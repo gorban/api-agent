@@ -55,7 +55,7 @@ def test_resource_pack_launcher_resolution(env, argv, expected):
         assert boot.resource_pack_main(argv, launcher_root=ROOT / 'demo') == expected
         if expected == 9:
             command = launch.call_args.args[0]
-            assert command[1] == str(ROOT / 'launch.py')
+            assert command[:2] == ['/bin/sh', str(ROOT / 'launch.sh')]
             assert '--_launcher-root' in command
         else:
             launch.assert_not_called()

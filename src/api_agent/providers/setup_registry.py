@@ -2,11 +2,14 @@
 import asyncio
 from collections.abc import Mapping
 
-from .contracts import ContractError, SessionClosedError
+from .contracts import ContractError, SessionClosedError, SetupRegistrationLimitError
 from .sessions import _Owner, _spawn, _drain
 from .progress import independent_timeout_scope
 from .control import finish_cleanup
 
+
+# Bound replay tombstones and active leases for one operation.
+_MAX_REGISTRATIONS = 8192
 
 _KEYS = frozenset(('version', 'operation_id', 'selected_identity', 'worker_id', 'attempt'))
 
@@ -45,10 +48,14 @@ class SetupRegistry(_Owner):
         if type(attempt) is not int or attempt < 1:
             raise ContractError('Invalid setup attempt')
         old = self._leases.get(worker_id)
-        if old is not None and (not old['revoked'] or attempt <= old['binding']['attempt']):
+        if old is not None and (not old['revoked'] or old.get('closing', False) or attempt <= old['binding']['attempt']):
             raise ContractError('Duplicate or stale setup registration')
+        if old is None and len(self._history) >= _MAX_REGISTRATIONS:
+            raise SetupRegistrationLimitError('Setup registration limit reached for this operation')
         binding = dict(version=1, operation_id=self.operation_id,
                        selected_identity=self.selected_identity, worker_id=worker_id, attempt=attempt)
+        if old is not None:
+            self._history.pop((worker_id, old['binding']['attempt']))
         self._leases[worker_id] = dict(binding=binding, revoked=False, waiters=set())
         self._history[worker_id, attempt] = self._leases[worker_id]
         return binding.copy()
@@ -197,7 +204,9 @@ class SetupRegistry(_Owner):
     async def revoke(self, binding):
         lease = self._lease(binding)
         lease['revoked'] = True
+        lease['closing'] = True
         await _drain(lease['waiters'], self._timeout, self._cancel_requested)
+        lease['closing'] = False
 
     async def _stop_consumers(self):
         for lease in self._leases.values():

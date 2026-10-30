@@ -21,7 +21,9 @@ def test_unconfigured_provider_is_explicit_and_configured_provider_is_usable():
     request = LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('Question'),)),)))
     result = LLMResult(Message('assistant',(TextContent('Answer'),)))
     implementation = SimpleNamespace(capabilities=ProviderCapabilities('llm', ('complete',)),
-                                     acomplete=AsyncMock(return_value=result),aclose=AsyncMock())
+                                     acomplete=AsyncMock(return_value=result),aclose=AsyncMock(),
+                                     credential_protection_version=1,
+                                     bind_credential_authority=lambda authority: None)
     runtime = Runtime('demo',llm_provider=LoadedProvider(implementation,'synthetic'))
     selected = runtime.require_llm_provider()
     assert selected is not implementation

@@ -224,3 +224,20 @@ def test_luna_56_catalog_api_keeps_exact_capability_boundary():
     assert rows[0].reasoning_efforts == ('off', 'low', 'medium', 'high')
     assert rows[1].reasoning_efforts is None
     assert [(sent.method, str(sent.url)) for sent in requests] == [('GET', BASE + '/models')]
+
+
+def test_authenticated_discovery_rejects_registered_non_access_credential():
+    from api_agent.llm_providers.gpt.discovery import discover_selections
+    from api_agent.providers.contracts import ProviderAccessError
+    from api_agent.telemetry.privacy import EmissionBoundary
+
+    boundary = EmissionBoundary()
+    boundary.register_secret('synthetic-refresh-credential')
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={'data': [
+                    {'id': 'gpt-4.1', 'description': 'synthetic-refresh-credential'}]}))) as client:
+            with pytest.raises(ProviderAccessError):
+                await discover_selections(client=client, base_url=BASE, access_token=TOKEN,
+                                          subscription=False, authority=boundary)
+    asyncio.run(run())

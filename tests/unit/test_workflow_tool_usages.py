@@ -174,3 +174,13 @@ def test_tool_instance_cannot_also_be_configuration_resource(graph):
 
     with pytest.raises(LayoutError, match='tool instance has conflicting resource kind'):
         admit(graph)
+
+
+def test_capture_explicit_consumer_operations_without_native_import(graph):
+    _, entry, _, node, _ = graph
+    entry.write_text(entry.read_text() + tools(('primary', 'instance.toml')))
+    node.write_text(node.read_text() + '\n## Tools\n\n| Port | Instance | Operations |\n'
+                    '| --- | --- | --- |\n| primary | [instance](instance.toml) | prepare, verify |\n')
+    selected = admit(graph)
+    assert [use.operations for use in selected.tool_usages] == [(), ('prepare', 'verify')]
+    assert len([r for r in selected.resources if r.kind == 'tool_instance']) == 1

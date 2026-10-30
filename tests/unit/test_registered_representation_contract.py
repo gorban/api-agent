@@ -174,8 +174,19 @@ def test_alternate_genuine_control_capture_at_response_bound(tmp_path, monkeypat
     carrier = ('owned-' + escape + 'credential-' + 'q' * 3000 + '-remaining').encode()
     helper = tmp_path / 'cutoff_writer.py'
     helper.write_text('import os, sys\nfd = int(sys.argv[1])\ndata = b"x" * (8 * 1024 * 1024 - 2500) + os.environ["OWNED_TEXT"].encode()\nwhile data:\n n = os.write(fd, data)\n data = data[n:]\n')
+    response_bound = 8 * 1024 * 1024
+    tail_start = response_bound - 2500
     original_read = prerequisites.os.read
-    monkeypatch.setattr(prerequisites.os, 'read', lambda fd, size: original_read(fd, min(size, 127)))
+    offsets, reads = {}, {}
+    def read_credential_tail(fd, size):
+        offset = offsets.get(fd, 0)
+        limit = min(size, tail_start - offset) if offset < tail_start else min(size, 127)
+        chunk = original_read(fd, limit)
+        if chunk:
+            reads.setdefault(fd, []).append((offset, len(chunk)))
+            offsets[fd] = offset + len(chunk)
+        return chunk
+    monkeypatch.setattr(prerequisites.os, 'read', read_credential_tail)
     finalized = []
     original_finalize = prerequisites.finalize
     def finalize(process):
@@ -188,6 +199,14 @@ def test_alternate_genuine_control_capture_at_response_bound(tmp_path, monkeypat
             environment={'API_KEY': secret, 'OWNED_TEXT': carrier.decode()}, directory=tmp_path,
             deadline=time.monotonic() + 20, cancelled=lambda: False)
 
+    output_reads, = (rows for fd, rows in reads.items() if offsets[fd] > response_bound)
+    prefix_reads = [(offset, size) for offset, size in output_reads if offset < tail_start]
+    tail_reads = [(offset, size) for offset, size in output_reads if offset >= tail_start]
+    assert any(size > 127 for _, size in prefix_reads)
+    assert all(offset + size <= tail_start for offset, size in prefix_reads)
+    assert tail_reads[0][0] == tail_start
+    assert len(tail_reads) > 1 and all(size <= 127 for _, size in tail_reads)
+    assert response_bound < sum(size for _, size in output_reads) <= response_bound + 127
     assert 'owned-' not in caught.value.local_details
     assert 'q' * 100 not in caught.value.local_details
     assert '[REDACTED]' in caught.value.local_details

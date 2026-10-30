@@ -21,19 +21,17 @@ requirements come from the selected graph.
 
 Ports resolve from the nearest lexical scope. A child cannot silently replace an inherited port with another instance. Replacements are applied before tool discovery. Discovery reads declarative resources without importing native nodes or tool factories.
 
-A node borrows the selected instance through its execution context:
+A node with explicit [operation declarations](#node-capabilities) borrows the selected instance through its execution context:
 
 ```python
-from api_agent.workflows.tool_gate import ToolGate
-
-gate = ToolGate(context.tool('primary'), invocation_id=call_id)
+gate = context.tools['primary']
 specification = await gate.describe()
 prepared = await gate.prepare(arguments)
 verified = await gate.verify(prepared, relevance=independent_verifier)
 result = await gate.execute(verified)
 ```
 
-The verifier must return both `relevant: true` and `grounded: true`. Owner validity runs first. Prepared calls and execution grants cannot be replayed through another gate. The operation owns disposal; a node cannot release sibling tools by closing a borrowed view.
+The verifier must return both `relevant: true` and `grounded: true`. Owner validity runs first. Prepared calls and execution grants can transfer between declared consumers of the same instance in one invocation; they cannot be replayed through another instance or invocation. The operation owns disposal; a node cannot release sibling tools by closing a borrowed view.
 
 ## Bind instance inputs
 
@@ -113,10 +111,22 @@ A first launch prepares missing core parser dependencies through the normal mana
 
 ## Prerequisites and shared services
 
+The shared tool conversation validates every generated argument against the
+declared input schema before dispatch. A confirmed argument mismatch can request
+a corrected proposal within the existing conversation-round limit (four by
+default). A rejected batch executes no tools, and correction cannot repeat an
+already completed input. Each generation keeps its own usage and evidence.
+Local validator failures and relevance/grounding rejections remain terminal;
+this is separate from transient network retries.
+
 See [optional infrastructure and cleanup](tool-infrastructure.md) for local output
 bindings, recursive dependencies, Docker profiles and shared-primary behavior.
 Infrastructure ownership is declared by the instance, separately from the
 implementation's input schema.
+
+An implementation may also declare [selected executable requirements](tool-executables.md),
+including recursively linked mise toolchains for a Rust/.NET or other subprocess
+adapter. These are separate from Python packages and container prerequisites.
 
 ## Inspect the delivered examples
 
@@ -157,7 +167,7 @@ From a prepared source checkout, validate declarations without inference:
 python -m api_agent.workflows validate --base-root . --entry demo/simple/flow.md.html
 python -m api_agent.workflows validate --base-root . --entry tests/integration/fixtures/tool_instances/shared_primary/flow.md.html
 python -m api_agent.workflows validate --base-root . --entry tests/integration/fixtures/tool_instances/independent/flow.md.html
-./launch.py --tui-mode integration --collect-only --no-std-in api-agent::tests/integration/test_tool_alternate.py::test_independent_tools
+./launch.sh --tui-mode integration --collect-only --no-std-in api-agent::tests/integration/test_tool_alternate.py::test_independent_tools
 ```
 
 Validation checks workflow declarations; collection discovers test identities.
@@ -168,7 +178,7 @@ spend tokens. To exercise the same independent case with its REST implementation
 use the normal integration execution gate explicitly:
 
 ```bash
-./launch.py --tui-mode integration --no-std-in --start=True --debug=False \
+./launch.sh --tui-mode integration --no-std-in --start=True --debug=False \
   --secondary-implementation rest.toml \
   api-agent::tests/integration/test_tool_alternate.py::test_independent_tools
 ```
@@ -181,3 +191,53 @@ combinations, platform isolation and durable storage retain their [separate deli
 An implementation can declare `nonempty = true` on any string input. This rejects empty or whitespace-only effective remote values during configuration preflight, before prerequisites or factories start. The key must be a boolean and is invalid on non-string inputs. Omitting it or setting it false retains ordinary string semantics; `required` still controls presence independently.
 
 An exact empty string remains valid when the instance declares a local output for that input: preflight retains its symbolic pending binding until acquisition supplies the effective value. Whitespace does not request local provisioning. Explicit shared-primary profiles derive their effective values and pending outputs before this check. Neither this policy nor the slot name implies a default endpoint or an undeclared prerequisite.
+
+## Node capabilities
+
+A graph or component Tools table makes an instance available in its lexical scope.
+Existing two-column `Port`/`Instance` tables remain supported. Availability alone
+never grants a native node permission to call the tool. Declare each consuming
+node's operations explicitly:
+
+```markdown
+## Tools
+
+| Port | Instance | Operations |
+| --- | --- | --- |
+| primary | [reader](cfg/tools/reader.toml) | describe, prepare, verify |
+```
+
+For an inline node, use `### Tools` inside its `## Node: name` section. Operations
+are a nonempty comma-separated list drawn from `describe`, `prepare`, `verify`,
+and `execute`; duplicate operations and operations on graph/component tables are
+rejected during capture. The linked instance must agree with any inherited port
+binding. Instance selection and prerequisite admission still belong to the normal
+named-tool plan; native source is not imported during discovery.
+
+Both parsed workflow executors supply `context.tools[port]` automatically:
+
+```python
+async def review(inputs, context):
+    reader = context.tools['primary']
+    prepared = await reader.prepare(inputs['arguments'])
+    verified = await reader.verify(prepared, relevance=review_relevance)
+    context.services['verified_read'] = verified
+    return {'accepted': True, 'feedback': {}}
+```
+
+A later node can declare the same instance under its own port with `execute` and
+call `await context.tools['primary'].execute(context.services['verified_read'])`.
+State workflows can instead transfer the grant in an appropriate invocation-local
+service. Grants belong to one graph invocation and the exact selected instance,
+arguments and specification. They cannot be replayed, reused in another turn or
+executed through a different instance. Each prepared call has its own single-use ToolGate grant state. Fresh calls,
+including repeated calls with identical arguments, share the instance view while
+keeping pending and completed grants separate. Shared owners are constructed by the operation
+Runtime; node capabilities borrow invocation views and cannot dispose the owner.
+Capabilities expire when the graph invocation exits, including on cancellation.
+
+The saved diagram uses these same declarations to draw dashed references
+from consumers to clickable instances. Operation details stay in each node’s Tools
+table rather than on the diagram edges. These references describe permitted calls, including
+conditional consumers, without claiming that a call actually occurred. Tool
+request/response evidence retains the actual consuming node, port and instance.

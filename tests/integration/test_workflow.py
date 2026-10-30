@@ -4,7 +4,7 @@ from api_agent.providers.progress import report_timeout_sync
 from api_agent.testing.model_choices import exact_model, catalog_choice
 from api_agent.workflows.fixture_driver import coverage_preflight, node_coverage
 
-pytestmark = pytest.mark.feature('Workflow execution')
+pytestmark = [pytest.mark.feature('Workflow execution'), pytest.mark.credential_authorities('workflow')]
 
 
 def test_workflow_node_coverage(request, integration_config):

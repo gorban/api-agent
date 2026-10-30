@@ -40,6 +40,87 @@ def fake_process(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_network_failure_has_clear_safe_diagnostic(auth, fake_process):
+    fake_process[0]['frames'] = [{'error': 'network', 'execution': 'possibly_executed'}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ProviderAccessError, match='Bedrock network request failed; connection lost or timed out') as caught:
+            await transport.call('models', {}, auth=auth)
+        assert caught.value.kind == 'network'
+        assert caught.value.execution == 'possibly_executed'
+        assert caught.value.usage is None
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_metadata_is_bounded_and_not_yielded_as_an_inference_result(auth, fake_process):
+    from api_agent.workflows.inference_capture import collect_inference
+    from api_agent.telemetry.privacy import EmissionBoundary
+    fake_process[0]['frames'] = [{'result': {'ok': True}, 'diagnostics': {'version': 1, 'http_status': 200}}]
+    transport = sdk.SDKTransport()
+    with collect_inference(EmissionBoundary()) as capture:
+        try:
+            assert await transport.call('responses', {}, auth=auth) == {'ok': True}
+            assert capture['transport_diagnostics'][None] == {'version': 1, 'http_status': 200}
+        finally:
+            await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('frame', [
+    {'result': {}, 'diagnostics': {'version': 1, 'body': 'not metadata'}},
+    {'event': {}, 'diagnostics': {'version': 1}},
+])
+async def test_sdk_rejects_unrecognized_metadata_frames(auth, fake_process, frame):
+    fake_process[0]['frames'] = [frame]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ContractError, match='Invalid Bedrock worker diagnostics'):
+            await transport.call('responses', {}, auth=auth)
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_success_contract_rejection_retains_code_usage_and_shape(auth, fake_process):
+    from api_agent.workflows.inference_capture import collect_inference, capture_inference
+    from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
+    diagnostics = {'version':1, 'response_validation':'rejected', 'reasoning_text_characters':0,
+                   'finish_reasons':['stop'], 'validation_rule':'tool_finish_consistency',
+                   'validation_path':'$.choices[].finish_reason'}
+    fake_process[0]['frames'] = [dict(error='unknown', execution='possibly_executed', http_status=200,
+        code='tool_finish_mismatch', diagnostics=diagnostics,
+        usage={'input_tokens':375, 'output_tokens':25, 'cached_input_tokens':None, 'reasoning_tokens':None})]
+    transport = sdk.SDKTransport()
+    try:
+        with collect_inference(EmissionBoundary(ContentPolicy(True)), retain_raw=True) as capture:
+            with pytest.raises(ProviderAccessError, match='response failed contract validation') as caught:
+                await transport.call('completions', {}, auth=auth)
+            capture_inference('output', {}, 'call', unavailable=True)
+        assert caught.value.code == 'tool_finish_mismatch' and caught.value.status == 200
+        assert caught.value.usage.input_tokens == 375 and caught.value.usage.output_tokens == 25
+        assert caught.value.provider_diagnostics == diagnostics
+        assert capture['rows'] == [dict(phase='response', content={}, reason='unavailable', diagnostics=diagnostics)]
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', [dict(code='provider body'), dict(code=[]), dict(error='network'),
+    dict(execution='not_started'), dict(diagnostics={'version':1,'text':'secret'}), dict(code=None)])
+async def test_contract_failure_metadata_is_not_an_unrestricted_error_channel(auth, fake_process, change):
+    fake_process[0]['frames'] = [dict(error='unknown', execution='possibly_executed',
+        code='invalid_response', diagnostics={'version':1}) | change]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ContractError, match='Invalid Bedrock worker'):
+            await transport.call('completions', {}, auth=auth)
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
 async def test_call_scopes_secrets_to_stdin_and_removes_bearer(auth, fake_process, monkeypatch):
     monkeypatch.setenv('AWS_BEARER_TOKEN_BEDROCK', 'synthetic-bearer')
     monkeypatch.setenv('OPENAI_API_KEY', 'ambient-openai')
@@ -299,6 +380,11 @@ async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatc
 @pytest.mark.asyncio
 async def test_source_worker_launch_does_not_need_pythonpath(monkeypatch, tmp_path):
     monkeypatch.delenv('PYTHONPATH', raising=False)
+    monkeypatch.setenv('PYTHONNOUSERSITE', '1')
+    # Use a clean interpreter, not the test environment's installed api-agent
+    # wheel, which can accidentally hide missing source-worker imports.
+    monkeypatch.setattr(sdk.sys, 'executable', sys._base_executable)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('HOME', str(tmp_path))
     # Invalid auth fails before importing boto3 or resolving any AWS credentials.
     auth = BedrockAuthSession({'mode': 'unsupported'})
@@ -765,3 +851,153 @@ async def test_wire_timeout_cannot_overflow_frame_limit(auth, fake_process, monk
     assert len(fake_process[1]) == 1
     assert fake_process[1][0].writes == []
     assert not transport._processes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('wire', [b'{bad}\n', b'{}\n', b'[""]\n', b'"' + b'x' * 33000])
+async def test_worker_authority_channel_rejects_invalid_handoffs(auth, fake_process, monkeypatch, wire):
+    import os
+    import socket
+    original_spawn = sdk.asyncio.create_subprocess_exec
+    tasks = []
+    async def spawn(*args, **kwargs):
+        fd = os.dup(kwargs['pass_fds'][0])
+        async def send():
+            channel = socket.socket(fileno=fd)
+            channel.setblocking(False)
+            try:
+                try:
+                    await asyncio.get_running_loop().sock_sendall(channel, wire)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            finally:
+                channel.close()
+        tasks.append(asyncio.create_task(send()))
+        return await original_spawn(*args, **kwargs)
+    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    with pytest.raises(ContractError, match='authority handoff'):
+        await sdk.SDKTransport().call('completions', {}, auth=auth, join=lambda values: None)
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('union', [[], ['different'], ['synthetic-key', ''], ['synthetic-key', '\x00' * 10000]])
+async def test_parent_rejects_invalid_joined_authority_and_releases_lease(auth, fake_process, monkeypatch, union):
+    import os
+    import socket
+    original_spawn = sdk.asyncio.create_subprocess_exec
+    tasks = []
+    async def spawn(*args, **kwargs):
+        fd = os.dup(kwargs['pass_fds'][0])
+        async def send():
+            channel = socket.socket(fileno=fd)
+            channel.setblocking(False)
+            try:
+                await asyncio.get_running_loop().sock_sendall(channel, b'["synthetic-key"]\n')
+            finally:
+                channel.close()
+        tasks.append(asyncio.create_task(send()))
+        return await original_spawn(*args, **kwargs)
+    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    lease = SimpleNamespace(release=__import__('unittest.mock', fromlist=['Mock']).Mock())
+    async def join(values):
+        assert values == ['synthetic-key']
+        return union, lease
+    with pytest.raises(ContractError, match='authority handoff'):
+        await sdk.SDKTransport().call('completions', {}, auth=auth, join=join)
+    lease.release.assert_called_once()
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+async def test_unjoined_dispatch_callback_runs_before_result(auth, fake_process):
+    events = []
+    result = await sdk.SDKTransport().call('completions', {}, auth=auth, on_dispatch=lambda: events.append('dispatch'))
+    assert result == {'ok': True} and events == ['dispatch']
+
+
+@pytest.mark.asyncio
+async def test_worker_error_preserves_valid_usage_without_releasing_unjoined_response(auth, fake_process):
+    usage = {'input_tokens': 4, 'output_tokens': 2, 'cached_input_tokens': None, 'reasoning_tokens': None}
+    fake_process[0]['frames'] = [{'error': 'unavailable', 'execution': 'possibly_executed', 'usage': usage}]
+    with pytest.raises(ProviderAccessError) as caught:
+        await sdk.SDKTransport().call('completions', {}, auth=auth)
+    assert (caught.value.usage.input_tokens, caught.value.usage.output_tokens) == (4, 2)
+    fake_process[0]['frames'][0]['provider_response'] = {'message': 'untrusted'}
+    with pytest.raises(ContractError, match='Invalid Bedrock worker response'):
+        await sdk.SDKTransport().call('completions', {}, auth=auth)
+
+
+@pytest.mark.asyncio
+async def test_joined_authority_without_dispatch_callback_still_requires_worker_ack(auth, fake_process, monkeypatch):
+    import os
+    import socket
+    original_spawn = sdk.asyncio.create_subprocess_exec
+    tasks, observed = [], []
+    async def spawn(*args, **kwargs):
+        fd = os.dup(kwargs['pass_fds'][0])
+        async def exchange():
+            channel = socket.socket(fileno=fd)
+            channel.setblocking(False)
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.sock_sendall(channel, b'["synthetic-key"]\n')
+                data = bytearray()
+                while not data.endswith(b'\n'):
+                    data.extend(await loop.sock_recv(channel, 1024))
+                observed.append(json.loads(data))
+                await loop.sock_sendall(channel, b'1')
+                observed.append(await loop.sock_recv(channel, 1))
+            finally:
+                channel.close()
+        tasks.append(asyncio.create_task(exchange()))
+        return await original_spawn(*args, **kwargs)
+    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    async def join(values): return None
+    result = await sdk.SDKTransport().call('completions', {}, auth=auth, join=join)
+    await asyncio.gather(*tasks)
+    assert result == {'ok': True}
+    assert observed == [['synthetic-key'], b'1']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('code,expected_error,expected_body', [
+    ('tool_finish_mismatch', ProviderAccessError, {'content':'safe rejected body'}),
+    ('response_safety_rejected', ContractError, None),
+])
+async def test_joined_failure_body_cannot_contradict_safety_rejection(auth, fake_process, monkeypatch,
+                                                                   code, expected_error, expected_body):
+    import os
+    import socket
+    fake_process[0]['frames'] = [dict(error='unknown', execution='possibly_executed', code=code,
+                                    provider_response={'content':'safe rejected body'})]
+    original_spawn = sdk.asyncio.create_subprocess_exec
+    tasks = []
+    async def spawn(*args, **kwargs):
+        descriptor = os.dup(kwargs['pass_fds'][0])
+        async def exchange():
+            channel = socket.socket(fileno=descriptor)
+            channel.setblocking(False)
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.sock_sendall(channel, b'["synthetic-key"]\n')
+                data = bytearray()
+                while not data.endswith(b'\n'):
+                    data.extend(await loop.sock_recv(channel, 1024))
+                await loop.sock_sendall(channel, b'1')
+                assert await loop.sock_recv(channel, 1) == b'1'
+            finally:
+                channel.close()
+        tasks.append(asyncio.create_task(exchange()))
+        return await original_spawn(*args, **kwargs)
+    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    async def join(values):
+        return None
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(expected_error) as caught:
+            await transport.call('completions', {}, auth=auth, join=join)
+        assert getattr(caught.value, 'provider_response', None) == expected_body
+    finally:
+        await transport.aclose()
+        await asyncio.gather(*tasks)

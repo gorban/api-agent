@@ -1,12 +1,10 @@
 """Selected useful demo, separate from the admitted one-call chat application."""
-from uuid import uuid4
-
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.inference import async_request_to_wire
 from api_agent.providers.inference import result_to_wire
 from api_agent.workflows.definition import load_native_catalog
 from api_agent.workflows.execution import NodeFunction, Workflow, WorkflowError
-from api_agent.workflows.tool_gate import ToolGate
+from api_agent.tooling.runtime import OwnerTools
 
 
 class UsefulDemoApplication:
@@ -56,20 +54,14 @@ class UsefulDemoApplication:
         selected_owner = tool_owner or self.tool_owner
         if selected_owner is None and self.tools is None:
             raise ContractError('Useful demo requires a selected tool owner')
-        invocation_id = request.request_id or str(uuid4())
-        factory = getattr(selected_owner, 'for_invocation', None)
-        view = factory() if callable(factory) else selected_owner
-        close_view = view is not selected_owner
-        if self.tools is not None:
-            view = self.tools.for_port(scope_kind='node', scope='execute_tool', port='primary')
-            close_view = True
+        tools = self.tools or OwnerTools(self.definition, selected_owner)
         observations = None
         try:
-            gate = ToolGate(view, invocation_id=invocation_id)
             observations = self.observations.create(self.definition) if self.observations is not None else None
-            services = {'selection': request.selected_llm, 'generation': request.payload.generation,
-                        'messages': messages, 'tool_gate': gate, 'journal': observations,
-                        'observation_factory': self.observations, 'tools': self.tools}
+            result_store = {}
+            services = {'result_store': result_store, 'selection': request.selected_llm, 'generation': request.payload.generation,
+                        'messages': messages, 'journal': observations,
+                        'observation_factory': self.observations, 'tools': tools}
 
             async def selected(value):
                 if value.selected_llm != request.selected_llm:
@@ -79,15 +71,11 @@ class UsefulDemoApplication:
             services['llm'] = selected
             workflow = Workflow(self.definition, self.registry, config=self.config, services=services)
             values = await workflow.arun({'messages': messages})
-            rendered = services.get('rendered_result')
+            rendered = result_store.get('rendered_result', services.get('rendered_result'))
             if (rendered is None or values.get('render', {}).get('selected_model') != request.selected_llm
                     or values['render'].get('response_text') != result_to_wire(rendered)['text']):
                 raise WorkflowError('Useful demo did not render through its selected model')
             return rendered
         finally:
-            try:
-                if observations is not None:
-                    observations.close()
-            finally:
-                if close_view:
-                    await view.aclose()
+            if observations is not None:
+                observations.close()

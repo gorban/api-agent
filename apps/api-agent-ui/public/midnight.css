@@ -76,12 +76,12 @@ button:disabled { opacity: 1; color: #b7bfca; background: #354252; box-shadow: n
 footer { color: var(--muted); }
 .footer-brand { color: var(--ink); }
 .footer-brand span, footer a { color: #f3b587; }
-#settings, #lab {
+#settings, #lab, #failure {
   background: #1c293a;
   color: var(--ink);
   box-shadow: 0 24px 90px #050b1466, inset 0 1px 0 #61718570;
 }
-#settings::backdrop, #lab::backdrop { background: #070e19ba; backdrop-filter: blur(5px); }
+#settings::backdrop, #lab::backdrop, #failure::backdrop { background: #070e19ba; backdrop-filter: blur(5px); }
 .dialog-head button { color: var(--ink); background: #35465b; }
 .dialog-head button:hover { background: #46566c; }
 #settings label, #lab label { color: var(--ink); }
@@ -99,7 +99,7 @@ footer { color: var(--muted); }
 .lab-pending { color: var(--muted); background: #1c293a; border-color: var(--line); }
 .message .lab-artifact { color: var(--ink); background: #243347; border-color: var(--line); }
 .lab-artifact a { color: #f3b587; }
-#conversation-scroll, #settings, #lab { scrollbar-color: #7d8da0 #172331; }
+#conversation-scroll, #settings, #lab, #failure { scrollbar-color: #7d8da0 #172331; }
 @media (forced-colors: active) {
   #composer, .starters button, .new-chat, #send, .primary, #lab-run, .dialog-head button { border: 1px solid ButtonText; }
   :focus-visible, #composer:focus-within { outline-color: Highlight; }

@@ -64,10 +64,9 @@ def test_live_capture_requires_emission_boundary():
 def test_launch_registers_token_before_first_output(monkeypatch):
     child, observed, options = PipeChild(), [], []
     boundary = EmissionBoundary(ContentPolicy())
-    boundary.register_secret = Mock(wraps=boundary.register_secret)
     monkeypatch.setattr(process, 'token_urlsafe', lambda length: 'launch-token')
     def spawn(*args, **kwargs):
-        boundary.register_secret.assert_called_once_with('launch-token')
+        assert 'launch-token' in boundary.snapshot_content()[1]._secrets
         options.append(kwargs)
         os.write(child.writer, b'launch-token output\n')
         return child

@@ -22,7 +22,14 @@ class _SetupOwner:
             unattended_index_source=backend.unattended_index_source,
             loop=asyncio.get_running_loop(),
             password_manager_registry=backend.password_manager_registry,
-            interaction=backend.interaction, quota_observer=backend.quota_observer)
+            interaction=backend.interaction, quota_observer=backend.quota_observer,
+            authority=backend.authority)
+        self.trace = None
+        if backend.config.get('TRACE_MODE', ''):
+            from api_agent.telemetry.remote_inference import RemoteInferenceTrace
+            from .workflow_capture import capture_config
+            self.trace = RemoteInferenceTrace(capture_config(backend.config, backend.capture_sources),
+                                              self.provider.emissions)
 
     async def ensure_ready(self):
         await self.provider._ensure()
@@ -31,8 +38,11 @@ class _SetupOwner:
         return await self.provider._describe()
 
     async def complete(self, request):
-        from api_agent.workflows.inference_capture import bind_boundary
+        from api_agent.workflows.inference_capture import bind_boundary, bind_inference_trace
         bind_boundary(self.provider.emissions)
+        if self.trace is not None:
+            await self.trace.astart()
+            bind_inference_trace(self.trace)
         return await self.provider._complete(request)
 
     def quote_cost(self, request, result):
@@ -44,10 +54,14 @@ class _SetupOwner:
 
     async def aclose(self):
         await self.provider._close()
+        if self.trace is not None:
+            await self.trace.aclose()
         self.provider.closed = True
 
     async def finish_execution(self):
         await self.provider._finish_execution()
+        if self.trace is not None:
+            await self.trace.aclose()
 
 
 from .suite_lock import CleanupLeaseOwner
@@ -64,12 +78,20 @@ class SetupBackend(CleanupLeaseOwner):
     retains_browser = False
 
     def __init__(self, config, owner_root, *, unattended_index_source=None,
-                 password_manager_registry=None, interaction=None, quota_observer=None):
+                 password_manager_registry=None, interaction=None, quota_observer=None, authority=None,
+                 capture_sources=None):
         from api_agent.providers.setup_transport import _timeout
         self.timeout = _timeout(config.get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', self.timeout))
         self.quota_observer = quota_observer
         self.interaction = interaction
+        from api_agent.telemetry.privacy import EmissionBoundary
+        if authority is not None and type(authority) is not EmissionBoundary:
+            raise ContractError('Invalid integration credential authority')
+        self.authority = authority
         self._config = deepcopy(dict(config))
+        from .workflow_capture import capture_config
+        self._capture_sources = deepcopy({} if capture_sources is None else capture_sources)
+        capture_config(self._config, self._capture_sources)
         self.debug = self._config.get('DEBUG') is True
         self._owner_root = Path(owner_root).resolve()
         from api_agent.auth.managers import registry_for_owner
@@ -80,7 +102,7 @@ class SetupBackend(CleanupLeaseOwner):
         managers = [(item.id, str(item.implementation), item.cli_default)
                     for item in self._password_manager_registry.definitions]
         frozen = json.dumps({'config': self._config, 'owner_root': str(self._owner_root),
-                             'password_managers': managers},
+                             'password_managers': managers, 'capture_sources': self._capture_sources},
                             sort_keys=True, separators=(',', ':'), default=str)
         self._selected_identity = hashlib.sha256(frozen.encode()).hexdigest()
         self.loop = self.thread = self.registry = self.server = None
@@ -101,6 +123,10 @@ class SetupBackend(CleanupLeaseOwner):
     @property
     def config(self):
         return deepcopy(self._config)
+
+    @property
+    def capture_sources(self):
+        return deepcopy(self._capture_sources)
 
     @property
     def owner_root(self):
@@ -151,9 +177,13 @@ class SetupBackend(CleanupLeaseOwner):
         from api_agent.providers.setup_registry import SetupRegistry
         from api_agent.providers.setup_transport import SetupServer
         async with report_timeout('Shared setup backend startup', self.cleanup_timeout):
+            if self.authority is not None:
+                from .inference_content import content_boundary
+                for secret in tuple(content_boundary(self.config)._secrets):
+                    await self.authority.aregister_secret(secret)
             self.registry = SetupRegistry(self.operation_id, self.selected_identity,
                                           lambda: _SetupOwner(self), timeout=self.cleanup_timeout)
-            self.server = SetupServer(self.registry, str(uuid4()), timeout=self.timeout)
+            self.server = SetupServer(self.registry, str(uuid4()), timeout=self.timeout, authority=self.authority)
             self.descriptor = await self.server.start()
             return deepcopy(self.descriptor)
 

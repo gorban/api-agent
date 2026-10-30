@@ -178,7 +178,7 @@ async def _open_authorization(session, url, open_browser=None):
 async def connect_account(store, *, registration=None, open_browser=None,
                           client=None, timeout=180, clock=time.time, profile=None, browser_owner=None,
                           app_name="api-agent", login_username=None, login_credentials=None,
-                          allow_interaction=True, login_material=None):
+                          allow_interaction=True, login_material=None, register_secret=None):
     """Persist only a fully verified connection; clean up on every exit."""
     from .oauth import begin_authorization, finish_authorization
     if type(allow_interaction) is not bool:
@@ -267,7 +267,8 @@ async def connect_account(store, *, registration=None, open_browser=None,
                             except Exception:
                                 raise AuthError('login_step_failed') from None
                         try:
-                            connection = await finish_authorization(attempt, parameters, client=client, now=clock())
+                            options = {"register_secret": register_secret} if register_secret is not None else {}
+                            connection = await finish_authorization(attempt, parameters, client=client, now=clock(), **options)
                         except AuthError as error:
                             if (retry or str(error) != 'authorization_failed'
                                     or getattr(error, 'stage', None) != 'token'

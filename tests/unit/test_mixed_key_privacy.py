@@ -71,10 +71,16 @@ def mixed_key_case(request):
 def recorded_worker_evidence(payload, expected, enabled, tmp_path):
     async def scenario():
         boundary = EmissionBoundary(ContentPolicy(enabled), secrets=(PRIMARY,))
+        # The workflow capture schema admits ordinary declared field names;
+        # embedded JSON syntax in the other key is omitted at that boundary.
+        evidence_expected = {'ordinary': 'keep'}
         functional = LLMResult(Message('assistant', (TextContent('Exact answer'),)), Usage(7, 3))
-        rows = ({'phase': 'response', 'content': boundary.export(payload)},) if enabled else ()
-        owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=AsyncMock(return_value=functional),
-                                aclose=AsyncMock(), export_content=lambda req, res: rows)
+        async def complete(request):
+            from api_agent.workflows.inference_capture import bind_boundary, capture_inference
+            bind_boundary(boundary)
+            capture_inference('output', payload, 'synthetic')
+            return functional
+        owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock())
         registry = SetupRegistry('owned-operation', 'owned-selection', lambda: owner)
         server = SetupServer(registry, 'synthetic-native-key-capability-0000000')
         frames = []
@@ -85,8 +91,9 @@ def recorded_worker_evidence(payload, expected, enabled, tmp_path):
                                                'request': request_to_wire(REQUEST)}, 'complete')
             assert result_from_wire(wire['result']) == functional
             assert functional.usage == Usage(7, 3)
-            evidence = [_decode(frame) for frame in frames if _decode(frame)['status'] == 'evidence']
-            assert [row['content'] for row in evidence] == ([expected] if enabled else [])
+            evidence = [_decode(frame) for frame in frames if _decode(frame)['status'] == 'evidence'
+                        and _decode(frame).get('reason') != 'withheld']
+            assert [row['content'] for row in evidence] == ([evidence_expected] if enabled else [])
             # Parent has no registered secrets: the backend must protect its own frames.
             parent = EmissionBoundary(ContentPolicy(True))
             attachments = [content_attachment(SimpleNamespace(text=json.dumps(
@@ -98,7 +105,7 @@ def recorded_worker_evidence(payload, expected, enabled, tmp_path):
             saved = json.loads((tmp_path / filename).read_text())
             assert saved['steps'] == [dict(name='step', **expected)]
             assert [json.loads((tmp_path / item['source']).read_text()) for item in saved['attachments']] == (
-                [expected] if enabled else [])
+                [evidence_expected] if enabled else [])
         finally:
             await server.aclose()
             await registry.aclose()

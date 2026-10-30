@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import signal
+import socket
 from pathlib import Path
 
 from api_agent.providers.contracts import ContractError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError
@@ -54,7 +55,7 @@ class SDKTransport:
         async with component_timeout('Bedrock SDK operation', remaining):
             return await work()
 
-    async def stream(self, operation, payload, *, auth):
+    async def stream(self, operation, payload, *, auth, join=None, on_dispatch=None):
         if os.name != 'posix':
             raise SetupPrerequisiteError('Bedrock SDK process isolation currently requires POSIX.')
         if self._closed:
@@ -66,6 +67,8 @@ class SDKTransport:
         except (ValueError, TypeError, RecursionError):
             raise ContractError('Invalid Bedrock SDK JSON request or transport limit') from None
         owned = []
+        channels = []
+        authority_lease = None
         async with component_timeout('Bedrock SDK operation', self.timeout) as budget:
             pass
         try:
@@ -84,6 +87,13 @@ class SDKTransport:
             if auth_config['mode'] in {'access_key', 'temporary'}:
                 environment.pop('AWS_SESSION_TOKEN', None)
                 environment.pop('AWS_SECURITY_TOKEN', None)
+            if join is not None:
+                parent_channel, child_channel = socket.socketpair()
+                parent_channel.setblocking(False)
+                channels.extend((parent_channel, child_channel))
+                environment["API_AGENT_BEDROCK_AUTHORITY_FD"] = str(child_channel.fileno())
+            else:
+                environment.pop("API_AGENT_BEDROCK_AUTHORITY_FD", None)
             async def launch():
                 if self._closed:
                     raise SessionClosedError('Bedrock transport is closed')
@@ -92,7 +102,7 @@ class SDKTransport:
                         sys.executable, str(Path(__file__).with_name('worker.py')),
                         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL, env=environment, limit=MAX_FRAME,
-                        start_new_session=True)
+                        start_new_session=True, pass_fds=(child_channel.fileno(),) if join is not None else ())
                 except OSError:
                     raise ContractError('Unable to start Bedrock SDK worker') from None
                 owned.append(process)
@@ -109,6 +119,8 @@ class SDKTransport:
                     self._launches.discard(task)
             await self._timed(lambda: finish_cleanup(wait_launch()), budget)
             process = owned[0]
+            if join is not None:
+                child_channel.close()
             if self._closed:
                 raise SessionClosedError('Bedrock transport is closed')
             remaining = budget.remaining
@@ -122,6 +134,52 @@ class SDKTransport:
             process.stdin.write(request)
             await self._timed(process.stdin.drain, budget)
             process.stdin.close()
+            if join is not None:
+                loop = asyncio.get_running_loop()
+                raw_join = bytearray()
+                while not raw_join.endswith(b'\n'):
+                    part = await self._timed(lambda: loop.sock_recv(parent_channel, 32769 - len(raw_join)), budget)
+                    if not part:
+                        # An error before credential acquisition is reported on stdout.
+                        break
+                    raw_join.extend(part)
+                    if len(raw_join) > 32768:
+                        raise ContractError('Invalid Bedrock authority handoff')
+                if raw_join:
+                    try:
+                        values = json.loads(raw_join)
+                        if (type(values) is not list or len(values) > 64 or
+                            any(type(value) is not str or not value for value in values) or
+                            sum(len(value.encode()) for value in values) > 16384):
+                            raise ValueError()
+                    except (ValueError, UnicodeError):
+                        raise ContractError('Invalid Bedrock authority handoff') from None
+                    joined = await self._timed(lambda: join(values), budget)
+                    if joined is None:
+                        union = values
+                    else:
+                        union, authority_lease = joined
+                    try:
+                        if (type(union) is not list or len(union) > 64 or
+                            any(type(value) is not str or not value for value in union) or
+                            sum(len(value.encode()) for value in union) > 16384 or
+                            not set(values) <= set(union)):
+                            raise ValueError()
+                        encoded_union = json.dumps(union, ensure_ascii=False).encode() + b'\n'
+                        if len(encoded_union) > 32768:
+                            raise ValueError()
+                    except (TypeError, ValueError, UnicodeError):
+                        raise ContractError('Invalid Bedrock authority handoff') from None
+                    await self._timed(lambda: loop.sock_sendall(parent_channel, encoded_union), budget)
+                    ready = await self._timed(lambda: loop.sock_recv(parent_channel, 1), budget)
+                    if ready != b'1':
+                        raise ContractError('Bedrock worker rejected credential authority')
+                    if on_dispatch is not None:
+                        on_dispatch()
+                    await self._timed(lambda: loop.sock_sendall(parent_channel, b'1'), budget)
+                parent_channel.close()
+            elif on_dispatch is not None:
+                on_dispatch()
             while True:
                 try:
                     raw = await self._timed(process.stdout.readline, budget)
@@ -139,14 +197,39 @@ class SDKTransport:
                     kind = frame['error']
                     if kind == 'setup':
                         raise SetupPrerequisiteError('Install the optional Bedrock SDK dependencies.')
-                    if kind not in {'authentication', 'authorization', 'rate_limited', 'unavailable', 'invalid_request', 'unknown'}:
+                    if kind not in {'authentication', 'authorization', 'rate_limited', 'unavailable', 'network', 'invalid_request', 'unknown'}:
                         raise ContractError('Invalid Bedrock worker error')
                     execution = frame.get('execution')
                     if execution not in {'not_started', 'possibly_executed'}:
                         raise ContractError('Invalid Bedrock worker execution state')
                     status = frame.get('http_status')
-                    error = ProviderAccessError(kind, 'Bedrock SDK operation failed; verify provider setup and permissions.', status=status)
+                    message = ('Bedrock network request failed; connection lost or timed out.' if kind == 'network'
+                               else 'Bedrock SDK operation failed; verify provider setup and permissions.')
+                    code = frame.get('code')
+                    if code is not None:
+                        from .mantle import RESPONSE_CODES
+                        if (type(code) is not str or code not in RESPONSE_CODES
+                                or kind != 'unknown' or execution != 'possibly_executed'):
+                            raise ContractError('Invalid Bedrock worker response code')
+                        message = ('Bedrock inference response could not be safely released.' if code == 'response_safety_rejected'
+                                   else 'Bedrock inference response failed contract validation.')
+                    error = ProviderAccessError(kind, message, status=status, code=code)
+                    if 'diagnostics' in frame:
+                        from api_agent.telemetry.inference_diagnostics import valid_diagnostics
+                        if code is None or not valid_diagnostics(frame['diagnostics']):
+                            raise ContractError('Invalid Bedrock worker diagnostics')
+                        error.provider_diagnostics = frame['diagnostics']
+                        from api_agent.workflows.inference_capture import capture_transport_diagnostics
+                        capture_transport_diagnostics(frame['diagnostics'])
+                    if 'usage' in frame:
+                        from api_agent.providers.inference import result_from_wire
+                        error.usage = result_from_wire({'text': '', 'outcome': 'completed', 'usage': frame['usage']}).usage
                     error.execution = execution
+                    if 'provider_response' in frame:
+                        if (type(frame['provider_response']) is not dict or join is None
+                                or code == 'response_safety_rejected'):
+                            raise ContractError('Invalid Bedrock worker response')
+                        error.provider_response = frame['provider_response']
                     hint = frame.get('retry_after')
                     if status is not None:
                         error.http_status = status
@@ -156,17 +239,27 @@ class SDKTransport:
                             raise ContractError('Invalid Bedrock worker retry delay')
                         error.retry_after = hint
                     raise error
+                if 'diagnostics' in frame:
+                    from api_agent.telemetry.inference_diagnostics import valid_diagnostics
+                    if set(frame) != {'result', 'diagnostics'} or not valid_diagnostics(frame['diagnostics']):
+                        raise ContractError('Invalid Bedrock worker diagnostics')
+                    from api_agent.workflows.inference_capture import capture_transport_diagnostics
+                    capture_transport_diagnostics(frame.pop('diagnostics'))
                 if set(frame) not in ({'event'}, {'result'}) or not isinstance(next(iter(frame.values())), dict):
                     raise ContractError('Invalid Bedrock worker response')
                 yield next(iter(frame.values()))
             if await self._timed(process.wait, budget):
                 raise ContractError('Bedrock worker failed')
         finally:
+            for channel in channels:
+                channel.close()
             for process in owned:
                 await finish_cleanup(self._stop(process))
+            if authority_lease is not None:
+                authority_lease.release()
 
-    async def call(self, operation, payload, *, auth):
-        results = [value async for value in self.stream(operation, payload, auth=auth)]
+    async def call(self, operation, payload, *, auth, join=None, on_dispatch=None):
+        results = [value async for value in self.stream(operation, payload, auth=auth, join=join, on_dispatch=on_dispatch)]
         if len(results) != 1:
             raise ContractError('Invalid Bedrock worker result count')
         return results[0]

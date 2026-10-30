@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import threading
 from dataclasses import replace
 from uuid import uuid4
 
@@ -12,6 +13,52 @@ from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary, OwnedLo
 
 MARKER = 'SYNTHETIC_CONTENT_914'
 SECRET = 'SYNTHETIC_SECRET_625'
+
+
+def test_policy_projection_registration_invalidates_existing_content_snapshot():
+    authority = EmissionBoundary()
+    projected = authority.for_policy(ContentPolicy(True))
+    generation, snapshot = authority.snapshot_content()
+    projected.register_secret(SECRET)
+
+    committed = []
+    assert not authority.commit_if_current(generation, lambda: committed.append(True))
+    assert committed == []
+    _, current = authority.snapshot_content()
+    assert SECRET not in json.dumps(current.content_export({'prompt': SECRET}))
+    assert snapshot.content_export({'prompt': SECRET}) == {'prompt': SECRET}
+    assert authority.export({'prompt': SECRET}) == {}
+
+
+def test_concurrent_registration_invalidates_snapshot_before_commit():
+    authority = EmissionBoundary()
+    generation, _ = authority.snapshot_content()
+    ready = threading.Event()
+    registered = threading.Event()
+
+    def register():
+        ready.wait()
+        authority.for_policy(ContentPolicy(True)).register_secret(SECRET)
+        registered.set()
+
+    worker = threading.Thread(target=register)
+    worker.start()
+    ready.set()
+    assert registered.wait(2)
+    committed = []
+    assert not authority.commit_if_current(generation, lambda: committed.append(True))
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert committed == []
+
+
+def test_same_registration_does_not_invalidate_snapshot():
+    authority = EmissionBoundary(secrets=(SECRET,))
+    generation, _ = authority.snapshot_content()
+    authority.register_secret(SECRET)
+    committed = []
+    assert authority.commit_if_current(generation, lambda: committed.append(True))
+    assert committed == [True]
 
 
 def config(value=True, source='environment', explicit=True, **kwargs):
@@ -295,7 +342,7 @@ def test_log_filter_clears_arbitrary_record_attributes():
 
 @pytest.mark.parametrize('key',[
     'hidden_reasoning','hiddenReasoning','Hidden-Reasoning','hidden.reasoning',
-    'reasoning_content','internal_analysis','thinking_content','scratchpad','chain_of_thought',
+    'internal_analysis','scratchpad',
     'continuation_state','continuationState','continuation.id',
     'encrypted_content','previous_response_id','conversation_state',
 ])
@@ -315,8 +362,7 @@ def test_hidden_protocol_fields_are_excluded_even_with_content_opt_in(key,serial
     assert json.dumps(payload)==original
 
 
-@pytest.mark.parametrize('tag',[{'type':'reasoning'},{'type':'redacted_thinking'},
-    {'type':'continuation'},{'channel':'analysis'},{'channel':'reasoning'}])
+@pytest.mark.parametrize('tag',[{'type':'redacted_thinking'}, {'type':'continuation'}, {'type':'compaction'}])
 @pytest.mark.parametrize('carrier',['native','serialized','embedded','parts'])
 def test_tagged_hidden_carriers_cannot_escape_through_serialized_or_split_json(tag,carrier):
     boundary = EmissionBoundary(ContentPolicy(True))

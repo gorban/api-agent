@@ -64,6 +64,17 @@ class ViewerController:
 
 
 @dataclass(frozen=True)
+class ViewerToolBinding:
+    scope_kind: str
+    scope: str
+    declaration_path: str
+    port: str
+    instance_path: str
+    instance_sha256: str
+    operations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ViewerProjection:
     version: int
     graph_id: str
@@ -78,6 +89,7 @@ class ViewerProjection:
     replacements: tuple
     projection_sha256: str
     controllers: tuple[ViewerController, ...] = ()
+    tool_bindings: tuple[ViewerToolBinding, ...] = ()
 
 
 def project_view(definition) -> ViewerProjection:
@@ -212,6 +224,16 @@ def project_view(definition) -> ViewerProjection:
                                              max_passes_link=(logical(row['max_passes_link'])
                                                               if 'max_passes_link' in row else None))
                             for row in definition.layout.tables['Components'])
+    tool_bindings = []
+    for usage in getattr(definition, 'tool_usages', ()):
+        instance_path = logical(usage.instance)
+        resource = resource_by_path.get(instance_path)
+        if resource is None or resource.kind != 'tool_instance':
+            raise ValueError('missing captured tool instance')
+        tool_bindings.append(ViewerToolBinding(usage.scope_kind, usage.scope,
+            logical(usage.declaration), usage.port, instance_path, resource.sha256,
+            getattr(usage, 'operations', ())))
+    tool_bindings = tuple(tool_bindings)
     payload = {'version': 1, 'graph_id': definition.graph_id,
                'entry_path': logical(definition.entry),
                'documents': [(d.logical_path, d.stable_id, d.owner_id, d.sha256) for d in documents],
@@ -227,9 +249,11 @@ def project_view(definition) -> ViewerProjection:
     payload['controllers'] = [(c.component_id, c.guard, c.max_passes, c.accepted,
                                c.retry, c.exhaustion, c.max_passes_key, c.max_passes_link)
                               for c in controllers]
+    payload['tool_bindings'] = [(b.scope_kind, b.scope, b.declaration_path, b.port,
+                                b.instance_path, b.instance_sha256) + ((b.operations,) if b.operations else ()) for b in tool_bindings]
     digest = sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     backlinks = tuple(sorted(edges, key=lambda edge: (edge.owner, edge.target, edge.source,
                                                        edge.condition, edge.implicit)))
     return ViewerProjection(1, definition.graph_id, definition.definition_id, logical(definition.entry),
                             tuple(documents), steps, tuple(edges), backlinks, tuple(references),
-                            definition.resources, definition.replacements, digest, controllers)
+                            definition.resources, definition.replacements, digest, controllers, tool_bindings)

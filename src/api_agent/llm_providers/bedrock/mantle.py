@@ -13,11 +13,17 @@ from .catalog import selection
 
 _LIMIT = 524288
 _REASONS = {'stop': 'completed', 'tool_calls': 'tool_calls', 'length': 'length', 'content_filter': 'refused'}
+RESPONSE_CODES = frozenset({'invalid_response', 'unsupported_response_field', 'invalid_tool_arguments',
+                            'invalid_usage', 'unsupported_finish_reason', 'tool_finish_mismatch',
+                            'response_safety_rejected'})
 
 
-def _require(condition):
+def _require(condition, code='invalid_response', *, rule=None, path=None):
     if not condition:
-        raise ProviderAccessError('unknown', 'Invalid Bedrock inference response.')
+        error = ProviderAccessError('unknown', 'Invalid Bedrock inference response.', code=code)
+        if rule is not None:
+            error.provider_diagnostics = {'version':1, 'validation_rule':rule, 'validation_path':path}
+        raise error
 
 
 def _text(value, *, empty=True):
@@ -33,7 +39,7 @@ def _object(value):
     try:
         return object_json(_text(value))
     except ContractError:
-        raise ProviderAccessError('unknown', 'Invalid Bedrock tool arguments.') from None
+        raise ProviderAccessError('unknown', 'Invalid Bedrock tool arguments.', code='invalid_tool_arguments') from None
 
 
 def _bounded(value):
@@ -43,13 +49,14 @@ def _bounded(value):
         raise ProviderAccessError('unknown', 'Invalid Bedrock inference response.') from None
 
 
-def _fields(row, allowed):
+def _fields(row, allowed, *, path='$'):
     """Unknown null SDK fields are absence; nonnull unsupported semantics fail."""
-    _require(type(row) is dict and all(key in allowed or value is None for key, value in row.items()))
+    _require(type(row) is dict and all(key in allowed or value is None for key, value in row.items()),
+             'unsupported_response_field', rule='allowed_fields', path=path)
 
 
 def _reasoning(item, *, incomplete=False):
-    _fields(item, {'type', 'id', 'status', 'summary', 'content'})
+    _fields(item, {'type', 'id', 'status', 'summary', 'content'}, path='$.output[]')
     status = item.get('status')
     status = 'completed' if status is None else status
     _require(item.get('type') == 'reasoning'
@@ -135,25 +142,25 @@ def encode(request, api_mode):
 
 
 def _usage(raw, response):
-    _require(type(raw) is dict)
+    _require(type(raw) is dict, 'invalid_usage')
     incoming, outgoing, total = (raw.get(key) for key in
         (('input_tokens', 'output_tokens', 'total_tokens') if response else ('prompt_tokens', 'completion_tokens', 'total_tokens')))
-    _require(all(type(value) is int and 0 <= value <= 2147483647 for value in (incoming, outgoing, total)))
-    _require(total == incoming + outgoing)
+    _require(all(type(value) is int and 0 <= value <= 2147483647 for value in (incoming, outgoing, total)), 'invalid_usage')
+    _require(total == incoming + outgoing, 'invalid_usage')
     counts = []
     for key, subset, maximum in (
         ('input_tokens_details' if response else 'prompt_tokens_details', 'cached_tokens', incoming),
         ('output_tokens_details' if response else 'completion_tokens_details', 'reasoning_tokens', outgoing)):
         details = raw.get(key)
-        _require(details is None or type(details) is dict)
+        _require(details is None or type(details) is dict, 'invalid_usage')
         value = None if details is None else details.get(subset)
-        _require(value is None or type(value) is int and 0 <= value <= maximum)
+        _require(value is None or type(value) is int and 0 <= value <= maximum, 'invalid_usage')
         counts.append(value)
     return Usage(incoming, outgoing, *counts)
 
 
 def _call_metadata(row):
-    _fields(row, {'type', 'id', 'status', 'call_id', 'name', 'arguments', 'item_id', 'output_index'})
+    _fields(row, {'type', 'id', 'status', 'call_id', 'name', 'arguments', 'item_id', 'output_index'}, path='$.output[]')
     for key in ('id', 'item_id'):
         if row.get(key) is not None:
             _text(row[key], empty=False)
@@ -170,14 +177,14 @@ def _calls(rows, response):
         if response:
             _call_metadata(row)
         else:
-            _fields(row, {'type', 'id', 'function'})
+            _fields(row, {'type', 'id', 'function'}, path='$.choices[].message.tool_calls[]')
         _require(row.get('type') == ('function_call' if response else 'function'))
         call_id = _text(row.get('call_id' if response else 'id'), empty=False)
         _require(call_id not in seen)
         seen.add(call_id)
         spec = row if response else row.get('function')
         if not response:
-            _fields(spec, {'name', 'arguments'})
+            _fields(spec, {'name', 'arguments'}, path='$.choices[].message.tool_calls[].function')
         name, arguments = _text(spec.get('name'), empty=False), _text(spec.get('arguments'))
         _object(arguments)
         calls.append(ToolCall(call_id, name, arguments))
@@ -211,10 +218,13 @@ def decode(raw, api_mode, *, selected_llm):
 def _decode(raw, api_mode, *, selected_llm):
     selection(selected_llm, api_mode)
     _bounded(raw)
-    _require(type(raw) is dict and raw.get('error') is None and raw.get('model', selected_llm) == selected_llm)
+    _require(type(raw) is dict and raw.get('error') is None, rule='response_object', path='$')
+    _require(raw.get('model', selected_llm) == selected_llm, rule='selected_model', path='$.model')
     response = api_mode == 'responses'
     if response:
-        _require(raw.get('status') in ('completed', 'incomplete') and type(raw.get('output')) is list and len(raw['output']) <= 64)
+        _require(raw.get('status') in ('completed', 'incomplete'), rule='response_status', path='$.status')
+        _require(type(raw.get('output')) is list and len(raw['output']) <= 64,
+                 rule='response_output', path='$.output')
         text, tools = [], []
         for item in raw['output']:
             _require(type(item) is dict)
@@ -240,13 +250,17 @@ def _decode(raw, api_mode, *, selected_llm):
             _require(raw.get('incomplete_details') is None)
     else:
         choices = raw.get('choices')
-        _require(type(choices) is list and len(choices) == 1 and type(choices[0]) is dict and choices[0].get('index') == 0)
+        _require(type(choices) is list and len(choices) == 1 and type(choices[0]) is dict,
+                 rule='response_choices', path='$.choices')
+        _require(choices[0].get('index') == 0, rule='choice_index', path='$.choices[].index')
         choice = choices[0]
         message = choice.get('message')
-        _fields(message, {'role', 'content', 'tool_calls', 'reasoning_content', 'reasoning', 'annotations'})
+        _fields(message, {'role', 'content', 'tool_calls', 'reasoning_content', 'reasoning', 'annotations'},
+                path='$.choices[].message')
         annotations = message.get('annotations')
-        _require(annotations is None or type(annotations) is list and not annotations)
-        _require(message.get('role') == 'assistant')
+        _require(annotations is None or type(annotations) is list and not annotations,
+                 rule='message_annotations', path='$.choices[].message.annotations')
+        _require(message.get('role') == 'assistant', rule='assistant_role', path='$.choices[].message.role')
         for field in ('reasoning_content', 'reasoning'):
             if message.get(field) is not None:
                 _text(message[field])
@@ -254,7 +268,10 @@ def _decode(raw, api_mode, *, selected_llm):
         text = [] if content is None else [_text(content)]
         calls = _calls(message.get('tool_calls', []), False)
         finish = choice.get('finish_reason')
-        _require(type(finish) is str and finish in _REASONS and (finish == 'tool_calls') == bool(calls))
+        _require(type(finish) is str and finish in _REASONS, 'unsupported_finish_reason',
+                 rule='finish_reason', path='$.choices[].finish_reason')
+        _require((finish == 'tool_calls') == bool(calls), 'tool_finish_mismatch',
+                 rule='tool_finish_consistency', path='$.choices[].finish_reason')
         reason = _REASONS[finish]
     content = _text(''.join(text))
     metadata = _metadata(raw)

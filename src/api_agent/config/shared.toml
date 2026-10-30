@@ -10,7 +10,7 @@ persist_default = false
 [fields.NO_STD_IN]
 type = "bool"
 default = false
-help = "Disable interactive input after the worktree provenance gate."
+help = "Disable interactive menus after the worktree provenance gate. Explicitly owned authentication may still require terminal or browser interaction."
 
 [fields.COLLECT_ONLY]
 type = "bool"

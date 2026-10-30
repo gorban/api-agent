@@ -9,7 +9,7 @@
 - [x] After disposal, replace the Stop hint with `c Close`. Within a destination/source menu, `c` returns to logs; from the stopped log view, `c` returns to the main menu without another stop confirmation. Quit retains its existing confirmation and application cleanup policy.
 - [x] Preserve responsive asynchronous Stop and serialized Stop/Quit/unmount cleanup, including retained cleanup receipts and retries. Never acknowledge disposal before owned cleanup finishes.
 - [x] Complete regression and causal mutation checks, independent review and applicable public-boundary checks.
-- [ ] Human acceptance: inspect retained logs and destinations after Stop, then Close; verify the warning/browser startup line boundary.
+- [x] Human accepts this delivered Run local follow-up without requiring another manual retest: inspect retained logs and destinations after Stop, then Close; verify the warning/browser startup line boundary.
 
 - [x] Display a valid owned loopback HTTP Browser CDP endpoint on a separate status line and append it as the final browser destination. Open and copy it through the same explicit actions as other destinations. Preserve it for stopped inspection without exposing it through the local status HTTP endpoint.
 - [x] Render destination names and URLs on separate visible lines at ordinary terminal sizes while retaining two columns and scrolling for long lists. Verify actual rendered output.
@@ -60,9 +60,11 @@ which otherwise strips leading controls. Fifteen endpoint validation cases pass,
 including NUL/ESC and missing hostnames. Removing only the C0 guard rejects the
 causal mutation through the new NUL/ESC cases.
 
-## Deferred human review
+## Human acceptance
 
 Substantive implementation and required independent/external reviews are complete.
 The final joined unit gate passes at exact line and branch coverage, with package,
-installed and public-boundary checks. Only explicit human acceptance remains
-unchecked above; earlier approvals and historical failed evidence are preserved.
+installed and public-boundary checks. Explicit human acceptance is recorded
+above; earlier approvals and historical failed evidence are preserved.
+
+The explicit acceptance covers this delivered follow-up; later tool presentation and full tracing parity remain separate.

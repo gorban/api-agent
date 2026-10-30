@@ -5,11 +5,14 @@ Adapters must call ``export`` before recording/exporting payloads. Attach
 not install logging hooks or instrument providers automatically.
 """
 from dataclasses import dataclass
+from array import array
+import asyncio
 import json
 import logging
 import math
 from pathlib import PurePosixPath
 import re
+import threading
 from uuid import UUID
 
 from api_agent.config.resolve import ConfigResult
@@ -58,15 +61,15 @@ _IDS = frozenset({'correlation_id', 'request_id', 'trace_id', 'span_id', 'run_id
 _BEARER = re.compile(r'(?i)\bbearer\s+(?!\[redacted\](?=$|[\s,;"\'}]))[^\s,;"\'}]+')
 
 
-# Explicit field/carrier names identify non-user-visible content. Ordinary
-# visible strings containing these words are not classified by their text.
-_EXCLUDED_FIELDS = frozenset({'hidden_reasoning', 'chain_of_thought',
-    'reasoning_content', 'encrypted_reasoning', 'encrypted_content',
+# Provider-returned plaintext reasoning is optional content, just like a final
+# answer. Internal/encrypted state is never exportable, even with opt-in.
+_EXCLUDED_FIELDS = frozenset({'hidden_reasoning',
+    'encrypted_reasoning', 'encrypted_content',
     'internal_reasoning', 'internal_analysis', 'hidden_analysis', 'private_reasoning',
-    'thinking_content', 'redacted_thinking', 'hidden_thoughts', 'scratchpad',
+    'redacted_thinking', 'hidden_thoughts', 'scratchpad',
     'continuation_state', 'continuation_id', 'previous_response_id',
     'conversation_state', 'resume_state', 'checkpoint_state'})
-_HIDDEN_TYPES = frozenset({'reasoning', 'analysis', 'thinking', 'redacted_thinking',
+_HIDDEN_TYPES = frozenset({'redacted_thinking',
     'continuation', 'compaction'})
 _EFFORTS = frozenset({'', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'auto', 'off'})
 _EFFORT_KEYS = frozenset({'reasoning_effort', 'gen_ai_request_reasoning_effort'})
@@ -80,9 +83,8 @@ def _normalized_key(key):
 
 def _excluded_carrier(value):
     # Callers have already admitted an exact dictionary.
-    kind, channel = value.get('type'), value.get('channel')
-    return ((type(kind) is str and _normalized_key(kind) in _HIDDEN_TYPES)
-            or (type(channel) is str and _normalized_key(channel) in ('analysis', 'reasoning')))
+    kind = value.get('type')
+    return type(kind) is str and _normalized_key(kind) in _HIDDEN_TYPES
 
 
 def _credential_key(key):
@@ -120,6 +122,54 @@ def _parse_json(value):
     return json.loads(value, object_pairs_hook=_unique_object)
 
 
+class _Authority:
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.secrets = set()
+        self.assigned_ids = set()
+        self.generation = 0
+        self.evidence_leases = 0
+        self.registration_waiters = set()
+
+
+class CredentialRegistrationBlocked(RuntimeError):
+    """A synchronous producer cannot wait for an active evidence lease."""
+
+
+async def register_secret_async(boundary, secret):
+    """Use async admission for native boundaries and retain legacy test adapters."""
+    import inspect
+    if inspect.iscoroutinefunction(getattr(type(boundary), 'aregister_secret', None)):
+        await boundary.aregister_secret(secret)
+    else:
+        boundary.register_secret(secret)
+
+
+class _EvidenceLease:
+    """Owned local registration freeze; callers must release on all exits."""
+    def __init__(self, authority):
+        self._authority = authority
+        self._released = False
+
+    def release(self):
+        authority = self._authority
+        with authority.lock:
+            if self._released:
+                return
+            self._released = True
+            authority.evidence_leases -= 1
+            waiters = tuple(authority.registration_waiters)
+            authority.registration_waiters.clear()
+        for loop, future in waiters:
+            def wake(target=future):
+                if not target.done():
+                    target.set_result(None)
+            try:
+                loop.call_soon_threadsafe(wake)
+            except RuntimeError:
+                pass
+
+
 class EmissionBoundary:
     """Serialize only permitted JSON values, scrubbing registered secrets always.
 
@@ -131,9 +181,10 @@ class EmissionBoundary:
     def __init__(self, policy=ContentPolicy(), *, secrets=(), assigned_ids=(), preserve_json_text=False):
         self.policy = policy
         self.preserve_json_text = preserve_json_text
-        self._secrets = set()
+        self._authority = _Authority()
+        self._secrets = self._authority.secrets
         self._registered_json = None
-        self._assigned_ids = set()
+        self._assigned_ids = self._authority.assigned_ids
         for secret in secrets:
             self.register_secret(secret)
         for identifier in assigned_ids:
@@ -142,6 +193,7 @@ class EmissionBoundary:
     def for_policy(self, policy):
         """Project a destination policy while sharing live credential registrations."""
         boundary = EmissionBoundary(policy, preserve_json_text=self.preserve_json_text)
+        boundary._authority = self._authority
         boundary._secrets = self._secrets
         boundary._assigned_ids = self._assigned_ids
         return boundary
@@ -150,12 +202,73 @@ class EmissionBoundary:
         """Register an identifier generated by the runtime, never by user content."""
         if type(identifier) is not str or str(UUID(identifier)) != identifier:
             raise ValueError('Assigned identifier must be a canonical UUID')
-        self._assigned_ids.add(identifier)
+        with self._authority.lock:
+            self._assigned_ids.add(identifier)
 
     def register_secret(self, secret):
         if type(secret) is not str or not secret:
             raise ValueError('Secret must be a nonempty string')
-        self._secrets.add(secret)
+        with self._authority.lock:
+            if secret not in self._secrets:
+                if self._authority.evidence_leases:
+                    raise CredentialRegistrationBlocked('Credential registration requires asynchronous admission during evidence publication.')
+                self._secrets.add(secret)
+                self._authority.generation += 1
+
+    async def aregister_secret(self, secret, *, timeout=30):
+        """Wait without blocking the event loop until a publication lease ends."""
+        if type(secret) is not str or not secret:
+            raise ValueError('Secret must be a nonempty string')
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 3600:
+            raise ValueError('Invalid credential registration timeout')
+        async with asyncio.timeout(timeout):
+            while True:
+                loop = asyncio.get_running_loop()
+                with self._authority.lock:
+                    if secret in self._secrets:
+                        return
+                    if not self._authority.evidence_leases:
+                        self._secrets.add(secret)
+                        self._authority.generation += 1
+                        return
+                    future = loop.create_future()
+                    waiter = (loop, future)
+                    self._authority.registration_waiters.add(waiter)
+                try:
+                    await future
+                finally:
+                    with self._authority.lock:
+                        self._authority.registration_waiters.discard(waiter)
+
+    def begin_evidence_lease(self):
+        """Freeze new registrations until the returned owned lease is released."""
+        with self._authority.lock:
+            self._authority.evidence_leases += 1
+            return _EvidenceLease(self._authority)
+
+    def snapshot_content(self):
+        """Return a generation and isolated projection of the current authority.
+
+        Registration before use is mandatory. A credential first registered
+        after publication cannot be removed from already released evidence.
+        """
+        with self._authority.lock:
+            generation = self._authority.generation
+            secrets = tuple(self._secrets)
+            identifiers = tuple(self._assigned_ids)
+        return generation, EmissionBoundary(ContentPolicy(True), secrets=secrets,
+                                             assigned_ids=identifiers, preserve_json_text=True)
+
+    def commit_if_current(self, generation, commit):
+        """Synchronize a short synchronous publication commit with registration.
+
+        The callback must not block, await, or invoke provider code.
+        """
+        with self._authority.lock:
+            if generation != self._authority.generation:
+                return False
+            commit()
+            return True
 
     def _text(self, value):
         # Collect every range from the original text. Replacing a registered
@@ -167,8 +280,8 @@ class EmissionBoundary:
         # Detect inserted controls consistently with provider credential checks.
         # Source offsets preserve ordinary controls outside matching ranges.
         if not value.isprintable():
-            visible_offsets = [index for index, character in enumerate(value)
-                               if character.isprintable()]
+            visible_offsets = array('I', (index for index, character in enumerate(value)
+                                          if character.isprintable()))
             visible = ''.join(value[index] for index in visible_offsets)
             for secret in registered_values(self._secrets):
                 registered.extend((visible_offsets[start], visible_offsets[end - 1] + 1, None)
@@ -185,16 +298,13 @@ class EmissionBoundary:
                 spans.append((match.start(), match.end(), match.start() + 6))
         # The printable view is detection-only. Original offsets preserve all
         # unrelated controls and whitespace when a concealed scheme matches.
-        characters = []
-        offsets = []
-        for index, character in enumerate(value):
-            if character.isprintable() or character.isspace():
-                characters.append(character)
-                offsets.append(index)
-        printable = ''.join(characters)
-        spans.extend((offsets[match.start()], offsets[match.end() - 1] + 1,
-                      offsets[match.start() + 5] + 1)
-                     for match in _BEARER.finditer(printable))
+        if not value.isprintable():
+            offsets = array('I', (index for index, character in enumerate(value)
+                                  if character.isprintable() or character.isspace()))
+            printable = ''.join(value[index] for index in offsets)
+            spans.extend((offsets[match.start()], offsets[match.end() - 1] + 1,
+                          offsets[match.start() + 5] + 1)
+                         for match in _BEARER.finditer(printable))
         merged = []
         for start, end, scheme_end in sorted(spans, key=lambda span: (span[0], span[1])):
             if merged and start < merged[-1][1]:
@@ -526,6 +636,14 @@ class EmissionBoundary:
         return _DROP
 
     def export(self, payload):
+        with self._authority.lock:
+            secrets = tuple(self._secrets)
+            identifiers = tuple(self._assigned_ids)
+        snapshot = EmissionBoundary(self.policy, secrets=secrets, assigned_ids=identifiers,
+                                    preserve_json_text=self.preserve_json_text)
+        return snapshot._export(payload)
+
+    def _export(self, payload):
         if type(payload) is not dict or _excluded_carrier(payload):
             return {}
         # Each child starts at zero, so the containing export root is at -1.
@@ -546,8 +664,8 @@ class EmissionBoundary:
 
     def content_export(self, payload):
         """Explicit evidence callers retain content but share credential rules."""
-        return EmissionBoundary(ContentPolicy(True), secrets=tuple(self._secrets),
-                                preserve_json_text=True).export(payload)
+        _, snapshot = self.snapshot_content()
+        return snapshot._export(payload)
 
     @staticmethod
     def exception(error):
@@ -576,6 +694,10 @@ class OwnedLogFilter(logging.Filter):
             # Avoid formatting arbitrary args (which could call repr/str).
             payload = {'message': record.msg}
         clean = self.boundary.export(payload)
+        if not self.boundary.policy.allow_content:
+            from .inference_diagnostics import has_optional_content, omission_notice
+            if has_optional_content(payload) or type(record.msg) is str:
+                clean['content_notice'] = omission_notice('LOG_CONTENT')
         if record.exc_info:
             clean.update(self.boundary.exception(record.exc_info[1]))
         # Formatters can access every LogRecord attribute. Remove arbitrary extras

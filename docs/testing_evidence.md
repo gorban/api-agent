@@ -39,9 +39,18 @@ not alter workflow sampling evidence.
 `LOG_CONTENT` must permit content at both emission and report ingestion.
 Tracing content configuration is independent. Disabled content produces an
 explicit withholding marker while retaining a scrubbed title. Credentials and
-hidden reasoning are removed before IPC; the report consumer validates again.
+encrypted reasoning and internal state are removed before IPC; the report consumer validates again.
+Provider-returned plaintext reasoning/summaries are captured only with explicit
+content opt-in, separately from the final answer. Enabling capture cannot make
+an empty visible answer a valid test measurement.
 Labels are always scrubbed, including when content is withheld. The boundary
 must come from the authority that owns configuration and credential registration.
+
+Withheld custom evidence appears as a separately labelled **capture diagnostics**
+attachment containing `capture_reason: "withheld"`, not as a substitute content
+value. Permitted attachment values remain the scrubbed producer data. Routine
+successful reasoning capture adds no explanatory notice; notices describe only
+omissions, withholding or incomplete capture and stay outside provider payloads.
 
 Values accept only JSON objects with string keys, arrays, strings, booleans,
 null, interoperable integers, and finite numbers. Object coercion and arbitrary

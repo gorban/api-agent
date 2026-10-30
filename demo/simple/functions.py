@@ -7,6 +7,8 @@ from api_agent.providers.llm import GenerationOptions, LLMRequest, Message, Text
 from api_agent.workflows.execution import WorkflowError
 from api_agent.workflows.tool_gate import ToolGateError
 from api_agent.providers.tools import MAX_ARGUMENT_BYTES, canonical
+from api_agent.providers.rich_inference import response_json
+from api_agent.providers.contracts import ContractError
 import json
 import time
 
@@ -61,16 +63,16 @@ async def _demo_llm(context, purpose, payload):
 
 
 async def plan(inputs, context):
-    spec = await context.services['tool_gate'].describe()
-    result, text = await _demo_llm(context,
+    spec = await context.tools['primary'].describe()
+    result, _ = await _demo_llm(context,
         'Plan a read-only response. Return JSON with use_tool:boolean, arguments:object, answer:string. '
         'Do not execute the tool. Use empty arguments when no tool is needed.',
         {'messages': inputs['messages'], 'feedback': inputs.get('feedback') or {},
          'tool': {'name': spec.name, 'description': spec.description,
                   'input_schema': spec.input_schema}})
     try:
-        candidate = json.loads(text)
-    except ValueError as error:
+        candidate = response_json(result)
+    except ContractError as error:
         raise WorkflowError('Planner returned invalid JSON') from error
     if (type(candidate) is not dict or type(candidate.get('use_tool')) is not bool
             or type(candidate.get('arguments')) is not dict or type(candidate.get('answer')) is not str
@@ -87,19 +89,19 @@ async def plan(inputs, context):
 
 async def review(inputs, context):
     candidate = inputs['candidate']
-    gate = context.services['tool_gate']
+    gate = context.tools['primary']
     verdict = {}
 
     async def relevance(prepared):
         nonlocal verdict
-        _, text = await _demo_llm(context,
+        result, _ = await _demo_llm(context,
             'Assess correctness, grounding, relevance and presentation preference. '
             'Return JSON with correct, grounded, relevant, preference booleans. '
             'A query is only a candidate and has not run.',
             {'messages': context.services['messages'], 'candidate': candidate})
         try:
-            verdict = json.loads(text)
-        except ValueError as error:
+            verdict = response_json(result)
+        except ContractError as error:
             raise WorkflowError('Reviewer returned invalid JSON') from error
         if type(verdict) is not dict or any(type(verdict.get(key)) is not bool for key in
                                               ('correct', 'grounded', 'relevant', 'preference')):
@@ -129,7 +131,7 @@ async def execute_tool(inputs, context):
     started = time.monotonic()
     call_id = str(uuid4())
     try:
-        result = await context.services['tool_gate'].execute(grant)
+        result = await context.tools['primary'].execute(grant)
     except Exception:
         context.record_call(call_id=call_id, elapsed=time.monotonic() - started, outcome='failed')
         raise
@@ -151,4 +153,7 @@ async def render(inputs, context):
     if not text:
         raise WorkflowError('Renderer returned no text')
     context.services['rendered_result'] = response
+    result_store = context.services.get('result_store')
+    if result_store is not None:
+        result_store['rendered_result'] = response
     return {'response_text': text, 'selected_model': context.services['selection']}

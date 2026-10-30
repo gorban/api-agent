@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures('isolated_native_login_gate')
+
 from api_agent.llm_providers.bedrock import aws_login as module
 from api_agent.llm_providers.bedrock.acquisition import SessionRequest, SessionMaterial
 from api_agent.providers.contracts import ContractError, InteractionRequiredError, SessionClosedError
@@ -167,12 +169,18 @@ async def test_existing_bridge_retry_and_invalid_tuple(config, session_request, 
 
 
 @pytest.mark.asyncio
-async def test_no_stdin_configuration_overrides_request(config, session_request):
+async def test_no_stdin_allows_explicit_owned_sign_in(config, session_request, bridge, monkeypatch):
     adapter = module.AwsLoginAcquirer(dict(config, NO_STD_IN=True))
-    with pytest.raises(InteractionRequiredError):
-        await adapter.acquire(session_request)
-    assert adapter._root is None
-    await adapter.aclose()
+    async def acquire(settings, environment, interaction):
+        assert interaction.opened
+        return dict(AccessKeyId='key', SecretAccessKey='secret', SessionToken='token',
+            expires_at=time.time()+300, identity=dict(Account='123456789012', Arn='arn:aws:iam::123456789012:user/example'))
+    monkeypatch.setattr(adapter._transport, 'acquire', acquire)
+    try:
+        material = await adapter.acquire(session_request)
+        assert material.kind == 'temporary' and adapter._logged_in
+    finally:
+        await adapter.aclose()
 
 
 @pytest.mark.asyncio

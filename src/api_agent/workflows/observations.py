@@ -56,6 +56,10 @@ class WorkflowObservations:
         self._journal_observer = self._admitted
         journal.subscribe(self._journal_observer)
 
+    def credential_authorities(self):
+        """Keep wrapper admission attached to the journal's original live owners."""
+        return self.journal.credential_authorities()
+
     @property
     def semantic_identity(self):
         return self.journal.semantic_identity
@@ -90,6 +94,9 @@ class WorkflowObservations:
     def _emit(self, row):
         if self.sink is not None:
             try:
+                if row.get('reason') == 'withheld' and not self.log_policy.allow_content:
+                    from api_agent.telemetry.inference_diagnostics import omission_notice
+                    row = dict(row, content_notice=omission_notice('LOG_CONTENT'))
                 self.sink(_freeze(self.boundary.content_export(row)))
             except (Exception, asyncio.CancelledError):
                 pass
@@ -237,16 +244,19 @@ class WorkflowObservations:
             plain_fields=plain_fields if self.log_policy.allow_content else None,
             _observer_override=(self._journal_observer, admitted_capture))
 
-    def capture_json(self, *, visit_id, direction, values, schema, cause_id=None, capture_reason=None):
+    def capture_json(self, *, visit_id, direction, values, schema, cause_id=None, capture_reason=None, transport_attempt_id=None, capture_source=None, tool_invocation_id=None, attempt_id=None):
         """Project log and trace content independently before either queues it."""
         from .capture import capture_reason as classify_capture, project_values
         report = set()
-        log_values = (project_values(values, schema, self.boundary, limit=65536, report=report)
+        provider_content = cause_id is not None and capture_source == 'provider'
+        log_values = (project_values(values, schema, self.boundary, limit=65536, report=report,
+                                     _provider_content=provider_content)
                       if self.log_policy.allow_content and capture_reason != 'withheld' else None)
         trace_values = None
         if self.trace is not None and self.trace.boundary.policy.allow_content and capture_reason != 'withheld':
             trace_report = set()
-            trace_values = project_values(values, schema, self.boundary, limit=65536, report=trace_report)
+            trace_values = project_values(values, schema, self.boundary, limit=65536, report=trace_report,
+                                          _provider_content=provider_content)
         def admitted_capture(row):
             live = dict(row)
             if log_values is not None:
@@ -262,13 +272,29 @@ class WorkflowObservations:
                         event = dict(event_id=row['event_id'], direction=direction, values=trace_values,
                                      reason=classify_capture(trace_values, trace_report, capture_reason),
                                      capture_class='schema_user_io')
+                        if tool_invocation_id is not None:
+                            event['tool_invocation_id'] = tool_invocation_id
                         if cause_id is not None:
                             event['cause_id'] = cause_id
+                        if transport_attempt_id is not None:
+                            event['transport_attempt_id'] = transport_attempt_id
+                        if capture_source is not None:
+                            event['capture_source'] = capture_source
                         span.event(event)
                     except (Exception, asyncio.CancelledError):
                         pass
+            elif self.trace is not None and not self.trace.boundary.policy.allow_content:
+                span = self._spans.get(visit_id)
+                if span is not None:
+                    # Supply no content to the trace adapter. Its own policy
+                    # adds destination-specific omission guidance.
+                    try:
+                        span.event({'values': {}})
+                    except (Exception, asyncio.CancelledError):
+                        pass
         return self.journal.capture_json(visit_id=visit_id, direction=direction,
-            values=values, schema=schema, cause_id=cause_id, capture_reason=capture_reason,
+            values=values, schema=schema, cause_id=cause_id, capture_reason=capture_reason, transport_attempt_id=transport_attempt_id, capture_source=capture_source,
+            tool_invocation_id=tool_invocation_id, attempt_id=attempt_id,
             _observer_override=(self._journal_observer, admitted_capture))
 
     def close(self):

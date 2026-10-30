@@ -58,3 +58,7 @@ The exact schema will be reviewed before implementation. This example is located
 ```
 
 [GitHub's relative-link documentation](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#relative-links) confirms that ordinary relative Markdown links are relative to their containing file and follow the viewed branch. Editor link navigation depends on the editor's Markdown support. Neither resolves `<resource_pack>`; the runtime loader supplies that resolution and validates the selected pack's paths.
+
+## Declarative inference output modes
+
+- [ ] Extend the existing Functions table with the [output-mode and fallback contract](implementation_plan_f1a1.md). Keep Input/Output schema links, distinguish complete node results from LLM-generated values, and join provider-owned formatting without a separate LLM-call table.

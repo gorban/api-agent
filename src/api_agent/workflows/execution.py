@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from contextlib import nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import inspect
 import json
 import os
@@ -27,6 +27,7 @@ class WorkflowError(RuntimeError):
 
 
 _CURRENT_JOURNAL = ContextVar('workflow_journal', default=None)
+_CURRENT_SERVICES = ContextVar('workflow_invocation_services', default=None)
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,11 @@ class NodeContext:
     visit_id: str | None = None
     attempt_id: str | None = None
     response_contract: dict | None = None
+    _tools: object = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        from api_agent.tooling.runtime import capture_node_tools
+        object.__setattr__(self, '_tools', capture_node_tools(self.node_id))
 
     def response_request(self, messages, *, tools=(), generation=None, strict=True):
         """Explicitly bind a request to this node's generated-response contract."""
@@ -77,13 +83,17 @@ class NodeContext:
 
     @property
     def tools(self):
+        if self._tools is None:
+            raise ValueError('Node tools require an active workflow invocation')
+        self._tools._invocation.check()
+        return self._tools
+
+    def tool(self, port):
+        # Compatibility for callers using the earlier explicit resolver API.
         resolver = self.services.get('tools')
         if resolver is None:
             raise WorkflowError('Workflow has no admitted tool bindings')
-        return resolver
-
-    def tool(self, port):
-        return self.tools.for_port(scope_kind='node', scope=self.node_id, port=port)
+        return resolver.for_port(scope_kind='node', scope=self.node_id, port=port)
 
     def record_call(self, *, usage=None, selection=None, elapsed=None, outcome='completed', call_id=None):
         """Attribute one completed provider/tool leaf call to this node visit."""
@@ -208,14 +218,22 @@ class Workflow:
                 layout.error(str(error), row['line'])
         self.graph = self._compile(None)
 
+    def _run_services(self):
+        current = _CURRENT_SERVICES.get()
+        return current[1] if current is not None and current[0] is self else self.services
+
+    def _capture_services(self):
+        current = _CURRENT_SERVICES.get()
+        return current[2] if current is not None and current[0] is self else self.services
+
     def _event(self, event, **values):
-        journal = _CURRENT_JOURNAL.get() or self.services.get('journal')
+        journal = _CURRENT_JOURNAL.get() or self._run_services().get('journal')
         if journal is not None:
             row = dict(event=event, **values)
             if event in ('scope_start', 'scope_end') and row.get('owner') == 'GRAPH' and row.get('kind') == 'graph':
                 row['parent_id'] = None
             journal.observe(row)
-        observer = self.services.get('observe')
+        observer = self._run_services().get('observe')
         if observer is not None:
             observer(dict(event=event, **values))
 
@@ -357,7 +375,7 @@ class Workflow:
             inputs = {}
             values = state['values']
             context = NodeContext(step.id, state['ancestry'], tuple(state['prompts'][item['File']] for item in prompts
-                if item['When'] == 'always' or self._condition(item['When'], values)), self.services,
+                if item['When'] == 'always' or self._condition(item['When'], values)), self._run_services(),
                 budget.id, state.get('attempt_id'), row)
             for binding in bindings:
                 source = binding['From']
@@ -378,31 +396,28 @@ class Workflow:
                 else:
                     raise WorkflowError(f'Missing required binding for {step.id}.{binding["Input"]}')
             self._validate(row['Input schema'], inputs, step.id, 'input')
-            journal = _CURRENT_JOURNAL.get() or self.services.get('journal')
-            plain_fields = (self.services.get('plain_io_fields') or {}).get(step.id, {})
-            if journal is not None:
-                if 'input' in plain_fields:
-                    journal.capture(visit_id=budget.id, direction='input', values=inputs,
-                                    schema=row['Input schema'], plain_fields=plain_fields['input'])
-                else:
-                    journal.capture_json(visit_id=budget.id, direction='input', values=inputs,
-                                         schema=row['Input schema'])
+            journal = _CURRENT_JOURNAL.get() or self._run_services().get('journal')
+            plain_fields = (self._run_services().get('plain_io_fields') or {}).get(step.id, {})
+            from .capture_authority import capture_node
+            await capture_node(journal, self._capture_services(), visit_id=budget.id,
+                direction='input', values=inputs, schema=row['Input schema'],
+                plain_fields=plain_fields.get('input', ...))
             started = time.monotonic()
             from .attribution import bind_workflow_visit
-            with bind_workflow_visit(journal, budget.id, state.get('attempt_id')):
-                result = (function.invoke(inputs, context) if inspect.iscoroutinefunction(function.invoke)
-                          else await offload(function.invoke, inputs, context))
-                if inspect.isawaitable(result):
-                    result = await result
+            with bind_workflow_visit(journal, budget.id, state.get('attempt_id'), capture_services=self._capture_services()):
+                try:
+                    result = (function.invoke(inputs, context) if inspect.iscoroutinefunction(function.invoke)
+                              else await offload(function.invoke, inputs, context))
+                    if inspect.isawaitable(result):
+                        result = await result
+                finally:
+                    from .evidence_finalization import finalize
+                    await finalize()
             self._check_deadline(budget)
             self._validate(row['Output schema'], result, step.id, 'output')
-            if journal is not None:
-                if 'output' in plain_fields:
-                    journal.capture(visit_id=budget.id, direction='output', values=result,
-                                    schema=row['Output schema'], plain_fields=plain_fields['output'])
-                else:
-                    journal.capture_json(visit_id=budget.id, direction='output', values=result,
-                                         schema=row['Output schema'])
+            await capture_node(journal, self._capture_services(), visit_id=budget.id,
+                direction='output', values=result, schema=row['Output schema'],
+                plain_fields=plain_fields.get('output', ...))
             self._event('node', scope_id=budget.id, node=step.id, component=step.parent, attempt=context.attempt,
                         elapsed=time.monotonic() - started, kind=function.kind)
             return dict(state, values={**values, step.id: deepcopy(result)}, visit_id=budget.id)
@@ -428,11 +443,26 @@ class Workflow:
             raise WorkflowError(f'Node {node} returned non-JSON {direction}') from None
 
     async def arun(self, inputs, *, turn_id=None, turn_kind='initial'):
+        from .capture_authority import resolve_capture_services
+        from .run_context import canonical_uuid
+        if turn_id is not None:
+            canonical_uuid(turn_id)
+        selected = resolve_capture_services(self.services)
+        token = _CURRENT_SERVICES.set((self, dict(selected), selected))
+        try:
+            from api_agent.tooling.runtime import invocation_tools
+            async with invocation_tools(self.definition, selected):
+                return await self._arun(inputs, turn_id=turn_id, turn_kind=turn_kind)
+        finally:
+            _CURRENT_SERVICES.reset(token)
+
+    async def _arun(self, inputs, *, turn_id=None, turn_kind='initial'):
+        from .capture_authority import requested_log_content
         from .run_context import canonical_uuid, current_execution_context, current_turn_id, execution_context, turn
         if turn_id is not None:
             canonical_uuid(turn_id)
         turn_id = turn_id if turn_id is not None else current_turn_id()
-        journal = self.services.get('journal')
+        journal = self._run_services().get('journal')
         if turn_id is not None and journal is not None and turn_id != journal.turn_id:
             raise ValueError('explicit turn identity disagrees with the active journal')
         if journal is not None and self.definition is not None:
@@ -455,7 +485,7 @@ class Workflow:
             if self.definition is None:
                 raise WorkflowError('Reporting requires an admitted workflow definition')
             from .provenance import verified_documents
-            proof = self.services.get('packaged_proof')
+            proof = self._run_services().get('packaged_proof')
             source_manifest = verified_documents(self.definition, packaged_proof=proof)
             from .journal import WorkflowJournal
             from .identity import workflow_identity
@@ -463,14 +493,14 @@ class Workflow:
                 semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
                                                     component_passes=self.component_passes),
                 component_passes=self.component_passes,
-                log_content=self.config.get('LOG_CONTENT') is True,
+                log_content=requested_log_content(self.config, self._run_services()),
                 source_manifest=source_manifest,
-                boundary=self.services.get('emissions'),
-                content_policy=self.services.get('content_policy'),
+                boundary=self._run_services().get('emissions'),
+                content_policy=self._run_services().get('content_policy'),
                 turn_id=turn_id,
                 test_id=os.environ.get('PYTEST_CURRENT_TEST', '').rsplit(' ', 1)[0] or None)
             journal.admit_execution_context(selected_context)
-            factory = self.services.get('observation_factory')
+            factory = self._run_services().get('observation_factory')
             if factory is not None:
                 journal = factory.create(self.definition, journal=journal)
         token = _CURRENT_JOURNAL.set(journal)

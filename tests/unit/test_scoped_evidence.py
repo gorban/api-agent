@@ -41,6 +41,15 @@ def test_round_trip_owner_and_nested_values(channel, kind, keys):
     assert attachment[2] == 'application/json'
 
 
+def test_permitted_attachment_status_like_values_are_not_rewritten_as_diagnostics(channel):
+    boundary = EmissionBoundary(ContentPolicy(True))
+    value = {'content':'withheld', 'capture_reason':'withheld', 'content_notice':'producer-owned text'}
+    publish('Result', value, boundary=boundary)
+    _, attachment = validate_attachment(packet(channel), boundary, True)
+    assert attachment[0] == 'Result'
+    assert json.loads(attachment[1]) == value
+
+
 def test_credentials_and_hidden_reasoning_are_scrubbed_before_ipc(channel):
     boundary = content_boundary({'LOG_CONTENT': True, 'API_KEY': 'configured-secret'})
     boundary.register_secret('dynamic-secret')
@@ -72,7 +81,8 @@ def test_disabled_content_keeps_safe_title_and_withholding_marker(channel, trace
     assert 'confidential-value' not in channel.read_text()
     assert 'label-secret' not in attachment[0]
     assert attachment[0].startswith('Result')
-    assert json.loads(attachment[1]) == {'content': 'withheld'}
+    assert attachment[0].endswith('(capture diagnostics)')
+    assert json.loads(attachment[1]) == {'capture_reason':'withheld'}
 
 
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), object(), (1,), {1: 'x'},
@@ -184,7 +194,16 @@ def test_safe_fallback_label_is_retained(channel):
     boundary = EmissionBoundary(ContentPolicy(False))
     publish('NaN', {}, boundary=boundary)
     _, attachment = validate_attachment(packet(channel), boundary, False)
-    assert attachment[0] == 'Attachment'
+    assert attachment[0] == 'Attachment (capture diagnostics)'
+
+
+def test_maximum_label_still_has_a_bounded_withholding_diagnostic(channel):
+    boundary = EmissionBoundary(ContentPolicy(False))
+    label = 'x' * 1022
+    publish(label, {'content':'provider-value'}, boundary=boundary)
+    _, attachment = validate_attachment(packet(channel), boundary, False)
+    assert attachment[0] == 'Capture diagnostics'
+    assert json.loads(attachment[1]) == {'capture_reason':'withheld'}
 
 
 def test_invalid_unicode_is_rejected_before_ipc(channel):

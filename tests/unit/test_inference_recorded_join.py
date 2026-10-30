@@ -25,7 +25,7 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
     secret_fragment = 'synthetic-inference-secret-not-exported'
     key = secret_fragment * 40
     response_text = 'Ok /var/app/renderer.py'
-    monkeypatch.setenv('SYNTHETIC_TEST_PROMPT', 'Answer with exactly: Ok ' + key + ' /var/app/prompt.py')
+    monkeypatch.setenv('SYNTHETIC_TEST_PROMPT', 'Answer with exactly: Ok /var/app/prompt.py')
     reads, requests, loaded = [], [], []
     def password(profile, **kwargs):
         reads.append((profile.vault,profile.user))
@@ -131,17 +131,29 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
         assert 'HTTP status: 403' in result.execution.output and 'Request permission denied' in result.execution.output
         assert 'code: denied' in result.execution.output and 'request ID: request-safe' in result.execution.output
     artifacts = '\n'.join(path.read_text() for path in result.directory.rglob('*') if path.is_file())
+    accounting = json.loads((result.directory / 'accounting.json').read_text())
+    attempt_ids = [row['calls'][0]['transport_attempts']['attempts'][0]['id'] for row in accounting['tests']]
+    assert len(attempt_ids) == len(set(attempt_ids)) == 2
     for path in result.directory.glob('*-result.json'):
         outcome = json.loads(path.read_text())
-        requests_saved = [row for row in outcome['attachments'] if row['name'].startswith('Unattached LLM request')]
-        responses_saved = [row for row in outcome['attachments'] if row['name'].startswith('Unattached LLM response')]
+        pending, attachments = [outcome], []
+        while pending:
+            step = pending.pop()
+            attachments.extend(step.get('attachments', []))
+            pending.extend(step.get('steps', []))
+        requests_saved = [row for row in attachments if row['name'].startswith(('LLM request (', 'Unattached LLM request ('))]
+        responses_saved = [row for row in attachments if row['name'].startswith(('LLM response (', 'Unattached LLM response ('))]
         assert len(requests_saved) == int(log_content)
-        assert len(responses_saved) == int(log_content and status == 200)
+        assert len(responses_saved) == int(log_content)
         if requests_saved:
+            recorded_attempt = requests_saved[0]['name'].split('attempt ', 1)[1].rstrip(')')
+            assert recorded_attempt == responses_saved[0]['name'].split('attempt ', 1)[1].rstrip(')')
+            owner = next(row for row in accounting['tests'] if row['node_id'] == outcome['fullName'])
+            assert recorded_attempt == owner['calls'][0]['transport_attempts']['attempts'][0]['id']
             payload = json.loads((result.directory / requests_saved[0]['source']).read_text())
             container = 'input' if mode == 'responses' else 'messages'
             expected_body = {'model': 'gpt-4.1-nano', container: [
-                {'role': 'user', 'content': 'Answer with exactly: Ok [REDACTED] /var/app/prompt.py'}],
+                {'role': 'user', 'content': 'Answer with exactly: Ok /var/app/prompt.py'}],
                 'stream': False}
             if mode == 'responses':
                 expected_body.update(store=False, max_output_tokens=128)
@@ -149,13 +161,76 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
                 expected_body['max_completion_tokens'] = 128
             assert payload == {'provider_payload': expected_body, 'adapter_instructions': []}
             dispatched_body = {**expected_body, container: [
-                {'role': 'user', 'content': 'Answer with exactly: Ok ' + key + ' /var/app/prompt.py'}]}
+                {'role': 'user', 'content': 'Answer with exactly: Ok /var/app/prompt.py'}]}
             assert [json.loads(request.content) for request in requests if request.method == 'POST'] == [
                 dispatched_body, dispatched_body]
         if responses_saved:
             payload = json.loads((result.directory / responses_saved[0]['source']).read_text())
-            assert payload['text'] == response_text
+            if status != 200:
+                assert payload['error'] == {'code': 'denied', 'type': 'permission',
+                    'message': 'Request permission denied [REDACTED] Bearer [REDACTED]'}
+            elif mode == 'responses':
+                assert payload['output'][0]['content'][0]['text'] == response_text
+                assert payload['usage']['input_tokens'] == 2
+            else:
+                assert payload['choices'][0]['message']['content'] == response_text
+                assert payload['usage'] == {}
     assert key not in artifacts and key not in result.execution.output
     assert secret_fragment not in artifacts and secret_fragment not in result.execution.output
     assert 'secondary-synthetic-secret' not in artifacts and 'secondary-synthetic-secret' not in result.execution.output
     forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+def test_recorded_worker_rejects_selected_credential_in_prompt_before_dispatch(tmp_path, monkeypatch, mode):
+    from api_agent.auth import credentials
+    from api_agent.llm_providers.gpt import factory
+    from api_agent.testing.collection import collect_tests
+    from api_agent.testing.recorded import run_recorded_integration
+    from api_agent.providers import rates
+
+    secret = 'synthetic-selected-credential-must-not-be-dispatched'
+    monkeypatch.setattr(credentials, 'get_password', lambda *args, **kwargs: secret)
+    monkeypatch.setattr(rates, 'freeze_pricing', lambda *args: rates.bundled_rate_card())
+    monkeypatch.setenv('SYNTHETIC_TEST_PROMPT', 'Do not send ' + secret)
+    requests = []
+    real_client = httpx.AsyncClient
+
+    def respond(request):
+        requests.append(request)
+        if request.method == 'GET':
+            if 'authorization' not in request.headers:
+                return httpx.Response(401)
+            return httpx.Response(200, json={'data': [{'id': 'gpt-4.1-nano'}]})
+        raise AssertionError('Credential-bearing prompt must not be dispatched')
+
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(
+        transport=httpx.MockTransport(respond), **kwargs))
+    base = tmp_path / 'base'
+    suite = base / 'tests/integration'
+    suite.mkdir(parents=True)
+    source = (Path(__file__).parents[1] / 'integration/test_llm_request.py').read_text()
+    (suite / 'test_request.py').write_text('from os import environ\n' + source.replace(
+        "'Answer with exactly: Ok'", "environ['SYNTHETIC_TEST_PROMPT']"))
+    context = SimpleNamespace(base_root=base, owner_root=base, suite_paths=lambda mode: [suite])
+    config = dict(LLM_DEFAULT_MODEL='gpt-4.1-nano', LLM_ALLOWED_MODELS='gpt-4.*',
+        LLM_PROVIDER=str(Path(factory.__file__).resolve()) + ':factory', LLM_CREDENTIAL_ROLE='LLM User',
+        LOG_CONTENT=True, GPT_AUTH_MODE='api_key', GPT_API_MODE=mode, UNATTENDED_USER_INDEX=0,
+        UNATTENDED_AUTH={'password_manager': {'manager': 'keeper', 'cli_path': 'synthetic-cli'},
+            'roles': {'LLM User': [{'vault': 'synthetic-vault', 'user': 'selected-entry'}]}},
+        TUI_MODE='integration', ALLURE_S3_BUCKET='synthetic', ALLURE_RESULTS_DIR=tmp_path / 'allure',
+        TEST_PARALLEL_JOBS=0)
+    selected = [test for test in collect_tests(context, 'integration', config=config) if test.repo == 'base']
+    events = []
+    result = run_recorded_integration(context, selected, config, accepted=True,
+        storage=SimpleNamespace(persist=lambda directory, manifest: None), on_event=events.append)
+
+    assert result.persisted and result.exit_code == 1
+    assert [test.status for test in result.execution.tests] == ['failed']
+    assert requests and all(request.method == 'GET' for request in requests)
+    assert 'protected authentication content' in result.execution.output
+    assert secret not in result.execution.output
+    assert secret not in repr(events)
+    for path in result.directory.rglob('*'):
+        if path.is_file():
+            assert secret not in path.read_text()

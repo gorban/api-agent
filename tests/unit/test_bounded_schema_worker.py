@@ -86,10 +86,10 @@ def test_spawn_failure_is_safe_rejection(monkeypatch):
 @pytest.mark.parametrize('raw,expected',[
     (b'[{"type":"object"},{}]',b'R1'),
     (b'[{"type":"integer"},"bad"]',b'R0'),
-    (b'bad',b'R0'),
-    (b'[{"$ref":"https://example.invalid/schema"},{}]',b'R0'),
-    (b'x'*2097153,b'R0'),
-])
+    (b'bad',b'R?'),
+    (b'[{"$ref":"https://example.invalid/schema"},{}]',b'R?'),
+    (b'x'*2097153,b'R?'),
+], ids=['object', 'type_mismatch', 'malformed_json', 'remote_reference', 'oversized'])
 def test_standalone_worker_protocol_is_fixed_and_no_network(monkeypatch,raw,expected):
     import io
     import runpy
@@ -169,6 +169,25 @@ def test_async_worker_protocol_has_bounded_output_and_reaps(tmp_path,monkeypatch
     assert kwargs['limit'] == 16
 
 
+@pytest.mark.parametrize('answer,expected', [(b'R0', False), (b'R1', True),
+                                           (b'R?', None), (b'R', None), (b'R1extra', None)])
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_observed_invalid_and_unavailable_worker_verdicts_are_distinct(
+        tmp_path, monkeypatch, answer, expected, asynchronous):
+    import asyncio
+    body = ('import sys;sys.stdout.buffer.write(b"R");sys.stdout.buffer.flush();'
+            'sys.stdin.buffer.read();sys.stdout.buffer.write(' + repr(answer[1:]) + ')')
+    if asynchronous:
+        processes = async_worker(tmp_path, monkeypatch, body)
+        observed = asyncio.run(subject.async_isolated_schema_verdict({}, {}))
+    else:
+        processes = worker(tmp_path, monkeypatch, body)
+        observed = subject.isolated_schema_verdict({}, {})
+
+    assert observed is expected
+    assert processes[0][0].returncode is not None
+
+
 @pytest.mark.parametrize('ready',[False,True])
 def test_async_worker_startup_and_active_timeout_kill_and_reap(tmp_path,monkeypatch,ready):
     import asyncio
@@ -239,7 +258,8 @@ def test_provider_close_owns_and_reaps_request_admission_worker(tmp_path,monkeyp
     processes=async_worker(tmp_path,monkeypatch,'import sys,time;sys.stdout.buffer.write(b"R");sys.stdout.buffer.flush();sys.stdin.buffer.read();time.sleep(10)')
     async def scenario():
         provider=SimpleNamespace(capabilities=ProviderCapabilities('llm',('complete','stream')),
-            asetup=AsyncMock(),acomplete=AsyncMock(),astream=AsyncMock(),aclose=AsyncMock())
+            credential_protection_version=1, asetup=AsyncMock(),acomplete=AsyncMock(),astream=AsyncMock(),aclose=AsyncMock())
+        provider.bind_credential_authority=lambda authority: setattr(provider, 'authority', authority)
         if kind.startswith('shared'):
             owner=SharedSetupOwner('operation','identity',lambda credentials:LLMSessionOwner(provider),complete=provider.acomplete)
             operation=owner.complete(request())

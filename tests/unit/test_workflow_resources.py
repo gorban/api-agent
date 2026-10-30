@@ -18,7 +18,7 @@ def candidate(tmp_path, monkeypatch):
     module = checkout / 'src/api_agent/workflows/resources.py'
     module.parent.mkdir(parents=True)
     module.write_text('# relocated module\n')
-    for name in ('src/api_agent/__init__.py', 'flow.md.html', 'launch.py', 'pyproject.toml'):
+    for name in ('src/api_agent/__init__.py', 'flow.md.html', 'launch.sh', 'pyproject.toml'):
         path = checkout / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('marker\n')
@@ -44,7 +44,7 @@ def test_packaged_flow_wins_even_beneath_a_valid_checkout(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize('missing', ('src/api_agent/__init__.py', 'flow.md.html',
-                                     'launch.py', 'pyproject.toml', 'src/api_agent/workflows/resources.py'))
+                                     'launch.sh', 'pyproject.toml', 'src/api_agent/workflows/resources.py'))
 def test_missing_checkout_marker_cannot_select_source_flow(tmp_path, monkeypatch, missing):
     checkout, package = candidate(tmp_path, monkeypatch)
     (checkout / missing).unlink()

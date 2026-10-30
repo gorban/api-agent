@@ -1,5 +1,7 @@
 # Content logging and trace scrubbing
 
+Provider-returned plaintext reasoning/summaries now follow the destination's explicit content permission, under [the approved inference-evidence revision](implementation_plan_f2f3d.md). Internal, encrypted and redacted state remains unconditionally excluded; reasoning never substitutes for a final answer.
+
 ## Checklist
 
 - [x] Human approval (2026-10-05): the implemented privacy emission boundary is accepted: content defaults off; explicit LOG_CONTENT opt-in still scrubs credentials/registered secrets. Actual diagnostic and tracing consumer wiring remains below.

@@ -108,6 +108,39 @@
     if (entry && heading.tagName === `H${entry.level}`) heading.id = entry.id;
     heading.removeAttribute(headingMarker);
   }
+  for (const element of template.content.querySelectorAll('[id]')) {
+    if (/^workflow-tools?-/.test(element.id)) element.removeAttribute('id');
+  }
+  // Give each declared tool port a stable, scope-qualified target. IDs are
+  // assigned after sanitization so authored HTML cannot impersonate a row.
+  const titleText = template.content.querySelector("h1")?.textContent.trim() || "";
+  const owner = /^((?:Component|Node))(?: v[23])?: ([a-z][a-z0-9_]{0,63})$/.exec(titleText);
+  let graphId = "";
+  for (const heading of template.content.querySelectorAll("h2")) {
+    if (heading.textContent.trim() === "Graph ID") {
+      graphId = heading.nextElementSibling?.querySelector("tbody tr td")?.textContent.trim() || "";
+      break;
+    }
+  }
+  let inlineNode = "";
+  for (const heading of template.content.querySelectorAll("h2,h3")) {
+    if (heading.tagName === "H2") {
+      inlineNode = /^Node: ([a-z][a-z0-9_]{0,63})$/.exec(heading.textContent.trim())?.[1] || "";
+    }
+    if (heading.textContent.trim() !== "Tools") continue;
+    const kind = heading.tagName === "H3" && inlineNode ? "node" : owner?.[1].toLowerCase() || "graph";
+    const scope = heading.tagName === "H3" && inlineNode ? inlineNode : owner?.[2] || graphId;
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(scope)) continue;
+    const table = heading.nextElementSibling;
+    if (table?.tagName !== "TABLE") continue;
+    const scopeAnchor = document.createElement("span");
+    scopeAnchor.id = `workflow-tools-${kind}-${scope}`;
+    heading.prepend(scopeAnchor);
+    for (const row of table.querySelectorAll(":scope > tbody > tr")) {
+      const port = row.cells[0]?.textContent.trim() || "";
+      if (/^[a-z][a-z0-9_]{0,63}$/.test(port)) row.id = `workflow-tool-${kind}-${scope}-${port}`;
+    }
+  }
   main.append(template.content);
   // Only the terminal generator-owned section participates in presentation.
   // Its image must already have passed the owner-local image guard above.

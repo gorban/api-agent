@@ -85,3 +85,7 @@ reply controls with exact authored line/branch coverage.
 Post-test interaction and its known deadline/client-lifetime gap are tracked in [retained Studio interaction](implementation_plan_i2c2.md). Frontend human acceptance is deferred until that capability or working Run local is available; the accepted automated request remains distinct.
 
 Human review reconfirmed the automated Studio `Ok` request and the previously accepted reporting and authentication behavior. Full manual interaction, explicit selection and long-idle cache acceptance remain deferred to a usable retained session or Run local; they do not block implementation of that capability.
+
+## Failure-dialog appearance
+
+- [x] Apply the selected dark appearance to the error dialog, its close button and backdrop, preserving readable text. Capture the existing error state before changing catalog or theme-test acceptance behavior. Preserve explicit error dismissal via the close button or Escape.

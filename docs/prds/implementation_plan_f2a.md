@@ -28,7 +28,7 @@ The provider-specific code lives in `src/api_agent/llm_providers/gpt/`; shared c
 
 ## Internal connection diagnostic
 
-Normal user setup occurs lazily from launch.py when a selected integration requests provider setup. The module commands below are optional development diagnostics, not user prerequisites.
+Normal user setup occurs lazily from launch.sh when a selected integration requests provider setup. The module commands below are optional development diagnostics, not user prerequisites.
 
 From the repository root with its Python environment prepared:
 

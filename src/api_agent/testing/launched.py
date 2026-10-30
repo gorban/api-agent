@@ -101,7 +101,8 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         execution = run_recorded_integration(context, tests, config, accepted=accepted,
             no_std_in=no_std_in, prepare=before,
             **({'config_fields': config_fields} if config_fields is not None else {}),
-            **({'tool_plan': tool_plan} if tool_plan is not None else {}), **options)
+            **({'tool_plan': tool_plan} if tool_plan is not None else {}),
+            **options)
         return execution
     finally:
         primary = sys.exc_info()[1]

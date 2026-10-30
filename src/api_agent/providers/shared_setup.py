@@ -79,7 +79,7 @@ class SharedSetupOwner(_Owner):
     Wrapped completions may explicitly preserve provider-owned payload capture;
     None retains marker discovery on an ordinary bound completion method.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600, max_attempts=5, inference_timeout=None):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600, max_attempts=5, inference_timeout=None, withhold_inference_content=False):
         super().__init__(timeout)
         if type(catalog_ttl) not in (int, float):
             raise ContractError('Invalid shared setup binding')
@@ -113,6 +113,7 @@ class SharedSetupOwner(_Owner):
         self._catalog_ttl = catalog_ttl
         self._complete = complete
         self._captures_effective_payload = captures_effective_payload
+        self._withhold_inference_content = withhold_inference_content is True
         self._validate_request = validate_request
         self._calls = set()
 
@@ -220,15 +221,14 @@ class SharedSetupOwner(_Owner):
                 from .rich_inference import resolve_catalog_selection
                 selection = await resolve_catalog_selection(lambda: self.describe(selected_identity=selected_identity), request)
         async def invoke(*, auth):
-            from api_agent.workflows.inference_capture import capture_inference, bind_inference_call
+            from api_agent.workflows.inference_capture import capture_inference, bind_inference_call, prepare_capture_auth
+            await prepare_capture_auth(auth)
             cause_id = str(uuid4())
             with bind_inference_call(cause_id):
                 effective_capture = self._captures_effective_payload
                 if effective_capture is None:
                     implementation = getattr(self._complete, '__self__', None)
                     effective_capture = getattr(implementation, 'captures_effective_payload', False) is True
-                if not effective_capture:
-                    capture_inference('input', request_wire, cause_id, auth=auth)
                 from .inference_retry import retryable, retry_delay, retry_hint_supported
                 from .generation_attempts import begin_transport_attempt, finish_transport_attempt
                 from .progress import component_timeout
@@ -237,6 +237,8 @@ class SharedSetupOwner(_Owner):
                     while True:
                         token = begin_transport_attempt(index)
                         attempt_dispatch = None
+                        if not effective_capture:
+                            capture_inference('input', request_wire, cause_id, auth=auth, fallback=True)
                         try:
                             from api_agent.workflows.inference_capture import isolated_response_dispatch, promote_response_dispatch
                             with isolated_response_dispatch() as attempt_dispatch:
@@ -273,14 +275,16 @@ class SharedSetupOwner(_Owner):
                             await asyncio.sleep(delay)
                             index += 1
                         else:
+                            capture_inference('output', result_to_wire(result), cause_id, auth=auth, fallback=True)
                             finish_transport_attempt(token, result=result, response=attempt_dispatch['response'])
                             break
                 self._check()
                 from .rich_inference import async_validate_result
                 await async_validate_result(request, result, selection=selection)
-                capture_inference('output', result_to_wire(result), cause_id, auth=auth)
                 return result
-        return await self._owner.call(invoke)
+        from api_agent.workflows.inference_capture import withholding_inference_content
+        with withholding_inference_content(self._withhold_inference_content):
+            return await self._owner.call(invoke)
 
     async def aclose(self):
         self._context()

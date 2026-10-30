@@ -40,6 +40,22 @@ def test_secret_reads_are_lazy_scoped_and_registered(binding, monkeypatch, kind)
     assert not binding.pending
 
 
+def test_credential_read_waits_for_evidence_lease_before_return(binding, monkeypatch):
+    monkeypatch.setattr(helpers, 'get_password', Mock(return_value='synthetic-secret'))
+    reader = binding.create()
+    async def exercise():
+        lease = binding.boundary.begin_evidence_lease()
+        task = asyncio.create_task(reader('UI User', 0, 'password'))
+        async with asyncio.timeout(2):
+            while not binding.boundary._authority.registration_waiters:
+                await asyncio.sleep(0.001)
+        assert not task.done()
+        lease.release()
+        assert await task == 'synthetic-secret'
+        assert binding.boundary._text('synthetic-secret') == '[REDACTED]'
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize('value', [SelectedLoginCredentials(False), SelectedLoginCredentials(True, 'user@example.test', 'synthetic-password')])
 def test_optional_login_material_registered_before_return(binding, monkeypatch, value):
     helper = Mock(return_value=value)

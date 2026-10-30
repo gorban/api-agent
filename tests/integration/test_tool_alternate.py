@@ -18,7 +18,8 @@ from api_agent.workflows.tool_evidence import tool_evidence
 # This is a sibling test resource, not an admitted tool/native factory.
 measure_targets = run_path(str(Path(__file__).parent / "fixtures/tool_instances/measurement.py"))["measure_targets"]
 
-pytestmark = [pytest.mark.feature('Named tool workflows'), pytest.mark.requires_llm]
+pytestmark = [pytest.mark.feature('Named tool workflows'), pytest.mark.requires_llm,
+              pytest.mark.credential_authorities('tools', 'workflow')]
 INSTANCES = {'primary_read': 'fixture/primary', 'secondary_read': 'fixture/secondary'}
 
 

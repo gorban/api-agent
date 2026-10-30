@@ -238,16 +238,24 @@ def test_loaded_provider_retains_billing_before_structured_output_rejection(tmp_
 from api_agent.providers.llm import LLMResult, Message, TextContent, Usage
 class Provider:
     version = 1
+    credential_protection_version = 1
     capabilities = ProviderCapabilities('llm', ('complete',), features=('structured',))
+    def bind_credential_authority(self, authority): self.authority = authority
     async def acomplete(self, request, *, auth=None):
-        return LLMResult(Message('assistant', (TextContent('{"value": 7}'),)), Usage(3, 2), billing={'usd': 0.1, 'request_id': None, 'generation_id': None})
+        from api_agent.providers.credential_guard import guard_json
+        from api_agent.providers.inference import request_to_wire, result_to_wire
+        await self.authority.aregister_secret(auth)
+        guard_json(request_to_wire(request), self.authority._secrets)
+        result = LLMResult(Message('assistant', (TextContent('{"value": 7}'),)), Usage(3, 2), billing={'usd': 0.1, 'request_id': None, 'generation_id': None})
+        guard_json(result_to_wire(result), self.authority._secrets)
+        return result
 def create(config, services): return Provider()
 ''')
     async def scenario():
         loaded = await aload_provider(str(module) + ':create', {}, {}, kind='llm')
         provider = loaded.require('llm', 'complete')
         async def call(callback):
-            return await callback(auth='selected')
+            return await callback(auth='synthetic-private-auth-credential')
         child = SimpleNamespace(call=call, aclose=AsyncMock())
         owner = SharedSetupOwner('op', 'selected', lambda _: child, complete=provider.acomplete)
         schema = '{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}'

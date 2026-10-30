@@ -74,6 +74,13 @@ class IntegrationInspection(CleanupLeaseOwner):
                 rows.append(row)
         return rows
 
+    @property
+    def inspection_endpoints(self):
+        """Read retained browser addresses from the owned worker event stream."""
+        return tuple(row['endpoint'] for row in self._rows()
+                     if row.get('kind') == 'inspection_open'
+                     and isinstance(row.get('endpoint'), str))
+
     def _emit(self, kind):
         from .contracts import RunnerEvent
         if self.on_event is not None:

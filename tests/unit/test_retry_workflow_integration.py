@@ -99,7 +99,8 @@ def test_retry_crosses_ipc_into_frozen_workflow(tmp_path, monkeypatch, exhausted
         assert len({str(UUID(row['id'])) for row in attempts}) == 2
         assert attempts[0]['usage']['input_tokens'] == 7
         assert attempts[1]['usage'] is None if exhausted else attempts[1]['usage']['input_tokens'] == 3
-        events = [json.loads(line)['data'] for line in path.read_text().splitlines()]
+        frames = [json.loads(line) for line in path.read_text().splitlines()]
+        events = [frame['data'] for frame in frames if frame['kind'] == 'inference_usage']
         published = [row for row in events if row['finished_at'] is not None]
         accounting = {'tests': [{'test_id': 'case', 'calls': published, 'calls_complete': True}]}
         _, facts = join_workflow_accounting({'case': [captured]}, accounting,
@@ -109,7 +110,10 @@ def test_retry_crosses_ipc_into_frozen_workflow(tmp_path, monkeypatch, exhausted
         assert graph['status'] == ('failed' if exhausted else 'broken')
         component = graph['steps'][0]
         node = component['steps'][0]
-        call = node['steps'][0]
+        call = next(child for child in node['steps'] if child['name'] == 'call ' + calls[0]['call_id'])
+        tools = [child for child in node['steps'] if child['name'].startswith('Tool ')]
+        assert len(tools) == 1 and tools[0]['status'] == 'passed'
+        assert node['status'] == component['status'] == graph['status']
         assert call['status'] == ('failed' if exhausted else 'broken')
         assert [step['status'] for step in call['steps']] == ['broken', 'failed' if exhausted else 'passed']
         for scope in (graph, component, node):

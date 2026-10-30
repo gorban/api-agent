@@ -10,12 +10,22 @@ class ContractError(ValueError):
     """A neutral boundary failure, without payload or credential diagnostics."""
 
 
+class SetupRegistrationLimitError(ContractError):
+    """The bounded replay history for this setup operation is exhausted."""
+
+
 class ProviderAccessError(OperationalError):
     """Provider-sanitized, bounded upstream rejection details for consumer reports."""
     response: ResponseEvidence | None = None
+    origin = 'provider'
 
-    def __init__(self, kind, message, *, status=None, code=None, type=None, request_id=None, usage=None, response=None):
+    def __init__(self, kind, message, *, status=None, code=None, type=None, request_id=None, usage=None, response=None,
+                 origin='provider'):
         super().__init__(kind)
+        if origin.__class__ is not str or origin not in ('provider', 'local_output_validation'):
+            raise ContractError('Invalid provider error origin')
+        if origin != 'provider':
+            self.origin = origin
         if status is not None and (status.__class__ is not int or not 100 <= status <= 599):
             raise ContractError('Invalid provider error status')
         for value, limit in ((message, 512), (code, 100), (type, 100), (request_id, 100)):

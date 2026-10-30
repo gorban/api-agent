@@ -75,8 +75,9 @@ class LocalTracing:
             if not all(isinstance(value, str) and value.strip() and '\x00' not in value for value in (email, password)):
                 raise DashboardError('Configure the LangFuse dashboard admin email and password.')
             self._credentials = email, password
+            from api_agent.telemetry.privacy import register_secret_async
             for value in self._credentials:
-                self.emissions.register_secret(value)
+                await register_secret_async(self.emissions, value)
             path = '/auth/sign-in'
         else:
             url = self.config.get('TRACE_VIEWER_URL')

@@ -77,13 +77,18 @@ def test_optional_schema_survives_transport_and_local_validation(mode, subscript
 
 
 @pytest.mark.parametrize('mode', ['responses', 'completions'])
-@pytest.mark.parametrize('kind', ['tool', 'structured'])
+@pytest.mark.parametrize('kind,message,code', [
+    ('tool', 'Generated arguments for tool call 1 (declared tool 1)', 'tool_arguments_schema'),
+    ('structured', 'Structured output does not match its schema', None),
+])
 @pytest.mark.parametrize('text', ['{"value":4}', '{"value":"ok","optional":"wrong"}', '{"optional":1}'])
-def test_invalid_nonstrict_output_preserves_usage(mode, kind, text):
+def test_invalid_nonstrict_output_preserves_usage(mode, kind, message, code, text):
     with pytest.raises(ProviderAccessError) as caught:
         complete(request(kind), mode, kind, text)
     assert caught.value.usage == Usage(9, 3, 4)
-    assert 'outside its declared contract' in str(caught.value)
+    assert message in str(caught.value)
+    assert caught.value.code == code
+    assert caught.value.origin == 'local_output_validation'
     assert TOKEN not in str(vars(caught.value))
 
 

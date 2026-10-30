@@ -80,6 +80,16 @@ def events(mode, *, text='Ok', calls=(), truncated=False, usage=True):
     yield from (row | dict(sequence_number=i) for i,row in enumerate(rows))
 
 
+async def normalized_events(mode, **kwargs):
+    from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
+    decoder = WorkerStream(mode, MODELS[mode], set())
+    for row in events(mode, **kwargs):
+        for frame in decoder.feed(row):
+            yield frame
+    for frame in decoder.finish():
+        yield frame
+
+
 def request(mode, messages=None, tools=()):
     return LLMRequest(MODELS[mode], CompletionRequest(messages or (Message('user',(TextContent('Return Ok.'),)),),
         tools=tools, generation=GenerationOptions(max_output_tokens=16)))
@@ -99,7 +109,10 @@ def test_parsed_application_runs_real_auth_factory_codec_and_local_llm(monkeypat
         owner=LocalLLM(config,ROOT,registry={}); calls=[]
         try:
             await owner.ensure_ready(); implementation=owner.provider.implementation
-            async def sdk(operation,payload,*,auth):
+            async def sdk(operation,payload,*,auth,join=None,on_dispatch=None):
+                if join is not None:
+                    await join(["synthetic-worker-secret"])
+                    on_dispatch()
                 values=auth.worker_config(); assert values['mode']==('access_key' if auth_mode=='session' else auth_mode) and values['region']=='us-east-1'
                 calls.append((operation,payload))
                 if operation=='models': return {'data':[{'id':MODELS[mode]}]}
@@ -135,7 +148,10 @@ def test_tool_turn_round_trip(mode):
         owner=LocalLLM(configuration(mode),ROOT,registry={}); calls=[]
         try:
             await owner.ensure_ready()
-            async def sdk(operation,payload,*,auth):
+            async def sdk(operation,payload,*,auth,join=None,on_dispatch=None):
+                if join is not None:
+                    await join(["synthetic-worker-secret"])
+                    on_dispatch()
                 if operation=='models': return {'data':[{'id':MODELS[mode]}]}
                 calls.append(payload['body'])
                 if len(calls)==1: return raw(mode,calls=(('lookup-1','lookup','{}'),))
@@ -160,7 +176,7 @@ def test_stream_buffers_tools_through_eof_and_result_validation(mode,variant):
             calls=() if variant=='text' else (('id','unrequested' if variant=='undeclared' else 'lookup','{"wrong":1}' if variant=='invalid_arguments' else '{}'),)
             if variant=='duplicate': calls=calls+calls
             async def sdk_stream(*a,**k):
-                for row in events(mode,calls=calls,truncated=variant=='truncated'): yield row
+                async for row in normalized_events(mode,calls=calls,truncated=variant=='truncated'): yield row
                 ended.append(True)
             async def models(*a,**k): return {'data':[{'id':MODELS[mode]}]}
             implementation.transport.call=models
@@ -187,7 +203,10 @@ def test_missing_usage_fails_without_completed_accounting(mode,usage):
         owner=LocalLLM(configuration(mode),ROOT,registry={})
         try:
             await owner.ensure_ready()
-            async def sdk(operation,payload,*,auth):
+            async def sdk(operation,payload,*,auth,join=None,on_dispatch=None):
+                if join is not None:
+                    await join(["synthetic-worker-secret"])
+                    on_dispatch()
                 return {'data':[{'id':MODELS[mode]}]} if operation=='models' else raw(mode,usage=usage)
             owner.provider.implementation.transport.call=sdk
             with pytest.raises(OperationalError): await owner.complete(request(mode))
@@ -202,7 +221,7 @@ def test_stream_invalid_usage_has_no_completed_or_cost_event(mode):
         try:
             await owner.ensure_ready()
             async def sdk_stream(*a,**k):
-                for row in events(mode,usage={'total_tokens':True}): yield row
+                async for row in normalized_events(mode,usage={'total_tokens':True}): yield row
             async def models(*a,**k): return {'data':[{'id':MODELS[mode]}]}
             owner.provider.implementation.transport.call=models
             owner.provider.implementation.transport.stream=sdk_stream
@@ -226,7 +245,10 @@ def test_bootstrapped_provider_default_selects_oss20b_from_real_local_catalog(mo
         owner=LocalLLM(config.values,ROOT,registry={})
         try:
             await owner.ensure_ready()
-            async def sdk(operation,payload,*,auth):
+            async def sdk(operation,payload,*,auth,join=None,on_dispatch=None):
+                if join is not None:
+                    await join(["synthetic-worker-secret"])
+                    on_dispatch()
                 assert operation=='models'
                 return {'data':[{'id':'zai.glm-5'},{'id':'openai.gpt-oss-20b'},{'id':'zai.glm-4.7-flash'}]}
             owner.provider.implementation.transport.call=sdk

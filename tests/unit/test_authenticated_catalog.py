@@ -55,8 +55,82 @@ def test_remote_rejection_never_passes_or_tries_another_credential(status, kind)
     with pytest.raises(ModelDiscoveryError) as caught:
         invoke(handler)
     assert len(calls) == 2
-    assert caught.value.kind == kind and caught.value.status == status and caught.value.code == 'denied'
-    assert SECRET not in str(caught.value) and '[redacted]' in str(caught.value)
+    assert caught.value.kind == kind and caught.value.status == status and caught.value.code is None
+    assert SECRET not in str(caught.value) and caught.value.__suppress_context__
+
+
+def test_safe_remote_rejection_retains_code_and_classification():
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(401, json={'error': {'message': 'Access denied', 'code': 'denied'}})
+    with pytest.raises(ModelDiscoveryError) as caught:
+        invoke(handler)
+    assert len(calls) == 2
+    assert (caught.value.kind, caught.value.status, caught.value.code) == ('authentication', 401, 'denied')
+    assert caught.value.message == 'Access denied'
+
+
+def test_registered_other_credential_in_error_is_not_released():
+    from api_agent.telemetry.privacy import EmissionBoundary
+    other = 'synthetic-other-registered-credential'
+    boundary = EmissionBoundary()
+    boundary.register_secret(other)
+    async def run():
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(401, json={'error': {'message': 'Access denied ' + other, 'code': other}})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(ModelDiscoveryError) as caught:
+                await discover_selections(client=client, base_url=BASE, access_token=SECRET, subscription=False, authority=boundary)
+        assert len(calls) == 1
+        assert (caught.value.kind, caught.value.status, caught.value.code) == ('authentication', 401, None)
+        assert other not in str(caught.value) and caught.value.__suppress_context__
+    asyncio.run(run())
+
+
+def test_credential_registered_during_key_verification_rejects_prior_catalog():
+    from api_agent.telemetry.privacy import EmissionBoundary
+    boundary = EmissionBoundary()
+    other = 'synthetic-late-catalog-secret'
+    async def handler(request):
+        if request.url.path.endswith('/key'):
+            boundary.register_secret(other)
+            return httpx.Response(200, json={'data': {'label': 'selected'}})
+        return httpx.Response(200, json={'data': [{'id': 'gpt-example', 'name': other}]})
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(ModelDiscoveryError) as caught:
+                await discover_selections(client=client, base_url=BASE, access_token=SECRET, subscription=False, authority=boundary)
+        assert caught.value.kind == 'unknown' and other not in str(caught.value)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('public', [False, True])
+def test_catalog_handoff_rejects_registration_during_validation(monkeypatch, public):
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.providers import credential_guard
+    boundary = EmissionBoundary()
+    original = credential_guard.async_guard_json
+    async def racing_guard(value, secrets):
+        checked = await original(value, secrets)
+        if type(value) is list and value and type(value[0]) is dict and 'selected_llm' in value[0]:
+            boundary.register_secret('synthetic-concurrently-registered-secret')
+        return checked
+    monkeypatch.setattr(credential_guard, 'async_guard_json', racing_guard)
+    def handler(request):
+        if request.url.path.endswith('/key'):
+            return httpx.Response(200, json={'data': {'label': 'selected'}})
+        if not public and 'Authorization' not in request.headers:
+            return httpx.Response(401)
+        return httpx.Response(200, json=catalog())
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(ModelDiscoveryError) as caught:
+                await discover_selections(client=client, base_url=BASE, access_token=SECRET, subscription=False, authority=boundary)
+        assert caught.value.kind == 'unknown' and caught.value.__suppress_context__
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('status', [403, 404, 500, 302])

@@ -148,8 +148,10 @@ def test_stream_view_preserves_operational_error():
     request = LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('Question'),)),)))
     error = OperationalError('unavailable')
     method = Mock(side_effect=error)
-    provider = LoadedProvider(SimpleNamespace(capabilities=ProviderCapabilities('llm', ('stream',)),
-                                             astream=method), 'test_module')
+    implementation = SimpleNamespace(capabilities=ProviderCapabilities('llm', ('stream',)),
+                                     credential_protection_version=1, astream=method)
+    implementation.bind_credential_authority = lambda authority: setattr(implementation, 'authority', authority)
+    provider = LoadedProvider(implementation, 'test_module')
     async def scenario():
         iterator = provider.require('llm', 'stream').astream(request)
         try:

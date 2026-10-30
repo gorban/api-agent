@@ -2,6 +2,7 @@
 from pathlib import Path
 from hashlib import sha256
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -43,6 +44,8 @@ def _trusted_checkout_template(root):
 
 def assure_hook(root: Path, *, report=None) -> str:
     report = report or (lambda message: print(message, file=sys.stderr))
+    if shutil.which('git') is None:
+        return 'not-applicable'
     try:
         root = Path(root).resolve()
         lines = _git(root, 'rev-parse', '--show-toplevel', '--git-path', 'hooks').decode().splitlines()

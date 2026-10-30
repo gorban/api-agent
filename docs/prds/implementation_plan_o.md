@@ -20,3 +20,7 @@ The bounded Compose contribution foundation is delivered. Broader decisions and 
 ## Deferred process extension
 
 - [ ] Specify and deliver [generic host-process prerequisites](implementation_plan_o2.md) separately if needed.
+
+## Workflow-selected tools
+
+- [ ] Decide and deliver [named tool instances and context-derived configuration](implementation_plan_o4.md) before expanding endpoint-dependent consumers. Parse application and test graph usages, bind reusable implementations to per-instance settings, and reuse conditional prerequisites. The linked contract is proposed; agree remaining decisions before dependent implementation.

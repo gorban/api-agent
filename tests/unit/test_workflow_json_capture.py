@@ -53,7 +53,8 @@ def test_native_generation_limit_capture_keeps_content_disabled(key):
     from api_agent.workflows.inference_capture import capture_inference, collect_inference
     with collect_inference(EmissionBoundary(ContentPolicy(False))) as collector:
         capture_inference('input', {'provider_payload': {key: 128}}, str(uuid4()))
-    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'withheld'}]
+    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'withheld',
+                                 'diagnostics': {'version': 1, 'observation': 'sdk_decoded', 'max_output_tokens': 128}}]
 
 
 def test_json_capture_excludes_policy_admission_before_projection(monkeypatch):
@@ -119,7 +120,9 @@ def test_json_capture_fans_out_independent_scrubbed_values(log, trace):
     assert stored['cause_id'] == emitted['cause_id'] == pair
     assert ('values' in stored) is log
     assert ('values' in emitted) is log
-    assert span.event.call_count == int(trace)
+    assert span.event.call_count == 1
+    if not trace:
+        assert span.event.call_args.args[0] == {'values': {}}
     if log:
         assert stored['values']['text'] == 'visible [REDACTED] ' + 'x' * 600
         assert len(emitted['values']['text']) > 512
@@ -146,7 +149,7 @@ def test_json_capture_drops_runtime_objects_and_cycles_without_losing_visible_si
     cycle = {}
     cycle['loop'] = cycle
     values = {'visible': 'answer', 'object': Hostile(), 'cycle': {},
-              'hidden_reasoning': 'excluded', 'parts': [Hostile(), {'type': 'reasoning', 'text': 'hidden'},
+              'hidden_reasoning': 'excluded', 'parts': [Hostile(), {'type': 'redacted_thinking', 'text': 'hidden'},
                                                        {'type': 'text', 'text': 'visible part'}]}
     captured = project_values(values, {'type': 'object'}, EmissionBoundary())
     assert captured['visible'] == 'answer'
@@ -255,7 +258,7 @@ def test_json_capture_rejects_non_json_root_and_marks_empty_capture_unavailable(
 
 
 @pytest.mark.parametrize('values, schema, secrets', [
-    ({'value': {'type': 'reasoning', 'text': 'hidden-sentinel'}},
+    ({'value': {'type': 'redacted_thinking', 'text': 'hidden-sentinel'}},
      {'type': 'object', 'properties': {'value': {'type': 'object', 'properties': {'text': {}}}}}, ()),
     ({'value': {'public': 'sensitive-sentinel', 'auth': 'secretpart'}},
      {'type': 'object', 'properties': {'value': {'type': 'object', 'properties': {'public': {}}}}},
@@ -405,7 +408,7 @@ def test_original_json_limits_fail_closed_without_partial_credential_context(cas
         deep = {'nested': deep}
     cases = {'depth': deep,
              'nodes': {'outer': {str(i): {str(j): [None, None] for j in range(32)} for i in range(32)}},
-             'key': {'x' * 129: 'answer'}, 'items': {'parts': [None] * 17}}
+             'key': {'x' * 129: 'answer'}, 'items': {'parts': [None] * 2048}}
     report = set()
     assert project_values(cases[case], {'type': 'object'}, EmissionBoundary(), report=report) == {}
     assert report == {'truncated'}

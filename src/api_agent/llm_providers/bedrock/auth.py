@@ -129,11 +129,12 @@ async def create_session(config, *, interactive, user_index, credentials, servic
             from api_agent.llm_providers.bedrock.sessions import AcquiredSession
             reader = SelectedCredentialReader(credentials, user_index) if credentials is not None else None
             services = services or {}
-            allow_interaction = bool(interactive) and not config.get('NO_STD_IN', False)
+            interaction = services.get('interaction', services.get('bedrock_interaction'))
+            allow_interaction = bool(interactive) and (interaction is not None or not config.get('NO_STD_IN', False))
             request = SessionRequest(profile=values['profile'], region=values['region'],
                 user_index=user_index, interactive=allow_interaction,
                 credentials=reader,
-                interaction=services.get('interaction', services.get('bedrock_interaction')) if allow_interaction else None)
+                interaction=interaction if allow_interaction else None)
             session = None
             try:
                 acquirer = await load_acquirer(config.get('BEDROCK_SESSION_PROVIDER', ''), config, services)

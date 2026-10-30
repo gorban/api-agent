@@ -81,6 +81,34 @@ def test_verified_query_executes_after_review_and_renderer_gets_partial_result()
     assert 'optional field failed' in ''.join(part.text for part in llm.requests[-1].payload.messages[-1].content)
 
 
+def test_fenced_prompted_planner_and_native_reviewer_share_validated_json_consumption():
+    from api_agent.llm_providers.response_policy import resolve_response
+    from api_agent.providers.rich_inference import async_validate_result
+
+    class PolicyLLM(LLM):
+        async def complete(self, request, *, context):
+            result = await super().complete(request, context=context)
+            if request.payload.response is None:
+                return result
+            _, evidence = resolve_response(request, lambda actual:
+                None if actual == ('prompted_json' if len(self.requests) == 1 else 'structured')
+                else 'unsupported_schema')
+            return await async_validate_result(request, replace(result, response=evidence))
+
+    owner = Owner()
+    candidate = json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Hello'})
+    llm = PolicyLLM(['`````json\n````\n```json\n' + candidate + '\n```\n````\n`````',
+                    verdict(), 'Hello'])
+
+    result = asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
+
+    assert result.payload.content[0].text == 'Hello'
+    assert len(llm.requests) == 3
+    assert owner.events == ['describe']
+    assert llm.requests[0].payload.response.fallback == 'allow'
+    assert llm.requests[1].payload.response.fallback == 'reject'
+
+
 def test_same_declared_consumer_uses_synthetic_rest_owner_unchanged():
     class RestOwner(Owner):
         def __init__(self):
@@ -365,7 +393,8 @@ def test_tool_node_rejects_missing_grant_and_records_failed_actual_call():
     class FailingGate:
         async def execute(self, grant):
             raise RuntimeError('transport failed')
-    context.services.update(verified_call=object(), tool_gate=FailingGate())
+    context.services.update(verified_call=object())
+    context.tools = {'primary': FailingGate()}
     with pytest.raises(RuntimeError, match='transport failed'):
         asyncio.run(invoke({}, context))
     assert len(observations) == 1
@@ -403,16 +432,31 @@ def test_existing_one_call_node_rejects_incomplete_or_empty_model_output(output,
 def test_named_tool_binding_runs_selected_port_and_closes_borrowed_view():
     owner = Owner()
     graph = application(None)
-    calls = []
-    def for_port(**kwargs):
-        calls.append(kwargs)
-        return owner
-    graph.tools = SimpleNamespace(for_port=for_port)
+    from api_agent.tooling.runtime import OwnerTools
+    class OwnerWithView(Owner):
+        def for_invocation(self):
+            return owner
+    parent = OwnerWithView()
+    graph.tools = OwnerTools(graph.definition, parent)
     llm = LLM([json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}),
                verdict(), 'Ada'])
 
     result = asyncio.run(graph.complete(request(), llm=llm, context=OperationContext('request')))
 
     assert ''.join(part.text for part in result.payload.content) == 'Ada'
-    assert calls == [{'scope_kind': 'node', 'scope': 'execute_tool', 'port': 'primary'}]
     assert owner.events == ['describe', 'validate', 'invoke', 'close']
+
+
+def test_compatibility_owner_tool_evidence_uses_captured_instance_id(monkeypatch):
+    from api_agent.workflows.tool_observations import ToolObservation
+    recorded = []
+    original = ToolObservation.capture
+    async def capture(self, direction, values, schema, **kwargs):
+        if direction == 'input':
+            recorded.append((self.alias, self.instance, values['tool_instance']))
+        return await original(self, direction, values, schema, **kwargs)
+    monkeypatch.setattr(ToolObservation, 'capture', capture)
+    llm = LLM([json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}),
+               verdict(), 'Ada'])
+    asyncio.run(application(Owner()).complete(request(), llm=llm, context=OperationContext('request')))
+    assert recorded == [('primary', 'demo/primary', 'demo/primary')]

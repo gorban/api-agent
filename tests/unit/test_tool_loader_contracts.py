@@ -182,7 +182,8 @@ def test_node_context_resolves_its_named_port_in_node_scope():
     resolver = SimpleNamespace(for_port=resolve)
     context = NodeContext('read', (), (), {'tools': resolver})
 
-    assert context.tools is resolver
+    with pytest.raises(ValueError, match="active workflow invocation"):
+        _ = context.tools
     assert context.tool('primary') is selected
     assert calls == [{'scope_kind': 'node', 'scope': 'read', 'port': 'primary'}]
 

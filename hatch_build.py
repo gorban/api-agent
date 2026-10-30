@@ -31,8 +31,8 @@ def _tree_entries(raw, size):
     return entries
 
 
-def _proof(root):
-    commit = _git(root, 'rev-parse', 'HEAD').decode().strip()
+def _proof(root, commit=None):
+    commit = commit or _git(root, 'rev-parse', 'HEAD').decode().strip()
     algorithm = _git(root, 'rev-parse', '--show-object-format').decode().strip()
     if algorithm not in ('sha1', 'sha256'):
         raise RuntimeError('Unsupported Git object format')
@@ -54,10 +54,10 @@ def _proof(root):
         data = ((root / path).read_bytes() if helper is None else
                 helper['_read'](root, relative, 8 * 1024 * 1024))
         rows = [row for row in _git(root, 'ls-files', '--stage', '-z', '--', relative).split(b'\0') if row]
-        head_oid = _git(root, 'rev-parse', 'HEAD:' + relative).decode().strip()
+        head_oid = _git(root, 'rev-parse', commit + ':' + relative).decode().strip()
         if (len(rows) != 1 or rows[0].split(b'\t', 1)[1] != relative.encode()
                 or rows[0].split(b'\t', 1)[0].split()[1].decode() != head_oid
-                or data != _git(root, 'show', 'HEAD:' + relative)):
+                or data != _git(root, 'show', commit + ':' + relative)):
             raise RuntimeError('Packaged workflow document differs from committed source')
         documents.append(dict(owner='base', path=relative, length=len(data),
                               sha256=sha256(data).hexdigest()))
@@ -145,13 +145,14 @@ def _package_path(relative, owners, helper, directories=None):
     return False
 
 
-def _package_inventory(root, git_source):
+def _package_inventory(root, git_source, commit=None):
     """A Git-derived finite list survives no-Git source archive rebuilding."""
     helper = _frontend_helper(root)
     owners = helper['owner_roots'](root)
     directories = _ancestor_includes(root, owners, helper)
     sidecar = root / 'workflow-package-files.json'
     if git_source:
+        commit = commit or _git(root, 'rev-parse', 'HEAD').decode().strip()
         paths = set()
         tracked = set()
         for raw in _git(root, 'ls-files', '-z').split(b'\0'):
@@ -169,10 +170,10 @@ def _package_inventory(root, git_source):
             data = helper['_read'](root, relative, 8 * 1024 * 1024)
             mode = 0o755 if (root / relative).stat().st_mode & 0o111 else 0o644
             if relative in tracked:
-                tree_row = _git(root, 'ls-tree', '-z', 'HEAD', '--', relative)
+                tree_row = _git(root, 'ls-tree', '-z', commit, '--', relative)
                 expected_mode = b'100755 ' if mode == 0o755 else b'100644 '
                 if (not tree_row.startswith(expected_mode) or
-                        data != _git(root, 'show', 'HEAD:' + relative)):
+                        data != _git(root, 'show', commit + ':' + relative)):
                     raise RuntimeError('Workflow package file differs from committed source')
             rows.append(dict(path=relative, size=len(data), sha256=sha256(data).hexdigest(), mode=mode))
         document = dict(version=1, owners=list(owners), directories=directories, files=rows)
@@ -306,6 +307,7 @@ def _owner_proofs(proof, owners):
         result[owner] = dict(version=1, manifest=manifest, objects=proof['objects'])
     return result
 
+
 class CustomBuildHook(BuildHookInterface):
     def initialize(self, version, build_data):
         root = Path(self.root).resolve()
@@ -315,7 +317,9 @@ class CustomBuildHook(BuildHookInterface):
             source_root = Path(_git(root, 'rev-parse', '--show-toplevel').decode().strip())
         except (RuntimeError, FileNotFoundError):
             source_root = None
-        inventory = _package_inventory(root, source_root == root)
+        git_source = source_root == root
+        commit = _git(root, 'rev-parse', 'HEAD').decode().strip() if git_source else None
+        inventory = _package_inventory(root, git_source, commit)
         if inventory is not None:
             _limit_owner_traversal(self.build_config, root, inventory['owners'], inventory['directories'])
             destination_prefix = '' if self.target_name == 'sdist' else 'api_agent/'
@@ -327,8 +331,8 @@ class CustomBuildHook(BuildHookInterface):
             package_sidecar = folder / 'workflow-package-files.json'
             package_sidecar.write_text(json.dumps(inventory, sort_keys=True, separators=(',', ':')))
             includes[str(package_sidecar)] = destination_prefix + package_sidecar.name
-        if source_root == root:
-            proof = _proof(root)
+        if git_source:
+            proof = _proof(root, commit)
             folder = Path(tempfile.mkdtemp(prefix='api-agent-proof-'))
             sidecar = folder / 'workflow-source-proof.json'
             sidecar.write_text(json.dumps(proof, sort_keys=True, separators=(',', ':')))
@@ -349,3 +353,5 @@ class CustomBuildHook(BuildHookInterface):
         destination = ('workflow-source-proof.json' if self.target_name == 'sdist'
                        else 'api_agent/workflow-source-proof.json')
         build_data.setdefault('force_include', {})[str(sidecar)] = destination
+        if git_source and _git(root, 'rev-parse', 'HEAD').decode().strip() != commit:
+            raise RuntimeError('Packaged source changed during build')

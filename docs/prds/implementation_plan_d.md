@@ -13,6 +13,12 @@ Planned exception to mandatory integration/E2E reporting: [explicit reporting sk
 
 ## Checklist
 
+- [x] Keep integration failure output concise with short pytest tracebacks by
+  default, retaining causes and source locations; DEBUG requests expanded source
+  tracebacks. Set the project's async fixture loop scope explicitly to avoid
+  repeated pytest-asyncio startup deprecations. Do not suppress unrelated warnings
+  or remove failure classifications, credential scrubbing or local callback evidence.
+
 - [ ] Establish Allure output before the first rewrite integration or E2E test, including the initial "Ok" milestone. Integration recording is implemented for interactive and explicitly started noninteractive runs. Preserve [execution acceptance](implementation_plan_a.md): NO_STD_IN integration requires explicit START=True/E2E or DEBUG; E2E requires human acceptance or explicit START=E2E. Collect-only is not a recorded test run. Unit tests must never be Allure-recorded: disable Allure collection/writers for unit mode, create no Allure result files or S3/secondary Allure uploads, and leave the latest integration/E2E run unchanged. Unit pass/coverage reports belong to local output and CI checks.
 - [ ] Organize Allure results as `<repo> -> <test mode: integration / E2E> -> <test file name> -> <test>`. Map repository, test mode, and test file to the suite hierarchy and retain individual test names. Use the test mode selected through `TUI_MODE`; keep LLM provider authentication configuration separate.
   - [x] Implement and deterministically verify the repository/mode/file/test Allure hierarchy in `src/api_agent/testing/recording.py`, including UUID run identity, attempt labels, test durations, failed/interrupted suite results and fail-closed manifest metadata. Real E2E attachments remain below.

@@ -167,7 +167,8 @@ async def test_local_llm_publishes_structured_authentication_requirement(tmp_pat
     from api_agent.runtime.local_llm import LocalLLM
     error = ConfigurationRequiredError(('ROUTE',))
     provider = SimpleNamespace(capabilities=ProviderCapabilities(kind='llm'),
-        asetup=AsyncMock(side_effect=error), adescribe=AsyncMock())
+        asetup=AsyncMock(side_effect=error), adescribe=AsyncMock(),
+        credential_protection_version=1, bind_credential_authority=lambda authority: None)
     loaded = SimpleNamespace(implementation=provider, astart=AsyncMock(), aclose=AsyncMock())
     loader = AsyncMock(side_effect=error) if failure_site == 'loader' else AsyncMock(return_value=loaded)
     events = []

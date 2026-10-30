@@ -72,10 +72,13 @@ Native recovery starts in an isolated profile and private HOME/config/credential
 login and SSO caches; it copies only the selected routing and recognized cache
 entries, rather than arbitrary profile contents. Recovery requires nonblank profile/region, normally supplied by application
 defaults, and AWS CLI v2 >=2.32.0. Direct login uses aws login --remote, receiving
-its authorization code through the private masked screen. SSO uses a device
+its authorization code through the private masked screen or owned terminal relay. SSO uses a device
 URL/code handoff. Complete browser sign-in yourself; automated form filling is
-not implemented. NO_STD_IN or a missing owner rejects recovery, while still
-allowing valid ambient credentials.
+not implemented. NO_STD_IN terminal integration permits recovery through a
+visible operation-owned authentication channel; a missing owner or denied
+interaction permission rejects recovery. Valid ambient credentials remain
+usable without interaction. Clear any saved unattended key-account index with
+`--unattended-user-index=` before requesting bundled attended session login.
 
 Exported native credentials require token and future expiry. STS uses the exact
 tuple, with configured endpoint overrides and proxies disabled, and checks any
@@ -96,6 +99,13 @@ never starts attended recovery. External SDK/CLI consumers may read the static
 snapshot until it expires; they do not implement these adapter renewal rules. User-edited tuples are preserved
 and are not silently replaced or used to trigger another credential source.
 Native refresh stays bound to its verified identity.
+
+Native acquisition is serialized across processes for the same saved credential
+file and profile, independently of test API/model settings. A waiter rechecks the
+saved session before opening a sign-in channel, so a completed peer login is
+reused. Admission respects the existing acquisition deadline and cancellation;
+its empty coordination file contains no authentication state. Keep coordination
+files in place while any operation is active, even when resetting credentials.
 
 Selected-file updates preserve unrelated profiles/settings, use private
 permissions, a cooperative lock, concurrent-change checks and per-file atomic

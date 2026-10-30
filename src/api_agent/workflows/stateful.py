@@ -5,7 +5,7 @@ import asyncio
 import ast
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from importlib.abc import Loader, MetaPathFinder
 from importlib.util import spec_from_loader
@@ -29,7 +29,7 @@ from langgraph.graph.message import add_messages
 
 from api_agent.providers.progress import bind_timeout_budget, component_timeout
 from api_agent.runtime.tasks import offload, settle
-from .definition import Replacement, Resource, ToolUsage, _MAX_SNAPSHOT_BYTES, _declaration_parts, _inline_selection, _freeze, _read_bounded, _sections, _table as _shared_table
+from .definition import Replacement, Resource, ToolUsage, _tool_operations, _MAX_SNAPSHOT_BYTES, _declaration_parts, _inline_selection, _freeze, _read_bounded, _sections, _table as _shared_table
 from .document_format import canonical_executable_bytes, validate_presentation_location
 from .layout import Layout, LayoutError, Step, _ID
 
@@ -195,7 +195,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             if target in kinds and kinds[target] != 'tool_instance':
                 raise LayoutError(f'{owner}:{row["line"]}: tool instance has conflicting resource kind')
             kinds[target] = 'tool_instance'
-            tool_usages.append(ToolUsage(scope, port, target, scope_kind, owner, row['line']))
+            tool_usages.append(ToolUsage(scope, port, target, scope_kind, owner, row['line'], _tool_operations(owner, row, scope_kind)))
     capture_tools(entry, 'graph', identity[0]['ID'], sections)
     state_source = source(state[0])
     declared_resources = {}
@@ -541,6 +541,18 @@ class StateNodeContext:
     services: object
     request: object
     resources: object
+    _tools: object = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        from api_agent.tooling.runtime import capture_node_tools
+        object.__setattr__(self, '_tools', capture_node_tools(self.node_id))
+
+    @property
+    def tools(self):
+        if self._tools is None:
+            raise ValueError('Node tools require an active workflow invocation')
+        self._tools._invocation.check()
+        return self._tools
 
 
 class StatefulWorkflow:
@@ -579,6 +591,7 @@ class StatefulWorkflow:
         self.schema = schema
         self._request = ContextVar('stateful_workflow_request', default=None)
         self._services = ContextVar('stateful_workflow_services', default=self.services)
+        self._capture_services = ContextVar('stateful_workflow_capture_services', default=self.services)
         self._journal = ContextVar('stateful_workflow_journal', default=journal)
         self._turn_state = ContextVar('stateful_workflow_turn_state', default=None)
         self._active_threads = set()
@@ -668,23 +681,29 @@ class StatefulWorkflow:
             from .attribution import bind_workflow_visit
             journal = self._journal.get()
             captures = (self._services.get().get('plain_io_contracts') or {}).get(row['ID'], {})
-            def capture(direction, values):
+            async def capture(direction, values):
+                from .capture_authority import capture_node
                 contract = captures.get(direction)
                 if journal is not None and contract is not None:
-                    journal.capture(visit_id=visit_id, direction=direction, values=values,
-                        schema=contract['schema'], plain_fields=contract['plain_fields'])
+                    await capture_node(journal, self._capture_services.get(), visit_id=visit_id,
+                        direction=direction, values=values, schema=contract['schema'],
+                        plain_fields=contract['plain_fields'])
                 elif journal is not None:
-                    journal.capture_json(visit_id=visit_id, direction=direction, values=values,
-                        schema=self.capture_schema)
-            capture('input', state)
-            with bind_workflow_visit(journal, budget.id):
-                result = (await function(state, context) if inspect.iscoroutinefunction(function)
-                          else await offload(function, state, context))
-                if inspect.isawaitable(result):
-                    result = await result
+                    await capture_node(journal, self._capture_services.get(), visit_id=visit_id,
+                        direction=direction, values=values, schema=self.capture_schema)
+            await capture('input', state)
+            with bind_workflow_visit(journal, budget.id, capture_services=self._capture_services.get()):
+                try:
+                    result = (await function(state, context) if inspect.iscoroutinefunction(function)
+                              else await offload(function, state, context))
+                    if inspect.isawaitable(result):
+                        result = await result
+                finally:
+                    from .evidence_finalization import finalize
+                    await finalize()
             if type(result) is not dict or any(key not in self.schema.__annotations__ for key in result):
                 raise ValueError('node must return a partial state update')
-            capture('output', result)
+            await capture('output', result)
             outcome = 'passed'
             self._event('node', scope_id=budget.id, node=row['ID'], visit_id=visit_id,
                         elapsed=time.monotonic() - started, kind=row['Kind'])
@@ -807,7 +826,8 @@ class StatefulWorkflow:
             canonical_uuid(turn_id)
         turn_id = turn_id if turn_id is not None else current_turn_id()
         self.definition.verify_sources()
-        selected_services = MappingProxyType({**self.services, **(services or {})})
+        from .capture_authority import resolve_capture_services, requested_log_content
+        selected_services = resolve_capture_services(services or {}, inherited=self.services)
         selected_journal = (journal if journal is not None else
                             self.journal if self.journal is not None else
                             selected_services.get('journal'))
@@ -834,7 +854,7 @@ class StatefulWorkflow:
             journal = WorkflowJournal(self.definition,
                 semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
                                                     component_passes={}),
-                log_content=self.config.get('LOG_CONTENT') is True,
+                log_content=requested_log_content(self.config, selected_services),
                 source_manifest=source_manifest,
                 boundary=selected_services.get('emissions'),
                 content_policy=selected_services.get('content_policy'),
@@ -849,7 +869,8 @@ class StatefulWorkflow:
                 raise RuntimeError('conversation already has an active turn')
             self._active_threads.add(thread_id)
         token = self._request.set(request)
-        services_token = self._services.set(selected_services)
+        services_token = self._services.set(dict(selected_services))
+        capture_token = self._capture_services.set(selected_services)
         journal_token = self._journal.set(journal if recorded else selected_journal)
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}})
         try:
@@ -860,11 +881,13 @@ class StatefulWorkflow:
             with execution_context(selected_context), (turn(active_turn) if active_turn is not None else nullcontext()), (
                     user_turn(active_turn, kind=turn_kind) if active_turn is not None else nullcontext()):
                 async with component_timeout('Workflow GRAPH', self.timeouts.get('GRAPH')) as budget:
-                    async with self._scope_graph(budget):
+                    from api_agent.tooling.runtime import invocation_tools
+                    async with invocation_tools(self.definition, selected_services), self._scope_graph(budget):
                         yield
         finally:
             self._request.reset(token)
             self._services.reset(services_token)
+            self._capture_services.reset(capture_token)
             self._journal.reset(journal_token)
             self._turn_state.reset(state_token)
             with self._thread_guard:

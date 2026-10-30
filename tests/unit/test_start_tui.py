@@ -3,7 +3,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import DataTable, Input
+from textual.widgets import Button, DataTable, Input
 
 from api_agent.testing.collection import TestIdentity
 from api_agent.testing.contracts import TestResult
@@ -124,7 +124,18 @@ def test_start_e2e_keeps_human_acceptance(tmp_path):
             assert '1 tests selected' in app.screen.body
             assert not app.test_run_active() and not app.auto_start_pending
             await pilot.pause()
-            assert await pilot.click('#decline')
+            decline = app.screen.query_one('#decline', Button)
+            def decline_is_clickable():
+                region = decline.region
+                return (decline.is_mounted and decline.display and not decline.disabled
+                        and region.width > 0 and region.height > 0
+                        and app.get_widget_at(region.x + region.width // 2,
+                                              region.y + region.height // 2)[0] is decline)
+            # Screen identity precedes compositor layout; click the same visible
+            # interior point checked by readiness, rather than a transient border.
+            await wait_for(pilot, decline_is_clickable)
+            assert await pilot.click(decline, offset=(decline.region.width // 2,
+                                                     decline.region.height // 2))
             await wait_for(pilot, lambda: app.screen.kind == 'tests')
             assert app.screen.kind == 'tests'
             await pilot.pause()

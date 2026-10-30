@@ -1,34 +1,96 @@
 # api-agent
 
-Build and run API-connected agents from one guided terminal interface.
+api-agent is a local workbench for building, running and testing API-connected agents.
 
-- Review settings and save reusable configuration.
-- Adapt applications through resource packs and replaceable providers.
-- Run locally with connected UI/API services, logs and optional tracing.
-- Select tests, inspect failures and browse recorded results.
-- Keep DEBUG browsers open for human or agent inspection with Chrome DevTools MCP
-  or Playwright MCP.
-- Even allows hooking up a password manager for automated login to UI and LLM
-  provider.
+Define workflows in readable Markdown, inspect their diagrams, and try them in
+the included Studio chat UI. Use the guided terminal launcher to configure
+connections, start local services, run tests and inspect failures.
+
+## Included
+
+- **Replaceable LLM connections:** OpenAI subscription or API-key access,
+  compatible endpoints such as OpenRouter, and Bedrock Mantle with session,
+  access-key or API-key authentication. Select an included provider or add your own.
+  Contributions welcome to add Anthropic / Claude support as another
+  out-of-the-box option.
+- **Executable workflows:** a small default chat graph plus a separate
+  [API demonstration](docs/api_demo.md) combining LLM and deterministic nodes,
+  a GraphQL MCP tool and a synthetic backend. Extend the declared tools and
+  native adapters for other APIs and protocols.
+- **Studio chat UI:** run `./launch.sh --tui-mode run-local --run-ui`, or save
+  `RUN_UI=True` and choose Run local. Use or adapt the UI while retaining David
+  Bruck's copyright notice, the license conditions and disclaimer; binary
+  redistributions must reproduce them in accompanying materials. See [LICENSE](LICENSE).
+- **Selected prerequisites:** nested configuration, provider Python packages,
+  tool-contributed mise runtimes and recursive local container dependencies.
+  [Add a tool, including one in another language](docs/tool-executables.md).
+- **Inspection and testing:** selectable tests, failure details, token/cost
+  accounting, Allure reports, optional OpenTelemetry/GenAI or LangFuse tracing,
+  and retained DEBUG browsers for human or coding-agent inspection.
+- **Assisted authentication:** optional password-manager adapters for supported
+  UI and LLM sign-in steps; some challenges still require human approval.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".private_resources/demo/ui-studio-start-dark.png">
+  <img alt="UI Studio Start" src=".private_resources/demo/ui-studio-start.png" width="800">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".private_resources/demo/ui-studio-prompt-dark.png">
+  <img alt="UI Studio Prompt" src=".private_resources/demo/ui-studio-prompt.png" width="800">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".private_resources/demo/flow-md-dark.png">
+  <img alt="Workflow Markdown" src=".private_resources/demo/flow-md.png" width="800">
+</picture>
 
 ## Get started
 
-Use Python 3.13 or newer. For source-checkout browser viewing, the included Studio
-and unit tests, also install Node.js 24 or newer with npm. The launcher checks
-the frontend dependencies and automatically runs the locked `npm ci` when they
-need preparation, showing progress or guidance if Node/npm is unavailable.
-The first install needs access to the packages or an npm cache; prepared assets
-work offline afterward. You can also run `npm ci` from the repository root
-yourself, including before opening workflow files directly in a browser.
-Installed Python distributions include the viewer assets; graph execution alone
-does not require npm.
+On Unix-like systems with a POSIX shell,
+[mise](https://mise.jdx.dev/installing-mise.html) is always required.
+Docker is a development dependency required
+[only for certain local services](docs/prerequisites.md#when-docker-is-needed),
+tools and tests. Mise supplies this
+project's Python, uv, Node.js and npm; you do not need to install those separately.
+Install mise with one of these official commands:
 
-Then run from this repository directory:
-```bash
-./launch.py
+```sh
+curl https://mise.run | sh
 ```
-The launcher prepares its local environment and dependencies. Follow the prompts
-and select **Run local** in the main menu to start the app.
+
+Or, with wget:
+
+```sh
+wget -qO- https://mise.run | sh
+```
+
+If neither command is available, open `https://mise.run` in a browser, save the
+raw installer script, open a terminal in its download directory, and run it with
+`sh`. Follow mise's [shell setup instructions](https://mise.jdx.dev/shell-setup.html)
+for your shell's startup file, such as `.bashrc` or `.zshrc`, so mise is available
+in future terminals. The installer cannot change the terminal that started it.
+For its default installation, make mise available in this terminal now:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+command -v mise
+mise --version
+```
+
+For a custom installation location, use that location instead. Download and
+extract the repository ZIP, or use a Git checkout. Open a terminal in that
+repository directory, then run:
+
+```sh
+chmod +x launch.sh # if the downloaded ZIP lost executable permissions
+./launch.sh
+```
+
+The launcher prepares Python/uv and its existing base Python environment,
+then opens the terminal menu. Choose **Run local** to start the app. Later
+launches reuse installed tools. Existing command-line options follow
+`./launch.sh` unchanged. Initial preparation needs internet access and writable
+user storage; a Git checkout is not required. Node/npm and other optional tools
+are acquired when an operation needs them.
 
 In **Review configuration**, set `RUN_UI=True` to launch the connected UI too.
 For packs offering a managed upstream API, set `API_ENDPOINT` to a remote URL,
@@ -42,7 +104,7 @@ With both settings false, it prints the home and flow URLs without opening a
 browser or authenticating an LLM. To use the same operation without the TUI:
 
 ```bash
-./launch.py --tui-mode run-local --no-std-in
+./launch.sh --tui-mode run-local --no-std-in
 ```
 
 Press Ctrl+C to stop the terminal operation; use Stop or Quit in the TUI.
@@ -63,7 +125,7 @@ arbitrary child output, which may contain credentials even with `LOG_CONTENT=Tru
 - [Workflow diagrams and browser inspection](docs/workflow_viewer.md)
 - [Bundled API demonstration](docs/api_demo.md)
 
-**Developing with a coding agent?** Start with Python 3.13+ and an agent with
+**Developing with a coding agent?** Follow setup above and use an agent with
 terminal access. For browser inspection, configure Chrome DevTools MCP (preferred)
 or Playwright MCP. See [developer setup](docs/development.md#developer-environment-and-builds)
 for prerequisites and connection instructions.
@@ -77,43 +139,18 @@ for prerequisites and connection instructions.
   [safe multi-stage runtime image](docs/prds/implementation_plan_k2a.md#deployment-dashboard-credential-defaults)
   will clear both admin defaults to empty and require explicit configuration
   when LangFuse is selected; that image work remains pending.
-- Automatic [Sign in with ChatGPT OAuth client registrations](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
-  support recognized username, password and authenticator-app TOTP steps through
-  the bundled Keeper and 1Password adapters. Hardware-key approval
-  ([YubiKey®](https://www.yubico.com/), for example) stays manual: a detected
-  challenge in a headless login triggers one visible-browser retry, then
-  supported steps resume after your approval. Other security checks may also
-  need attention; native OS prompts cannot reliably be detected.
-  - **Workaround:** choose attended login (no unattended user selected, or
-    `--unattended-user-index=`). No unattended subscription-user entry or
-    password manager is required. Managed Chromium opens when registration is needed; the saved
-    connection is reused and refreshed automatically. OpenAI documents
-    [one-hour access tokens and renewable 30-day refresh tokens](https://developers.openai.com/siwc/token-sharing-open-source/token-reference#token-lifetimes).
-    Successful refresh renews that 30-day window; expiry or revocation may
-    require signing in again.
-- **Keeper passkeys use a managed software authenticator.** The selected login's
-  matching P-256 credential is loaded only for sign-in and removed before DEBUG
-  browser retention. Presence/verification are software signals, not hardware-key
-  approval; positive signature counters and PRF-dependent authentication are not
-  supported. If a physical key is needed during software authentication, end
-  that attempt and retry attended, after its software authenticator is removed.
-  The site must offer a passkey route; email-only verification stays manual.
-  See [passkey support](docs/prds/implementation_plan_a2a2.md).
-  The bundled 1Password CLI adapter has no verified passkey interface; contributions
-  using a supported interface are welcome. Manual passkey approval remains available.
-- **1Password CLI must already be signed in.** Credential retrieval is included;
-  interactive CLI login recovery is a [later task](docs/prds/implementation_plan_a2a.md#deferred-login-recovery).
-  Keeper already supports interactive recovery. Native Windows recovery is
-  not implemented; the recovery transport currently requires POSIX.
 - **API-key mode needs a configured password-manager entry.** Manual key entry
   is [not implemented](docs/prds/implementation_plan_f2.md); the attended-login
-  workaround above applies to subscription authentication.
+  alternative applies to subscription authentication.
+- Some authentication challenges remain manual; 1Password CLI must already be
+  signed in. See [authentication limitations and workarounds](docs/authentication-limitations.md)
+  for hardware keys, Keeper software passkeys, OAuth refresh and CLI recovery.
 
 ## Testing
 
 Choose `unit`, `integration`, or `e2e` as `<tests_type>`:
 ```bash
-./launch.py --tui-mode "<tests_type>"
+./launch.sh --tui-mode "<tests_type>"
 ```
 
 All tests start selected. Add positional selectors to preselect tests, or adjust
@@ -125,58 +162,19 @@ execution asks for literal `y` before opening browsers, including with `--no-std
 Set `DEBUG=False` and omit `--debug` to avoid the prompt.
 See [test controls and automation](docs/development.md#testing).
 
-### For full coverage
+For the full unit line/branch gate and provider/API/authentication matrix, see
+[test qualification](docs/testing_qualification.md).
 
-Run all unit tests without selectors; require every test to pass and 100% line
-and branch coverage. Run integrations under the documented qualified settings
-needed to cover every applicable test. Providers can require different settings
-for different tests; coverage does not require every possible setting combination.
-For GPT, the valid discovery configurations are:
+## Workflow design
 
-- `GPT_API_MODE`
-  - `responses`
-  - `completions`
-- `GPT_AUTH_MODE`
-  - `api_key`
-  - `subscription`
-    - Subscription not supported with `GPT_API_MODE=completions`.
-
-When one configuration qualifies the whole suite, run it once with those settings:
-```bash
-./launch.py --tui-mode integration --no-std-in --start
-```
-
-Then repeat only the LLM discovery tests for the other valid combinations—two more
-runs for GPT. For example, when this differs from your first run:
-```bash
-./launch.py --tui-mode integration --no-std-in --start \
-  --gpt-auth-mode=subscription --gpt-api-mode=responses \
-  api-agent::tests/integration/test_llm_discovery.py
-```
-
-Discovery checks remote credential acceptance and catalog access without inference.
-API-specific request tests also need coverage under each applicable mode. Repeat
-affected tests after changing effective provider settings. A passing configured
-run does not qualify other settings. The included Bedrock provider supplies
-[operation-scoped test profiles](docs/integration_test_profiles.md): ordinary
-Responses calls and structured Completions workflows use separate defaults.
-The application retains its own settings; configure the provider and supported
-authentication once rather than switching API/model settings between tests.
-
-## Markdown workflow PoC
-
-The [workflow guide](docs/workflow_poc.md) covers the restricted Markdown grammar,
-inference-free validation and the permanent mandatory node-coverage fixture.
-Normal coverage filters fresh UUIDs before inference to exercise all ten reachable
-route/readiness combinations, with real responses and retries under one test deadline.
-It needs no calibration baseline; [older statistical maintenance](docs/workflow_calibration.md)
-remains separate. Unsupported provider/model/settings fail without substitution.
-The selected [API demonstration](docs/api_demo.md) uses its own declared flow;
-the root flow remains the small one-call chat example.
+The [workflow guide](docs/workflow_poc.md) covers Markdown declarations,
+inference-free validation and mandatory route coverage, which needs no calibration
+baseline. The [API demonstration](docs/api_demo.md) uses its own declared flow;
+the root remains the small one-call chat example.
 
 Open [flow.md.html](flow.md.html) directly to view the saved declaration and SVG,
-or run `./launch.py --view-flow` for checked, managed browser inspection.
+or run `./launch.sh --view-flow` for the selected application's managed view.
+Supply one path, such as `./launch.sh --view-flow "demo/contrived/flow.md.html"`,
+to inspect another flow; relative paths use the current directory.
 [Diagram maintenance](docs/workflow_viewer.md) explains markup freshness checks,
 optional generation prerequisites and staged pre-commit checks.
-
-*YubiKey® is a registered trademark of Yubico AB.*

@@ -49,6 +49,7 @@ class ToolUsage:
     scope_kind: str
     declaration: Path
     line: int
+    operations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -253,6 +254,16 @@ def _inline_selection(path, data, target, kind, identifier, parent, line):
     return nodes[identifier]
 
 
+def _tool_operations(path, row, scope_kind):
+    if 'Operations' not in row:
+        return ()
+    operations = tuple(part.strip() for part in row['Operations'].split(','))
+    if (scope_kind != 'node' or not operations or len(set(operations)) != len(operations)
+            or any(part not in ('describe', 'prepare', 'verify', 'execute') for part in operations)):
+        raise LayoutError(f'{path}:{row["line"]}: invalid tool operations; declare node operations separated by commas')
+    return operations
+
+
 def _table(path, body, columns):
     nonempty = [(line, value) for line, value in body if value.strip()]
     if not nonempty:
@@ -262,6 +273,10 @@ def _table(path, body, columns):
     tokens = _MD.parse('\n'.join(value for _, value in body))
     if not tokens or tokens[0].type != 'table_open' or tokens[-1].type != 'table_close' or sum(token.type == 'table_open' for token in tokens) != 1:
         raise LayoutError(f'{path}:{nonempty[0][0]}: expected one Markdown table')
+    if columns == ('Port', 'Instance'):
+        header = tuple(part.strip() for part in nonempty[0][1].strip('|').split('|'))
+        if header == ('Port', 'Instance', 'Operations'):
+            columns = header
     if columns == _COLUMNS['Functions']:
         header = tuple(part.strip() for part in nonempty[0][1].strip('|').split('|'))
         if header == _RESPONSE_COLUMNS:
@@ -482,7 +497,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             instance = link(owner, row['Instance'], 'tool_instance')
             if instance.suffix != '.toml':
                 raise LayoutError(f'{owner}:{row["line"]}: tool instance must be TOML')
-            tool_usages.append(ToolUsage(scope, port, instance, scope_kind, owner, row['line']))
+            tool_usages.append(ToolUsage(scope, port, instance, scope_kind, owner, row['line'], _tool_operations(owner, row, scope_kind)))
     execution_steps = []
     for step in resolved:
         if step.kind == 'node':

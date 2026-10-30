@@ -16,13 +16,13 @@ from api_agent.llm_providers.bedrock.acquisition import SessionMaterial, identit
 from api_agent.llm_providers.bedrock.ambient import AmbientSession
 from api_agent.llm_providers.bedrock.login_transport import LoginTransport
 from api_agent.llm_providers.bedrock.persistence import capture_paths
+from api_agent.llm_providers.bedrock.login_gate import profile_login_gate
 
 
 class AwsLoginAcquirer:
     version = 1
 
     def __init__(self, config, *, method="direct"):
-        self._no_stdin = bool(config.get('NO_STD_IN', False))
         self._method = method
         self._account = config.get('BEDROCK_LOGIN_EXPECTED_ACCOUNT_ID', '')
         self._principal = config.get('BEDROCK_LOGIN_EXPECTED_PRINCIPAL', '')
@@ -112,46 +112,52 @@ class AwsLoginAcquirer:
                     raise SessionClosedError('AWS sign-in acquirer is closed')
                 if request.user_index is not None:
                     raise InteractionRequiredError('Indexed AWS sign-in requires separate identity qualification.')
-                if not self._logged_in:
-                    material, route = await self._ambient.acquire(request, account=self._account, principal=self._principal)
-                    if self._closed:
-                        raise SessionClosedError('AWS sign-in acquirer is closed')
-                    if material is not None:
-                        self._ambient_selected = True
-                        return material
-                    self._verified_identity = self._ambient.verified_identity
-                    if self._ambient_selected:
-                        raise InteractionRequiredError('Selected SDK credentials need reauthentication; restart the session after sign-in.')
-                    if self._method == 'sso':
-                        self._sso_route(route)
-                if not self._logged_in and (self._no_stdin or not request.interactive or request.interaction is None):
-                    raise InteractionRequiredError('AWS sign-in requires a visible interaction owner.')
-                config, environment = self._prepare(request)
-                if config['login']:
-                    from api_agent.llm_providers.bedrock.login_interaction import LoginInteraction
-                    if self._interaction is None:
-                        self._interaction = LoginInteraction(request)
-                    await self._interaction.open()
-                try:
-                    result = await self._transport.acquire(config, environment, self._interaction)
-                    if type(result) is not dict or set(result) != {'AccessKeyId', 'SecretAccessKey', 'SessionToken', 'expires_at', 'identity'}:
-                        raise ContractError('Invalid AWS sign-in result')
-                    binding = identity_binding(result['identity'])
-                    if self._verified_identity is not None and binding != self._verified_identity:
-                        raise ContractError('AWS sign-in verified identity changed')
-                    material = SessionMaterial(kind='temporary', access_key=result.get('AccessKeyId'),
-                        secret_key=result.get('SecretAccessKey'), session_token=result.get('SessionToken'),
-                        expires_at=result.get('expires_at'))
-                    material.worker_config(request, time.time())
-                    if self._closed:
-                        raise SessionClosedError('AWS sign-in acquirer is closed')
-                    self._verified_identity = binding
-                    self._logged_in = True
-                    return material
-                finally:
-                    if self._interaction is not None:
-                        await finish_cleanup(self._interaction.aclose())
-                        self._interaction = None
+                async with profile_login_gate(self._persistence, request.profile):
+                    return await self._acquire_admitted(request)
+
+    async def _acquire_admitted(self, request):
+        if self._closed:
+            raise SessionClosedError('AWS sign-in acquirer is closed')
+        if not self._logged_in:
+            material, route = await self._ambient.acquire(request, account=self._account, principal=self._principal)
+            if self._closed:
+                raise SessionClosedError('AWS sign-in acquirer is closed')
+            if material is not None:
+                self._ambient_selected = True
+                return material
+            self._verified_identity = self._ambient.verified_identity
+            if self._ambient_selected:
+                raise InteractionRequiredError('Selected SDK credentials need reauthentication; restart the session after sign-in.')
+            if self._method == 'sso':
+                self._sso_route(route)
+        if not self._logged_in and (not request.interactive or request.interaction is None):
+            raise InteractionRequiredError('AWS sign-in requires a visible interaction owner.')
+        config, environment = self._prepare(request)
+        if config['login']:
+            from api_agent.llm_providers.bedrock.login_interaction import LoginInteraction
+            if self._interaction is None:
+                self._interaction = LoginInteraction(request)
+            await self._interaction.open()
+        try:
+            result = await self._transport.acquire(config, environment, self._interaction)
+            if type(result) is not dict or set(result) != {'AccessKeyId', 'SecretAccessKey', 'SessionToken', 'expires_at', 'identity'}:
+                raise ContractError('Invalid AWS sign-in result')
+            binding = identity_binding(result['identity'])
+            if self._verified_identity is not None and binding != self._verified_identity:
+                raise ContractError('AWS sign-in verified identity changed')
+            material = SessionMaterial(kind='temporary', access_key=result.get('AccessKeyId'),
+                secret_key=result.get('SecretAccessKey'), session_token=result.get('SessionToken'),
+                expires_at=result.get('expires_at'))
+            material.worker_config(request, time.time())
+            if self._closed:
+                raise SessionClosedError('AWS sign-in acquirer is closed')
+            self._verified_identity = binding
+            self._logged_in = True
+            return material
+        finally:
+            if self._interaction is not None:
+                await finish_cleanup(self._interaction.aclose())
+                self._interaction = None
 
     async def aclose(self):
         self._closed = True

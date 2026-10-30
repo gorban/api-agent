@@ -3,6 +3,7 @@ import json
 import pytest
 
 from api_agent.llm_providers.bedrock import catalog, mantle
+from test_bedrock_mantle import completion, response, message
 from api_agent.providers.contracts import ContractError, ProviderAccessError
 from api_agent.providers.llm import CompletionRequest, GenerationOptions, LLMRequest, Message, TextContent
 
@@ -62,9 +63,10 @@ def test_worker_forwards_qualified_effort_without_sdk_ownership_changes(mode, ef
     from api_agent.llm_providers.bedrock import worker
 
     seen, closed, emitted = [], [], []
+    result = response([message()]) if mode == 'responses' else completion()
     def create(**arguments):
         seen.append(arguments)
-        return SimpleNamespace(model_dump=lambda **kwargs: {})
+        return SimpleNamespace(model_dump=lambda **kwargs: result)
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
         responses=SimpleNamespace(create=create), close=lambda: closed.append('client'))
     http = SimpleNamespace(close=lambda: closed.append('http'))
@@ -73,7 +75,8 @@ def test_worker_forwards_qualified_effort_without_sdk_ownership_changes(mode, ef
         'auth': {'mode': 'api_key', 'api_key': 'synthetic', 'region': 'us-east-1'}}, emitted.append,
         client_factory=lambda *args: client, http_factory=lambda **kw: http)
     assert seen == [body]
-    assert emitted == [{'result': {}}]
+    assert len(emitted) == 1 and emitted[0]['result'] == result
+    assert set(emitted[0]) == {'result', 'diagnostics'}
     assert closed == ['client', 'http']
 
 
@@ -174,8 +177,13 @@ def test_worker_qualified_schema_survives_actual_sdk_serialization(stream):
     def handle(req):
         seen.append(json.loads(req.content))
         if stream:
-            return httpx2.Response(200, headers={'content-type': 'text/event-stream'}, content='data: [DONE]\n\n')
-        return httpx2.Response(200, json={'id':'c','object':'chat.completion','created':0,'model':'zai.glm-5','choices':[]})
+            rows = [
+                {'id':'c','object':'chat.completion.chunk','model':'zai.glm-5','choices':[{'index':0,'delta':{'role':'assistant','content':'{}'},'finish_reason':'stop'}]},
+                {'id':'c','object':'chat.completion.chunk','model':'zai.glm-5','choices':[], 'usage':{'prompt_tokens':2,'completion_tokens':3,'total_tokens':5}},
+            ]
+            return httpx2.Response(200, headers={'content-type': 'text/event-stream'}, content=''.join('data: '+json.dumps(row)+'\n\n' for row in rows)+'data: [DONE]\n\n')
+        return httpx2.Response(200, json=dict(completion(), id='c', object='chat.completion', created=0,
+            model='zai.glm-5', choices=[{'index': 0, 'message': {'role': 'assistant', 'content': '{}'}, 'finish_reason': 'stop'}]))
     worker.execute({'timeout': 240, 'operation': 'completions_stream' if stream else 'completions',
         'payload': {'prefix': '/v1', 'body': body},
         'auth': {'mode': 'api_key', 'api_key': 'synthetic', 'region': 'us-east-1'}}, emitted.append,
@@ -227,10 +235,17 @@ def test_ordinary_provider_view_admits_qualified_controls(monkeypatch, kind, str
         calls.append((operation, payload))
         return raw
     async def chunks(operation, payload, **kwargs):
+        from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
         calls.append((operation, payload))
-        yield {'id':'c','object':'chat.completion.chunk','model':req.selected_llm,'choices':[
-            {'index':0,'delta':{'role':'assistant','content':answer},'finish_reason':'stop'}]}
-        yield {'id':'c','object':'chat.completion.chunk','model':req.selected_llm,'choices':[], 'usage':usage}
+        decoder = WorkerStream('completions', req.selected_llm, set())
+        rows = [{'id':'c','object':'chat.completion.chunk','model':req.selected_llm,'choices':[
+            {'index':0,'delta':{'role':'assistant','content':answer},'finish_reason':'stop'}]},
+            {'id':'c','object':'chat.completion.chunk','model':req.selected_llm,'choices':[], 'usage':usage}]
+        for row in rows:
+            for frame in decoder.feed(row):
+                yield frame
+        for frame in decoder.finish():
+            yield frame
     transport = SimpleNamespace(call=call, stream=chunks)
     monkeypatch.setattr(factory, 'SDKTransport', lambda **kwargs: transport)
     provider = factory.factory({'BEDROCK_API_MODE':'completions'}, {})

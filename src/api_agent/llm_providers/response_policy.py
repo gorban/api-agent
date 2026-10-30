@@ -66,7 +66,9 @@ def format_payload(request, body, evidence):
     from api_agent.providers.rich_inference import _bounded
     container = 'input' if 'input' in body else 'messages'
     body = {**body, container: [*body[container], {'role': 'user', 'content':
-        'Return only JSON satisfying this response schema:\n' + request.payload.response.schema.schema}]}
+        'Return a complete final answer containing only JSON satisfying this response schema. '
+        'Include the final JSON answer even when reasoning is enabled; reasoning is not the answer.\n'
+        + request.payload.response.schema.schema}]}
     _bounded(body)
     return body
 

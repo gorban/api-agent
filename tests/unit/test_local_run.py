@@ -1320,3 +1320,77 @@ def test_finish_cleanup_preserves_owner_when_cancelled_during_retry_delay(local,
         assert callbacks == ['entered']
         assert local.calls[-1] == 'operation-stop'
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('publication', ['log', 'diagnostic'])
+def test_diagnostic_retries_when_credential_registered_during_scrub(local, monkeypatch, publication):
+    from api_agent.testing import diagnostics
+    boundary = EmissionBoundary(ContentPolicy())
+    local.owner._emissions = boundary
+    original = diagnostics.CredentialScrubber
+    calls = []
+
+    class RacingScrubber(original):
+        def __call__(self, text):
+            result = super().__call__(text)
+            calls.append(True)
+            if len(calls) == 1:
+                boundary.register_secret('late-secret')
+            return result
+
+    monkeypatch.setattr(diagnostics, 'CredentialScrubber', RacingScrubber)
+    if publication == 'log':
+        local.owner._log('agent', 'message late-secret')
+        result = local.events[-1].text
+    else:
+        result = local.owner.diagnostic(RuntimeError('message late-secret'))
+    assert len(calls) == 2
+    assert 'late-secret' not in result
+    assert '[REDACTED]' in result
+
+
+def test_log_observer_can_register_credential_and_receives_committed_text(local):
+    boundary = EmissionBoundary(ContentPolicy())
+    local.owner._emissions = boundary
+    observed = []
+
+    def observer(event):
+        # A different thread must be able to acquire the authority while the
+        # callback is running; same-thread RLock re-entry would not prove it.
+        registered = threading.Event()
+        worker = threading.Thread(target=lambda: (boundary.register_secret('observer-secret'), registered.set()))
+        worker.start()
+        assert registered.wait(1)
+        worker.join()
+        observed.append(event.text)
+
+    local.owner.on_event = observer
+    local.owner._log('agent', 'visible output')
+    assert observed == [local.owner._logs['agent']] == ['visible output']
+    assert 'observer-secret' in boundary.snapshot_content()[1]._secrets
+
+
+@pytest.mark.parametrize('publication', ['log', 'diagnostic'])
+def test_diagnostic_withholds_after_repeated_concurrent_registrations(local, monkeypatch, publication):
+    from api_agent.testing import diagnostics
+    boundary = EmissionBoundary(ContentPolicy())
+    local.owner._emissions = boundary
+    original = diagnostics.CredentialScrubber
+    calls = []
+
+    class RacingScrubber(original):
+        def __call__(self, text):
+            result = super().__call__(text)
+            calls.append(True)
+            boundary.register_secret(f'concurrent-secret-{len(calls)}')
+            return result
+
+    monkeypatch.setattr(diagnostics, 'CredentialScrubber', RacingScrubber)
+    if publication == 'log':
+        local.owner._log('agent', 'untrusted content')
+        result = local.events[-1].text
+        assert result == local.owner._logs['agent']
+    else:
+        result = local.owner.diagnostic(RuntimeError('untrusted content'))
+    assert len(calls) == 3
+    assert result == '[diagnostic withheld]'

@@ -4,10 +4,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from api_agent.config.resolve import ConfigResult, ResolvedValue
 from api_agent.providers.contracts import ProviderAccessError
@@ -17,7 +13,6 @@ from api_agent.providers.selection import ModelSelectionPolicy
 from api_agent.telemetry.privacy import EmissionBoundary
 from api_agent.telemetry.tracing import TraceRuntime
 from api_agent.workflows.definition import load_definition
-from api_agent.workflows.local_application import LocalChatApplication
 from api_agent.workflows.observations import WorkflowObservationFactory
 from test_local_llm import selected, request
 
@@ -25,6 +20,11 @@ from test_local_llm import selected, request
 @pytest.mark.parametrize('mode', ['OTEL', 'LangFuse'])
 @pytest.mark.parametrize('model', ['customer_private_question', 'provider/model-v1', '模型@v1'])
 def test_failed_local_request_preserves_selection_but_omits_model_prose_from_otlp(selected, mode, model):
+    from api_agent.workflows.local_application import LocalChatApplication
+    from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
     llm, implementation, _, _, _ = selected
     llm.policy = ModelSelectionPolicy({'LLM_ALLOWED_MODELS': '.*'})
     implementation.adescribe = AsyncMock(return_value=(AvailableSelection('provider/model-v1'), AvailableSelection('模型@v1'),))
@@ -86,6 +86,7 @@ def test_failed_local_request_preserves_selection_but_omits_model_prose_from_otl
 @pytest.mark.parametrize('model, admitted', [
     ('customer_private_question', False), ('provider/model-v1', True), ('模型@v1', True)])
 def test_failed_request_selection_is_catalog_admitted_before_live_and_journal_retention(selected, model, admitted):
+    from api_agent.workflows.local_application import LocalChatApplication
     llm, implementation, _, _, _ = selected
     llm.policy = ModelSelectionPolicy({'LLM_ALLOWED_MODELS': '.*'})
     implementation.adescribe = AsyncMock(return_value=(
@@ -134,6 +135,7 @@ def test_failed_request_selection_is_catalog_admitted_before_live_and_journal_re
 @pytest.mark.parametrize('failed', [False, True])
 @pytest.mark.parametrize('effort', [None, 'high'])
 def test_authenticated_local_owner_preserves_call_settings_and_actual_usage(selected, failed, effort):
+    from api_agent.workflows.local_application import LocalChatApplication
     from dataclasses import replace
     from api_agent.providers.llm import GenerationOptions, LLMResult, Message, TextContent, Usage
     llm, implementation, _, _, _ = selected

@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
+import html
 import posixpath
 import re
 from urllib.parse import quote, unquote
@@ -48,8 +50,8 @@ _ROOT_FALLBACK = (
     b'\n'
     b'\n'
     b'  Open this file in a browser to view the workflow.\n'
-    b'  For managed viewing, use Python 3.13 or newer.\n'
-    b'./launch.py --view-flow\n'
+    b'  For managed viewing, follow Getting started in README.md, then run the launcher.\n'
+    b'./launch.sh --view-flow\n'
     b'\n'
     b'\n'
     b'\n'
@@ -58,8 +60,8 @@ _ROOT_FALLBACK = (
     b'-->\n'
     b'\n'
     b'[workflow-help]: <section id="workflow-fallback" style="font:16px/1.6 system-ui,sans-serif"> "\n'
-    b'    <h2>Viewing this file</h2><p>Use Python 3.13 or newer from the repository root:</p>\n'
-    b'    <pre>./launch.py --view-flow</pre></section>"\n'
+    b'    <h2>Viewing this file</h2><p>Follow Getting started in README.md, then run from the repository root:</p>\n'
+    b'    <pre>./launch.sh --view-flow</pre></section>"\n'
 )
 _ROOT_INSTRUCTIONS, _ROOT_HELP_BODY = _ROOT_FALLBACK.split(b'[workflow-help]', 1)
 _ROOT_HELP = b'[workflow-help]' + _ROOT_HELP_BODY
@@ -75,6 +77,57 @@ _CARRIER = (
 )
 _NEW_START = b'\n<!-- workflow-generated-diagram-v2:start -->\n'
 _NEW_END = b'\n<!-- workflow-generated-diagram-v2:end -->\n'
+
+
+def _view_command(flow_path: str | None) -> str:
+    from .layout import LayoutError
+    command = './launch.sh --view-flow'
+    if flow_path is None or flow_path == 'flow.md.html':
+        return command
+    path = PurePosixPath(flow_path)
+    if (not flow_path or path.is_absolute() or path.as_posix() != flow_path
+            or flow_path.startswith('-') or '<' in flow_path or '>' in flow_path
+            or any(part in ('', '.', '..') for part in flow_path.split('/'))
+            or any(ord(char) < 32 or ord(char) == 127 for char in flow_path)):
+        raise LayoutError('invalid workflow viewing path')
+    quoted = ''.join('\\' + char if char in '\\"$`' else char for char in flow_path)
+    return command + ' "' + quoted + '"'
+
+
+def _normalize_view_command(raw: bytes, *, flow_path: str | None = None) -> bytes:
+    """Admit only a safely quoted path in the otherwise exact root envelope."""
+    from .layout import LayoutError
+    prefix, separator, body = raw.partition(_CARRIER)
+    if not separator or not raw.startswith(_HINT):
+        return raw
+    # Keep already-published v2 envelopes readable; only normalize the
+    # instructional header, never the executable workflow body.
+    prefix = prefix.replace(b'  For managed viewing, use Python 3.13 or newer.\n',
+                            b'  For managed viewing, follow Getting started in README.md, then run the launcher.\n')
+    prefix = prefix.replace(b'  For managed viewing, install mise and run the launcher.\n',
+                            b'  For managed viewing, follow Getting started in README.md, then run the launcher.\n')
+    prefix = prefix.replace(b'<h2>Viewing this file</h2><p>Use Python 3.13 or newer from the repository root:</p>',
+                            b'<h2>Viewing this file</h2><p>Follow Getting started in README.md, then run from the repository root:</p>')
+    prefix = prefix.replace(b'<h2>Viewing this file</h2><p>Install mise, then run from the repository root:</p>',
+                            b'<h2>Viewing this file</h2><p>Follow Getting started in README.md, then run from the repository root:</p>')
+    prefix = prefix.replace(b'./launch.py --view-flow', b'./launch.sh --view-flow')
+    match = re.search(rb'^\./launch\.sh --view-flow ("(?:\\.|[^"\\\r\n])*")$', prefix, re.M)
+    if match is None:
+        return prefix + separator + body
+    try:
+        command = match[0].decode('utf-8')
+        path = re.sub(r'\\([\\"$`])', r'\1', match[1][1:-1].decode('utf-8'))
+        if _view_command(path) != command:
+            raise ValueError()
+        if flow_path is not None and path != flow_path:
+            raise LayoutError('workflow viewing command does not match declaration location')
+    except (UnicodeError, ValueError) as error:
+        raise LayoutError('invalid workflow viewing command') from error
+    base = b'./launch.sh --view-flow'
+    prefix = prefix.replace(b'<pre>' + html.escape(command, quote=False).encode() + b'</pre>',
+                            b'<pre>' + base + b'</pre>')
+    prefix = prefix.replace(match[0], base, 1)
+    return prefix + separator + body
 
 
 def _saved_generated(generated):
@@ -124,6 +177,7 @@ def extract_document(raw: bytes, *, path: Path) -> ExtractedDocument:
 
     if not isinstance(raw, bytes):
         raise TypeError('workflow document must be bytes')
+    raw = _normalize_view_command(raw)
     path = Path(path)
     presented = raw.startswith((b'<!doctype html>', _HINT))
     offset = 0
@@ -221,6 +275,14 @@ def validate_presentation_location(raw: bytes, *, path: Path, root: Path) -> Non
 
     path, root = Path(path), Path(root)
     relative = path.relative_to(root).as_posix()
+    if re.search(rb'^\./launch\.(?:py|sh) --view-flow "', raw, re.M):
+        from .viewer_repository import read_repository_identity
+        recorded = read_repository_identity(root)
+        prefix = recorded[0].path_prefix if recorded is not None else ''
+        expected_path = '/'.join(part for part in (prefix, relative) if part)
+        raw = _normalize_view_command(raw, flow_path=expected_path)
+    else:
+        raw = _normalize_view_command(raw)
     extracted = extract_document(raw, path=path)
     if not extracted.presentation and extracted.generated is None:
         return
@@ -278,7 +340,7 @@ def validate_presentation_location(raw: bytes, *, path: Path, root: Path) -> Non
 
 
 def wrap_document(executable_bytes: bytes, *, root: bool, asset_prefix: str,
-                  generated: bytes = b'') -> bytes:
+                  generated: bytes = b'', flow_path: str | None = None) -> bytes:
     """Present inert Markdown with optional finite navigation after its heading."""
     from .layout import LayoutError
 
@@ -298,5 +360,10 @@ def wrap_document(executable_bytes: bytes, *, root: bool, asset_prefix: str,
             raise LayoutError('generated diagram requires a complete heading line')
         executable_bytes = heading + separator + _saved_generated(generated) + remainder
     head = _ROOT_HEAD if root else _HEAD
-    return (head.replace(b'{assets}', prefix) + (_ROOT_HELP if root else b'')
-            + _CARRIER + executable_bytes)
+    head = head.replace(b'{assets}', prefix)
+    help_body = _ROOT_HELP if root else b''
+    if root:
+        command = _view_command(flow_path)
+        head = head.replace(b'./launch.sh --view-flow', command.encode('utf-8'))
+        help_body = help_body.replace(b'./launch.sh --view-flow', html.escape(command, quote=False).encode())
+    return head + help_body + _CARRIER + executable_bytes

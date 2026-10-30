@@ -91,18 +91,29 @@ def compose_modal_script(script, manifest):
     return b'window.__apiAgentManagedSvgRoutes = ' + manifest + b';\n' + script
 
 
-def decorate_managed_wrapper(path, content_type, body):
-    """Enhance an exact captured v2 wrapper header without touching its carrier."""
+def decorate_managed_wrapper(path, content_type, body, *, projection=None):
+    """Decorate captured pages and annotate resources unavailable from this host."""
     if not body.startswith(_HINT):
         return body, False
     if not (path.startswith('r/') and path.endswith('.md.html')
             and content_type == 'text/html; charset=utf-8'):
         raise ValueError('Managed wrapper has invalid route or type')
     try:
-        extract_document(body, path=Path(path))
+        extracted = extract_document(body, path=Path(path))
     except (ValueError, TypeError) as error:
         raise ValueError('Invalid managed workflow wrapper') from error
     header, marker, carrier = body.partition(_CARRIER)
+    if projection is not None:
+        from api_agent.workflows.viewer_render import _annotate_hosted_resources, _route
+        from api_agent.workflows.document_format import _saved_generated
+        document = next((item for item in projection.documents if _route(item.logical_path) == path), None)
+        if document is None:
+            raise ValueError('Managed wrapper is outside the admitted projection')
+        carrier = _annotate_hosted_resources(projection, document,
+                                             extracted.executable_bytes.splitlines(keepends=True))
+        if extracted.generated is not None:
+            heading, newline, rest = carrier.partition(b'\n')
+            carrier = heading + newline + _saved_generated(extracted.generated) + rest
     line_start = header.index(_VIEWER_LINE)
     line_end = header.index(b'\n', line_start)
     meta = b'[workflow-managed-svg-routes]: <meta name="workflow-managed-svg-routes" content="v1">\n'

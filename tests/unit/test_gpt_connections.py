@@ -570,3 +570,71 @@ def test_serialized_initial_save_and_host_mismatch(store, record):
     with pytest.raises(AuthError, match='invalid_connection'):
         run(store.save_serialized(replace(record, host_id='different-host')))
     assert store.load(store.profile_id(record)) == record
+
+
+def test_refresh_registers_old_and_new_credentials_before_return(store, record):
+    from api_agent.llm_providers.gpt.factory import GPTProvider
+    from api_agent.telemetry.privacy import EmissionBoundary
+
+    async def run():
+        authority = EmissionBoundary()
+        provider = GPTProvider({}, emissions=authority)
+        key = store.save(record)
+        updated = replace(record, access_token='new-access', refresh_token='new-refresh',
+                          id_token='new-id', expires_at=200)
+
+        async def refresh(value, now):
+            _, snapshot = authority.snapshot_content()
+            assert {'access', 'refresh', 'id'} <= snapshot._secrets
+            return updated
+
+        session = SubscriptionSession(store, key, refresh, clock=lambda: 50,
+                                      register_connection=provider._register_connection)
+        assert await session() == 'new-access'
+        _, snapshot = authority.snapshot_content()
+        assert {'access', 'refresh', 'id', 'new-access', 'new-refresh', 'new-id'} <= snapshot._secrets
+        await session.aclose()
+
+    asyncio.run(run())
+
+
+def test_pending_rotation_retains_lock_through_timeout_and_cleanup(store, record):
+    from api_agent.providers.control import CleanupPendingError
+
+    async def scenario():
+        key = store.save(record)
+        pending = {}
+        admission = asyncio.Event()
+        issued = asyncio.Event()
+        calls = []
+        updated = replace(record, access_token='new-access', refresh_token='new-refresh', expires_at=200)
+
+        async def refresh(value, now):
+            calls.append(value.refresh_token)
+            if not pending:
+                pending['value'] = updated
+                issued.set()
+            if not admission.is_set():
+                raise TimeoutError('admission unavailable')
+            return pending['value']
+
+        first = SubscriptionSession(store, key, refresh, clock=lambda: 50,
+                                    has_pending=lambda: bool(pending), on_saved=lambda _: pending.clear())
+        second = SubscriptionSession(store, key, refresh, clock=lambda: 50)
+        with pytest.raises(TimeoutError):
+            await first()
+        await issued.wait()
+        waiting = asyncio.create_task(second())
+        await asyncio.sleep(.05)
+        assert not waiting.done()
+        assert store.load(key) == record
+        with pytest.raises(CleanupPendingError):
+            await first.aclose()
+        assert not waiting.done()
+        admission.set()
+        await first.aclose()
+        assert await waiting == 'new-access'
+        assert calls == ['refresh', 'refresh', 'refresh']
+        await second.aclose()
+
+    asyncio.run(scenario())

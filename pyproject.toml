@@ -20,12 +20,19 @@ dev = ["graphql-core==3.2.13", "pytest-asyncio==1.4.0", "Authlib>=1.7.2,<1.8", "
 [project.scripts]
 api-agent = "api_agent.runtime.bootstrap:cli_main"
 
+
 [tool.hatch.build.targets.sdist]
-only-include = ["LICENSE", "README.md", "pyproject.toml", "hatch_build.py", "launch.py", "package.json", "package-lock.json", "tools/prepare_frontend_assets.mjs", "tools/frontend-assets.json",
+only-include = ["LICENSE", "README.md", "pyproject.toml", "hatch_build.py", "launch.sh", "mise.toml", "mise.lock", "package.json", "package-lock.json", "tools/prepare_frontend_assets.mjs", "tools/frontend-assets.json",
   "tools/frontend_assets.py", "src", "demo", "cfg", "infra/compose", "apps/api-agent-ui", "workflows", "flow.md.html", "tests", "docs", "tools/checks.py", "tools/pre_commit_dispatcher.py", "tools/workflow_views.py"]
 exclude = [".*", "**/.*", "**/__pycache__/**", "**/node_modules/**", "**/*.pyc"]
 
 [tool.hatch.build.targets.sdist.force-include]
+".private_resources/demo/flow-md-dark.png" = ".private_resources/demo/flow-md-dark.png"
+".private_resources/demo/flow-md.png" = ".private_resources/demo/flow-md.png"
+".private_resources/demo/ui-studio-prompt-dark.png" = ".private_resources/demo/ui-studio-prompt-dark.png"
+".private_resources/demo/ui-studio-prompt.png" = ".private_resources/demo/ui-studio-prompt.png"
+".private_resources/demo/ui-studio-start-dark.png" = ".private_resources/demo/ui-studio-start-dark.png"
+".private_resources/demo/ui-studio-start.png" = ".private_resources/demo/ui-studio-start.png"
 "src/api_agent/api_providers/graphql_mcp/licenses/third-party/body-parser/node_modules/content-type/LICENSE" = "src/api_agent/api_providers/graphql_mcp/licenses/third-party/body-parser/node_modules/content-type/LICENSE"
 "src/api_agent/api_providers/graphql_mcp/licenses/third-party/express/node_modules/content-type/LICENSE" = "src/api_agent/api_providers/graphql_mcp/licenses/third-party/express/node_modules/content-type/LICENSE"
 "src/api_agent/api_providers/graphql_mcp/licenses/third-party/negotiator/node_modules/content-type/LICENSE" = "src/api_agent/api_providers/graphql_mcp/licenses/third-party/negotiator/node_modules/content-type/LICENSE"
@@ -93,10 +100,12 @@ exclude = ["src/api_agent/config/shared.toml", "demo/config.toml"]
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 addopts = "--strict-markers"
+asyncio_default_fixture_loop_scope = "function"
 markers = ["requires_pack_api: selected integration requires the pack API and identity preflight",
     "feature(name): explicit functional feature for reporting",
     "requires_ui_session: selected integration consumes the UI provider",
-    "requires_llm: selected integration consumes an LLM provider"]
+    "requires_llm: selected integration consumes an LLM provider",
+    "credential_authorities(*owners): explicitly admit every worker credential producer"]
 
 [tool.coverage.run]
 source = ["api_agent"]

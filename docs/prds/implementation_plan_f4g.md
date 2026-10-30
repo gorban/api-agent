@@ -68,6 +68,6 @@ no additional live authentication or inference.
 
 ## Deferred human acceptance
 
-- [ ] Through ordinary launch.py, complete attended native login, verify selected-profile refresh cache and credentials snapshot persistence, then restart and confirm reuse.
+- [ ] Through ordinary launch.sh, complete attended native login, verify selected-profile refresh cache and credentials snapshot persistence, then restart and confirm reuse.
 - [ ] Exercise no-index attended access_key/api_key prompts and restored direct/sso method setting through the public launcher.
 - [ ] Qualify session-mode Completions and live SSO interoperability separately; request explicit inference authorization for further coordinator-owned live requests.

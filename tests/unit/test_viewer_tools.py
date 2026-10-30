@@ -33,7 +33,7 @@ def staged_repo(tmp_path):
     package.mkdir(parents=True)
     (root / 'src/api_agent/__init__.py').write_text('')
     (package / '__init__.py').write_text('')
-    (package / 'viewer_build.py').write_text('def check_views(root):\n    assert (root / "proof.txt").read_text() == "ok\\n"\n')
+    (package / 'viewer_build.py').write_text('def check_views(root):\n    assert (root / "proof.txt").read_text() == "ok\\n"\n\ndef check_staged_workflow_matches_worktree(snapshot, worktree):\n    pass\n')
     (root / 'proof.txt').write_text('ok\n')
     git(root, 'add', '.')
     return root
@@ -357,3 +357,70 @@ def test_script_main_guards_are_executable(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as error:
         runpy.run_path(str(ROOT / 'tools/pre_commit_dispatcher.py'), run_name='__main__')
     assert error.value.code == 0
+
+
+def test_head_check_falls_back_without_git_or_checkout(tmp_path, monkeypatch):
+    monkeypatch.setattr(checks.shutil, 'which', lambda name: None)
+    assert checks.check_head(tmp_path) is False
+    monkeypatch.undo()
+    assert checks.check_head(tmp_path) is False
+
+
+def test_head_check_rejects_changed_workflow_but_not_unrelated_file(tmp_path, monkeypatch):
+    root = tmp_path / 'repo'
+    root.mkdir()
+    git(root, 'init', '-q')
+    git(root, 'config', 'user.email', 'test@example.com')
+    git(root, 'config', 'user.name', 'Test')
+    (root / 'flow.md.html').write_text('initial')
+    (root / 'unrelated').write_text('initial')
+    git(root, 'add', '.')
+    git(root, 'commit', '-qm', 'initial')
+    from api_agent.workflows import viewer_build
+    monkeypatch.setattr(viewer_build, '_checked_view_inventory', lambda root: {'flow.md.html': (root / 'flow.md.html').read_bytes()})
+    (root / 'unrelated').write_text('changed')
+    assert checks.check_head(root) is True
+    (root / 'flow.md.html').write_text('changed')
+    with pytest.raises(ValueError, match='differ from HEAD'):
+        checks.check_head(root)
+    git(root, 'update-index', '--assume-unchanged', 'flow.md.html')
+    with pytest.raises(ValueError, match='differ from HEAD'):
+        checks.check_head(root)
+    git(root, 'update-index', '--no-assume-unchanged', 'flow.md.html')
+    (root / 'flow.md.html').write_text('initial')
+    (root / '.gitignore').write_text('ignored/\n')
+    (root / 'ignored').mkdir()
+    (root / 'ignored/flow.md.html').write_text('ignored graph')
+    monkeypatch.setattr(viewer_build, '_checked_view_inventory', lambda root: {
+        'flow.md.html': b'initial', 'ignored/flow.md.html': b'ignored graph'})
+    with pytest.raises(ValueError, match='ignored/flow.md.html'):
+        checks.check_head(root)
+
+
+def test_head_cli_reports_source_only_fallback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(checks, 'check', lambda root, frontend_source=None: None)
+    monkeypatch.setattr(checks, 'check_head', lambda root: False)
+    assert checks.main(['--head', '--root', str(tmp_path)]) == 0
+    assert 'without a HEAD comparison' in capsys.readouterr().out
+
+
+def test_head_check_bounds_committed_diagram_before_read(tmp_path, monkeypatch):
+    root = tmp_path / 'repo'
+    root.mkdir()
+    git(root, 'init', '-q')
+    git(root, 'config', 'user.email', 'test@example.com')
+    git(root, 'config', 'user.name', 'Test')
+    (root / 'flow.md.html').write_bytes(b'flow')
+    diagram = root / 'other/.private_resources/diagrams/large.svg'
+    diagram.parent.mkdir(parents=True)
+    diagram.write_bytes(b'x' * (8 * 1024 * 1024 + 1))
+    git(root, 'add', '.')
+    git(root, 'commit', '-qm', 'initial')
+    from api_agent.workflows import viewer_build
+    monkeypatch.setattr(viewer_build, '_checked_view_inventory', lambda root: {'flow.md.html': b'flow'})
+    original = checks.subprocess.run
+    def observed(command, *args, **kwargs):
+        assert command[1:3] != ['cat-file', 'blob']
+        return original(command, *args, **kwargs)
+    monkeypatch.setattr(checks.subprocess, 'run', observed)
+    assert checks.check_head(root) is True

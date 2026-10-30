@@ -20,13 +20,13 @@ Review the [contract freeze checklist](implementation_plan_b1b1.md) before depen
 
 - [x] Derive registered nodes, forward routes, inbound backlinks, type fields and navigation links from the Markdown declaration body. Build SVG links and companion Markdown links from the same inventory. A standalone SVG may expose its links while GitHub's embedded SVG image requires companion Markdown navigation.
 - [x] Generate temporary `.puml` only inside an owned temporary directory; render with pinned PlantUML, dispose of temporary files on success, failure and cancellation, and atomically publish SVGs. Track no `.puml` source. Verify deterministic markup projection and source provenance; font-dependent geometry does not determine freshness.
-- [x] Keep a root-only help panel with the heading **Viewing this file**, the Python 3.13 or newer prerequisite and the exact root command `./launch.py --view-flow`. Nested declarations contain only rendering bootstrap. Remove `?view=help` special handling; ordinary URLs bearing that query render normally. IDE comments stay invisible in rendered views and use exactly five empty lines before and after, two leading spaces on every prose line, and the command at column one.
+- [x] Keep a root-only help panel with the heading **Viewing this file**, the mise prerequisite and the exact root command `./launch.sh --view-flow`. Nested declarations contain only rendering bootstrap. Remove `?view=help` special handling; ordinary URLs bearing that query render normally. IDE comments stay invisible in rendered views and use exactly five empty lines before and after, two leading spaces on every prose line, and the command at column one.
 - [x] Restrict local preview access to declared resources and an explicit `.private_resources` asset subtree allowlist. Reject traversal, symlink escapes and source access beyond the optional declared source viewer. Rewritten Markdown, SVG, script and stylesheet links must work from root and nested declarations.
 
 ## Runtime integration acceptance
 
 - [ ] Convert the parser/compiler and selected application declarations to the versioned `.md.html` format together. Prove equivalent graph transitions, prompt composition, routing, state/bindings, timeouts, streaming and explicit pack selection/overrides before treating the new format as executable.
-- [x] Implement `./launch.py --view-flow` through the shared managed Playwright lifecycle. Prepare the browser dependency, start an owned loopback preview on an available port and open root `flow.md.html` automatically in a headed browser regardless of caller working directory. Cleanup closes owned browser/server resources. Viewing performs no graph execution, provider login or application startup.
+- [x] Implement `./launch.sh --view-flow` through the shared managed Playwright lifecycle. Prepare the browser dependency, start an owned loopback preview on an available port and open root `flow.md.html` automatically in a headed browser regardless of caller working directory. Cleanup closes owned browser/server resources. Viewing performs no graph execution, provider login or application startup.
 - [ ] In Run local, host the same workflow resources and open the selected flow before the enabled UI in its existing managed Playwright browser (last when UI is disabled) after readiness, regardless of UI or tracing settings. This is a static declaration/diagram view of the graph compiled for this invocation, including resolved pack overrides. Preserve the other Run local tabs and ownership rules; [K2](implementation_plan_k2.md) owns their readiness and ordering.
 - [x] Verify root-only fallback, ordinary query rendering, markup freshness, temporary cleanup, packaged-resource navigation, launcher/browser cleanup and staged-check rejection cases. See [I1](implementation_plan_i1.md) for the index and CI contract.
 - [ ] Complete the [three-context template and navigation acceptance](implementation_plan_b1a1.md), including root editor-comment layout and repository Markdown links. Optional declared configuration/source viewing remains separate from the delivered source inventory and must not be claimed from inventory-only checks.
@@ -67,6 +67,10 @@ Select **Run local** to start the app and open a managed browser with the Agent 
 ## Shared interactive diagrams
 
 - [x] Deliver the [fitted, zoomable interactive SVG overlay](implementation_plan_b1a7.md) for saved files and managed viewing, with interactive resource navigation; human acceptance remains unchecked in the detail.
+
+## Later caller-aware navigation
+
+- [ ] Add [contextual component START/END navigation](implementation_plan_b1a8.md), preserving reusable declarations, explicit conditional ambiguity and managed/file environment boundaries, before final credential-sanitization profiling.
 
 ## Source frontend setup
 

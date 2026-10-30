@@ -41,3 +41,21 @@ Synthetic serialized collector tests verify ancestry and one-time accounting.
 This is a subset of the requirements above: served-model/finish mappings,
 a pinned complete GenAI revision, duration/token metrics, remote propagation,
 HTTP/system instrumentors and downstream AI-view acceptance remain pending.
+
+## Native LangFuse node input/output
+
+The shared runtime currently emits permitted node content as custom span events.
+This does not populate LangFuse's native Input/Output panels; their null or
+undefined display does not by itself establish that source capture failed.
+
+- [ ] In the shared tracing adapter, map already admitted node input/output to the supported LangFuse observation attributes, including `langfuse.observation.input` and `langfuse.observation.output`. Apply this to both parsed-flow executors and selected resource packs without per-demo or per-application capture wiring. Preserve node/visit/attempt identities; nested LLM message events must not overwrite the containing node's input/output.
+- [ ] Keep TRACELOOP_TRACE_CONTENT authoritative before SDK queues, independently of LOG_CONTENT. Preserve credential, authentication-state and hidden-reasoning exclusions, bounded capture and explicit unavailable/truncated evidence. Preserve existing Jaeger events, ancestry and one-time usage accounting.
+- [ ] Verify the recognized attributes in serialized OTLP for all four content-flag combinations, nested nodes/retries and failure/cancellation; use causal controls for absent mapping and wrong destination gating. Custom event presence alone is insufficient. Complete applicable coverage, independent and external review.
+- [ ] Human verify a fresh Run local LangFuse trace displays permitted values in a selected node's native Input/Output panels, and disabling trace content withholds them. Keep this distinct from Jaeger's pending GenAI conversation-panel conformance and from complete durable log/Allure test evidence.
+
+[LangFuse input/output mapping](https://langfuse.com/faq/all/empty-trace-input-and-output)
+documents the recognized span attributes.
+
+## Complete-operation follow-through
+
+- [ ] Deliver [complete execution traces and terminal outcomes](implementation_plan_k1a1.md), including returned failures, streaming finalization, named tools, native field types and real trace/log/metric conformance. Existing bounded acceptance does not close this extension.

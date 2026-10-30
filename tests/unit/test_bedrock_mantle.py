@@ -34,6 +34,31 @@ def call(response=False):
     return dict(type='function_call',id='fc',call_id='c',status='completed',**spec) if response else {'id':'c','type':'function','function':spec}
 
 
+@pytest.mark.parametrize('mode,path,value,rule,location', [
+    ('completions', ('model',), 'other-selection', 'selected_model', '$.model'),
+    ('completions', ('choices',), [], 'response_choices', '$.choices'),
+    ('completions', ('choices',0,'index'), 1, 'choice_index', '$.choices[].index'),
+    ('completions', ('choices',0,'message','role'), 'user', 'assistant_role', '$.choices[].message.role'),
+    ('completions', ('choices',0,'message','annotations'), [1], 'message_annotations', '$.choices[].message.annotations'),
+    ('completions', ('choices',0,'message','unknown'), 'private-field-content', 'allowed_fields', '$.choices[].message'),
+    ('responses', ('status',), 'queued', 'response_status', '$.status'),
+    ('responses', ('output',), None, 'response_output', '$.output'),
+])
+def test_rejection_identifies_fixed_validation_rule_and_schema_location(mode, path, value, rule, location):
+    raw = completion() if mode == 'completions' else response()
+    owner = raw
+    for key in path[:-1]:
+        owner = owner[key]
+    owner[path[-1]] = value
+
+    with pytest.raises(ProviderAccessError) as caught:
+        m.decode(raw, mode, selected_llm=MODEL)
+
+    assert caught.value.provider_diagnostics == {
+        'version':1, 'validation_rule':rule, 'validation_path':location}
+    assert 'private-field-content' not in str(caught.value.provider_diagnostics)
+
+
 @pytest.mark.parametrize('mode', ['completions','responses'])
 def test_encode_text_tools_and_history(mode):
     req = LLMRequest(MODEL, CompletionRequest((Message('system',(TextContent('system'),)),
@@ -246,6 +271,19 @@ def reasoning():
 def test_native_reasoning_is_validated_but_never_exposed_or_continued():
     result=m.decode(response([reasoning(),message()]),'responses',selected_llm=MODEL)
     assert result.payload.content==(TextContent('hi'),) and result.payload.continuation is None
+
+
+def test_reasoning_capture_cannot_make_an_empty_answer_a_valid_measurement():
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.testing.reasoning_contrast import measurement_failure
+    raw = response([reasoning()])
+    permitted = EmissionBoundary(ContentPolicy(True)).export({'provider_response': raw})
+    assert permitted['provider_response']['output'][0]['content'][0]['text'] == 'private thought'
+    result = m.decode(raw, 'responses', selected_llm=MODEL)
+    assert result.payload.content == (TextContent(''),)
+    assert measurement_failure(dict(status='completed', reasoning_tokens=2,
+        requested_model=MODEL, actual_model=MODEL, max_output_tokens=16000,
+        usage={'output_tokens': 3}, response_text_present=bool(result.payload.content[0].text)), MODEL) == 'visible_answer_missing'
 
 
 @pytest.mark.parametrize('change',[{'encrypted_content':'opaque'},{'summary':None},{'summary':[{'type':'unknown','text':'bad'}]},

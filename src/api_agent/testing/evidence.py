@@ -166,7 +166,11 @@ def validate_attachment(packet, boundary, allow_content):
     if label != packet['name']:
         raise ValueError('Attachment name violates credential boundary')
     if packet['content'] == 'withheld' and set(packet) == base:
-        value = {'content': 'withheld'}
+        value = {'capture_reason': 'withheld'}
+        diagnostic_label = label + ' (capture diagnostics)'
+        if len(_json_bytes(diagnostic_label)) > MAX_LABEL_BYTES:
+            diagnostic_label = 'Capture diagnostics'
+        label = _label(diagnostic_label, boundary)
     elif packet['content'] == 'permitted_scrubbed' and set(packet) == base | {'value'}:
         if allow_content is not True or not boundary.policy.allow_content:
             raise ValueError('Attachment content is disabled')

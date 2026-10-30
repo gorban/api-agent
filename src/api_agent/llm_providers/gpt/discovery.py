@@ -171,31 +171,60 @@ async def _get(client, url, token, budget):
                 _authentication_type(response.headers.get('www-authenticate')))
 
 
-async def discover_selections(*, client, base_url, access_token, subscription):
+async def discover_selections(*, client, base_url, access_token, subscription, authority=None):
     """Verify remote access before returning a public or authenticated catalog."""
     base_url = _endpoint(base_url, access_token, subscription)
     failure = None
+    async def checked_get(url, token, budget):
+        result = await _get(client, url, token, budget)
+        from .inference import _guard_content
+        try:
+            await _guard_content(list(result), access_token, authority)
+        except ProviderAccessError:
+            status = result[0]
+            if type(status) is int and 400 <= status <= 599:
+                kind = {401: 'authentication', 403: 'authorization', 429: 'rate_limited'}.get(
+                    status, 'invalid_request' if status < 500 else 'unavailable')
+                raise ModelDiscoveryError(kind, 'GPT model discovery response contains protected authentication content.', status=status) from None
+            raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata or protected authentication content.') from None
+        return result
+    async def handoff(catalog):
+        from api_agent.providers.catalog import catalog_from_wire, catalog_to_wire
+        from api_agent.providers.credential_guard import async_guard_json, CredentialProtectionError
+        rows = catalog_to_wire(catalog)
+        try:
+            if authority is None:
+                return catalog_from_wire(await async_guard_json(rows, {access_token}))
+            generation, snapshot = authority.snapshot_content()
+            owned = await async_guard_json(rows, {*snapshot._secrets, access_token})
+            result = catalog_from_wire(owned)
+            published = []
+            if not authority.commit_if_current(generation, lambda: published.append(result)):
+                raise CredentialProtectionError('Credential registrations changed during handoff.')
+            return published.pop()
+        except CredentialProtectionError:
+            raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata or protected authentication content.') from None
     try:
         async with component_timeout('GPT authenticated discovery', _TIMEOUT) as budget:
-            status, data, request_id, authentication_type = await _get(client, base_url + '/models', None, budget)
+            status, data, request_id, authentication_type = await checked_get(base_url + '/models', None, budget)
             if status == 200:
                 if subscription:
                     raise ModelDiscoveryError('authentication', 'GPT subscription requires an authenticated account catalog; the endpoint returned a public catalog.')
                 catalog = _catalog(data, False, access_token, base_url=base_url)
-                status, data, request_id, authentication_type = await _get(client, base_url + '/key', access_token, budget)
+                status, data, request_id, authentication_type = await checked_get(base_url + '/key', access_token, budget)
                 if status != 200:
                     raise _failure(status, data, request_id, access_token, authentication_type)
                 if (type(data) is not dict or type(data.get('data')) is not dict
                         or type(data['data'].get('label')) is not str or not data['data']['label']
                         or len(data['data']['label']) > 512 or not data['data']['label'].isprintable()):
                     raise ModelDiscoveryError('authentication', 'GPT endpoint did not verify the selected API key.')
-                return catalog
+                return await handoff(catalog)
             if status != 401:
                 raise _failure(status, data, request_id, access_token, authentication_type)
-            status, data, request_id, authentication_type = await _get(client, base_url + '/models', access_token, budget)
+            status, data, request_id, authentication_type = await checked_get(base_url + '/models', access_token, budget)
             if status != 200:
                 raise _failure(status, data, request_id, access_token, authentication_type)
-            return _catalog(data, subscription, access_token, base_url=base_url)
+            return await handoff(_catalog(data, subscription, access_token, base_url=base_url))
     except (TimeoutError, httpx.TimeoutException):
         failure = ModelDiscoveryError('deadline', 'GPT model discovery timed out.')
     except httpx.RequestError:

@@ -556,3 +556,28 @@ def test_retained_group_rejects_new_integration_executor(tmp_path):
         finally:
             await app.end_inspection(force=True)
     asyncio.run(run())
+
+
+def test_retained_cdp_addresses_show_in_suite_and_test_details(tmp_path):
+    async def run():
+        app = fixture(tmp_path)
+        item = handle()
+        item.inspection_endpoints = ('http://127.0.0.1:1234', 'http://127.0.0.1:4321')
+        identity = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
+        async with app.run_test() as pilot:
+            await pilot.pause(.1)
+            app.mode = 'integration'
+            app.unit_result = IntegrationRunResult(0, (TestResult(identity, 'passed'),), '')
+            app.unit_rows = {identity.id: ('PASSED', identity.id, '1s')}
+            app.inspections = InspectionGroup((item,))
+            app.show_unit_results()
+            await pilot.pause(.1)
+            for endpoint in item.inspection_endpoints:
+                assert endpoint in app.screen.body
+            app.toggle_row(identity.id)
+            await pilot.pause(.1)
+            assert app.screen.kind == 'test-failure'
+            for endpoint in item.inspection_endpoints:
+                assert endpoint in app.screen.body.plain
+            assert 'retained suite browser' in app.screen.body.plain
+    asyncio.run(run())

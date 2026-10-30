@@ -1,27 +1,5 @@
 # Amazon Bedrock provider
 
-The historical API-key Completions calibration qualified Bedrock cap 50 from
-60 graphs and 156 calls: measured minimum 46 plus allowance 4. GPT cap 57 is
-unchanged at that checkpoint. The matching normal API-key Completions workflow coverage test passed
-1/1, with six user turns and 9,415 tokens; cost remains unknown. At that historical
-checkpoint, source verification passed 19,433 unit tests with exact
-line/branch coverage and independent/external source reviews. The user confirms
-the effective default attended login works; repeat/restart reuse, SSO and indexed
-session qualification remain separate. Packaged/relocated artifact verification
-and final delivery review passed for that checkpoint. The deterministic coverage
-follow-through below has separate unit, artifact, live and review gates; its human
-acceptance remains open.
-
-The earlier built-in SDK-profile checkpoint qualified Bedrock cap 50 with GPT
-cap 48. Fresh workflow/reasoning checks passed, retaining an earlier empty-answer
-failure. Its 18,700 units passed with exact line/branch coverage and technical
-reviews passed; launcher follow-up acceptance was conditional. Those historical
-settings differ from the later API-key calibration.
-
-The historical native-adapter checkpoint qualified cap 52, passed 17 core plus
-one provider UI case and 18,674 units. This is not a new full 18-case SDK run.
-See the [qualification guide](QUALIFICATION.md) for evidence and acceptance scopes.
-
 This optional provider uses only regional bedrock-mantle
 endpoint through the ordinary provider interface. The OpenAI SDK owns signing, HTTP and SSE in a worker.
 Converse, InvokeModel, Bedrock Runtime and direct OpenAI fallback remain unsupported.
@@ -30,17 +8,24 @@ a separate acceptance step.
 
 ## Install and select
 
-Install the optional Python dependencies in the environment running the app:
+For a source checkout, follow [Getting started](../../../../README.md#get-started)
+and select this factory in Review configuration or `.env`:
+
+    LLM_PROVIDER=src/api_agent/llm_providers/bedrock/factory.py:factory
+
+`./launch.sh` installs the selected provider's Python SDK dependencies through
+uv/PyPI automatically. AWS CLI is not required for API-key or explicit access-key
+authentication; CLI-assisted session recovery has [conditional prerequisites](PREREQUISITES.md).
+Normal mandatory workflow coverage needs no calibration baseline; see
+[workflow coverage](../../../../docs/workflow_poc.md#deterministic-workflow-coverage).
+
+For an independently managed installed-package environment instead:
 
     python -m pip install 'api-agent[bedrock]'
 
 Source packaging requires frontend assets from npm ci.
 SDK imports and credential resolution are lazy, so configuration inspection
 does not require AWS access or invoke login.
-
-From the source owner root set:
-
-    LLM_PROVIDER=src/api_agent/llm_providers/bedrock/factory.py:factory
 
 For an installed package, locate that factory beside this README through
 api_agent.llm_providers.bedrock.__file__.
@@ -82,8 +67,10 @@ than choosing an arbitrary model.
   then offers attended direct AWS recovery when permitted. No extra session
   selector is needed. Explicitly empty BEDROCK_SESSION_PROVIDER selects the
   SDK-only preauthenticated path; an explicit SSO/custom selector remains
-  authoritative. Bundled adapters reject indexed account selection. NO_STD_IN
-  or a missing interaction owner prevents hidden recovery. BEDROCK_PROFILE
+  authoritative. Bundled adapters reject indexed account selection; use
+  `--unattended-user-index=` for attended session login. NO_STD_IN terminal
+  execution permits session sign-in through an explicitly supplied visible
+  authentication channel; a missing/disallowed owner prevents hidden recovery. BEDROCK_PROFILE
   defaults to lowercase default and BEDROCK_REGION to us-east-1; explicit blanks
   restore SDK resolution. Custom adapters own acquisition, refresh and disposal.
 - access_key with an unattended LLM User index reads only that selected item:
@@ -228,3 +215,27 @@ Direct AWS sign-in and IAM Identity Center use separate session adapters:
 `src/api_agent/llm_providers/bedrock/aws_sso.py:factory`, respectively, selected
 through BEDROCK_SESSION_PROVIDER. Both reuse valid selected credentials before
 recovery. See [session setup and migration](SESSION_LOGIN.md).
+
+## Historical qualification checkpoints
+
+These measurements describe older statistical workflow coverage, not a setup
+requirement for today's deterministic mandatory coverage fixture.
+
+The historical API-key Completions calibration qualified Bedrock cap 50 from
+60 graphs and 156 calls: measured minimum 46 plus allowance 4. GPT cap 57 was
+unchanged at that checkpoint. The matching workflow coverage test passed 1/1,
+with six user turns and 9,415 tokens; cost remained unknown. Source verification
+passed 19,433 unit tests with exact line/branch coverage and independent/external
+reviews. The effective default attended login worked; repeat/restart reuse, SSO
+and indexed session qualification remained separate. Packaged/relocated artifact
+verification and final delivery review passed. Later deterministic coverage has
+separate unit, artifact, live, review and human gates.
+
+The earlier built-in SDK-profile checkpoint qualified Bedrock cap 50 with GPT
+cap 48. Fresh workflow/reasoning checks passed, retaining an earlier empty-answer
+failure. Its 18,700 units passed with exact line/branch coverage and technical
+reviews; launcher follow-up acceptance was conditional.
+
+The historical native-adapter checkpoint qualified cap 52, passed 17 core plus
+one provider UI case and 18,674 units. This is not a new full 18-case SDK run.
+See the [qualification guide](QUALIFICATION.md) for evidence and acceptance scopes.

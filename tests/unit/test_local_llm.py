@@ -19,9 +19,13 @@ def request(model='sample'):
 def selected(tmp_path):
     events = []
     class Auth:
-        async def __call__(self): return 'secret'
+        async def __call__(self):
+            await implementation.authority.aregister_secret('secret')
+            return 'secret'
         async def aclose(self): events.append('auth-close')
     class Provider:
+        credential_protection_version = 1
+        def bind_credential_authority(self, authority): self.authority = authority
         capabilities = ProviderCapabilities(kind='llm')
         async def asetup(self, **options):
             events.append(('setup', options))
@@ -30,8 +34,13 @@ def selected(tmp_path):
             events.append('describe')
             return (AvailableSelection('sample'), AvailableSelection('other'))
         async def acomplete(self, value, *, auth):
+            from api_agent.providers.credential_guard import guard_json
+            from api_agent.providers.inference import request_to_wire, result_to_wire
+            guard_json(request_to_wire(value), self.authority._secrets)
             events.append(('complete', value, auth))
-            return LLMResult(Message('assistant', (TextContent('answer'),)), Usage(2, 3))
+            result = LLMResult(Message('assistant', (TextContent('answer'),)), Usage(2, 3))
+            guard_json(result_to_wire(result), self.authority._secrets)
+            return result
     implementation = Provider()
     loaded = SimpleNamespace(implementation=implementation, astart=AsyncMock(), aclose=AsyncMock())
     loader = AsyncMock(return_value=loaded)
@@ -371,6 +380,8 @@ def test_concurrent_local_calls_share_usage_identity_with_own_visit(selected):
         return await original(value, auth=auth)
     implementation.acomplete = overlapping
     journals = [Mock(), Mock()]
+    for journal in journals:
+        journal.journal._gap = None
     async def call(index):
         with bind_workflow_visit(journals[index], f'visit-{index}'):
             await owner.complete(request())
@@ -466,6 +477,7 @@ def test_local_cancelled_call_retains_cancelled_terminal_outcome(selected):
         raise asyncio.CancelledError()
     implementation.acomplete = cancelled
     journal = Mock()
+    journal.journal._gap = None
     async def run():
         with bind_workflow_visit(journal,'visit'):
             with pytest.raises(asyncio.CancelledError):
@@ -717,4 +729,49 @@ def test_failed_central_receipt_keeps_ledger_when_no_quote_available(selected):
             assert 'quote' not in owner.usage[0]
         finally:
             await owner.aclose()
+    asyncio.run(run())
+
+
+def test_unjoined_provider_is_rejected_before_start(selected):
+    owner, implementation, loaded, _, _ = selected
+    implementation.credential_protection_version = 0
+    async def run():
+        from api_agent.providers.credential_guard import CredentialProtectionError
+        with pytest.raises(CredentialProtectionError, match='must implement'):
+            await owner.ensure_ready()
+        loaded.astart.assert_not_awaited()
+        await owner.aclose()
+    asyncio.run(run())
+
+
+def test_provider_with_one_shot_authority_binding_starts_and_authenticates(tmp_path):
+    from api_agent.providers.loading import LoadedProvider
+    class Provider:
+        capabilities = ProviderCapabilities(kind='llm', operations=('describe',))
+        credential_protection_version = 1
+        def __init__(self): self.binds = 0; self.started = False
+        def bind_credential_authority(self, authority):
+            self.binds += 1
+            if self.binds != 1:
+                raise RuntimeError('Authority can only be bound once')
+            self.authority = authority
+        async def astart(self): self.started = True
+        async def asetup(self, **kwargs):
+            assert self.started and self.binds == 1
+            authority = self.authority
+            class Auth:
+                async def __call__(self):
+                    await authority.aregister_secret('synthetic-one-shot-token')
+                    return 'synthetic-one-shot-token'
+                async def aclose(self): pass
+            return Auth()
+        async def aclose(self): pass
+    implementation = Provider()
+    async def loader(location, config, services, **kwargs):
+        return LoadedProvider(implementation, 'synthetic', services=services)
+    async def run():
+        owner = LocalLLM({'LLM_PROVIDER': 'synthetic'}, tmp_path, loader=loader)
+        await owner.ensure_ready()
+        assert implementation.started and implementation.binds == 1
+        await owner.aclose()
     asyncio.run(run())

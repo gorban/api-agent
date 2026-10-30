@@ -3,15 +3,21 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 _VISIT = ContextVar('workflow_leaf_visit', default=None)
+_CAPTURE = ContextVar('workflow_tool_capture_services', default=None)
 
 
 @contextmanager
-def bind_workflow_visit(journal, visit_id, attempt_id=None):
+def bind_workflow_visit(journal, visit_id, attempt_id=None, *, capture_services=None):
+    from .evidence_finalization import begin, end
+    pending_token = begin()
+    capture_token = _CAPTURE.set(capture_services)
     token = _VISIT.set((journal, visit_id, attempt_id) if journal is not None else None)
     try:
         yield
     finally:
         _VISIT.reset(token)
+        _CAPTURE.reset(capture_token)
+        end(pending_token)
 
 
 def current_workflow_visit():
@@ -43,3 +49,7 @@ def admit_terminal_call_receipt(row, journal):
             prior['call_id'] == row['call_id'] for prior in receipts):
         receipts.append({key: row[key] for key in
             ('call_id', 'selection', 'usage', 'outcome', 'actual_model', 'reasoning_effort', 'response', 'transport_attempts') if key in row})
+
+
+def current_tool_capture_services():
+    return _CAPTURE.get()

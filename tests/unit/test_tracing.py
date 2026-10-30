@@ -38,7 +38,9 @@ def test_payloads_cross_boundary_before_recording(content):
     assert 'Authorization' not in attrs
     assert attrs.get('prompt') == ('[REDACTED] prompt' if content else None)
     assert span.add_event.call_args.kwargs['attributes']==attrs
-    assert span.set_attributes.call_args.args[0]==({'response':'[REDACTED] answer'} if content else {})
+    from api_agent.telemetry.inference_diagnostics import omission_notice
+    assert span.set_attributes.call_args.args[0]==({'response':'[REDACTED] answer'} if content else
+        {'api_agent.content_notice': omission_notice('TRACELOOP_TRACE_CONTENT')})
     assert span.end.call_count==1
     assert runtime.flush() and runtime.shutdown() and runtime.shutdown() and runtime.flush()
     assert provider.shutdown.call_count==1

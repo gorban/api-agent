@@ -28,3 +28,6 @@ coverage/
 /apps/api-agent-ui/public/dompurify.js
 **/.private_resources/viewer/heading-id.js
 .api-agent/
+
+# Ephemeral uv process locks; keep the project uv.lock eligible for tracking.
+/uv-????????????????.lock

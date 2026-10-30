@@ -115,3 +115,84 @@ def test_shared_retry_after_body_timeout_waits_for_response_close(monkeypatch):
             assert requests[0].content == requests[1].content
             await owner.aclose()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('allow', [False, True])
+def test_retry_captures_observed_failure_body_per_attempt(monkeypatch, allow):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from api_agent.providers import inference_retry
+    from api_agent.providers.generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger
+    from api_agent.providers.shared_setup import SharedSetupOwner
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import collect_inference
+
+    monkeypatch.setattr(inference_retry, 'retry_delay', lambda number, hint: 0)
+    async def scenario():
+        calls = []
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(503, json={'error': {'message': f'failure {len(calls)} {TOKEN}'},
+                                            'usage': {'input_tokens': 2, 'output_tokens': 1},
+                                            'hidden_reasoning': 'hidden-sentinel'})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            async def physical(request, *, auth):
+                return await inference.complete_text(client=client, base_url=BASE, access_token=auth,
+                    subscription=True, api_mode='responses', request=request)
+            async def call(callback):
+                return await callback(auth=TOKEN)
+            owner = SharedSetupOwner('op', 'selected', lambda _: SimpleNamespace(call=call, aclose=AsyncMock()),
+                                     complete=physical, max_attempts=2)
+            req = LLMRequest('gpt-example', CompletionRequest((Message('user', (TextContent('Say Ok'),)),)))
+            ledger = TransportAttemptLedger(2)
+            with collect_inference(EmissionBoundary(ContentPolicy(allow))) as collector:
+                with bind_transport_attempt_ledger(ledger):
+                    with pytest.raises(ProviderAccessError) as caught:
+                        await owner.complete(req)
+            await owner.aclose()
+        rows = [row for row in collector['rows'] if row['phase'] == 'response']
+        assert len(calls) == len(rows) == 2
+        assert len({row['transport_attempt_id'] for row in rows}) == 2
+        assert caught.value.http_status == 503
+        serialized = json.dumps(rows)
+        assert TOKEN not in serialized and 'hidden-sentinel' not in serialized
+        assert all(row['reason'] == ('captured' if allow else 'withheld') for row in rows)
+        if allow:
+            assert [row['content']['error']['message'] for row in rows] == [
+                'failure 1 [REDACTED]', 'failure 2 [REDACTED]']
+            assert all(row['content']['usage']['input_tokens'] == 2 for row in rows)
+    asyncio.run(scenario())
+
+
+def test_success_captures_actual_response_instead_of_normalized_result():
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import collect_inference
+    from test_gpt_inference import result, run
+
+    body = result()
+    body['provider_extra'] = 'actual provider field'
+    body['hidden_reasoning'] = 'hidden-sentinel'
+    with collect_inference(EmissionBoundary(ContentPolicy(True))) as collector:
+        value, _ = run(httpx.Response(200, json=body))
+    response = next(row for row in collector['rows'] if row['phase'] == 'response')
+    assert value.payload.content[0].text == 'Ok'
+    assert response['content']['provider_extra'] == 'actual provider field'
+    assert response['content']['output'][0]['content'][0]['text'] == 'Ok'
+    assert 'hidden_reasoning' not in response['content']
+
+
+def test_stream_captures_observed_terminal_response():
+    import json
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import collect_inference
+    from test_gpt_inference import result, run
+
+    body = result()
+    body['provider_extra'] = 'terminal field'
+    stream = 'data: ' + json.dumps({'type': 'response.completed', 'response': body}) + '\n\n'
+    with collect_inference(EmissionBoundary(ContentPolicy(True))) as collector:
+        value, _ = run(httpx.Response(200, text=stream, headers={'content-type': 'text/event-stream'}), subscription=True)
+    response = next(row for row in collector['rows'] if row['phase'] == 'response')
+    assert value.payload.content[0].text == 'Ok'
+    assert response['content']['provider_extra'] == 'terminal field'

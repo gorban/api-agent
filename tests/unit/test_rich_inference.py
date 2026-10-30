@@ -61,7 +61,7 @@ def test_each_returned_tool_call_is_validated_before_delivery():
     data['choices'][0]['message']['tool_calls'].append(dict(id='call-2', type='function',
         function=dict(name='lookup', arguments='{"value":4}')))
     result = rich.tool_result(data, False, TOKEN)
-    with pytest.raises(ProviderAccessError, match='outside its declared contract'):
+    with pytest.raises(ProviderAccessError, match='tool call 2 .*input schema'):
         rich.validate_result(request(), result)
 
 
@@ -135,6 +135,16 @@ def test_result_rejects_invalid_native_tool_result(change):
 def native(responses):
     call = dict(id='item-1', type='function_call', status='completed',call_id='call-1',name='lookup',arguments='{"value":"x"}')
     return dict(status='completed',output=[call],usage={'input_tokens':5,'output_tokens':3}) if responses else dict(choices=[dict(finish_reason='tool_calls',message=dict(role='assistant',content=None,tool_calls=[dict(id='call-1',type='function',function=dict(name='lookup',arguments='{"value":"x"}'))]))],usage={'prompt_tokens':5,'completion_tokens':3})
+
+
+def test_tool_call_response_rejects_credentials_in_visible_assistant_content():
+    data = native(True)
+    data['output'].append({'type': 'message', 'role': 'assistant', 'content': [
+        {'type': 'output_text', 'text': TOKEN[:10]},
+        {'type': 'output_text', 'text': TOKEN[10:]}]})
+
+    with pytest.raises(ProviderAccessError, match='invalid function calls'):
+        rich.tool_result(data, True, TOKEN)
 
 
 @pytest.mark.parametrize('mode,subscription',[('responses',False),('responses',True),('completions',False)])

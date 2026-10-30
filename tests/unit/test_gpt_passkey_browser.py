@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
-from playwright.async_api import async_playwright
 
 from api_agent.auth.login_credentials import PasskeyCredential
 from api_agent.llm_providers.gpt.passkeys import SoftwarePasskey
@@ -38,6 +37,7 @@ ASSERTION = '''async ({challenge, credential}) => {
 
 
 def test_software_passkey_real_signatures_verification_scope_and_removal():
+    from playwright.async_api import async_playwright
     async def exercise():
         async def serve(reader, writer):
             try:

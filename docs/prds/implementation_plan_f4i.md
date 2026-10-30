@@ -8,7 +8,7 @@ The user reports a successful attended session inference after fresh browser log
 - [x] Verify the default-profile shared-credentials snapshot and permitted model discovery without inference. Separate snapshot usability from refreshable native cache reuse. Keep credential values, account identifiers, raw SDK/CLI diagnostics and authorization material out of recorded evidence.
 - [x] Replace the authentication screen's dedicated output-copy button with the ordinary highlighted ^c footer shortcut. Show its hint only while output text is selected. Preserve priority Ctrl+C consumption without selection, prevent secret-input copying and keep ordinary cancel/retry behavior. The shared password-manager screen receives the same behavior; see the generic private-interaction requirements.
 - [x] Complete focused regression/causal checks with exact new-code line/branch coverage, distinct low implementer/reviewer checks, boundary/package qualification and external PR-style review before another human retry.
-- [ ] Human acceptance: sign in through ordinary launch.py when needed, complete the selected session test and repeat/restart without a new login. Confirm output selection controls the ^c hint and secret selection never exposes a copy action. Existing root inference spending approvals are exhausted; non-inference discovery is authorized for this diagnosis.
+- [ ] Human acceptance: sign in through ordinary launch.sh when needed, complete the selected session test and repeat/restart without a new login. Confirm output selection controls the ^c hint and secret selection never exposes a copy action. Existing root inference spending approvals are exhausted; non-inference discovery is authorized for this diagnosis.
 
 ## Reproduction and bounded verification
 

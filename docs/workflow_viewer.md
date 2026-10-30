@@ -52,8 +52,20 @@ Node or network. The locked npm install and asset-copy helper are source-only.
 From the checkout, run:
 
 ```sh
-./launch.py --view-flow
+./launch.sh --view-flow
+./launch.sh --view-flow "demo/contrived/flow.md.html"
+./launch.sh --view-flow "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html"
 ```
+
+With no path, this opens the selected application's declared flow. The bundled
+demo application currently selects `demo/simple/flow.md.html`; the repository-root
+`flow.md.html` is the minimal chat example and can be selected explicitly.
+Supply one `.md.html` path to inspect another flow. Relative paths use the current
+directory; source-view mappings preserve each fixture's base/pack ownership.
+The generated instructions in each graph page include its repository-relative
+path in double quotes, except the repository-root flow, whose command omits it.
+Declared tool-instance links open the captured TOML file, like schema and setting
+links; resolved environment values are not served.
 
 The launcher validates the selected declarations and saved diagram, starts a
 temporary loopback viewer on an available port, and opens managed headed
@@ -62,13 +74,18 @@ inspection tools to that endpoint and use its existing page. Close the browser
 or press Ctrl+C to release its browser and host. Viewing performs no graph
 execution, provider authentication or application startup.
 
-Python 3.13 or newer and the managed browser's host prerequisites are required;
+mise and the managed browser's host prerequisites are required;
 the launcher prepares its browser dependencies. Fresh owner-local diagrams are
 checked without Java or renderer setup. A library/composed/replacement selection
 may need a new temporary diagram and therefore the optional generator below.
 That view discloses its selected definition identity and never overwrites owner
-diagrams or reloads replaced originals. Captured native/configuration source is
-not exposed as HTTP routes; hosted resource links identify path, kind and digest.
+diagrams or reloads replaced originals. Explicitly referenced, captured Python
+sources open as UTF-8 plain text, alongside captured JSON schemas and TOML
+declarations. The server verifies their hashes and serves only its finite captured
+inventory; it never executes Python or reads arbitrary requested files. Other
+unserved resources appear as nonclickable source details. Static files retain
+their ordinary source links. The viewer link-crawl integration test checks rendered
+pages and standalone diagrams across the included workflow hierarchies.
 
 ## Check and regenerate
 
@@ -86,8 +103,11 @@ Using the checkout's prepared Python environment, check saved output:
 
 Check mode is read-only and needs no renderer or download. Changed declarations,
 linked resources, diagram source metadata, companions or viewer assets require
-explicit generation. Generation needs Java 17 or newer available as `java` on
-PATH. Prepare the pinned optional MIT PlantUML JAR, then generate:
+explicit generation to update saved diagrams. Managed viewing can render a
+temporary view of current changes without modifying saved diagrams; when needed,
+it prepares the pinned renderer in the development cache. Rendering needs Java
+17 or newer available as `java` on PATH. To update saved diagrams, prepare the
+pinned optional MIT PlantUML JAR, then generate:
 
 ```sh
 .venv/bin/python tools/workflow_views.py prepare
@@ -139,14 +159,18 @@ A managed copy installed before locked npm asset delivery needs a one-time
 manual refresh: that older copy does not pass the original dependency root to
 the snapshot checker. First verify that the existing hook is the exact older
 managed copy you own, and back it up outside the hook directory. Remove only
-that confirmed owned copy, then run `./launch.py --view-flow` to install the new
+that confirmed owned copy, then run `./launch.sh --view-flow` to install the new
 reviewed dispatcher in the vacant slot. Preserve unfamiliar, custom and shared
 hooks and integrate the dispatcher manually instead. The launcher does not
 automatically replace an older copy. The refreshed hook verifies original npm
 assets against the staged lock and manifest; it never runs npm or fetches.
 
-The hook checks an isolated index snapshot. Stage regenerated diagrams with
-their declarations: an unstaged correction cannot repair a stale proposed commit.
+The hook checks an isolated index snapshot and compares its workflow inputs and
+generated views with the working files. Stage the relevant changes together;
+unrelated working-tree changes do not block the check. CI can run
+`python tools/checks.py --head --root .` for the same checks and a comparison
+against HEAD. If Git or checkout metadata is unavailable, this checks the actual
+files and reports that a HEAD comparison was unavailable.
 Checks bound index bytes, output and elapsed work, and dispose owned checker
 descendants on failure or interruption. Broader lint/security checks and CI
 wiring remain separately planned.

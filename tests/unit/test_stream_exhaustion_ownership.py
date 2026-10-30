@@ -13,6 +13,13 @@ from api_agent.providers.loading import LoadedProvider
 from api_agent.providers import loading
 
 
+def joined(provider):
+    # These lifecycle fakes acquire no credentials and emit fixed text only.
+    provider.credential_protection_version = 1
+    provider.bind_credential_authority = lambda authority: setattr(provider, 'authority', authority)
+    return provider
+
+
 def test_exhaustion_releases_request_and_auth_while_owner_and_stream_survive():
     async def scenario():
         async def events(request, *, auth):
@@ -20,7 +27,7 @@ def test_exhaustion_releases_request_and_auth_while_owner_and_stream_survive():
 
         provider = SimpleNamespace(capabilities=ProviderCapabilities('llm', ('stream',)),
                                    astream=events, aclose=AsyncMock())
-        owner = LoadedProvider(provider, 'synthetic-exhaustion')
+        owner = LoadedProvider(joined(provider), 'synthetic-exhaustion')
         request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('question'),)),)))
         class Auth:
             pass
@@ -52,8 +59,8 @@ def test_read_failure_preserves_lease_until_provider_cleanup(failure):
             async def __anext__(self): raise failure()
             aclose = AsyncMock()
         iterator = Iterator()
-        owner = LoadedProvider(SimpleNamespace(capabilities=ProviderCapabilities('llm', ('stream',)),
-                               astream=lambda *args, **kwargs: iterator), 'synthetic-read-failure')
+        owner = LoadedProvider(joined(SimpleNamespace(capabilities=ProviderCapabilities('llm', ('stream',)),
+                               astream=lambda *args, **kwargs: iterator)), 'synthetic-read-failure')
         request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('question'),)),)))
         auth = object()
         stream = owner.require('llm', 'stream').astream(request, auth=auth)
@@ -90,7 +97,7 @@ def test_exhaustion_keeps_failed_cleanup_owned_until_successful_retry(failure, m
             async def aclose(self): await iterator.aclose()
         provider = SimpleNamespace(capabilities=ProviderCapabilities('llm', ('stream',)),
                                    astream=lambda *args, **kwargs: Iterator())
-        owner = LoadedProvider(provider, 'synthetic-exhaustion-retry')
+        owner = LoadedProvider(joined(provider), 'synthetic-exhaustion-retry')
         request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('question'),)),)))
         auth = object()
         stream = owner.require('llm', 'stream').astream(request, auth=auth)

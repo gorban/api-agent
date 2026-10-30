@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from .contracts import BrowserSession, ContractError, SessionClosedError, LLMCredentialReader
+from .contracts import BrowserSession, ContractError, SessionClosedError, LLMCredentialReader, ProviderAccessError
 from .control import OperationalError, OperationContext, CleanupPendingError, _cancel_once, finish_cleanup
 
 
@@ -275,7 +275,8 @@ class BrowserOwner(_Owner):
             browser = await driver.launch(headless=self._headless)
             self._resources.append((browser, "close"))
             self._check()
-            context = await browser.new_context()
+            context_options = {} if self._headless else {'no_viewport': True}
+            context = await browser.new_context(**context_options)
             self._resources.append((context, "close"))
             self._check()
             page = await context.new_page()
@@ -419,6 +420,9 @@ class LLMSessionOwner(_Owner):
                 self._browser = None
             if isinstance(error, (OperationalError, ContractError, SessionClosedError)):
                 raise error from None
+            if isinstance(error, TimeoutError):
+                raise ProviderAccessError('deadline',
+                    'LLM authentication setup timed out. Complete any password-manager or provider sign-in prompt, then retry.') from None
             raise OperationalError("unknown", execution="possibly_executed") from None
 
     async def _budget(self, awaitable, context):
@@ -457,14 +461,22 @@ class LLMSessionOwner(_Owner):
         self._check()
         task = asyncio.current_task()
         self._calls[task] = self._calls.get(task, 0) + 1
+        authenticating = True
         try:
             if context is not None and context.remaining() == 0:
                 raise OperationalError("deadline")
             auth = await self._authenticate(context)
             self._check()
+            authenticating = False
             return await self._budget(operation(auth=auth), context)
         except (asyncio.CancelledError, OperationalError, ContractError, SessionClosedError, CleanupPendingError):
             raise
+        except TimeoutError:
+            message = ('LLM authentication setup timed out. Complete any password-manager or provider sign-in prompt, then retry.'
+                       if authenticating else 'LLM provider operation timed out.')
+            error = ProviderAccessError('deadline', message)
+            error.execution = 'not_started' if authenticating else 'possibly_executed'
+            raise error from None
         except Exception:
             raise OperationalError("unknown", execution="possibly_executed") from None
         finally:

@@ -107,6 +107,8 @@ def test_worker_local_join_and_closed_guard(tmp_path, monkeypatch):
     session = AsyncMock(return_value='synthetic-token')
     implementation = SimpleNamespace(asetup=AsyncMock(return_value=session), adescribe=AsyncMock(return_value=VALUES))
     provider = SimpleNamespace(implementation=implementation, aclose=AsyncMock())
+    implementation.credential_protection_version = 1
+    implementation.bind_credential_authority = lambda authority: setattr(implementation, 'authority', authority)
     monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=provider))
     worker = IntegrationLLM({'LLM_PROVIDER': 'synthetic'}, tmp_path)
     assert worker.describe() == worker.describe() == VALUES
@@ -119,6 +121,8 @@ def test_worker_local_join_and_closed_guard(tmp_path, monkeypatch):
 def test_local_and_remote_missing_describe_are_prerequisite_skips(tmp_path, monkeypatch):
     from api_agent.testing import provider_setup
     implementation = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='token')))
+    implementation.credential_protection_version = 1
+    implementation.bind_credential_authority = lambda authority: setattr(implementation, 'authority', authority)
     monkeypatch.setattr(provider_setup, 'aload_provider', AsyncMock(return_value=SimpleNamespace(implementation=implementation, aclose=AsyncMock())))
     worker = IntegrationLLM({'LLM_PROVIDER': 'synthetic'}, tmp_path)
     try:

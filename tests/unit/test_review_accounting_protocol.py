@@ -133,6 +133,9 @@ def test_redaction_expansion_cannot_replace_a_completed_loopback_result(allow):
         assert rows == ()
     class Owner(Registry):
         async def complete(self,binding,request):
+            from api_agent.workflows.inference_capture import bind_boundary, _COLLECTOR
+            bind_boundary(boundary)
+            _COLLECTOR.get()['rows'].extend(export_content(boundary,request,expected))
             self.calls+=1
             return expected
         def export_content(self,binding,request,value):
@@ -152,9 +155,12 @@ def test_redaction_expansion_cannot_replace_a_completed_loopback_result(allow):
             actual,evidence=await asyncio.to_thread(consumer)
             assert actual==expected and registry.calls==1
             assert all('al' not in json.dumps(row) for row in evidence)
-            assert [row['phase'] for row in evidence]==(['request', 'response'] if allow else [])
+            assert [row['phase'] for row in evidence]==['request', 'response']
             if allow:
-                assert evidence[-1] == dict(phase='response', content={}, reason='truncated')
+                assert evidence[-1]['content'] == {}
+                assert evidence[-1]['reason'] in ('truncated', 'unavailable')
+            else:
+                assert all(row['reason'] == 'withheld' and row['content'] == {} for row in evidence)
         finally:
             await server.aclose()
     asyncio.run(scenario())
@@ -186,7 +192,8 @@ def test_optional_export_failure_and_duplicates_preserve_primary_result(monkeypa
             client=SetupClient(endpoint,timeout=2)
             try:
                 value=client.complete(request)
-                assert client.evidence==[{'phase':'request','content':{}}]
+                assert client.evidence==[dict(phase=phase, content={}, reason='withheld')
+                                         for phase in ('request', 'response')]
                 return value
             finally:
                 client.close()

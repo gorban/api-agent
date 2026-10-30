@@ -183,6 +183,19 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
     root = context.pack_root if context.external_pack else context.base_root
     environment = root / '.venv'
     python = environment / 'bin/python'
+    if os.environ.get('API_AGENT_MISE') == '1' and (environment.exists() or environment.is_symlink()):
+        # Do not let an older checkout environment bypass the selected runtime.
+        try:
+            probe = subprocess.run([str(python), '-I', '-c',
+                'import sys; print(sys._base_executable)'], check=True,
+                capture_output=True, text=True, timeout=30)
+            matches = Path(probe.stdout.strip()).resolve() == Path(sys._base_executable).resolve()
+        except (OSError, subprocess.SubprocessError):
+            matches = False
+        if not matches:
+            raise OSError(f'{environment} uses a different or unavailable Python. '
+                          'Move that environment aside, then retry ./launch.sh to recreate it '
+                          'with the project Python. The existing environment has not been changed.')
     try:
         _requirement_types()
     except OSError:
@@ -225,7 +238,7 @@ def _relaunch(context, python, argv, *, replace_process=False):
         "from api_agent.runtime.bootstrap import main; "
         f"raise SystemExit(main(sys.argv[2:], base_root=base, _worktrees_verified=True, _replace_process={replace_process!r}))"
     )
-    command = [str(python), '-c', handoff, str(context.base_root / 'launch.py'),
+    command = [str(python), '-c', handoff, str(context.base_root / 'launch.sh'),
                *pack_arguments,
                '--_launcher-root', str(getattr(context, 'launcher_root', None) or context.base_root), *argv]
     environment = os.environ.copy()

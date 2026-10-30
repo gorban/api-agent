@@ -408,3 +408,20 @@ def test_real_http_probe_requires_direct_success(status):
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+def test_dashboard_credentials_wait_for_active_evidence_lease():
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    async def scenario():
+        boundary = EmissionBoundary(ContentPolicy(True))
+        lease = boundary.begin_evidence_lease()
+        tracing = LocalTracing(config(), emissions=boundary, probe=Mock(return_value=True))
+        task = asyncio.create_task(tracing.start())
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not boundary._secrets
+        lease.release()
+        await task
+        assert 'synthetic-password' in boundary._secrets
+        await tracing.aclose()
+    asyncio.run(scenario())

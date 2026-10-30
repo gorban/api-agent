@@ -209,6 +209,10 @@ def test_managed_canonical_selection_accepts_independent_artifacts_but_checks_se
     monkeypatch.setattr(runtime, "load_selected_definition", lambda context: load_definition(
         tmp_path / "flow.md.html", base_root=tmp_path, pack_root=tmp_path))
     context = SimpleNamespace(base_root=tmp_path, workflow_base_root=None)
+    monkeypatch.delenv('API_AGENT_PLANTUML_JAR', raising=False)
+    monkeypatch.setattr(vb, 'prepare_renderer', lambda: tmp_path / 'renderer.jar')
+    from api_agent.workflows import viewer_render
+    monkeypatch.setattr(viewer_render, 'PlantUMLRenderer', lambda jar: TinyRenderer())
 
     prepared = _prepare_view(context)
 
@@ -216,8 +220,66 @@ def test_managed_canonical_selection_accepts_independent_artifacts_but_checks_se
     assert all("nested" not in file.path for file in prepared[3].files)
     selected = tmp_path / ".private_resources/diagrams/flow.svg"
     selected.write_bytes(selected.read_bytes().replace(b'width="1"', b'width="2"'))
+    tampered = selected.read_bytes()
+    rebuilt = _prepare_view(context)
+    assert selected.read_bytes() == tampered
+    assert any(file.path.endswith('/flow.svg') and b'width="1"' in file.body for file in rebuilt[3].files)
+
+
+@pytest.mark.parametrize('changed', ['native.py', 'flow.md.html'])
+def test_managed_view_renders_unstaged_workflow_without_writing_saved_views(tmp_path, monkeypatch, changed):
+    from api_agent.runtime.view_flow import _prepare_view
+    from api_agent.workflows.definition import load_definition
+    from api_agent.workflows import viewer_render
+    import importlib
+    runtime = importlib.import_module('api_agent.runtime.view_flow')
+    minimal_graph(tmp_path)
+    vb.generate_views(tmp_path, renderer=TinyRenderer(), repository_url='//github.com/example/agent')
+    monkeypatch.setattr(runtime, 'load_selected_definition', lambda context: load_definition(
+        tmp_path / 'flow.md.html', base_root=tmp_path, pack_root=tmp_path))
+    monkeypatch.delenv('API_AGENT_PLANTUML_JAR', raising=False)
+    monkeypatch.setattr(vb, 'prepare_renderer', lambda: tmp_path / 'renderer.jar')
+    monkeypatch.setattr(viewer_render, 'PlantUMLRenderer', lambda jar: TinyRenderer())
+    target = tmp_path / changed
+    target.write_text(target.read_text().replace('| example |', '| changed |') if changed.endswith('.html')
+                      else target.read_text() + '# changed implementation\n')
+    before = {path: path.read_bytes() for path in tmp_path.rglob('*') if path.is_file()}
     with pytest.raises(RenderError):
-        _prepare_view(context)
+        vb.check_views(tmp_path)
+    definition, projection, canonical, bundle, _ = _prepare_view(
+        SimpleNamespace(base_root=tmp_path, workflow_base_root=None))
+    assert canonical and bundle.projection_sha256 == projection.projection_sha256
+    assert definition.graph_id == ('changed' if changed.endswith('.html') else 'example')
+    assert {path: path.read_bytes() for path in tmp_path.rglob('*') if path.is_file()} == before
+
+
+def test_workflow_definition_identity_matches_after_working_tree_is_committed(tmp_path):
+    import subprocess
+    from api_agent.workflows.definition import load_definition
+    from api_agent.workflows.provenance import verified_documents
+
+    def git(*args):
+        subprocess.run(('git', '-C', str(tmp_path), *args), check=True, capture_output=True)
+
+    entry = minimal_graph(tmp_path)
+    git('init', '-q')
+    git('config', 'user.name', 'Example')
+    git('config', 'user.email', 'example@example.invalid')
+    git('add', '.')
+    git('commit', '-qm', 'initial workflow')
+    entry.write_text(entry.read_text().replace('| example |', '| changed |'))
+    working = load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+    working_manifest = verified_documents(working)
+    assert working_manifest['owners'][0]['state'] == 'working_tree'
+    assert working_manifest['owners'][0]['commit'] is None
+
+    git('add', '.')
+    git('commit', '-qm', 'update workflow')
+    committed = load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+    committed_manifest = verified_documents(committed)
+    assert committed.definition_id == working.definition_id
+    assert committed_manifest['documents'] == working_manifest['documents']
+    assert committed_manifest['owners'][0]['commit'] is not None
 
 
 def test_source_inventory_check_still_rejects_unowned_orphan(tmp_path):
@@ -287,6 +349,7 @@ def test_mapped_owner_envelopes_and_identities_match_actual_loaders(tmp_path):
 
     vb.generate_views(tmp_path, renderer=TinyRenderer(), repository_url="//github.com/example/agent")
     vb.check_views(tmp_path)
+    assert vb.VIEW_ROOTS_PATH in vb._checked_view_inventory(tmp_path)
 
     for entry, base, selected_pack in ((pack / "nested/flow.md.html", tmp_path, pack),
                                        (fixture / "flow.md.html", fixture, fixture)):
@@ -552,3 +615,62 @@ def test_mapping_existing_component_document_is_not_a_source_graph_entry(tmp_pat
     roots_manifest(tmp_path, {"nested/flow.md.html": {"base_root": ".", "pack_root": ".", "entry_root": "pack"}})
     with pytest.raises(RenderError, match="unknown or stale"):
         vb.read_view_roots(tmp_path)
+
+
+def test_checked_inventory_compares_complete_workflow_between_snapshots(tmp_path):
+    import shutil
+    staged = tmp_path / 'staged'
+    working = tmp_path / 'working'
+    staged.mkdir()
+    minimal_graph(staged)
+    vb.generate_views(staged, renderer=TinyRenderer(), repository_url='//github.com/example/agent')
+    shutil.copytree(staged, working)
+    vb.check_staged_workflow_matches_worktree(staged, working)
+    (working / 'unrelated.txt').write_text('independent change')
+    vb.check_staged_workflow_matches_worktree(staged, working)
+    path = working / 'flow.md.html'
+    path.write_text(path.read_text().replace('| example |', '| changed_graph |'))
+    vb.generate_views(working, renderer=TinyRenderer())
+    with pytest.raises(RenderError, match='unstaged changes'):
+        vb.check_staged_workflow_matches_worktree(staged, working)
+
+
+def test_real_workflow_head_check_matches_committed_inventory(tmp_path):
+    import subprocess
+    from tools import checks
+    def git(*args):
+        subprocess.run(['git', *args], cwd=tmp_path, check=True, capture_output=True)
+    minimal_graph(tmp_path)
+    vb.generate_views(tmp_path, renderer=TinyRenderer(), repository_url='//github.com/example/agent')
+    (tmp_path / 'unrelated').mkdir()
+    (tmp_path / 'unrelated/flow.md.html').write_text('# Component v2: unrelated\n')
+    (tmp_path / 'unrelated/.private_resources/diagrams').mkdir(parents=True)
+    (tmp_path / 'unrelated/.private_resources/diagrams/art.svg').write_text(
+        '<svg/>\n<!-- api-agent-view-v1 not-json -->\n')
+    (tmp_path / 'unrelated/.private_resources/diagrams/other.svg').write_text(
+        '<svg/>\n<!-- api-agent-view-v1 [] -->\n')
+    vb.check_views(tmp_path)
+    assert checks.check_head(tmp_path) is False
+    git('init', '-q')
+    git('config', 'user.name', 'Example')
+    git('config', 'user.email', 'example@example.invalid')
+    git('add', '.')
+    git('commit', '-qm', 'workflow')
+    assert checks.check_head(tmp_path) is True
+    (tmp_path / 'native.py').write_text('raise RuntimeError("new implementation")\n')
+    vb.generate_views(tmp_path, renderer=TinyRenderer())
+    git('update-index', '--assume-unchanged', 'native.py')
+    with pytest.raises(ValueError, match='differ from HEAD'):
+        checks.check_head(tmp_path)
+
+
+def test_inventory_accepts_optional_repository_identity_and_missing_source_assets(tmp_path, monkeypatch):
+    monkeypatch.setattr(vb, 'check_views', lambda root: None)
+    monkeypatch.setattr(vb, 'discover_view_entries', lambda root: ())
+    monkeypatch.setattr(vb, 'read_view_roots', lambda root, entries: {})
+    monkeypatch.setattr(vb, '_projections', lambda root: ())
+    monkeypatch.setattr(vb, '_inventory_contexts', lambda *args: ())
+    monkeypatch.setattr(vb, '_repository_inputs', lambda root: (None, ()))
+    monkeypatch.setattr(vb, '_owner_records', lambda *args: ({}, {}))
+    monkeypatch.setattr(vb, '_inventory_files', lambda *args, **kwargs: ())
+    assert vb._checked_view_inventory(tmp_path) == {}

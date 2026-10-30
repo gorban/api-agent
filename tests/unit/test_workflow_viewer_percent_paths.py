@@ -14,7 +14,17 @@ const images = input.paths.map(path => ({removed:false, dataset:{}, getAttribute
 const links = input.paths.map(path => ({href:input.prefix + path, getAttribute() {return this.href;}, getAttributeNS() {return this.href;}, setAttribute(name,value) {this.href=value;}, setAttributeNS(ns,name,value) {this.xlink=value;}}));
 const carrier = {textContent:'# Workflow v2\n', before() {}};
 const main = {setAttribute() {}, append() {}, querySelector() {return null;}, querySelectorAll() {return [];}};
-const content = {querySelectorAll(selector) {return selector === 'img' ? images : [];}};
+const content = {
+ querySelector(selector) {
+  if (selector === 'h1') return null;
+  throw new Error(`Unexpected template selector: ${selector}`);
+ },
+ querySelectorAll(selector) {
+  if (selector === 'img') return images;
+  if (['[data-workflow-heading]', '[id]', 'h2', 'h2,h3'].includes(selector)) return [];
+  throw new Error(`Unexpected template selector: ${selector}`);
+ }
+};
 const script = {src:new URL('.private_resources/viewer/viewer.js', input.base).href, getAttribute(name) {return name === 'src' ? '.private_resources/viewer/viewer.js' : name === 'data-workflow-links' ? 'v1' : JSON.stringify({[input.prefix]: input.relative});}};
 const document = {baseURI:input.base, readyState:'complete', currentScript:script,
  querySelector(selector) {return selector.startsWith('plaintext') ? carrier : null;},

@@ -1,5 +1,5 @@
 # Inspector execution evidence and bounded delivery
-
+Orange
 [Inspector summary](implementation_plan_b1c.md) · [Recorded execution contract](implementation_plan_b1c1a.md) · [Presentation and diagnosis](implementation_plan_b1c2.md) · [Historical source identity](implementation_plan_b1c3.md)
 
 ## Origin-side identities and observations
@@ -31,3 +31,12 @@
 - [ ] Independently review and renew applicable exact unit line/branch coverage, installed package/license and public source/index/metadata gates. Deterministic evidence requires no paid calls; actual application/E2E acceptance stays separately scoped.
 
 - [ ] Persist the exact resolved declaration projection and sanitized component/node/tool events together in manifest-hashed Allure execution artifacts for instrumented integration and E2E attempts. Bind events to the stable declaration hierarchy, turns, visits, retries and calls; retain timing/token/cost attribution and explicit capture completeness. LOG_CONTENT other than True records a clear content-withheld reason; True records permitted scrubbed node/tool/deterministic inputs and outputs while credentials and hidden chain-of-thought remain excluded. Partial traces never imply exact full-graph coverage.
+
+## Execution-time settings
+
+- [ ] Capture [effective workflow setting values](implementation_plan_b1c1b.md) with their invocation/scope evidence, including timeout and pass-limit resolution. Extend the Allure format before historical overlays; current defaults must never substitute for missing executed values.
+
+
+## Destination-specific content projections
+
+- [ ] Preserve LOG_CONTENT as the journal/Allure/local-inspection content gate while delivering [independent trace capture](implementation_plan_k1b.md). Source-side fan-out must permit trace-only capture without storing trace-permitted payloads in a shared log/Allure-readable journal, and cannot recover content already withheld by that journal. Reuse identities, credential registration and structural events; validate all four flag combinations before downstream consumers.

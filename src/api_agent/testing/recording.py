@@ -63,11 +63,15 @@ class RunRecorder:
 
     def _write(self, name, data):
         path = self.directory / name
+        created = False
         try:
             with path.open('xb') as stream:
+                created = True
                 stream.write(data)
         except OSError:
             self._write_failed = True
+            if created:
+                path.unlink(missing_ok=True)
             raise
         self._files.add(name)
         return name
@@ -80,6 +84,15 @@ class RunRecorder:
         if name == 'manifest.json' or type(content) is not bytes:
             raise ValueError('Artifact requires a distinct filename and bytes')
         return self._write(name, content)
+
+    def discard_artifacts(self, names):
+        """Remove newly written artifacts after an incomplete grouped write."""
+        if self._finalized or any(name not in self._files for name in names):
+            raise ValueError('Artifacts are not owned by this active recording')
+        for name in names:
+            _safe_component(name)
+            (self.directory / name).unlink(missing_ok=True)
+            self._files.remove(name)
 
     def existing_attachment(self, title, source, mime='application/json'):
         """Reference bytes already owned by this run without writing another copy."""

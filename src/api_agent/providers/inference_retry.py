@@ -1,4 +1,4 @@
-"""Bounded, status-only retry decisions for a single logical inference."""
+"""Bounded HTTP/network retry decisions for a single logical inference."""
 import math
 import random
 from datetime import datetime, timezone
@@ -37,7 +37,38 @@ def retry_after(value, *, now=None):
 
 def retryable(error):
     status = getattr(error, 'http_status', None)
-    return type(status) is int and (status == 429 or 500 <= status <= 599)
+    if type(status) is int and (status == 429 or 500 <= status <= 599):
+        return True
+    from .control import OperationalError
+    return (status is None or type(status) is int and status == 200) and isinstance(error, OperationalError) and error.kind == 'network'
+
+
+def transient_network_failure(error, transport):
+    """Classify typed transport causes, not exception messages or broad OSErrors.
+
+    Providers pass their actual httpx-compatible module (including SDK httpx2).
+    Pool saturation, local deadlines, invalid URLs and certificate failures
+    are deliberately excluded. A disconnected request may already be billable.
+    """
+    import ssl
+    chain, seen = [], set()
+    while error is not None and id(error) not in seen and len(chain) < 16:
+        seen.add(id(error))
+        chain.append(error)
+        error = error.__cause__ if error.__cause__ is not None else (
+            None if error.__suppress_context__ else error.__context__)
+    if any(isinstance(item, ssl.SSLError) and not isinstance(item, ssl.SSLEOFError) for item in chain):
+        return False
+    failures = (transport.ConnectError, transport.ConnectTimeout, transport.ReadError,
+                transport.ReadTimeout, transport.WriteError, transport.WriteTimeout,
+                transport.RemoteProtocolError)
+    for item in chain:
+        if isinstance(item, failures):
+            return True
+        if isinstance(item, (TimeoutError, transport.PoolTimeout, transport.InvalidURL,
+                             transport.UnsupportedProtocol, transport.LocalProtocolError)):
+            return False
+    return False
 
 
 def retry_hint_supported(hint):

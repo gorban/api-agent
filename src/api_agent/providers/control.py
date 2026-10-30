@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable, TypeVar
 
 T = TypeVar("T")
-KINDS = frozenset({"authentication", "authorization", "unavailable", "rate_limited", "unsupported", "invalid_request", "deadline", "unknown"})
+KINDS = frozenset({"authentication", "authorization", "unavailable", "network", "rate_limited", "unsupported", "invalid_request", "deadline", "unknown"})
 EXECUTIONS = frozenset({"not_started", "possibly_executed", "completed"})
 
 

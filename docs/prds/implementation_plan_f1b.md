@@ -13,10 +13,16 @@ for the supported shared completion path.
   initial request, supported range 1..20. One disables retries. Resolve and validate
   it before authentication or inference; preserve ordinary/test override precedence.
 - [ ] Retry normalized upstream HTTP 500..599 and 429. Other HTTP failures, local
-  validation, cancellation and statusless transport failures remain terminal in
-  this bounded contract. Preserve a known status even if its error body cannot be
+  validation and cancellation remain terminal. Also retry explicitly classified
+  transient connection, read/write-timeout and disconnect failures using the same
+  five-total-attempt loop; preserve possibly-executed and unknown-cost evidence.
+  Statusless unknown errors, local deadlines, pool saturation and TLS configuration
+  failures remain terminal. Preserve a known status even if its error body cannot be
   parsed. Preserve status and parsed retry hints before reading a failure body;
   never infer eligibility solely from an unavailable/unknown kind.
+  These transport retries do not repair invalid generated tool arguments. The
+  [tool-conversation contract](implementation_plan_f1a.md) may request a new,
+  separately accounted proposal within its own existing round limit.
 - [ ] Nominal waits are `min(30, 0.2 * 5 ** (retry_number - 1))` seconds, giving
   200ms, 1s, 5s and 25s for the default. Apply bounded jitter; a valid Retry-After
   value is a minimum and may exceed the algorithm's cap. Reject malformed/unbounded

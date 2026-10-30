@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from api_agent.providers.contracts import SetupPrerequisiteError
 from api_agent.providers.control import CleanupPendingError
+from api_agent.runtime import frontend
 from api_agent.ui import provider
 
 
@@ -32,11 +33,14 @@ def test_listener_and_resources(tmp_path, monkeypatch):
 def test_provider_lifecycle(monkeypatch):
     process = SimpleNamespace(aclose=AsyncMock())
     launcher = SimpleNamespace(start=AsyncMock(return_value=process))
+    prepare = AsyncMock()
+    monkeypatch.setattr(frontend, 'prepare_source_frontend', prepare)
     monkeypatch.setattr(provider.shutil, 'which', lambda _: '/usr/bin/node')
     instance = provider.create_provider({}, {'ui_processes':launcher, 'ui_access_token':'a' * 32, 'tls_material':SimpleNamespace(cert_file='cert', key_file='key')})
     async def exercise():
         await instance.astart()
         await instance.astart()
+        prepare.assert_awaited_once()
         assert launcher.start.await_count == 1
         args = launcher.start.call_args
         assert Path(args.args[0][1]).name == 'launch.mjs'
@@ -62,6 +66,8 @@ def test_missing_prerequisites(missing, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize('cancel', [False, True])
 def test_pending_cleanup_retry(cancel, monkeypatch):
+    prepare = AsyncMock()
+    monkeypatch.setattr(frontend, 'prepare_source_frontend', prepare)
     monkeypatch.setattr(provider.shutil, 'which', lambda _: '/usr/bin/node')
     pending = CleanupPendingError((), AsyncMock())
     error = asyncio.CancelledError() if cancel else pending
@@ -74,6 +80,7 @@ def test_pending_cleanup_retry(cancel, monkeypatch):
         launcher.start.side_effect = None
         launcher.start.return_value = SimpleNamespace(aclose=AsyncMock())
         await instance.astart()
+        assert prepare.await_count == 2
         assert instance.pending is None
         instance.pending = pending
         await instance.aclose()

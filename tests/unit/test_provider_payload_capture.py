@@ -53,7 +53,8 @@ def backend_process(addresses, stop, log, fail, text=VISIBLE, auth_secret=SECRET
 
 @pytest.mark.parametrize('log,trace', [(False, False), (False, True), (True, False), (True, True)])
 @pytest.mark.parametrize('fail', [False, True, 'cancel'])
-def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log, trace, fail):
+@pytest.mark.parametrize('journal_authority', [False, True])
+def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log, trace, fail, journal_authority):
     status = 'cancelled' if fail == 'cancel' else 'failed' if fail else 'passed'
     exit_code = 130 if fail == 'cancel' else int(fail)
     context = multiprocessing.get_context('spawn')
@@ -63,7 +64,8 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
     client = None
     try:
         client = SetupClient(addresses.get(timeout=10), timeout=5)
-        request = LLMRequest('synthetic-model', CompletionRequest((Message('user', (TextContent(VISIBLE + SECRET),)),)))
+        messages = tuple(Message('user', (TextContent(f'{index}: {VISIBLE}' + SECRET),)) for index in range(27))
+        request = LLMRequest('synthetic-model', CompletionRequest(messages))
         if fail:
             with pytest.raises(Exception):
                 client.complete(request)
@@ -77,7 +79,8 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
         assert (VISIBLE in serialized) is log
         assert all(row['reason'] == ('captured' if log else 'withheld') for row in rows)
         if log:
-            assert rows[0]['content']['messages'][0]['text'] == VISIBLE + '[REDACTED]'
+            assert len(rows[0]['content']['messages']) == 27
+            assert rows[0]['content']['messages'][0]['text'] == '0: ' + VISIBLE + '[REDACTED]'
             assert rows[0]['content']['selected_llm'] == 'synthetic-model'
             if not fail:
                 assert rows[1]['content']['usage']['input_tokens'] == 3
@@ -86,7 +89,7 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
         boundary = EmissionBoundary()
         runtime = SimpleNamespace(boundary=boundary.for_policy(ContentPolicy(trace)),
             begin=Mock(return_value=span), is_model_identity=lambda value: False)
-        adapter = WorkflowObservationFactory(config(log, trace), boundary=boundary, trace=runtime).create(definition())
+        adapter = WorkflowObservationFactory(config(log and journal_authority, trace), boundary=boundary, trace=runtime).create(definition())
         visit, call, graph = str(uuid4()), str(uuid4()), str(uuid4())
         adapter.observe(dict(event='scope_start', scope_id=graph, parent_id=None, owner='GRAPH', kind='graph', started_ms=999))
         adapter.observe(dict(event='edge', owner='GRAPH', source='START', target='Make', implicit=True))
@@ -94,14 +97,14 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
         from api_agent.workflows.attribution import bind_workflow_visit
         with bind_workflow_visit(adapter, visit):
             capture_rows(rows, call)
-        adapter.record_call(visit_id=visit, call_id=call, usage=None if fail else {'input_tokens': 3, 'output_tokens': 4}, outcome=status if fail else 'completed')
+        adapter.record_call(visit_id=visit, call_id=call, usage=None if fail else {'input_tokens': 3, 'output_tokens': 4}, outcome=status if fail else 'completed', transport_attempts=client.transport_attempts)
         adapter.observe(dict(event='scope_end', scope_id=visit, parent_id=graph, owner='Make', kind='node', started_ms=1000, stopped_ms=1001, outcome=status))
         adapter.observe(dict(event='edge', owner='GRAPH', source='Make', target='END', implicit=True, visit_id=visit))
         adapter.observe(dict(event='scope_end', scope_id=graph, parent_id=None, owner='GRAPH', kind='graph', started_ms=999, stopped_ms=1002, outcome=status))
         retained = adapter.finalize()
         captures = [row for row in retained['events'] if row['event'] == 'capture']
         assert all(row['cause_id'] == call and row['visit_id'] == visit for row in captures)
-        assert ('llm_request' in json.dumps(retained)) is log
+        assert ('llm_request' in json.dumps(retained)) is (log and journal_authority)
         # Continue the same provider phases and journal through publication,
         # then reopen the digest-bound files from the finalized manifest.
         from api_agent.testing.contracts import RunnerEvent, TestResult
@@ -129,9 +132,31 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
         resolver = PayloadResolver.local(published.directory, published.manifest)
         index_name = next(row['source'] for row in rendered['attachments'] if row['name'] == 'Payload index')
         index = resolver.index(index_name)
+        if log:
+            request_entry = next(entry for entry in index['entries']
+                                 if entry['occurrence'].get('phase') == 'request')
+            assert len(resolver({'kind': 'payload', 'source': request_entry['source'],
+                                 'sha256': request_entry['sha256'], 'length': request_entry['length']})['messages']) == 27
         assert not any(row['name'] == 'Workflow execution evidence' for row in rendered['attachments'])
         graph = rendered['steps'][0]
         assert next(row['value'] for row in graph['parameters'] if row['name'] == 'invocation_id') == retained['invocation_id']
+        node = next(step for step in graph['steps'] if any(
+            parameter['name'] == 'scope_id' and parameter['value'] == visit
+            for parameter in step.get('parameters', [])))
+        if log:
+            phases = [entry for entry in index['entries'] if entry['occurrence'].get('kind') == 'llm']
+            assert {entry['occurrence']['phase'] for entry in phases} == ({'request'} if fail else {'request', 'response'})
+            assert all(entry['owner'] == {'invocation_id': retained['invocation_id'], 'visit_id': visit} for entry in phases)
+            def descendants(step):
+                yield step
+                for child in step.get('steps', []):
+                    yield from descendants(child)
+            for entry in phases:
+                attempt_id = entry['occurrence']['transport_attempt_id']
+                attempt_step = next(step for step in descendants(node) if any(
+                    parameter['name'] == 'transport_id' and parameter['value'] == attempt_id
+                    for parameter in step.get('parameters', [])))
+                assert entry['source'] in {item['source'] for item in attempt_step.get('attachments', [])}
         journal_name = next(row['source'] for row in graph['attachments'] if row['name'] == 'Execution evidence')
         envelope = json.loads((published.directory / journal_name).read_text())
         assert hydrate_journal(envelope, resolver) == retained
@@ -154,8 +179,72 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
 def test_provider_capture_oversized_has_explicit_omission():
     from api_agent.workflows.inference_capture import capture_inference
     with collect_inference(EmissionBoundary(ContentPolicy(True))) as collector:
-        capture_inference('input', {'messages': [{'text': 'é' * 33000}]}, str(uuid4()), auth=SECRET)
+        capture_inference('input', {'messages': [{'text': 'é' * (2 * 1024 * 1024)}]}, str(uuid4()), auth=SECRET)
     assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'truncated'}]
+
+
+def test_provider_capture_admits_large_container_after_late_secret_registration():
+    from api_agent.workflows.inference_capture import capture_inference
+    boundary = EmissionBoundary(ContentPolicy(True))
+    wire = {'fields': {f'field_{index}': f'value {index}' for index in range(40)},
+            'messages': [{'text': f'message {index} {SECRET}'} for index in range(27)],
+            'parts': ['synthetic-provider-', 'owned-secret']}
+    with collect_inference(boundary) as collector:
+        boundary.register_secret(SECRET)
+        capture_inference('input', wire, str(uuid4()))
+    row = collector['rows'][0]
+    assert row['reason'] == 'captured'
+    assert len(row['content']['fields']) == 40
+    assert len(row['content']['messages']) == 27
+    assert SECRET not in json.dumps(row)
+    assert row['content']['messages'][-1]['text'].endswith('[REDACTED]')
+    assert row['content']['parts'] == ['[REDACTED]']
+
+
+def test_provider_capture_total_item_overflow_is_omitted():
+    from api_agent.workflows.inference_capture import capture_inference
+    with collect_inference(EmissionBoundary(ContentPolicy(True))) as collector:
+        capture_inference('input', {'messages': [None] * 2048}, str(uuid4()))
+    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'truncated'}]
+
+
+def test_rejected_raw_wire_is_not_serialized_for_dedup(monkeypatch):
+    from api_agent.workflows.inference_capture import bind_inference_call, capture_inference
+    import json as json_module
+    original = json_module.dumps
+    wire = {'messages': [None] * 2048}
+    def bounded_dump(value, *args, **kwargs):
+        assert value is not wire
+        return original(value, *args, **kwargs)
+    monkeypatch.setattr(json_module, 'dumps', bounded_dump)
+    with collect_inference(EmissionBoundary(ContentPolicy(True))) as collector:
+        with bind_inference_call(str(uuid4())):
+            capture_inference('input', wire, str(uuid4()))
+    assert collector['rows'][0]['reason'] == 'truncated'
+
+
+def test_authoritative_request_supersedes_fallback_and_conflicts_are_incomplete():
+    from api_agent.workflows.inference_capture import select_capture_rows
+    fallback = {'phase': 'request', 'content': {'text': 'fallback'}, '_source': 'fallback'}
+    actual = {'phase': 'request', 'content': {'text': 'actual'}}
+    assert select_capture_rows([fallback, actual]) == [actual]
+    conflict = {'phase': 'request', 'content': {'text': 'different'}}
+    assert select_capture_rows([fallback, actual, conflict]) == [
+        {'phase': 'request', 'content': {}, 'reason': 'truncated'}]
+
+
+@pytest.mark.parametrize('allow', [False, True])
+def test_large_provider_capture_scrubs_secret_across_chunk_boundary(allow):
+    from api_agent.workflows.inference_capture import capture_inference
+    boundary = EmissionBoundary(ContentPolicy(allow))
+    with collect_inference(boundary) as collector:
+        boundary.register_secret(SECRET)
+        capture_inference('input', {'text': 'x' * (200 * 1024 - 10) + SECRET + 'y' * 20}, str(uuid4()))
+    row = collector['rows'][0]
+    assert SECRET not in json.dumps(row)
+    assert row['reason'] == ('captured' if allow else 'withheld')
+    if allow:
+        assert '[REDACTED]' in row['content']['text']
 
 
 @pytest.mark.parametrize('failure', [ValueError('synthetic failure'), asyncio.CancelledError()])
@@ -228,7 +317,8 @@ def test_empty_authoritative_collector_never_invokes_secondary_exporter(authorit
             client = SetupClient(address, timeout=2)
             try:
                 assert client.complete(request) == expected
-                assert client.evidence == ([] if authority else [{'phase': 'request', 'content': {'text': 'already-admitted'}}])
+                assert client.evidence == ([] if authority else [dict(phase=phase, content={}, reason='withheld')
+                                                                  for phase in ('request', 'response')])
             finally:
                 client.close()
         try:
@@ -239,8 +329,39 @@ def test_empty_authoritative_collector_never_invokes_secondary_exporter(authorit
     asyncio.run(run())
 
 
+def test_invalid_capture_reason_marks_incomplete_without_losing_result():
+    from test_setup_transport import Registry, CAPABILITY
+    from api_agent.workflows.inference_capture import _COLLECTOR
+    request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('Ok'),)),)))
+    expected = LLMResult(Message('assistant', (TextContent('Ok'),)), Usage(1, 1))
+    class Owner(Registry):
+        async def complete(self, binding, request):
+            bind_boundary(EmissionBoundary(ContentPolicy(True)))
+            _COLLECTOR.get()['rows'].append({'phase': 'request', 'content': {'text': 'bad'}, 'reason': 'invalid'})
+            return expected
+    async def run():
+        server = SetupServer(Owner(), CAPABILITY, timeout=2)
+        address = await server.start()
+        def consume():
+            client = SetupClient(address, timeout=2)
+            try:
+                assert client.complete(request) == expected
+                assert client.evidence == [dict(phase=phase, content={}, reason='truncated')
+                                           for phase in ('request', 'response')]
+            finally:
+                client.close()
+        try:
+            await asyncio.to_thread(consume)
+        finally:
+            await server.aclose()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('failure', [ValueError('synthetic observer'), asyncio.CancelledError()])
-def test_optional_capture_observer_failure_does_not_escape(failure):
+def test_optional_capture_observer_failure_does_not_escape(failure, monkeypatch):
+    from api_agent.workflows import inference_capture
+    reported = []
+    monkeypatch.setattr(inference_capture, '_report_capture_loss', lambda *args: reported.append(True))
     from api_agent.workflows.attribution import bind_workflow_visit
     def broken(**kwargs):
         raise failure
@@ -249,6 +370,7 @@ def test_optional_capture_observer_failure_does_not_escape(failure):
     with bind_workflow_visit(owner, 'synthetic-visit'):
         capture_rows(rows, str(uuid4()))
     assert rows == [{'phase': 'request', 'content': {'text': VISIBLE}}]
+    assert reported == [True]
 
 
 @pytest.mark.parametrize('failure', [ValueError('synthetic boundary'), asyncio.CancelledError()])
@@ -260,7 +382,7 @@ def test_optional_provider_projection_failure_never_retains_raw_payload(failure)
             raise failure
     with collect_inference(BrokenBoundary()) as collector:
         capture_inference('input', {'text': VISIBLE + SECRET}, str(uuid4()), auth=SECRET)
-    assert collector['rows'] == []
+    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'unavailable'}]
 
 
 def test_client_omits_oversized_evidence_without_losing_result(monkeypatch):
@@ -270,13 +392,16 @@ def test_client_omits_oversized_evidence_without_losing_result(monkeypatch):
     expected = LLMResult(Message('assistant', (TextContent('Ok'),)), Usage(1, 1))
     class Owner(Registry):
         async def complete(self, binding, request):
+            from api_agent.workflows.inference_capture import _COLLECTOR
+            bind_boundary(EmissionBoundary(ContentPolicy(True)))
+            _COLLECTOR.get()['rows'].append(dict(phase='request', content={'text': 'x' * 200000}))
             return expected
         def export_content(self, *args):
             return [{'phase': 'request', 'content': {'text': 'x' * 200000}}]
     # A faulty sender bypasses its optional-frame limiter. The independent
     # receiver bound must still omit content while preserving completion.
-    monkeypatch.setattr(setup_transport, '_content_frame', lambda row:
-        setup_transport._encode(dict(version=1, status='evidence', **row)))
+    monkeypatch.setattr(setup_transport, '_evidence_frames', lambda row, remaining:
+        [setup_transport._encode(dict(version=1, status='evidence', **row))])
     async def run():
         server = SetupServer(Owner(), CAPABILITY, timeout=2)
         address = await server.start()
@@ -306,11 +431,12 @@ def test_public_provider_capture_without_auth_and_without_workflow_is_valid(auth
 
 
 @pytest.mark.parametrize('text,auth_secret,reason', [
-    ('é' * 33000, SECRET, 'truncated'),
+    ('é' * 33000, SECRET, 'captured'),
     ('ordinary visible', 'values', 'unavailable'),
     ('🧪' * 6000 + '\n"\\', SECRET, 'captured'),
-    ('🧪' * 11000, SECRET, 'truncated'),
-], ids=['utf8_overflow', 'authority_unavailable', 'unicode_roundtrip', 'ipc_unicode_overflow'])
+    ('🧪' * 11000, SECRET, 'captured'),
+    ('🧪' * 55000, SECRET, 'captured'),
+], ids=['utf8_chunk', 'authority_unavailable', 'unicode_roundtrip', 'ipc_unicode_chunk', 'large_chunk'])
 def test_separate_backend_unicode_and_omitted_phases_finalize_exactly(tmp_path, text, auth_secret, reason):
     from api_agent.workflows.attribution import bind_workflow_visit
     from api_agent.testing.contracts import RunnerEvent, TestResult
@@ -340,16 +466,17 @@ def test_separate_backend_unicode_and_omitted_phases_finalize_exactly(tmp_path, 
         adapter.observe(dict(event='scope_start', scope_id=visit, parent_id=graph, owner='Make', kind='node', started_ms=1000))
         with bind_workflow_visit(adapter, visit):
             capture_rows(rows, call)
-        adapter.record_call(visit_id=visit, call_id=call, usage={'input_tokens': 3, 'output_tokens': 4}, outcome='completed')
+        adapter.record_call(visit_id=visit, call_id=call, usage={'input_tokens': 3, 'output_tokens': 4}, outcome='completed', transport_attempts=client.transport_attempts)
         adapter.observe(dict(event='scope_end', scope_id=visit, parent_id=graph, owner='Make', kind='node', started_ms=1000, stopped_ms=1001, outcome='passed'))
         adapter.observe(dict(event='edge', owner='GRAPH', source='Make', target='END', implicit=True, visit_id=visit))
         adapter.observe(dict(event='scope_end', scope_id=graph, parent_id=None, owner='GRAPH', kind='graph', started_ms=999, stopped_ms=1002, outcome='passed'))
         retained = adapter.finalize()
         captures = [row for row in retained['events'] if row['event'] == 'capture']
-        assert [row['reason'] for row in captures] == [reason, reason]
-        expected_values = ([{'llm_request': rows[0]['content']}, {'llm_response': rows[1]['content']}]
-                           if reason == 'captured' else [{}, {}])
-        assert [row['values'] for row in captures] == expected_values
+        if reason == 'captured' and len(text.encode('utf-8')) > 65536:
+            assert [row['reason'] for row in captures] == ['truncated', 'truncated']
+            assert [row['values'] for row in captures] == [{}, {}]
+        else:
+            assert [row['reason'] for row in captures] == [reason, reason]
         recording_context, selected, recording_config = fixture(tmp_path)
         recording_config['LOG_CONTENT'] = True
         def runner(context, tests, **hooks):
@@ -374,9 +501,14 @@ def test_separate_backend_unicode_and_omitted_phases_finalize_exactly(tmp_path, 
         assert next(row['value'] for row in graph['parameters'] if row['name'] == 'invocation_id') == retained['invocation_id']
         name = next(row['source'] for row in graph['attachments'] if row['name'] == 'Execution evidence')
         envelope = json.loads((published.directory / name).read_text())
+        if reason == 'captured' and len(text.encode('utf-8')) > 65536:
+            linked = [event['payload']['canonical'] for event in envelope['events']
+                      if event.get('event') == 'capture']
+            assert len(linked) == 2
+            assert all(ref['kind'] == 'chunked' for ref in linked)
         assert hydrate_journal(envelope, resolver) == retained
         payload_names = [name for name in published.manifest['files'] if name.startswith('payload-') and not name.startswith('payload-index-')]
-        assert len(payload_names) == (2 if reason == 'captured' else 0)
+        assert bool(payload_names) is (reason == 'captured')
         if reason == 'captured':
             assert rows[0]['content']['messages'][0]['text'] == text + '[REDACTED]'
             assert rows[1]['content']['text'] == text + '[REDACTED]'

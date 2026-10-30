@@ -1,0 +1,16 @@
+min_version = "2026.10.21"
+
+[tool_config]
+locked = true
+
+[settings]
+python.compile = false
+
+[tools]
+"core:python" = "3.13.18"
+"aqua:astral-sh/uv" = "0.13.6"
+"core:node" = { version = "24.22.2", lazy = true }
+"aqua:npm/cli" = { version = "11.16.0", lazy = true, lazy_bins = ["npm", "npx"] }
+"core:java" = { version = "temurin-21.0.13+9.0.LTS", lazy = true }
+"github:allure-framework/allure2" = { version = "2.46.1", lazy = true, lazy_bins = ["allure"] }
+"aqua:FiloSottile/mkcert" = { version = "1.4.4", lazy = true, lazy_bins = ["mkcert"] }

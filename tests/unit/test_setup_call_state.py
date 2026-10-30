@@ -16,6 +16,60 @@ CAP = 'synthetic-rich-inference-capability-000000'
 REQUEST = LLMRequest('gpt-synthetic', CompletionRequest((Message('user', (TextContent('Question'),)),)))
 EMPTY = {'version': 1, 'complete': False, 'attempts': []}
 
+
+@pytest.mark.parametrize('transition', ['disabled_to_enabled', 'enabled_to_disabled', 'different_authority'])
+def test_setup_exchange_withholds_evidence_after_boundary_transition(monkeypatch, transition):
+    import json
+    from api_agent.providers import setup_transport
+    from api_agent.providers.llm import LLMResult
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import bind_boundary, capture_inference, _COLLECTOR
+
+    frames = []
+    original_frames = setup_transport._evidence_frames
+    def observe_frames(*args, **kwargs):
+        for frame in original_frames(*args, **kwargs):
+            frames.append(frame)
+            yield frame
+    monkeypatch.setattr(setup_transport, '_evidence_frames', observe_frames)
+
+    async def scenario():
+        async def complete(request):
+            initial = EmissionBoundary(ContentPolicy(transition != 'disabled_to_enabled'),
+                                       secrets=('authority-secret',))
+            bind_boundary(initial)
+            capture_inference('input', {'text': 'private-content'}, request.request_id)
+            if transition != 'disabled_to_enabled':
+                assert 'private-content' in str(_COLLECTOR.get()['rows'])
+            if transition == 'different_authority':
+                replacement = EmissionBoundary(ContentPolicy(True), secrets=('other-secret',))
+            else:
+                replacement = initial.for_policy(ContentPolicy(transition == 'disabled_to_enabled'))
+            bind_boundary(replacement)
+            capture_inference('output', {'text': 'authority-secret other-secret private-content'}, request.request_id)
+            return LLMResult(Message('assistant', (TextContent('safe-result'),)))
+
+        owner = SimpleNamespace(ensure_ready=AsyncMock(), complete=complete, aclose=AsyncMock())
+        registry = SetupRegistry('operation', 'synthetic-selection', lambda: owner)
+        server = SetupServer(registry, CAP)
+        client = SetupClient(await server.start(), timeout=3)
+        try:
+            result = await asyncio.to_thread(client.complete, REQUEST)
+            assert result.payload.content[0].text == 'safe-result'
+            expected = [dict(phase=phase, content={}, reason='withheld')
+                        for phase in ('request', 'response')]
+            assert client.evidence == expected
+            assert [json.loads(frame) for frame in frames] == [
+                dict(version=1, status='evidence', **row) for row in expected]
+            wire = b''.join(frames)
+            assert wire
+            assert all(value not in wire for value in (b'private-content', b'authority-secret', b'other-secret'))
+        finally:
+            await asyncio.to_thread(client.close)
+            await server.aclose()
+            await registry.aclose()
+    asyncio.run(scenario())
+
 @pytest.mark.parametrize('failure', ['invalid_request', 'closed'])
 def test_direct_client_rejection_does_not_reuse_previous_attempts(failure):
     async def scenario():
@@ -107,7 +161,9 @@ def test_remote_running_loop_rejection_has_no_prior_attempts(monkeypatch):
 
     publications = []
     captures = []
-    monkeypatch.setattr(inference_usage, 'publish', lambda request, result=None, **kw: publications.append((request.request_id, kw)) or request.request_id)
+    call_ids = {'first-call': '00000000-0000-4000-8000-000000000001',
+                'second-call': '00000000-0000-4000-8000-000000000002'}
+    monkeypatch.setattr(inference_usage, 'publish', lambda request, result=None, **kw: publications.append((request.request_id, kw)) or call_ids[request.request_id])
     monkeypatch.setattr(inference_capture, 'capture_rows', lambda rows, call_id: captures.append((call_id, rows)))
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()
@@ -133,7 +189,7 @@ def test_remote_running_loop_rejection_has_no_prior_attempts(monkeypatch):
                 await asyncio.wait_for(asyncio.to_thread(provider.complete, second), 1)
             assert rejected.value.transport_attempts == EMPTY
             assert calls == ['first-call']
-            assert ('second-call', []) in captures
+            assert (call_ids['second-call'], []) in captures
             assert next(kw['error'] for call_id, kw in publications if call_id == 'second-call' and kw.get('failed')).transport_attempts == EMPTY
             release.set()
             result = await asyncio.wait_for(active, 2)
@@ -156,9 +212,11 @@ def test_remote_publishes_each_call_snapshot_after_later_call(monkeypatch):
 
     first_at_publish, release_publish = Event(), Event()
     publications, captures = [], []
+    call_ids = {'first-call': '00000000-0000-4000-8000-000000000001',
+                'second-call': '00000000-0000-4000-8000-000000000002'}
     def publish(request, result=None, **kw):
         publications.append((request.request_id, result, kw))
-        return request.request_id
+        return call_ids[request.request_id]
     monkeypatch.setattr(inference_usage, 'publish', publish)
     monkeypatch.setattr(inference_capture, 'capture_rows', lambda rows, call_id: captures.append((call_id, rows)))
     async def scenario():
@@ -200,7 +258,7 @@ def test_remote_publishes_each_call_snapshot_after_later_call(monkeypatch):
             quotes = {call: kw['quote']['list_cost_usd'] for call, result, kw in publications if result is not None}
             assert quotes == {'first-call': 1, 'second-call': 2}
             rows = dict(captures)
-            assert rows['first-call'][0]['content'] != rows['second-call'][0]['content']
+            assert rows[call_ids['first-call']][0]['content'] != rows[call_ids['second-call']][0]['content']
         finally:
             release_publish.set()
             await asyncio.to_thread(provider.close)
@@ -217,7 +275,7 @@ def test_remote_cancelled_offload_keeps_attempt_from_settled_worker(monkeypatch)
     from api_agent.testing.provider_setup import RemoteIntegrationLLM
 
     failed = []
-    monkeypatch.setattr(inference_usage, 'publish', lambda request, result=None, **kw: failed.append(kw) or 'call')
+    monkeypatch.setattr(inference_usage, 'publish', lambda request, result=None, **kw: failed.append(kw) or '00000000-0000-4000-8000-000000000003')
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()
         cancelled = Event()

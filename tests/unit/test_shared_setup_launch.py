@@ -27,6 +27,8 @@ from api_agent.providers.progress import component_timeout
 class Provider:
     version = 1
     capabilities = ProviderCapabilities(kind='llm')
+    credential_protection_version = 1
+    def bind_credential_authority(self, authority): pass
     def __init__(self, config):
         self.config = config
         self.emit('provider_load')

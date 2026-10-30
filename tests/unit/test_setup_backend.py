@@ -37,7 +37,7 @@ def fake_host(monkeypatch, tmp_path):
         async def _finish_execution(self):
             events.append('finish-execution')
     class Server:
-        def __init__(self, registry, capability, *, timeout):
+        def __init__(self, registry, capability, *, timeout, authority):
             self.registry = registry
             self.capability = capability
             self.timeout = timeout
@@ -306,7 +306,7 @@ def test_protected_snapshot_validates_backend_before_acceptance(tmp_path, monkey
     payload = json.loads(path.read_text())
     payload['setup_backend']['host'] = 'example.invalid'
     path.write_text(json.dumps(payload))
-    with pytest.raises(ContractError, match='start through launch.py'):
+    with pytest.raises(ContractError, match='start through launch.sh'):
         provider_setup._read_snapshot()
 
 
@@ -316,6 +316,7 @@ def test_remote_fixture_is_inert_and_closes_lease_on_same_owned_thread(tmp_path,
     class Client:
         def __init__(self, descriptor, *, timeout):
             self.descriptor = descriptor
+            self._descriptor = {'capability': 'synthetic-fixture', 'host': 'localhost', 'port': 1}
             self.timeout = timeout
         def ensure_ready(self):
             events.append(('ready', threading.get_ident()))
@@ -344,7 +345,8 @@ def test_remote_fixture_is_inert_and_closes_lease_on_same_owned_thread(tmp_path,
 def test_remote_prerequisite_skip_keeps_lease_owned_until_fixture_close(monkeypatch):
     from api_agent.providers import setup_transport
     class Client:
-        def __init__(self, *args, **kwargs): pass
+        def __init__(self, *args, **kwargs):
+            self._descriptor = {'capability': 'synthetic', 'host': 'localhost', 'port': 1}
         def ensure_ready(self): raise SetupPrerequisiteError('Select synthetic provider')
         def close(self): pass
     monkeypatch.setattr(setup_transport, 'SetupClient', Client)
@@ -476,6 +478,8 @@ class Auth:
 
 class Adapter:
     version = 1
+    credential_protection_version = 1
+    def bind_credential_authority(self, authority): pass
     def __init__(self, path, gate): self.path, self.gate = path, gate
     async def asetup(self, *, interactive, user_index, credentials):
         record(self.path, 'setup')

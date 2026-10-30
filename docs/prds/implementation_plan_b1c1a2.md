@@ -21,16 +21,25 @@ execution-setting snapshots and historical overlays remain unchecked here.
 
 ## Canonical payloads and progressive disclosure
 
+- [ ] Permit reporting against an admitted working-tree workflow before commit, including modified documents and new non-ignored documents at the repository root, whether changes are staged or unstaged. Label source ownership as a working-tree snapshot with its base commit, never as committed bytes; retain content-derived definition and document identities so identical bytes can be matched after commit. Reject changes after admission, preserve installed-package verification and strict staged commit checks, and keep historical definition archival and overlays separately gated. Verify both parsed execution paths, Allure reopening and dirty-to-committed identity matching.
 - [ ] Use one authoritative stored copy of each permitted node/tool/LLM input or output occurrence. Native Allure node/call attachments, structured field viewers, durable logs and later workflow overlays link to the same versioned occurrence and payload identity; avoid separate embedded copies of the same request/response in the journal, top-level attachments and native graph. Preserve independently owned request settings and response/usage metadata, and keep calls outside parsed workflows inspectable. Do not remove legacy evidence until the replacement proves equivalent permitted data, attribution and completeness.
 - [ ] Expose observed inputs and outputs beneath their actual graph/component/node visit, retaining nested JSON objects, arrays, scalar types and explicit null/withheld/redacted/truncated/unavailable distinctions. JSON fields are data, not additional timed execution steps. A native Allure display is a projection of canonical evidence, not another authority.
 - [ ] Separate the selected immutable definition from execution occurrences. Store or link to one verified resolved definition per distinct definition identity, with owner commit/resource digests and replacements; keep untraversed declarations and condition expressions out of the observed execution tree. Retain only actual visits/transitions/attempts there, with permitted condition operand values and executed settings. A compact definition link must still resolve and validate historical definitions without silently substituting current files. Preserve coverage-specific assertion evidence separately and label its purpose.
 - [ ] Derive descendant attention summaries independently of final execution outcomes: terminal error takes precedence over an observed retry, which takes precedence over ordinary success. Propagate that summary to ancestor components/graphs while preserving each child's own state and the authoritative test outcome. Distinguish recovered semantic/transport retries from terminal errors, cancellation and missing evidence. The agreed [native attention policy](implementation_plan_b1c1a3.md) maps actual internal retries to Broken/yellow, terminal failures to Failed/red and optimal success to Passed/green, without changing canonical scope/test outcomes.
 - [ ] Verify that nested content, call identity, settings, observed routes, timing and frozen token/cost attribution survive the single-copy representation and reopen correctly under the matching historical definition. Verify red-over-yellow ancestor precedence and unaffected siblings, plus both content flags independently, without paid inference. Keep canonical payload reuse, native hierarchy and later overlay consumers under independent/external and human review.
 
-The bounded [canonical GRAPH storage contract](implementation_plan_b1c1a2a.md) delivers this canonical Allure payload slice; the broader log, settings, definition and overlay requirements above retain their own gates.
+The bounded [canonical GRAPH storage contract](implementation_plan_b1c1a2a.md) delivers this canonical Allure payload slice; the broader log, settings, definition and overlay requirements above retain their own gates. The original 64 KiB canonical limit is extended by the [bounded propagation child](implementation_plan_b1c1a2d.md) through logical chunks of up to 200 KiB. This completion covers canonical evidence propagation; broader durable-log equivalence, executed-setting snapshots and historical overlays remain open.
 
 ## Conversation and turn reporting
 
 - [x] Deliver [conversation/turn hierarchy and exact-once cost rollups](implementation_plan_b1c1a2b.md), preserving independent trials, legacy evidence and canonical payloads.
 
 - [x] Deliver [scoped execution evidence and custom diagnostics](implementation_plan_b1c1a2c.md), placing attachments beneath verified owners while retaining test-wide summaries and unattached evidence.
+
+- [x] Implement and test [bounded canonical LLM request and response propagation](implementation_plan_b1c1a2d.md) across parsed flows and canonical Allure evidence.
+
+- [ ] Complete [native macOS memory-watchdog verification](implementation_plan_b1c1a2d.md).
+
+## Call and tool inspection
+
+- [ ] Deliver [call detail progressive disclosure and actual tool request/response evidence](implementation_plan_b1c1a2e.md) through shared runtime ownership.

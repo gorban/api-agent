@@ -47,7 +47,7 @@ Implementation reference: [LangGraph Graph API](https://docs.langchain.com/oss/p
 
 - [ ] Load optional zero-based UNATTENDED_USER_INDEX only when contributed by the selected provider or pack, including LLM-only accounts. Bare core/demo does not declare it. Exclude it from default acknowledgement; explicit test-picker saves and session-only ambiguity choices follow [authentication selection](implementation_plan_a2.md).
 
-- [ ] Before the first traced "Ok" run, declare boolean `LOG_CONTENT=False` with explicit-value provenance: a declaration/pack default must not grant content-logging permission. Only the effective explicit `True` enables the shared [logging/trace content gate](implementation_plan_j.md); omitted/default/False cases require thorough scrubbing tests.
+- [ ] Keep `LOG_CONTENT=False` with explicit-value provenance for [log/evidence capture](implementation_plan_j.md). Add default-False TRACELOOP_TRACE_CONTENT for [both tracing backends](implementation_plan_k1b.md); declaration/pack defaults cannot grant content permission. Verify independent gates and omitted/default/False cases.
 
 - [ ] Keep selection of needed credential roles synchronized through `UNATTENDED_USER_INDEX` only. Preserve paired array ordering; never independently pick a secondary index. Zero-entry arrays retain attended fallback; validate a selected shared index against every nonempty array consumed by the operation, including single-entry arrays, and fail invalid pairings rather than silently using another account. Interactive selection chooses one session-only index for the needed arrays.
 

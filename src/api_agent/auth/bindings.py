@@ -48,11 +48,12 @@ def bind_role_credentials(config, roles, index, *, registry, emissions, pending_
                 task.add_done_callback(pending_tasks.discard)
                 try:
                     value = await asyncio.shield(task)
+                    from api_agent.telemetry.privacy import register_secret_async
                     if type(value) is str and value:
-                        emissions.register_secret(value)
+                        await register_secret_async(emissions, value)
                     elif kind == 'login':
                         for secret in value.secret_values():
-                            emissions.register_secret(secret)
+                            await register_secret_async(emissions, secret)
                     return value
                 except asyncio.CancelledError:
                     if interaction is not None:

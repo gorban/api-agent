@@ -117,7 +117,8 @@ def test_registration_and_revocation():
         with pytest.raises(ContractError):
             registry.register('worker')
         new = registry.register('worker', 2)
-        await registry.revoke(binding)  # Original lease remains idempotent.
+        with pytest.raises(ContractError):
+            await registry.revoke(binding)  # The replaced binding is stale.
         await registry.ensure_ready(new)
         await registry.aclose()
         with pytest.raises(SessionClosedError):
@@ -490,4 +491,23 @@ def test_independent_timeout_scope_restores_caller_after_exception():
                     raise ValueError('synthetic failure')
             assert _scope.get() is caller
         assert _scope.get() is None
+    run(body)
+
+
+def test_reused_worker_attempts_keep_only_current_replay_record():
+    async def body():
+        registry = SetupRegistry('operation', 'selected', Owner)
+        prior = None
+        for attempt in range(1, 8200):
+            binding = registry.register('worker', attempt)
+            if prior is not None:
+                with pytest.raises(ContractError):
+                    await registry.revoke(prior)
+            await registry.revoke(binding)
+            prior = binding
+        assert len(registry._history) == 1
+        assert len(registry._leases) == 1
+        with pytest.raises(ContractError):
+            registry.register('worker', 8199)
+        await registry.aclose()
     run(body)

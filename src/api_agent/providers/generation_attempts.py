@@ -32,7 +32,7 @@ def validate_transport_attempts(value):
                 or (row['outcome'] in ('started', 'observed')) != (row['stopped_ms'] is None)
                 or (row['outcome'] in ('started', 'observed') and (index != len(value['attempts']) or value['complete']))
                 or (row['status'] is not None and (type(row['status']) is not int or not 100 <= row['status'] <= 599))
-                or row['error_kind'] not in (None, 'unknown', 'deadline', 'unavailable', 'rate_limit', 'authentication', 'authorization', 'invalid_request', 'server', 'cancelled')):
+                or row['error_kind'] not in (None, 'unknown', 'deadline', 'unavailable', 'network', 'rate_limit', 'authentication', 'authorization', 'invalid_request', 'server', 'cancelled')):
             raise ContractError('Invalid transport attempt ledger')
         if index > 1:
             previous = value['attempts'][index - 2]
@@ -62,7 +62,8 @@ def validate_transport_attempts(value):
             delay = row['retry_delay_seconds']
             if delay is not None and (type(delay) not in (int, float) or not math.isfinite(delay)
                     or not 0 <= delay <= 86400 or row['outcome'] != 'failed'
-                    or not (row['status'] == 429 or type(row['status']) is int and 500 <= row['status'] <= 599)):
+                    or not (row['status'] == 429 or type(row['status']) is int and 500 <= row['status'] <= 599
+                            or row['status'] in (None, 200) and row['error_kind'] == 'network')):
                 raise ValueError()
         except (ValueError, TypeError, OverflowError):
             raise ContractError('Invalid transport attempt ledger') from None
@@ -162,7 +163,7 @@ class TransportAttemptLedger:
         status = getattr(error, 'http_status', None)
         row['status'] = status if type(status) is int and 100 <= status <= 599 else None
         kind = getattr(error, 'kind', None)
-        row['error_kind'] = kind if kind in ('unknown', 'deadline', 'unavailable', 'rate_limit', 'authentication', 'authorization', 'invalid_request', 'server', 'cancelled') else ('unknown' if error is not None else None)
+        row['error_kind'] = kind if kind in ('unknown', 'deadline', 'unavailable', 'network', 'rate_limit', 'authentication', 'authorization', 'invalid_request', 'server', 'cancelled') else ('unknown' if error is not None else None)
         validate_transport_attempts(dict(version=1, complete=False, attempts=[*self._rows[:-1], row]))
         self._rows[-1] = row
         self._active = None
@@ -183,6 +184,12 @@ def bind_transport_attempt_ledger(ledger):
         yield ledger
     finally:
         _CURRENT.reset(token)
+
+
+def current_transport_attempt():
+    """Return the active physical dispatch identity, if a ledger is bound."""
+    ledger = _CURRENT.get()
+    return None if ledger is None else ledger._active
 
 
 def begin_transport_attempt(index):

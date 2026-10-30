@@ -194,7 +194,8 @@ def test_remote_outer_timeout_publishes_admitted_prefix(monkeypatch):
     remote.config, remote.client = {}, client
     published = []
     monkeypatch.setattr(inference_usage, 'publish', lambda request, result=None, **kw: published.append(kw))
-    def complete(_):
+    def complete(_, *, observation_call_id=None):
+        assert observation_call_id is not None
         client.transport_attempts = prefix
     client.complete = complete
     def timeout(call):
@@ -248,7 +249,8 @@ def test_remote_conflict_preserves_interrupted_attempt_prefix(monkeypatch):
     remote.config, remote.client = {}, client
     published = []
     monkeypatch.setattr(inference_usage, 'publish', lambda request, result=None, **kw: published.append(kw))
-    def fail(_):
+    def fail(_, *, observation_call_id=None):
+        assert observation_call_id is not None
         client.transport_attempts = prefix
         client.response_evidence = first
         error = TimeoutError('deadline')
@@ -494,7 +496,8 @@ def test_integration_callers_do_not_mutate_shared_concurrent_provider_result(tmp
         return shared
     async def load(*args, **kwargs):
         implementation = SimpleNamespace(asetup=AsyncMock(return_value=AsyncMock(return_value='synthetic')),
-                                         acomplete=physical)
+                                         acomplete=physical, credential_protection_version=1,
+                                         bind_credential_authority=lambda authority: None)
         return SimpleNamespace(implementation=implementation, aclose=AsyncMock())
     monkeypatch.setattr(provider_setup, 'aload_provider', load)
     request = LLMRequest('synthetic', CompletionRequest((Message('user', (TextContent('question'),)),)))

@@ -9,7 +9,7 @@
 - [x] Catalog failure retry, provider-owned authentication and configurable successful-catalog caching retain their established behavior.
 - [x] Complete causal mutation checks and independent source/regression review.
 - [x] Complete applicable exact coverage and public-boundary checks.
-- [ ] Human acceptance: after local startup has finished, open Studio Settings and confirm model choices load.
+- [x] Human accepts this delivered Run local follow-up without requiring another manual retest: after local startup has finished, open Studio Settings and confirm model choices load.
 
 ## Implementation evidence
 
@@ -35,12 +35,15 @@ clipped, nested request timing still applies and listener disposal completes.
 A native real-Uvicorn HTTPS proof on a disposable loopback port retrieved the
 synthetic catalog after startup expiry. Verified CA/hostname checks and the
 session guard remained active; a genuinely stalled request still returned 408.
-No inference ran, and all proof-owned listeners/providers closed. This does not
-replace the explicit human review of a restarted Studio session.
+No inference ran, and all proof-owned listeners/providers closed. That automated
+proof did not itself establish human acceptance; subsequent explicit approval
+is recorded above without claiming another restarted-session observation.
 
-## Deferred human review
+## Human acceptance
 
 Substantive implementation and required independent/external reviews are complete.
 The final joined unit gate passes at exact line and branch coverage, with package,
-installed and public-boundary checks. Only explicit human acceptance remains
-unchecked above; earlier approvals and historical failed evidence are preserved.
+installed and public-boundary checks. Explicit human acceptance is recorded
+above; earlier approvals and historical failed evidence are preserved.
+
+The explicit acceptance covers this delivered follow-up; later tool presentation and full tracing parity remain separate.

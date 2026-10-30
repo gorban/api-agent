@@ -29,7 +29,7 @@ def object_json(value):
     """Parse a bounded finite JSON object without ambiguous duplicate keys."""
     try:
         _text(value)
-        decoded = json.loads(value, object_pairs_hook=_pairs, parse_constant=_constant)
+        decoded = _json_value(value)
         if type(decoded) is not dict:
             raise ValueError()
         _bounded(decoded)
@@ -96,28 +96,37 @@ def _no_remote(uri):
 
 def valid_schema(definition, value):
     """Never permit validation to retrieve remote schema resources."""
+    return schema_verdict(definition, value) is True
+
+
+def schema_verdict(definition, value):
+    """Separate observed invalid data from unavailable local validation."""
     try:
         _references(definition)
         _instance_bound(value)
         if not _fast_schema(definition):
-            from .bounded_schema import isolated_valid_schema
-            return isolated_valid_schema(definition, value)
+            from .bounded_schema import isolated_schema_verdict
+            return isolated_schema_verdict(definition, value)
         return Draft202012Validator(definition, registry=Registry(retrieve=_no_remote)).is_valid(value)
     except (ValueError, TypeError, KeyError, IndexError, Unresolvable, RecursionError):
-        return False
+        return None
 
 
 
 async def async_valid_schema(definition, value):
+    return await async_schema_verdict(definition, value) is True
+
+
+async def async_schema_verdict(definition, value):
     try:
         _references(definition)
         _instance_bound(value)
         if not _fast_schema(definition):
-            from .bounded_schema import async_isolated_valid_schema
-            return await async_isolated_valid_schema(definition, value)
+            from .bounded_schema import async_isolated_schema_verdict
+            return await async_isolated_schema_verdict(definition, value)
         return Draft202012Validator(definition, registry=Registry(retrieve=_no_remote)).is_valid(value)
     except (ValueError, TypeError, KeyError, IndexError, Unresolvable, RecursionError):
-        return False
+        return None
 
 
 def _strict(node, depth=0):
@@ -213,10 +222,29 @@ def response_schema(value):
         raise ContractError('Invalid original response schema') from None
 
 
-def _response_json(text):
+def _json_value(text, *, allow_markdown_fences=False, previous_width=None, layers=0):
+    try:
+        return json.loads(text, object_pairs_hook=_pairs, parse_constant=_constant)
+    except json.JSONDecodeError:
+        if not allow_markdown_fences or layers >= 4:
+            raise
+        # A closed whole-response envelope, not a general Markdown document.
+        opening, _, remainder = text.strip().partition('\n')
+        contents, separator, closing = remainder.rpartition('\n')
+        envelope = re.fullmatch(r'(`{3,})(?:json)?[ \t]*\r?', opening)
+        if envelope is None or not separator or closing.rstrip(' \t\r') != envelope[1]:
+            raise ValueError()
+        width = len(envelope[1])
+        if previous_width is not None and width >= previous_width:
+            raise ValueError()
+        return _json_value(contents, allow_markdown_fences=True,
+                           previous_width=width, layers=layers + 1)
+
+
+def _response_json(text, *, allow_markdown_fences=False):
     try:
         _text(text)
-        value = json.loads(text, object_pairs_hook=_pairs, parse_constant=_constant)
+        value = _json_value(text, allow_markdown_fences=allow_markdown_fences)
         _instance_bound(value)
         _bounded(value)
         return value
@@ -224,8 +252,23 @@ def _response_json(text):
         raise ContractError('Invalid generated response JSON') from None
 
 
-def _validation_value(text, strict):
-    return _response_json(text) if strict is None else object_json(text)
+def _prompted_json(result):
+    return result.response is not None and result.response.actual_mode == 'prompted_json'
+
+
+def response_json(result):
+    """Decode a validated JSON result without changing its provider text/evidence.
+
+    Only recorded prompted-JSON generation permits bounded fence envelopes.
+    Missing evidence and native modes retain strict JSON parsing.
+    """
+    return _response_json(''.join(part.text for part in result.payload.content),
+                          allow_markdown_fences=_prompted_json(result))
+
+
+def _validation_value(text, strict, *, allow_markdown_fences=False):
+    return (_response_json(text, allow_markdown_fences=allow_markdown_fences)
+            if strict is None else object_json(text))
 
 
 def _validation_schema(definition, strict):
@@ -482,19 +525,59 @@ def _response_output_checks(request, result):
 
 
 def _output_checks(request, result, selection=None):
-    yield from _response_output_checks(request, result)
+    for check in _response_output_checks(request, result):
+        yield (*check, None)
     eligible = () if selection is None else cache_boundary_indexes(request, selection)
     if not set(result.applied_cache_boundaries).issubset(eligible):
         raise ProviderAccessError('unknown', 'Invalid applied cache boundary', usage=result.usage, response=result.response)
-    tools = {tool.name: tool for tool in request.payload.tools}
-    for call in result.payload.calls:
-        tool = tools.get(call.name)
-        if tool is None:
-            raise ProviderAccessError('unknown', 'Tool output does not match its schema', usage=result.usage, response=result.response)
-        yield tool.input_schema, tool.strict, call.arguments, 'Tool output does not match its schema'
+    tools = {tool.name: (index, tool) for index, tool in enumerate(request.payload.tools, 1)}
+    for call_index, call in enumerate(result.payload.calls, 1):
+        declared = tools.get(call.name)
+        if declared is None:
+            raise ProviderAccessError('unknown', f'Generated tool call {call_index} names an undeclared tool',
+                                      code='tool_name_undeclared', type='tool_call_validation',
+                                      usage=result.usage, response=result.response, origin='local_output_validation')
+        tool_index, tool = declared
+        message = f'Generated arguments for tool call {call_index} (declared tool {tool_index})'
+        yield tool.input_schema, tool.strict, call.arguments, message, 'tool_arguments_schema'
     if request.payload.structured is not None and result.outcome == 'completed':
         definition = request.payload.structured
-        yield definition.schema, definition.strict, ''.join(part.text for part in result.payload.content), 'Structured output does not match its schema'
+        yield definition.schema, definition.strict, ''.join(part.text for part in result.payload.content), 'Structured output does not match its schema', None
+
+
+def _output_error(result, message, code, definition, text, verdict, malformed):
+    if code is None and malformed and not text.strip():
+        return ProviderAccessError('unknown', 'Completed inference returned no final-answer JSON',
+            code='empty_final_answer', type='response_validation', origin='local_output_validation',
+            usage=result.usage, response=result.response)
+    if code is not None:
+        if malformed:
+            message += ': expected a bounded, unambiguous JSON object'
+            code = 'tool_arguments_json'
+        elif verdict is None:
+            message += ': local schema validation is unavailable'
+            code = 'tool_validation_unavailable'
+        else:
+            message += ' do not match its input schema'
+            # Only describe schema positions, never generated values or private
+            # field names. Complex schema diagnostics remain in gated evidence.
+            value = object_json(text)
+            if any(name not in value for name in json.loads(definition).get('required', ())):
+                message += ': missing required property'
+    return ProviderAccessError('unknown', message, code=code,
+                               type='tool_call_validation' if code is not None else None,
+                               usage=result.usage, response=result.response, origin='local_output_validation')
+
+
+def _output_inputs(definition, strict, text, *, allow_markdown_fences=False):
+    try:
+        parsed = _validation_schema(definition, strict)
+    except ContractError:
+        return None, None, False
+    try:
+        return parsed, _validation_value(text, strict, allow_markdown_fences=allow_markdown_fences), False
+    except ContractError:
+        return parsed, None, True
 
 
 def _bounded_result(result):
@@ -508,34 +591,35 @@ def _bounded_result(result):
 
 def validate_result(request, result, *, selection=None):
     """Validate actual output against the originating unmodified schemas."""
-    for definition, strict, text, message in _output_checks(request, result, selection):
-        if not _valid_output(definition, strict, text):
-            raise ProviderAccessError('unknown', message, usage=result.usage, response=result.response)
+    for definition, strict, text, message, code in _output_checks(request, result, selection):
+        parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
+        verdict = None if parsed is None else False if malformed else schema_verdict(parsed, value)
+        if verdict is not True:
+            raise _output_error(result, message, code, definition, text, verdict, malformed)
     return _bounded_result(result)
 
 
 def validate_response_result(request, result):
     """Admit original policy output at IPC without inventing route capabilities."""
     for definition, strict, text, message in _response_output_checks(request, result):
-        if not _valid_output(definition, strict, text):
+        if not _valid_output(definition, strict, text, allow_markdown_fences=_prompted_json(result)):
             raise ProviderAccessError('unknown', message, usage=result.usage, response=result.response)
     return result
 
 
 async def async_validate_result(request, result, *, selection=None):
-    for definition, strict, text, message in _output_checks(request, result, selection):
-        try:
-            valid = await async_valid_schema(_validation_schema(definition, strict), _validation_value(text, strict))
-        except ContractError:
-            valid = False
-        if not valid:
-            raise ProviderAccessError('unknown', message, usage=result.usage, response=result.response)
+    for definition, strict, text, message, code in _output_checks(request, result, selection):
+        parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
+        verdict = None if parsed is None else False if malformed else await async_schema_verdict(parsed, value)
+        if verdict is not True:
+            raise _output_error(result, message, code, definition, text, verdict, malformed)
     return _bounded_result(result)
 
 
-def _valid_output(definition, strict, text):
+def _valid_output(definition, strict, text, *, allow_markdown_fences=False):
     try:
-        return valid_schema(_validation_schema(definition, strict), _validation_value(text, strict))
+        return valid_schema(_validation_schema(definition, strict),
+                            _validation_value(text, strict, allow_markdown_fences=allow_markdown_fences))
     except ContractError:
         return False
 

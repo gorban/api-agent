@@ -26,6 +26,8 @@ def manual(tmp_path, monkeypatch):
     seen = []
     class Adapter:
         capabilities = ProviderCapabilities(kind='llm', features=('reasoning_effort',))
+        credential_protection_version = 1
+        def bind_credential_authority(self, authority): self.authority = authority
         async def asetup(self, **kwargs):
             seen.append(('setup', kwargs, asyncio.get_running_loop()))
             class Auth:

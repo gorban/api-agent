@@ -22,6 +22,7 @@ PUZZLE = (
     'Include all needed standard-library imports. '
     'Under if __name__ == "__main__": construct these example edges and print solve(edges, "S", "T", 3, 2, 2): S>A:4:R, S>B:2:B, S>C:5:R, A>B:1:B, A>D:5:R, A>E:3:B, B>C:2:R, B>D:4:B, B>E:6:R, C>D:1:B, C>E:3:R, C>F:7:B, D>E:2:B, D>F:4:R, D>T:9:B, E>F:1:R, E>T:5:B, F>T:3:R. '
     'Here source>target:cost:color denotes an edge. '
+    'After reasoning, provide the complete solution in your final answer. Do not stop after analysis. '
     'Reply with only executable Python code, without Markdown fences or explanation.'
 )
 
@@ -42,21 +43,54 @@ def reasoning_timeout(config):
     return value
 
 
-def valid_call(row, model=MODEL):
-    """Conservatively qualify measurements without changing provider outcomes."""
-    if not (row.get('status') == 'completed'
-            and type(row.get('reasoning_tokens')) is int and row['reasoning_tokens'] >= 0
-            and row.get('requested_model') == model and row.get('actual_model') in (None, model)):
-        return False
+def measurement_failure(row, model=MODEL):
+    """Return a fixed diagnostic category without exposing provider content."""
+    if row.get('status') != 'completed':
+        return 'response_not_completed'
+    tokens = row.get('reasoning_tokens')
+    if type(tokens) is not int or tokens < 0:
+        return 'reasoning_tokens_unavailable_or_invalid'
+    if row.get('requested_model') != model or row.get('actual_model') not in (None, model):
+        return 'model_identity_mismatch'
     maximum = row.get('max_output_tokens')
     if row.get('response_text_present', maximum is None) is not True:
-        return False
+        return 'visible_answer_missing'
     if maximum is None:
-        return True
+        return None
+    if type(maximum) is not int or maximum <= 0:
+        return 'invalid_output_budget'
     usage = row.get('usage')
-    return (type(maximum) is int and maximum > 0 and type(usage) is dict
-            and type(usage.get('output_tokens')) is int
-            and 0 <= usage['output_tokens'] < maximum)
+    if type(usage) is not dict or type(usage.get('output_tokens')) is not int or usage['output_tokens'] < 0:
+        return 'output_tokens_unavailable_or_invalid'
+    if usage['output_tokens'] >= maximum:
+        return 'output_budget_reached'
+    return None
+
+
+def valid_call(row, model=MODEL):
+    """Conservatively qualify measurements without changing provider outcomes."""
+    return measurement_failure(row, model) is None
+
+
+def _check_http_response(response, index, effort):
+    """Keep the owned API's safe failure category without exporting its body."""
+    import httpx
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        code = body.get('code') if type(body) is dict else None
+        allowed = {'network', 'deadline', 'unavailable', 'rate_limited', 'authentication',
+                   'authorization', 'invalid_request', 'unknown'}
+        category = code if type(code) is str and code in allowed else 'unknown'
+        raise httpx.HTTPStatusError(
+            f'Reasoning comparison request failed: {category} '
+            f'(HTTP {response.status_code}, pair={index}, effort={effort}). '
+            'Inspect physical-attempt evidence for prior execution and unknown charges.',
+            request=response.request, response=response) from None
 
 
 def evaluate(records, *, model=MODEL, efforts=('low', 'high')):
@@ -93,7 +127,7 @@ async def run_pairs(client, endpoint, nonce, *, model=MODEL, efforts=('low', 'hi
                 if max_output_tokens is not None:
                     body['max_output_tokens'] = max_output_tokens
                 response = await post_chat(client, endpoint, nonce, body)
-                response.raise_for_status()
+                _check_http_response(response, index, effort)
                 data = response.json()
                 if data.pop('session_id') != identifier:
                     raise ValueError('Application request identity mismatch')
@@ -114,7 +148,13 @@ async def run_pairs(client, endpoint, nonce, *, model=MODEL, efforts=('low', 'hi
             raise
         emit(dict(event='call', **row))
         if not valid_call(row, model):
-            raise ValueError('Reasoning comparison received an invalid measurement')
+            usage = row.get('usage') or {}
+            raise ValueError('Reasoning comparison received an invalid measurement: '
+                             + measurement_failure(row, model)
+                             + f' (pair={index}, effort={effort}, status={row["status"]}, '
+                               f'output_tokens={usage.get("output_tokens")}, '
+                               f'reasoning_tokens={row.get("reasoning_tokens")}, '
+                               f'max_output_tokens={max_output_tokens})')
         return row
 
     tasks = []

@@ -125,7 +125,7 @@ def test_interrupt_after_initialization_transfer_cannot_strand_handle(tmp_path, 
 @pytest.mark.parametrize('failure', ['popen', 'reader', 'monitor'])
 def test_startup_failure_reaps_worker_and_closes_liveness_pipe(tmp_path, monkeypatch, failure):
     context, tests = selection(tmp_path)
-    pipes, workers = [], []
+    pipes, workers, worker_fds = [], [], []
     original_pipe = os.pipe
     original_popen = integration.subprocess.Popen
     original_start = threading.Thread.start
@@ -135,6 +135,8 @@ def test_startup_failure_reaps_worker_and_closes_liveness_pipe(tmp_path, monkeyp
         return descriptors
     def popen(args, **kwargs):
         worker = kwargs.get('pass_fds')
+        if worker:
+            worker_fds.extend(worker)
         if worker and failure == 'popen':
             raise ValueError('synthetic startup failure')
         process = original_popen(args, **kwargs)
@@ -153,8 +155,59 @@ def test_startup_failure_reaps_worker_and_closes_liveness_pipe(tmp_path, monkeyp
     assert result.exit_code == 1
     assert all(handle.closed for handle in result.inspections)
     assert pipes
-    for descriptors in pipes:
+    liveness_pipes = [descriptors for descriptors in pipes if descriptors[0] in worker_fds]
+    assert len(liveness_pipes) == 1
+    for descriptors in liveness_pipes:
         for descriptor in descriptors:
             with pytest.raises(OSError):
                 os.fstat(descriptor)
     assert all(worker.poll() is not None for worker in workers)
+
+
+def test_non_posix_reader_start_failure_reaps_worker_and_closes_stdout(tmp_path, monkeypatch):
+    """The no-liveness-pipe platform still owns a worker when reader startup fails."""
+    context, tests = selection(tmp_path)
+    workers, launch_options = [], []
+    original_popen = integration.subprocess.Popen
+    original_start = threading.Thread.start
+
+    class NonPosixOS:
+        name = 'nt'
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    def popen(args, **kwargs):
+        launch_options.append(kwargs)
+        worker = original_popen(args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    def start(thread):
+        if getattr(thread._target, '__name__', '') == 'read_output':
+            raise RuntimeError('synthetic reader startup failure')
+        return original_start(thread)
+
+    from api_agent.testing import processes
+    platform = NonPosixOS()
+    monkeypatch.setattr(integration, 'os', platform)
+    monkeypatch.setattr(processes, 'os', platform)
+    monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: tests)
+    monkeypatch.setattr(integration.subprocess, 'Popen', popen)
+    monkeypatch.setattr(threading.Thread, 'start', start)
+    try:
+        result = integration.run_integration_tests(context, tests, accepted=True, config={'DEBUG': True})
+        assert result.exit_code == 1
+        assert len(workers) == 1
+        assert 'pass_fds' not in launch_options[0]
+        assert 'API_AGENT_LAUNCHER_LIVENESS_FD' not in launch_options[0]['env']
+        assert launch_options[0]['start_new_session'] is False
+        assert workers[0].poll() is not None
+        assert workers[0].stdout.closed
+        assert all(handle.closed for handle in result.inspections)
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+                worker.wait(timeout=5)
+            if worker.stdout is not None and not worker.stdout.closed:
+                worker.stdout.close()

@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
+from types import SimpleNamespace
 
 from api_agent.runtime.hook_assurance import assure_hook, MARKER
 from api_agent.runtime import hook_assurance
@@ -27,7 +28,7 @@ def repository(tmp_path):
     package.mkdir(parents=True)
     (root / 'src/api_agent/__init__.py').write_text('')
     (package / '__init__.py').write_text('')
-    (package / 'viewer_build.py').write_text('def check_views(root):\n    assert (root / "proof.txt").read_text() == "ok\\n"\n')
+    (package / 'viewer_build.py').write_text('def check_views(root):\n    assert (root / "proof.txt").read_text() == "ok\\n"\n\ndef check_staged_workflow_matches_worktree(snapshot, worktree):\n    pass\n')
     (root / 'proof.txt').write_text('ok\n')
     git(root, 'add', '.')
     return root
@@ -80,6 +81,16 @@ def test_modified_or_nonexecutable_managed_hook_is_foreign(tmp_path):
 
 def test_no_git_is_not_applicable(tmp_path):
     assert assure_hook(tmp_path, report=lambda _: None) == 'not-applicable'
+
+
+def test_missing_git_skips_assurance_without_warning_or_git_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(hook_assurance, 'shutil', SimpleNamespace(which=lambda name: None))
+    def unexpected_git(*args):
+        raise AssertionError('git must not be invoked')
+    monkeypatch.setattr(hook_assurance, '_git', unexpected_git)
+    messages = []
+    assert assure_hook(tmp_path, report=messages.append) == 'not-applicable'
+    assert messages == []
 
 
 def test_nested_directory_does_not_install_repo_hook(tmp_path):

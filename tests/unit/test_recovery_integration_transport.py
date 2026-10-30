@@ -66,7 +66,7 @@ def test_terminal_pipe_needs_no_tty_and_flushes_without_secret_echo():
         assert channel.read(0) is None
         channel.write('')
         channel.write('Password: ')
-        assert output.getvalue() == 'Password: '
+        assert output.getvalue() == 'Authentication: Keeper\nPassword: '
         assert channel.read(0) is None
         os.write(write_fd, b'private\nsecond\n')
         assert channel.read(.1).value == 'private'
@@ -78,7 +78,7 @@ def test_terminal_pipe_needs_no_tty_and_flushes_without_secret_echo():
         assert channel.read(.1).action == 'eof'
         channel.close()
         assert channel.read(.1).action == 'cancel'
-        assert output.getvalue() == 'Password: ' * 3
+        assert output.getvalue() == 'Authentication: Keeper\n' + 'Password: ' * 3
 
 
 def test_endpoint_validation():

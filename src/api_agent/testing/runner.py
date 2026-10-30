@@ -78,8 +78,37 @@ class Events:
                   status=report.outcome, duration=report.duration,
                   traceback=str(report.longrepr) if report.failed else '')
 with open(os.environ['API_AGENT_UNIT_SELECTION'], encoding='utf-8') as selection_file:
-    selected_nodes = json.load(selection_file)
-status = pytest.main(sys.argv[2:] + selected_nodes, plugins=[Events()])
+    selected_nodes = list(dict.fromkeys(json.load(selection_file)))
+selected_files = list(dict.fromkeys(node.split('::', 1)[0] for node in selected_nodes))
+collection_root = os.path.commonpath([os.path.dirname(os.path.abspath(path)) for path in selected_files])
+from pathlib import Path
+selection_plugin = Path(os.environ['API_AGENT_UNIT_SELECTION']).parent / 'api_agent_unit_selection.py'
+selection_plugin.write_text("""import json, os, pytest
+from pathlib import Path
+with open(os.environ['API_AGENT_UNIT_SELECTION'], encoding='utf-8') as stream:
+    selected_nodes = list(dict.fromkeys(json.load(stream)))
+selected_files = {Path(os.path.abspath(node.split('::', 1)[0])) for node in selected_nodes}
+@pytest.hookimpl(tryfirst=True)
+def pytest_ignore_collect(collection_path, config):
+    if collection_path.is_dir():
+        return not any(path.is_relative_to(collection_path) for path in selected_files)
+    return collection_path not in selected_files
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(session, config, items):
+    by_node = {item.nodeid: item for item in items}
+    missing = [node for node in selected_nodes if node not in by_node]
+    if missing:
+        report = pytest.CollectReport(nodeid='', outcome='failed',
+            longrepr='Selected unit identities were not collected: ' + ', '.join(missing), result=[])
+        config.hook.pytest_collectreport(report=report)
+        items.clear()
+        return
+    admitted = set(selected_nodes)
+    config.hook.pytest_deselected(items=[item for item in items if item.nodeid not in admitted])
+    items[:] = [by_node[node] for node in selected_nodes]
+""", encoding='utf-8')
+sys.path.insert(0, str(selection_plugin.parent))
+status = pytest.main(sys.argv[2:] + ['-p', 'api_agent_unit_selection'] + [collection_root], plugins=[Events()])
 import os
 if os.environ.get('API_AGENT_COVERAGE_OUTPUT'):
     from pathlib import Path

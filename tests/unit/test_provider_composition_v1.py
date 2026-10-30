@@ -328,6 +328,8 @@ def test_stream_factory_boundary_is_checked_only_at_invocation(tmp_path):
 class Adapter:
     version=1
     capabilities=ProviderCapabilities('llm', ('stream',))
+    credential_protection_version=1
+    def bind_credential_authority(self, authority): self.authority=authority
     def __init__(self): self.calls=[]
     def astream(self, request, *, auth=None):
         self.calls.append(request)
@@ -574,6 +576,8 @@ def test_stream_carrier_requires_callable_iterator_protocol(tmp_path):
 class Adapter:
     version=1
     capabilities=ProviderCapabilities('llm', ('stream',))
+    credential_protection_version=1
+    def bind_credential_authority(self, authority): self.authority=authority
     def astream(self, request, *, auth=None): return self.response
 def create(config, services): return Adapter()
 ''')

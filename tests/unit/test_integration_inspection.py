@@ -296,3 +296,13 @@ def test_unreadable_protocol_and_failing_callback_still_reap_worker(broken):
         assert [event.kind for event in events] == ['inspection_lost']
     finally:
         handle.abort()
+
+
+def test_retained_worker_exposes_browser_endpoints_from_complete_events(tmp_path):
+    item = object.__new__(inspection.IntegrationInspection)
+    item.event_file = tmp_path / 'events.jsonl'
+    item.event_file.write_text('{"kind":"inspection_open","endpoint":"http://127.0.0.1:1234"}\n'
+                              '{"kind":"inspection_open","endpoint":5}\n'
+                              '{"kind":"unrelated","endpoint":"http://127.0.0.1:4321"}\n'
+                              '{"kind":"inspection_open","endpoint":"partial')
+    assert item.inspection_endpoints == ('http://127.0.0.1:1234',)

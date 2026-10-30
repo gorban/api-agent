@@ -7,6 +7,17 @@ contracts as the included GPT adapter. The controlled Mantle runtime is implemen
 under [its bounded matrix](implementation_plan_f4d.md); pricing and the broader
 requirements below remain open. The approved [list-price phase](implementation_plan_f4k.md) qualifies bounded accounting; earlier live authentication/catalog evidence does not qualify prices.
 
+- [x] Standalone SDK workers launched from source must resolve their own api-agent
+  distribution without an installed wheel or inherited PYTHONPATH, including
+  catalog/error paths before inference. Verify with a clean interpreter so an
+  older installed package cannot mask a broken source-worker import.
+
+  Verified with a clean interpreter and a synthetic successful catalog from an
+  arbitrary directory, without account access. The regression previously emitted
+  a protocol error because its error handler also lacked the source package.
+  Full units: 21,022 plus 27 subtests, 100% measured line/branch coverage;
+  independent review passed. Live selected-account acceptance remains separate.
+
 - [ ] Implement the versioned factory, lazy AWS credential/client lifecycle,
   regional catalog/selection and completion/streaming through supported Bedrock
   Mantle HTTP operations. Support independently selected Responses and Chat

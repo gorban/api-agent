@@ -1,5 +1,7 @@
 """Owned synchronous Mantle SDK lifecycle; diagnostics contain no SDK text."""
 import json
+import os
+import socket
 import re
 import sys
 import time
@@ -106,11 +108,15 @@ def qualified_schema(value, model, prefix):
         raise ValueError()
     schema(json.dumps(definition['schema'], allow_nan=False), True)
 
-def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_client, http_factory=sdk_http):
+def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_client, http_factory=sdk_http, join=None):
     started = time.monotonic()
     client = body = http = None
     execution = 'not_started'
     received = {}
+    secrets = None
+    joined = False
+    decode_failure = None
+    failed_observation = None
     try:
         json_value(request)
         if set(request) != {'operation', 'auth', 'payload', 'timeout'} or request['operation'] not in OPERATIONS:
@@ -152,12 +158,21 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 if not response:
                     arguments['stream_options'] = {'include_usage': True}
         region, options = selected_auth(request['auth'], session_factory)
+        from api_agent.llm_providers.bedrock.normalized_stream import guard_semantic
+        secrets = {value for value in options.values() if isinstance(value, str) and value}
+        guard_semantic(arguments, secrets)
+        if join is not None:
+            secrets = set(join(sorted(secrets), arguments))
+            joined = True
         timeout = inference_timeout(deadline - time.monotonic())
         http = http_factory(timeout=timeout)
         hooks = getattr(http, 'event_hooks', None)
         if isinstance(hooks, dict) and isinstance(hooks.get('response'), list):
             def capture_headers(response):
                 received['status'] = response.status_code
+                # Only a named request identifier is observed; never arbitrary
+                # headers or URLs. Admission/redaction happens before IPC.
+                received['request_id'] = response.headers.get('x-amzn-requestid') or response.headers.get('x-request-id')
                 from api_agent.providers.inference_retry import retry_after
                 received['retry_after'] = retry_after(response.headers.get('retry-after'))
             hooks['response'].append(capture_headers)
@@ -171,16 +186,98 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             result = client.responses.create(**arguments)
         if operation.endswith('_stream'):
             body = result
+            from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
+            decoder = WorkerStream('responses' if response else 'completions', arguments['model'], secrets)
             for event in body:
                 value = json_value(event.model_dump(exclude_unset=True))
                 if type(value) is not dict or value.get('error') is not None or value.get('type') in {'error', 'response.failed'}:
+                    if type(value) is dict:
+                        from api_agent.llm_providers.bedrock.mantle import _reported_error
+                        from api_agent.providers.contracts import ProviderAccessError
+                        raw = value.get('response', value)
+                        failure = _reported_error(ProviderAccessError('unknown', 'Invalid Bedrock inference response.'), raw, response)
+                        failure.provider_response = value
+                        raise failure
                     raise ValueError()
-                emit({'event': value})
+                for frame in decoder.feed(value):
+                    emit({'event': frame})
+            for frame in decoder.finish():
+                emit({'event': frame})
         else:
             value = json_value(result.model_dump(exclude_unset=True))
             if type(value) is not dict or value.get('error') is not None:
+                if type(value) is dict:
+                    from api_agent.llm_providers.bedrock.mantle import _reported_error
+                    from api_agent.providers.contracts import ProviderAccessError
+                    failure = _reported_error(ProviderAccessError('unknown', 'Invalid Bedrock inference response.'), value, operation.startswith('responses'))
+                    failure.provider_response = value
+                    raise failure
                 raise ValueError()
-            emit({'result': value})
+            try:
+                guard_semantic(value, secrets)
+            except Exception:
+                decode_failure = 'response_safety_rejected'
+                failed_observation = {'version':1, 'response_validation':'rejected'}
+                raise
+            if operation != 'models':
+                from api_agent.llm_providers.bedrock.mantle import decode
+                from api_agent.llm_providers.bedrock.normalized_stream import guard_result
+                try:
+                    decoded = decode(value, 'responses' if response else 'completions',
+                                     selected_llm=arguments['model'])
+                except Exception as error:
+                    from api_agent.providers.contracts import ProviderAccessError
+                    from api_agent.llm_providers.bedrock.mantle import RESPONSE_CODES
+                    if isinstance(error, ProviderAccessError):
+                        decode_failure = error.code if error.code in RESPONSE_CODES else 'invalid_response'
+                        from api_agent.telemetry.inference_diagnostics import sdk_observation, scrub_diagnostics
+                        from api_agent.telemetry.privacy import EmissionBoundary
+                        # Only bounded content-free shape, never rejected text.
+                        observation = sdk_observation({'provider_response':value}, 'response')
+                        observation.update(scrub_diagnostics(getattr(error, 'provider_diagnostics', {}),
+                                                            EmissionBoundary(secrets=secrets)))
+                        failed_observation = scrub_diagnostics(observation, EmissionBoundary(secrets=secrets))
+                        if failed_observation:
+                            failed_observation['response_validation'] = 'rejected'
+                            status = received.get('status')
+                            if type(status) is int and 100 <= status <= 599:
+                                failed_observation['http_status'] = status
+                        if joined:
+                            from api_agent.llm_providers.bedrock.normalized_stream import guard_response_evidence
+                            try:
+                                error.provider_response = guard_response_evidence(value, secrets)
+                            except Exception:
+                                # A failed decoder has not run the normal result
+                                # guard. Evidence needs its own safety admission.
+                                pass
+                    raise
+                try:
+                    guard_result(decoded, secrets)
+                except Exception:
+                    decode_failure = 'response_safety_rejected'
+                    failed_observation = {'version':1, 'response_validation':'rejected'}
+                    raise
+            metadata = {}
+            if operation != 'models':
+                from api_agent.telemetry.inference_diagnostics import valid_diagnostics, scrub_diagnostics
+                from api_agent.telemetry.privacy import EmissionBoundary
+                from importlib.metadata import version
+                metadata = {'version': 1, 'sdk_versions': {}}
+                for package, label in (('openai', 'openai'), ('httpx2', 'httpx')):
+                    try:
+                        candidate = {'version': 1, 'sdk_versions': {label: version(package)}}
+                    except Exception:
+                        # Optional package metadata must never turn an already
+                        # completed, validated inference into a provider error.
+                        continue
+                    if valid_diagnostics(candidate):
+                        metadata['sdk_versions'].update(candidate['sdk_versions'])
+                for source, target in (('status', 'http_status'), ('request_id', 'request_id')):
+                    candidate = {'version': 1, target: received.get(source)}
+                    if valid_diagnostics(candidate):
+                        metadata[target] = candidate[target]
+                metadata = scrub_diagnostics(metadata, EmissionBoundary(secrets=secrets))
+            emit(dict(result=value, **({'diagnostics': metadata} if metadata else {})))
     except Exception as error:
         name = type(error).__name__
         status = getattr(error, 'status_code', None)
@@ -194,7 +291,31 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     'APIConnectionError': 'unavailable', 'APITimeoutError': 'unavailable',
                     'ModuleNotFoundError': 'setup', 'ImportError': 'setup',
                     'MissingDependencyException': 'setup', 'ProfileNotFound': 'setup', 'NoRegionError': 'setup'}.get(name, 'unknown')
+        if status in (None, 200) and name in {'APIConnectionError', 'APITimeoutError'}:
+            import httpx2
+            from api_agent.providers.inference_retry import transient_network_failure
+            if transient_network_failure(error, httpx2):
+                kind = 'network'
         frame = {'error': kind, 'execution': execution}
+        if decode_failure is not None:
+            frame['code'] = decode_failure
+            if failed_observation:
+                frame['diagnostics'] = failed_observation
+        # Only an observed JSON response, checked against the same frozen
+        # credentials already joined by this call, can cross the process boundary.
+        if joined and execution == 'possibly_executed':
+            raw_response = getattr(error, 'provider_response', None)
+            if raw_response is None:
+                raw_response = getattr(error, 'body', None)
+            if type(raw_response) is dict:
+                try:
+                    frame['provider_response'] = guard_semantic(json_value(raw_response), secrets)
+                except Exception:
+                    pass
+        from api_agent.providers.inference import error_usage, usage_to_wire
+        usage = error_usage(error)
+        if usage is not None:
+            frame['usage'] = usage_to_wire(usage)
         if type(status) is int and 100 <= status <= 599:
             frame['http_status'] = status
             response = getattr(error, 'response', None)
@@ -230,10 +351,45 @@ def main(input_stream=None, output_stream=None):
         raw = source.readline(MAX_FRAME + 1)
         if len(raw.encode()) > MAX_FRAME:
             raise ValueError()
-        execute(json.loads(raw), emit)
+        descriptor = os.environ.pop("API_AGENT_BEDROCK_AUTHORITY_FD", None)
+        def join(values, arguments):
+            with socket.socket(fileno=int(descriptor)) as channel:
+                channel.settimeout(30)
+                encoded = json.dumps(values, ensure_ascii=False).encode() + b"\n"
+                if len(encoded) > 32768:
+                    raise ValueError()
+                channel.sendall(encoded)
+                incoming = bytearray()
+                while not incoming.endswith(b"\n"):
+                    chunk = channel.recv(32769 - len(incoming))
+                    if not chunk:
+                        raise ValueError()
+                    incoming.extend(chunk)
+                    if len(incoming) > 32768:
+                        raise ValueError()
+                union = json.loads(incoming)
+                if (type(union) is not list or len(union) > 64
+                        or any(type(value) is not str or not value for value in union)
+                        or sum(len(value.encode()) for value in union) > 16384
+                        or not set(values) <= set(union)):
+                    raise ValueError()
+                from api_agent.llm_providers.bedrock.normalized_stream import guard_semantic
+                guard_semantic(arguments, union)
+                channel.sendall(b"1")
+                if channel.recv(1) != b"1":
+                    raise ValueError()
+                return union
+        if descriptor is None:
+            execute(json.loads(raw), emit)
+        else:
+            execute(json.loads(raw), emit, join=join)
     except Exception:
         emit({'error': 'protocol'})
 
 
 if __name__ == '__main__':
+    # Source launches do not install api-agent or export PYTHONPATH. Resolve
+    # sibling provider/contract imports from this worker's own distribution.
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     main()
