@@ -71,16 +71,35 @@ def test_empty_collection_is_error(tmp_path):
 
 
 def test_source_imports_resolved_without_editable_install(tmp_path, monkeypatch):
+    import shutil
+    import api_agent
     base, owner = tmp_path / 'base', tmp_path / 'pack'
     base_units = suite(base)
     pack_units = suite(owner)
     for root, module in ((base, 'fresh_base_code'), (owner, 'fresh_pack_code')):
         (root / 'src').mkdir()
         (root / 'src' / f'{module}.py').write_text('VALUE = 42\n')
-    (base_units / 'test_import.py').write_text('from fresh_base_code import VALUE\ndef test_import():\n    assert VALUE == 42\n')
-    (pack_units / 'test_pack_import.py').write_text('from fresh_base_code import VALUE\nfrom fresh_pack_code import VALUE as PACK\ndef test_import():\n    assert VALUE == PACK\n')
+    shutil.copytree(Path(api_agent.__file__).resolve().parent, base / 'src/api_agent',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    (base_units / 'test_import.py').write_text(
+        'from pathlib import Path\nimport pytest\nimport fresh_base_code\n'
+        'import api_agent.testing.classification as classification\n'
+        f'assert Path(fresh_base_code.__file__).resolve() == Path({str(base / "src/fresh_base_code.py")!r})\n'
+        f'assert Path(classification.__file__).resolve() == Path({str(base / "src/api_agent/testing/classification.py")!r})\n'
+        '@pytest.mark.feature("synthetic-base")\n'
+        'def test_import():\n    assert fresh_base_code.VALUE == 42\n')
+    (pack_units / 'test_pack_import.py').write_text(
+        'from pathlib import Path\nimport pytest\nimport fresh_base_code, fresh_pack_code\n'
+        f'assert Path(fresh_base_code.__file__).resolve() == Path({str(base / "src/fresh_base_code.py")!r})\n'
+        f'assert Path(fresh_pack_code.__file__).resolve() == Path({str(owner / "src/fresh_pack_code.py")!r})\n'
+        '@pytest.mark.feature("synthetic-pack")\n'
+        'def test_import():\n    assert fresh_base_code.VALUE == fresh_pack_code.VALUE\n')
     monkeypatch.delenv('PYTHONPATH', raising=False)
-    assert len(collect_tests(context(base, owner, {'unit': (pack_units,)}), 'unit')) == 6
+    collected = collect_tests(context(base, owner, {'unit': (pack_units,)}), 'unit')
+    assert len(collected) == 6
+    assert {test.repo for test in collected} == {'base', 'pack'}
+    assert {test.repo: test.features for test in collected if test.features} == {
+        'base': ('synthetic-base',), 'pack': ('synthetic-pack',)}
 
 
 def test_absent_optional_pack_units_and_empty_base(tmp_path):

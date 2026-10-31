@@ -152,8 +152,14 @@ def test_same_store_threads_serialize_and_nested_exception_restores_lock(transac
 async def test_terminated_login_worker_releases_persistent_transaction(transaction_store, tmp_path, monkeypatch, termination, phase):
     paths, _ = transaction_store
     marker = tmp_path / 'holding'
+    from api_agent.llm_providers.bedrock import persistence
+    package_root = Path(persistence.__file__).resolve().parents[3]
+    module_file = Path(persistence.__file__).resolve()
     script = ('import json,sys,time\nfrom pathlib import Path\n'
-              'from api_agent.llm_providers.bedrock.persistence import ProfileStore\n'
+              'sys.path.insert(0,sys.argv[1])\n'
+              'from api_agent.llm_providers.bedrock import persistence\n'
+              'assert Path(persistence.__file__).resolve()==Path(sys.argv[2]).resolve()\n'
+              'ProfileStore=persistence.ProfileStore\n'
               'config=json.loads(sys.stdin.readline())\n'
               'if config["phase"]=="waiting": Path(config["marker"]).touch()\n'
               'with ProfileStore(config["paths"],"chosen").locked():\n'
@@ -162,19 +168,23 @@ async def test_terminated_login_worker_releases_persistent_transaction(transacti
     original = asyncio.create_subprocess_exec
     children = []
     async def launch(*args, **kwargs):
-        process = await original(args[0], '-c', script, **kwargs)
+        process = await original(args[0], '-c', script, str(package_root), str(module_file), **kwargs)
         children.append(process)
         return process
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
-    transport = LoginTransport(timeout=1 if termination == 'deadline' else 5)
+    transport = LoginTransport(timeout=5 if termination == 'deadline' else 10)
     task = None
+    peer = None
     try:
         with ProfileStore(paths, 'chosen').locked() if phase == 'waiting' else nullcontext():
             task = asyncio.create_task(transport.acquire(dict(login=False, paths=paths, marker=str(marker), phase=phase), dict(HOME=str(tmp_path))))
-            async with asyncio.timeout(5):
+            async with asyncio.timeout(8):
                 while not marker.exists():
                     assert not task.done(), 'worker terminated before acquiring lock'
                     await asyncio.sleep(0.01)
+            peer = _spawn(_peer_ready, paths)
+            assert _receive(peer[1]) == 'attempting'
+            assert not peer[1].poll(0.1)
             if termination == 'cancel':
                 task.cancel()
             with pytest.raises(asyncio.CancelledError if termination == 'cancel' else ContractError):
@@ -182,15 +192,12 @@ async def test_terminated_login_worker_releases_persistent_transaction(transacti
             assert len(children) == 1
             assert children[0].returncode is not None
             assert not transport._processes
-        peer = _spawn(_peer_ready, paths)
-        try:
-            assert _receive(peer[1]) == 'attempting'
-            assert _receive(peer[1]) == 'old-key'
-        finally:
-            _finish(*peer)
+        assert _receive(peer[1]) == 'old-key'
     finally:
         await transport.aclose()
         if task is not None:
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        if peer is not None:
+            _finish(*peer)

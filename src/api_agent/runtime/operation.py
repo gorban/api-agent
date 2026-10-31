@@ -138,7 +138,7 @@ class OperationRunner:
 
     def __init__(self, *, resolve, prepare_dependencies, prepare_https, plan,
                  manager, compose_runtime, create_application, listener,
-                 timeout=120, bind_infrastructure=None, on_stage=None):
+                 timeout=120, bind_infrastructure=None, on_stage=None, on_failure=None):
         if timeout <= 0:
             raise ValueError('timeout must be positive')
         self.resolve = resolve
@@ -151,6 +151,7 @@ class OperationRunner:
         self.listener = listener
         self.bind_infrastructure = bind_infrastructure
         self.on_stage = on_stage
+        self.on_failure = on_failure
         self.timeout = timeout
         self.pending_cleanup = None
         self._active = False
@@ -194,6 +195,7 @@ class OperationRunner:
         lease = None
         runtime = None
         owned_listener = None
+        started = False
         try:
             stage('prerequisites')
             lease = await _offload(owned_manager.acquire, cancellation=cancelled)
@@ -212,8 +214,17 @@ class OperationRunner:
             await owned_listener.start(application, tls.material, endpoint)
             await owned_listener.wait_ready(self.timeout)
             stage('listener ready')
+            started = True
             yield OperationSession(config, tls, lease, runtime, application, owned_listener, endpoint,
                                    infrastructure)
+        except BaseException as error:
+            if not started and self.on_failure is not None:
+                try:
+                    self.on_failure(error)
+                except BaseException:
+                    # Observers cannot alter the primary failure or owned cleanup.
+                    pass
+            raise
         finally:
             primary = sys.exc_info()[1]
             if lease is None:
@@ -242,7 +253,7 @@ class OperationRunner:
 def local_operation(context, *, resolve, argv, scope, ownership_directory,
                     engine_environment=None, collect=False, groups=(), timeout=120,
                     runtime_factory=None, application_wrapper=None, required_kinds=None, prepared_plan=None,
-                    bind_infrastructure=None, on_stage=None):
+                    bind_infrastructure=None, on_stage=None, on_failure=None):
     """Wire the local engine/TLS/API owners after an explicit operation choice.
 
     The caller supplies fresh resolution and handles an interpreter handoff
@@ -315,4 +326,4 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
     return OperationRunner(resolve=resolved_for_operation, prepare_dependencies=dependencies,
         prepare_https=https, plan=plan, manager=manager, compose_runtime=runtime,
         create_application=application, listener=UvicornListener, timeout=timeout,
-        bind_infrastructure=bind_infrastructure, on_stage=on_stage)
+        bind_infrastructure=bind_infrastructure, on_stage=on_stage, on_failure=on_failure)

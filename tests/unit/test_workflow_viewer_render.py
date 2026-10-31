@@ -753,7 +753,9 @@ def test_admitted_schema_reference_has_no_filename_extension_requirement(field):
     assert viewer_render._reference_sources(projection) == {'r/' + path: schema}
 
 
-@pytest.mark.parametrize('body', [b'print("captured")\n', b'\xff', b'x' * viewer_render._MAX_RESOURCE_BYTES, b'x' * (viewer_render._MAX_RESOURCE_BYTES + 1)])
+@pytest.mark.parametrize('body', [b'print("captured")\n', b'\xff',
+                                 pytest.param(b'x' * viewer_render._MAX_RESOURCE_BYTES, id='at-limit'),
+                                 pytest.param(b'x' * (viewer_render._MAX_RESOURCE_BYTES + 1), id='over-limit')])
 def test_python_reference_admission_validates_captured_text(body):
     from hashlib import sha256
     projection, document = _projection()

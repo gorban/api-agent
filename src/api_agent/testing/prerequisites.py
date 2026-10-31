@@ -140,3 +140,31 @@ def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(
         cancel_event=cancel_event, timeout=timeout,
         reporting_session=(lambda plan: reporting_session(plan, engine_environment=engine_environment,
             deadline_seconds=timeout)) if reporting_session is not None else None)
+
+
+def local_trace_prerequisites(context, config, *, cancel_event=None, tool_plan=None):
+    """Plan only a conventional managed collector, independently of storage.
+
+    Acquisition is lazy and owned by the shared provider backend. The existing
+    manager supplies locking, readiness, rollback and last-consumer cleanup.
+    """
+    import os
+    from dataclasses import replace
+    from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, plan_compose, selected_profiles
+    from api_agent.runtime.inventory import capture_inventory
+    from api_agent.runtime.ownership import StackScope
+    from api_agent.runtime.prerequisites import PrerequisiteManager
+
+    values = {key: value for key, value in config.items()
+              if key.startswith('LANGFUSE_') or key in
+              {'TRACE_MODE', 'TRACE_TARGET', 'JAEGER_VIEWER_PORT'}}
+    if not selected_profiles(values):
+        return None
+    scope = StackScope.from_roots(context.base_root, context.pack_root)
+    environment = {key: os.environ[key] for key in ENGINE_ENVIRONMENT_KEYS if key in os.environ}
+    plan = plan_compose(values, scope, engine_environment=environment)
+    plan = replace(plan, inventory=capture_inventory(context, tool_plan))
+    return PrerequisiteManager(plan, scope, context.owner_root / 'artifacts' / 'prerequisites',
+        engine_environment=environment,
+        cancelled=cancel_event.is_set if cancel_event is not None else lambda: False,
+        cleanup_timeout_seconds=60)

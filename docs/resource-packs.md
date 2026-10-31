@@ -95,3 +95,17 @@ and authentication identity remain unchanged. Explicit test controls take
 precedence, and unsupported choices fail with guidance. This allows a provider
 to use different qualified models for reasoning, Studio and structured workflows
 without putting protocol branches in generic test drivers.
+
+## Tracing extensions (planned)
+
+Current tracing supports the built-in OTEL and LangFuse paths. A pack can
+configure an OTLP-compatible destination, but cannot yet register a complete
+new tracing implementation or managed dashboard through a provider contract.
+Standalone `--trace-viewer` currently admits managed Jaeger and LangFuse only.
+
+The [tracing-provider task](prds/implementation_plan_k1a2.md), grouped with
+[GenAI field support](prds/implementation_plan_k1a.md), will add pack-owned export,
+optional dashboard/login capabilities, nested configuration and optional recursive
+local infrastructure through existing shared owners. Its documentation acceptance
+includes a dedicated provider guide and examples linked from this overview.
+See [current tracing configuration](tracing.md) for behavior available today.

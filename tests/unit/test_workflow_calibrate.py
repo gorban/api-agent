@@ -314,8 +314,7 @@ def test_progress_descriptor_validation_closes_rejected_file_before_setup(setup,
             return SimpleNamespace(st_mode=stat.S_IFIFO if fault == 'mode' else actual.st_mode,
                 st_uid=actual.st_uid if fault == 'mode' else actual.st_uid + 1)
         return actual
-    monkeypatch.setattr(calibrate.os, 'open', opened_progress)
-    monkeypatch.setattr(calibrate.os, 'fstat', metadata)
+    monkeypatch.setattr(calibrate, 'os', SimpleNamespace(**(vars(calibrate.os) | {'open': opened_progress, 'fstat': metadata})))
     with pytest.raises(ValueError, match='regular file owned'):
         calibrate.pilot(setup.context, setup.result, setup.destination, 60)
     assert setup.instances == []

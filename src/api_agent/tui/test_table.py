@@ -108,6 +108,8 @@ class TestTable(DataTable):
         self.action_extend_range(direction * visible_rows)
 
     def action_clear_range(self):
+        if self.range_anchor is None and self.range_end is None:
+            return
         self.range_anchor = self.range_end = None
         self._clear_caches()
         self.refresh()

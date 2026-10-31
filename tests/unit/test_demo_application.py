@@ -242,7 +242,7 @@ def test_invalid_query_retries_without_calling_relevance_or_execution():
 @pytest.mark.parametrize('bad', [
     'not json', '{}',
     json.dumps({'use_tool': False, 'arguments': {'query': 'wrong'}, 'answer': ''}),
-    json.dumps({'use_tool': True, 'arguments': {'path': 'x' * 16384}, 'answer': ''}),
+    pytest.param(json.dumps({'use_tool': True, 'arguments': {'path': 'x' * 16384}, 'answer': ''}), id='oversized-path'),
 ])
 def test_invalid_planner_output_stops_before_tool_and_renderer(bad):
     owner = Owner()

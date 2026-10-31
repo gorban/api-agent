@@ -86,7 +86,7 @@ def test_each_layer_keeps_the_width_and_depth_budgets(widths):
     '{"answer":"one","answer":"two"}', '{"answer":NaN}',
     '{"answer":Infinity}', '{"answer":1e999}', '[0,]',
     '[' * 34 + '0' + ']' * 34, json.dumps([0] * 1025),
-    json.dumps([[0] * 1024] * 9), json.dumps('x' * 524289),
+    pytest.param(json.dumps([[0] * 1024] * 9), id='large-array'), pytest.param(json.dumps('x' * 524289), id='large-string'),
 ])
 def test_unwrapping_does_not_relax_existing_json_bounds(text):
     with pytest.raises(ContractError):

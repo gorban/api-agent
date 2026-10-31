@@ -153,7 +153,7 @@ def test_disconnect_cancellation_drains_inference():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('body,content_type', [(b'{}', 'text/plain'), (b'x' * 131073, 'application/json'), (b'{"version":1}', 'application/json'), (b'[]', 'application/json')])
+@pytest.mark.parametrize('body,content_type', [(b'{}', 'text/plain'), pytest.param(b'x' * 131073, 'application/json', id='oversized-body'), (b'{"version":1}', 'application/json'), (b'[]', 'application/json')])
 def test_body_boundary(body, content_type):
     async def run():
         backend, calls = setup_bridge()

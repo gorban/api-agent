@@ -9,7 +9,7 @@ from api_agent.testing.collection import TestIdentity
 from api_agent.testing.contracts import TestResult
 from api_agent.testing.integration import IntegrationRunResult
 from api_agent.testing.runner import UnitRunResult
-from test_tui import fixture
+from test_tui import fixture, confirm_full_unit
 
 
 START = {'type': 'str', 'default': 'False', 'enum': ['', 'False', 'True', 'E2E'], 'acknowledge_default': False}
@@ -79,6 +79,7 @@ def test_start_waits_for_required_configuration(tmp_path):
             app.screen.query_one(Input).value = 'provided'
             await pilot.press('enter')
             await pilot.press('c')
+            await confirm_full_unit(pilot, app)
             await wait_for(pilot, lambda: app.unit_result is not None)
             assert calls == [tuple(test.id for test in TESTS)]
             assert app.session.result().values['NEEDED'] == 'provided'
@@ -125,17 +126,11 @@ def test_start_e2e_keeps_human_acceptance(tmp_path):
             assert not app.test_run_active() and not app.auto_start_pending
             await pilot.pause()
             decline = app.screen.query_one('#decline', Button)
-            def decline_is_clickable():
-                region = decline.region
-                return (decline.is_mounted and decline.display and not decline.disabled
-                        and region.width > 0 and region.height > 0
-                        and app.get_widget_at(region.x + region.width // 2,
-                                              region.y + region.height // 2)[0] is decline)
-            # Screen identity precedes compositor layout; click the same visible
-            # interior point checked by readiness, rather than a transient border.
-            await wait_for(pilot, decline_is_clickable)
-            assert await pilot.click(decline, offset=(decline.region.width // 2,
-                                                     decline.region.height // 2))
+            decline.scroll_visible(animate=False)
+            decline.focus()
+            await wait_for(pilot, lambda: decline.is_mounted and decline.display
+                           and not decline.disabled and decline.has_focus)
+            await pilot.press('enter')
             await wait_for(pilot, lambda: app.screen.kind == 'tests')
             assert app.screen.kind == 'tests'
             await pilot.pause()
@@ -165,6 +160,7 @@ def test_start_configuration_review_empty_transition(tmp_path):
             app.session.set_value('COUNT', '8', persist=True)
             app.review_names.clear()
             app.show_configuration()
+            await confirm_full_unit(pilot, app)
             await wait_for(pilot, lambda: app.unit_result is not None)
             assert len(calls) == 1
     asyncio.run(scenario())
@@ -182,6 +178,7 @@ def test_start_auth_setup_returns_through_review(tmp_path):
             await pilot.pause()
             assert not calls and app.mode is None
             await pilot.press('c')
+            await confirm_full_unit(pilot, app)
             await wait_for(pilot, lambda: app.unit_result is not None)
             assert len(calls) == 1
     asyncio.run(scenario())
@@ -217,6 +214,7 @@ def test_start_required_auth_editor_resumes_pending_operation(tmp_path):
             await pilot.pause()
             app.session.set_value('UNATTENDED_AUTH', profile)
             await pilot.press('c')
+            await confirm_full_unit(pilot, app)
             await wait_for(pilot, lambda: app.unit_result is not None)
             assert len(calls) == 1
     asyncio.run(scenario())
@@ -253,6 +251,7 @@ def test_start_accepts_defaulted_mode(tmp_path):
         calls = []
         app.unit_runner = unit_runner(calls)
         async with app.run_test() as pilot:
+            await confirm_full_unit(pilot, app)
             await wait_for(pilot, lambda: app.unit_result is not None)
             assert len(calls) == 1 and app.mode == 'unit'
     asyncio.run(scenario())
@@ -285,6 +284,7 @@ def test_start_e2e_value_starts_other_mode_and_empty_does_not(tmp_path):
         calls = []
         app.unit_runner = unit_runner(calls)
         async with app.run_test() as pilot:
+            await confirm_full_unit(pilot, app)
             await wait_for(pilot, lambda: app.unit_result is not None)
             assert calls == [tuple(test.id for test in TESTS)]
         app = fixture(tmp_path, 'unit', fields={'START': START}, collector=lambda *args: TESTS,

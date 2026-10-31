@@ -112,8 +112,9 @@ def test_full_coverage_success_and_optional_missing_pack(tmp_path, monkeypatch):
         run_unit_tests(ctx, [])
 
 
-def test_cancellation_reaps_pytest_and_its_child(tmp_path):
-    base = fixture_repo(tmp_path / 'base', test='import subprocess, sys, time\nfrom pathlib import Path\ndef test_sleep():\n    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n    Path("child.pid").write_text(str(child.pid))\n    time.sleep(60)\n')
+def test_cancellation_reaps_pytest_and_its_child(tmp_path, monkeypatch):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    base = fixture_repo(tmp_path / 'base', test='import os, subprocess, sys, time\nfrom pathlib import Path\ndef test_sleep():\n    Path("scratch-path").write_text(os.environ["TMPDIR"])\n    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n    Path("child.pid").write_text(str(child.pid))\n    time.sleep(60)\n')
     ctx = context(base)
     tests = collect_tests(ctx, 'unit')
     cancel = threading.Event()
@@ -127,18 +128,32 @@ def test_cancellation_reaps_pytest_and_its_child(tmp_path):
     result = run_unit_tests(ctx, tests, cancel_event=cancel)
     thread.join()
     assert result.cancelled and result.exit_code == 130
+    scratch = Path((base / "scratch-path").read_text())
+    assert scratch.parent == tmp_path and not scratch.exists()
     pid = int((base / 'child.pid').read_text())
     status = Path(f'/proc/{pid}/stat')
     assert not status.exists() or status.read_text().split()[2] == 'Z'
 
 
-def test_unselected_owner_still_measures_all_production(tmp_path):
+def test_unselected_owner_still_measures_all_production(tmp_path, monkeypatch):
+    from api_agent.testing import runner
+    real_scratch = runner._unit_scratch
+    created = []
+    def track_scratch(prefix):
+        owner = real_scratch(prefix)
+        created.append((prefix, Path(owner.name)))
+        return owner
+    monkeypatch.setattr(runner, "_unit_scratch", track_scratch)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
     base = fixture_repo(tmp_path / 'base')
     pack = fixture_repo(tmp_path / 'pack')
     ctx = context(base, pack)
     selected = [test for test in collect_tests(ctx, 'unit') if test.repo == 'base']
     result = run_unit_tests(ctx, selected)
     assert result.exit_code == 1
+    assert [(prefix, path.parent) for prefix, path in created] == [
+        ('api-agent-unit-', tmp_path), ('api-agent-unselected-', tmp_path)]
+    assert all(not path.exists() for _, path in created)
     assert any(area.repo == 'pack' and area.covered_lines == 0 for area in result.coverage)
     assert {report.repo for report in result.coverage_reports} == {'base', 'pack'}
     assert all(report.json_path.is_file() and report.html_path.is_file()
@@ -278,7 +293,8 @@ def test_large_selection_uses_file_instead_of_os_argument_budget(tmp_path, monke
         selected = Path(options['env']['API_AGENT_UNIT_SELECTION'])
         assert json.loads(selected.read_text()) == nodes
         launches.append(selected)
-        return SimpleNamespace(stdout=io.StringIO(), returncode=1, poll=lambda: 1)
+        return SimpleNamespace(stdout=io.StringIO(), returncode=1, poll=lambda: 1,
+                               _api_agent_disposal_complete=True)
     monkeypatch.setattr(runner.subprocess, 'Popen', launch)
     monkeypatch.setattr(runner, '_stop_execution', lambda process: None)
     result = run_unit_tests(ctx, tests)
@@ -302,3 +318,219 @@ def test_unit_executor_uses_collected_labels_for_each_actual_child_cwd(tmp_path,
     result = run_unit_tests.__wrapped__(ctx, tests, require_full_coverage=False)
     assert result.exit_code == 0
     assert len(result.tests) == 2 and all(row.status == 'passed' for row in result.tests)
+
+
+@pytest.mark.parametrize('explicit, failing', [(False, False), (True, False), (False, True)])
+def test_unit_scratch_owned_by_runner_and_child(tmp_path, monkeypatch, explicit, failing):
+    import json
+    cache = tmp_path / 'cache'
+    chosen = tmp_path / 'chosen'
+    chosen.mkdir()
+    monkeypatch.setenv('XDG_CACHE_HOME', str(cache))
+    if explicit:
+        monkeypatch.setenv('TMPDIR', str(chosen))
+    else:
+        monkeypatch.delenv('TMPDIR', raising=False)
+    base = fixture_repo(tmp_path / 'base', test=(
+        'import json, os, tempfile\nfrom pathlib import Path\n'
+        'def test_scratch(tmp_path, pytestconfig):\n'
+        '    Path("scratch.json").write_text(json.dumps([os.environ["TMPDIR"], tempfile.gettempdir(), str(tmp_path), str(pytestconfig.getoption("basetemp"))]))\n'
+        + ('    assert False\n' if failing else '    assert True\n')))
+    ctx = context(base)
+    import os, tempfile
+    prior_tempdir = tempfile.tempdir
+    prior_env = os.environ.get('TMPDIR')
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'), require_full_coverage=False)
+    assert tempfile.tempdir == prior_tempdir and os.environ.get('TMPDIR') == prior_env
+    scratch, temp, item, basetemp = map(Path, json.loads((base / 'scratch.json').read_text()))
+    parent = chosen if explicit else cache / 'api-agent/unit-scratch'
+    assert scratch.parent == parent and temp == scratch
+    assert item.is_relative_to(scratch) and basetemp.is_relative_to(scratch)
+    assert not scratch.exists() and parent.exists()
+    assert result.tests[0].status == ('failed' if failing else 'passed')
+
+
+def test_unit_scratch_concurrent_and_unsafe_cache(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from api_agent.testing.runner import _unit_scratch
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        owners = list(pool.map(lambda _: _unit_scratch('api-agent-unit-'), range(2)))
+    paths = [Path(owner.name) for owner in owners]
+    try:
+        assert paths[0] != paths[1] and all(path.is_dir() for path in paths)
+        assert all(path.stat().st_mode & 0o777 == 0o700 for path in paths)
+    finally:
+        for owner in owners:
+            owner.cleanup()
+    assert not any(path.exists() for path in paths)
+    parent = tmp_path / 'api-agent/unit-scratch'
+    parent.rmdir()
+    parent.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(OSError, match='unit scratch.*TMPDIR'):
+        _unit_scratch('api-agent-unit-')
+
+
+def test_unit_scratch_rejects_unavailable_explicit_directory(tmp_path, monkeypatch):
+    from api_agent.testing.runner import _unit_scratch
+    missing = tmp_path / 'missing'
+    monkeypatch.setenv('TMPDIR', str(missing))
+    with pytest.raises(OSError, match='Cannot create unit scratch.*TMPDIR'):
+        _unit_scratch('api-agent-unit-')
+    assert not missing.exists()
+
+
+def test_unit_scratch_rejects_shared_writable_parent(tmp_path, monkeypatch):
+    import os
+    from api_agent.testing.runner import _unit_scratch
+    if not hasattr(os, 'getuid'):
+        pytest.skip('POSIX ownership check')
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path))
+    app_cache = tmp_path / 'api-agent'
+    app_cache.mkdir(mode=0o777)
+    app_cache.chmod(0o777)
+    with pytest.raises(OSError, match='unit scratch.*TMPDIR'):
+        _unit_scratch('api-agent-unit-')
+    assert app_cache.exists()
+
+
+def test_unit_scratch_retained_if_process_disposal_unconfirmed(tmp_path, monkeypatch):
+    import shutil
+    from api_agent.testing import runner
+    monkeypatch.setenv('TMPDIR', str(tmp_path))
+    base = fixture_repo(tmp_path / 'base')
+    ctx = context(base)
+    tests = collect_tests(ctx, 'unit')
+    original = runner._stop_execution
+    def failed_disposal(process):
+        original(process)  # Real child is reaped; simulate failure to confirm disposal.
+        process._api_agent_disposal_complete = False
+        raise RuntimeError('synthetic disposal failure')
+    monkeypatch.setattr(runner, '_stop_execution', failed_disposal)
+    try:
+        with pytest.raises(RuntimeError, match='synthetic disposal failure') as error:
+            run_unit_tests(ctx, tests)
+        retained = list(tmp_path.glob('api-agent-unit-*'))
+        assert len(retained) == 1 and retained[0].is_dir()
+        assert any(str(retained[0]) in note for note in error.value.__notes__)
+    finally:
+        for path in tmp_path.glob('api-agent-unit-*'):
+            shutil.rmtree(path)
+
+
+@pytest.mark.parametrize('platform, setting, expected', [
+    ('darwin', None, 'Library/Caches'),
+    ('win32', 'local', 'local'),
+    ('linux', 'relative', '.cache'),
+])
+def test_unit_scratch_cache_platform_defaults(tmp_path, monkeypatch, platform, setting, expected):
+    from api_agent.testing import runner
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(platform=platform))
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv('XDG_CACHE_HOME', 'relative')
+    if setting == 'local':
+        monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    with runner._unit_scratch('api-agent-unit-') as scratch:
+        assert Path(scratch).parent == tmp_path / expected / 'api-agent/unit-scratch'
+
+
+def test_unit_scratch_rejects_symlinked_cache_ancestor(tmp_path, monkeypatch):
+    from api_agent.testing.runner import _unit_scratch
+    monkeypatch.delenv('TMPDIR', raising=False)
+    link = tmp_path / 'link'
+    link.symlink_to(tmp_path, target_is_directory=True)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(link / 'cache'))
+    with pytest.raises(OSError, match='unit scratch.*TMPDIR'):
+        _unit_scratch('api-agent-unit-')
+    assert not (tmp_path / 'cache').exists()
+
+
+def test_unit_scratch_without_posix_uid_api(tmp_path, monkeypatch):
+    import os
+    from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'os', SimpleNamespace(environ={'XDG_CACHE_HOME': str(tmp_path)}))
+    with runner._unit_scratch('api-agent-unit-') as scratch:
+        assert Path(scratch).is_dir()
+
+
+@pytest.mark.parametrize('value', ['', 'relative'])
+def test_unit_scratch_windows_invalid_localappdata_uses_home(tmp_path, monkeypatch, value):
+    from api_agent.testing import runner
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setenv('LOCALAPPDATA', value)
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(platform='win32'))
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+    with runner._unit_scratch('unit-') as scratch:
+        assert Path(scratch).parent == tmp_path / 'AppData/Local/api-agent/unit-scratch'
+
+
+def test_unit_scratch_rejects_late_untrusted_ancestor(tmp_path, monkeypatch):
+    import os
+    from types import ModuleType
+    from api_agent.testing import runner
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'late' / 'cache'))
+    proxy = ModuleType('isolated_os')
+    proxy.__dict__.update(vars(os))
+    original = os.mkdir
+    injected = []
+    def mkdir(name, mode=0o777, *, dir_fd=None):
+        if name == 'late' and not injected:
+            original(name, 0o700, dir_fd=dir_fd)
+            os.chmod(tmp_path / 'late', 0o777)
+            injected.append(True)
+        return original(name, mode, dir_fd=dir_fd)
+    proxy.mkdir = mkdir
+    monkeypatch.setattr(runner, 'os', proxy)
+    with pytest.raises(OSError, match='cache ancestor is not trusted'):
+        runner._unit_scratch('unit-')
+    assert injected and not (tmp_path / 'late/cache').exists()
+
+
+def test_unit_scratch_new_intermediates_private_with_open_umask(tmp_path, monkeypatch):
+    import os
+    from api_agent.testing.runner import _unit_scratch
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'one/two'))
+    previous = os.umask(0)
+    try:
+        with _unit_scratch('unit-'):
+            assert (tmp_path / 'one').stat().st_mode & 0o777 == 0o700
+            assert (tmp_path / 'one/two').stat().st_mode & 0o777 == 0o700
+    finally:
+        os.umask(previous)
+
+
+def test_unit_scratch_without_uid_api_rejects_symlink(tmp_path, monkeypatch):
+    from api_agent.testing import runner
+    link = tmp_path / 'link'
+    link.symlink_to(tmp_path, target_is_directory=True)
+    monkeypatch.setattr(runner, 'os', SimpleNamespace(environ={'XDG_CACHE_HOME': str(link)}))
+    with pytest.raises(OSError, match='cache directory is not trusted'):
+        runner._unit_scratch('unit-')
+
+
+def test_unit_scratch_closes_directory_descriptor_on_interrupt(tmp_path, monkeypatch):
+    import os
+    from types import ModuleType
+    from api_agent.testing import runner
+    if not Path('/proc/self/fd').is_dir():
+        pytest.skip('descriptor inventory unavailable')
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'interrupted'))
+    proxy = ModuleType('isolated_os')
+    proxy.__dict__.update(vars(os))
+    original = os.mkdir
+    def mkdir(name, mode=0o777, *, dir_fd=None):
+        if name == 'interrupted':
+            raise KeyboardInterrupt()
+        return original(name, mode, dir_fd=dir_fd)
+    proxy.mkdir = mkdir
+    monkeypatch.setattr(runner, 'os', proxy)
+    before = len(list(Path('/proc/self/fd').iterdir()))
+    with pytest.raises(KeyboardInterrupt):
+        runner._unit_scratch('unit-')
+    assert len(list(Path('/proc/self/fd').iterdir())) == before

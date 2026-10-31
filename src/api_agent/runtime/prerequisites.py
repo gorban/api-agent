@@ -10,6 +10,7 @@ from hashlib import sha256
 from http.client import HTTPConnection, HTTPException, HTTPResponse
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -590,7 +591,8 @@ class PrerequisiteManager:
     def __init__(self, plan, scope, ownership_directory, *, engine_environment=None,
                  command_runner=run_command, cancelled=lambda: False,
                  readiness_probe=_readiness, deadline_seconds=120,
-                 now=time.monotonic, sleep=time.sleep, identity=process_identity):
+                 now=time.monotonic, sleep=time.sleep, identity=process_identity,
+                 cleanup_timeout_seconds=15):
         self.plan, self.scope = plan, scope
         self.conditional = {item.compose_name: item for item in getattr(plan, 'conditional', ())}
         self._rollback = None
@@ -609,6 +611,10 @@ class PrerequisiteManager:
         self.engine_id = sha256(json.dumps({'command': plan.command[0],
             'environment': dict(self.engine_environment)}, sort_keys=True).encode()).hexdigest()
         self.runner, self.cancelled, self.probe = command_runner, cancelled, readiness_probe
+        if (type(cleanup_timeout_seconds) not in (int, float)
+                or not math.isfinite(cleanup_timeout_seconds) or not 0 < cleanup_timeout_seconds <= 300):
+            raise PrerequisiteError('Cleanup deadline must be between zero and 300 seconds.')
+        self.cleanup_timeout = cleanup_timeout_seconds
         self.timeout, self.now, self.sleep, self.identity = deadline_seconds, now, sleep, identity
         document = json.loads(plan.assets['compose.json'])
         self.document = document
@@ -974,9 +980,22 @@ class PrerequisiteManager:
         if not eligible:
             return ()
         current = self._inventory(deadline, cleanup=True)
-        owned = tuple(sorted(item for item in eligible if item in current))
-        if owned:
-            self._command((self.plan.command[0], 'stop', '--time', '5', *owned), deadline, cleanup=True)
+        owned = tuple(sorted(item for item in eligible if item in current and current[item].running))
+        # Stop consumers before their stores, independently of engine scheduling
+        # or immutable container-ID order. Prepare all tiers before mutating any
+        # service so an invalid dependency cycle retains the complete stack.
+        pending, tiers = set(owned), []
+        while pending:
+            dependencies = {name for identifier in pending
+                            for name in self.specs[current[identifier].service].get('depends_on', {})}
+            tier = tuple(sorted(identifier for identifier in pending
+                                if current[identifier].service not in dependencies))
+            if not tier:
+                raise PrerequisiteError('Prerequisite cleanup dependency cycle; resources remain owned.')
+            tiers.append(tier)
+            pending.difference_update(tier)
+        for tier in tiers:
+            self._command((self.plan.command[0], 'stop', '--time', '5', *tier), deadline, cleanup=True)
         return owned
 
     def _rollback_acquisition(self, journal, deadline):
@@ -1133,7 +1152,7 @@ class PrerequisiteManager:
                 _prelocked=False, _deadline=None):
         if self.lease is None and self._rollback is None:
             return ()
-        deadline = self.now() + 15
+        deadline = self.now() + self.cleanup_timeout
         if _deadline is not None:
             deadline = min(deadline, _deadline)
         with (nullcontext() if _prelocked else _locked(self.directory, self.scope, deadline=deadline,

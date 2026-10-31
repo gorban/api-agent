@@ -48,6 +48,24 @@ def _extract_view_flow(argv):
     return remaining, selected
 
 
+def _extract_trace_viewer(argv):
+    """Select the standalone tracing viewer without parsing provider options."""
+    remaining, selected = [], False
+    for index, token in enumerate(argv):
+        if token == '--':
+            remaining.extend(argv[index:])
+            break
+        if token == '--trace-viewer':
+            if selected:
+                raise ValueError('Duplicate --trace-viewer')
+            selected = True
+        elif token.startswith('--trace-viewer='):
+            raise ValueError('--trace-viewer does not accept a value')
+        else:
+            remaining.append(token)
+    return remaining, selected
+
+
 def _validate_view_flow_arguments(argv):
     allowed = {'--debug', '--no-std-in', '--help', '-h'}
     entry = None
@@ -176,6 +194,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
     handoff_options = {'replace_process': True} if _replace_process else {}
     try:
         argv, view_flow_requested = _extract_view_flow(argv)
+        argv, trace_viewer_requested = _extract_trace_viewer(argv)
+        if view_flow_requested and trace_viewer_requested:
+            raise ValueError('--trace-viewer conflicts with --view-flow')
         argv, origin = _extract_option(argv, {'--_launcher-root'})
         if origin is not None:
             launcher_root = Path(origin).expanduser().resolve()
@@ -200,6 +221,28 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         if not _worktrees_verified:
             verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout,
                              resource_pack_name=context.pack_id if context.external_pack else None)
+        if trace_viewer_requested:
+            trace_arguments, _ = _extract_option(argv, {'--api-agent-dir', '--api_agent_dir'})
+            if '--help' in trace_arguments or '-h' in trace_arguments:
+                print('Usage: ./launch.sh --trace-viewer [tracing options]\n'
+                      'Open the configured managed local trace dashboard in a headed browser.')
+                return 0
+            shared = load_shared_schema(context.base_root)
+            schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
+                                    overrides=context.defaults)
+            dotenv = {}
+            for path in dict.fromkeys((context.base_root / '.env', *context.shared_dotenv_paths,
+                                       (context.launcher_root or context.base_root) / '.env', context.dotenv_path)):
+                dotenv.update(read_dotenv(path))
+            from api_agent.runtime.trace_viewer import resolve_viewer_config
+            values = resolve_viewer_config(schema, argv=trace_arguments, environ=os.environ,
+                                           dotenv=dotenv, anchors=context.anchors)
+            from api_agent.runtime.dependencies import ensure_environment
+            status = ensure_environment(context, ['--trace-viewer', *argv], groups=('browser',), **handoff_options)
+            if status is not None:
+                return status
+            from api_agent.runtime.trace_viewer import run_trace_viewer
+            return run_trace_viewer(context, values)
         if view_flow_requested:
             view_arguments, _ = _extract_option(argv, {'--api-agent-dir', '--api_agent_dir'})
             view_entry = _validate_view_flow_arguments(view_arguments)
@@ -494,6 +537,7 @@ def _colored(text, code, enabled):
 def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color=False):
     """Show CLI behavior and deliberate callouts; declarations own full config docs."""
     lines = ['Usage: ./launch.sh [OPTIONS] [TEST SELECTORS]', '', 'CLI options and selected configuration switches:']
+    lines.append('  --trace-viewer: open the managed local tracing dashboard without starting the app or providers.')
     lines.append('  --view-flow [FLOW.md.html]: open a workflow (default: selected application) without starting the app or providers.')
     callouts = {
         'HELP': '-h, --help: print help without execution configuration validation.',

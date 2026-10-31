@@ -205,7 +205,7 @@ def test_unowned_log_identifier_is_rejected(synthetic):
 @pytest.mark.parametrize('status,body,expected', [(200,b'{"id":"fixture"}',True),
     (201,b'{"id":"fixture"}',False), (200,b'{"id":1}',False),
     (200,b'{"id":"wrong"}',False), (200,b'[]',False), (200,b'bad',False),
-    (200,b'x'*65537,False)])
+    pytest.param(200,b'x'*65537,False, id='oversized-body')])
 def test_http_identity_requires_bounded_matching_json(monkeypatch, status, body, expected):
     @contextmanager
     def open_response(request, timeout, **kwargs):

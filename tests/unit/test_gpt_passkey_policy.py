@@ -31,7 +31,7 @@ def test_both_existing_restrictive_features_need_no_duplicate_header():
 @pytest.mark.parametrize('value', [f'{GET}=*', f'{GET}=(self "https://example.test")',
     f'{GET}', f'{GET}=?0', f'{GET}=(self), {GET}=()', 'camera=(),', 'camera=() garbage',
     'camera=("unterminated)', 'Camera=()', 'camera=(self\tself)', 'camera="bad\\q"',
-    'camera=(),,microphone=()', 'camera=:a:', 'camera=:a===:', 'camera=\u00e9', 'camera=' + 'x' * 65536])
+    'camera=(),,microphone=()', 'camera=:a:', 'camera=:a===:', 'camera=\u00e9', pytest.param('camera=' + 'x' * 65536, id='oversized-policy')])
 def test_ambiguous_or_invalid_combined_policy_fails_with_static_error(value):
     with pytest.raises(AuthError, match='^passkey_permissions_policy$'):
         restrict_webauthn_headers([{'name': 'Permissions-Policy', 'value': value}])

@@ -13,7 +13,7 @@ from api_agent.testing.contracts import TestResult
 from api_agent.testing.integration import IntegrationRunResult
 from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.testing.runner import UnitRunResult
-from test_tui import fixture
+from test_tui import fixture, confirm_full_unit
 
 
 @pytest.mark.parametrize('mode,status,startup_delay', [
@@ -44,6 +44,7 @@ def test_completion_immediately_presents_back_to_selection(tmp_path, mode, statu
                 asyncio.get_running_loop().call_later(startup_delay,startup.set)
                 if mode == 'unit':
                     app.start_unit_run()
+                    await confirm_full_unit(pilot, app)
                 else:
                     # E2E execution is pending; exercise its shared result path
                     # with a synthetic runner, without bypassing a real gate.

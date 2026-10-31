@@ -76,7 +76,7 @@ def test_lock_paths_reject_unowned_public_or_redirected_inodes(helper, tmp_path,
                 kind == 'file-owner' and not os.path.isdir('/proc/self/fd/' + str(fd)))
             return SimpleNamespace(st_uid=info.st_uid + 1 if mismatch else info.st_uid,
                 st_mode=info.st_mode, st_nlink=info.st_nlink)
-        monkeypatch.setattr(helper.os, 'fstat', ownership)
+        monkeypatch.setattr(helper, 'os', SimpleNamespace(**(vars(helper.os) | {'fstat': ownership})))
     with pytest.raises((ValueError, OSError)):
         helper._open(directory, authority)
 
@@ -245,7 +245,12 @@ def test_measurements_keep_overlapping_service_leases_and_last_consumer_cleanup(
 @pytest.mark.parametrize('driver', ['test_tool_instances.py', 'test_tool_alternate.py'])
 def test_driver_imports_sibling_helper_from_relocated_resources_without_checkout(driver, tmp_path):
     import shutil
+    import api_agent
     root = tmp_path / 'installed-resources'
+    library = tmp_path / 'library'
+    library.mkdir()
+    shutil.copytree(Path(api_agent.__file__).resolve().parent, library / 'api_agent',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     destination = root / 'tests/integration'
     fixtures = destination / 'fixtures/tool_instances'
     fixtures.mkdir(parents=True)
@@ -253,10 +258,16 @@ def test_driver_imports_sibling_helper_from_relocated_resources_without_checkout
     shutil.copyfile(ROOT / 'tests/integration' / driver, destination / driver)
     script = '''
 import inspect, runpy, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[3])
+import api_agent
+assert Path(api_agent.__file__).resolve().is_relative_to(Path(sys.argv[3]).resolve())
 namespace = runpy.run_path(sys.argv[1])
 assert inspect.unwrap(namespace['measure_targets']).__code__.co_filename == sys.argv[2]
+assert all(not getattr(module, '__file__', None) or Path(module.__file__).resolve().is_relative_to(Path(sys.argv[3]).resolve())
+           for name, module in sys.modules.items() if name == 'api_agent' or name.startswith('api_agent.'))
 '''
-    result = subprocess.run([sys.executable, '-I', '-c', script, str(destination / driver), str(fixtures / 'measurement.py')],
+    result = subprocess.run([sys.executable, '-I', '-c', script, str(destination / driver), str(fixtures / 'measurement.py'), str(library)],
         cwd=tmp_path, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
 

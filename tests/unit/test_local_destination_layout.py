@@ -48,7 +48,9 @@ def test_actual_app_destination_padding_url_row_and_copy(tmp_path, monkeypatch, 
             assert buttons[0].region.right <= buttons[1].region.x
             for index, (button, destination) in enumerate(zip(buttons, screen.menu_choices)):
                 button.focus()
-                await pilot.pause(0.5)
+                await pilot.pause()
+                await pilot.wait_for_scheduled_animations()
+                assert app.focused is button
                 assert button.region.height == 4
                 assert button.styles.padding.left >= 1
                 assert button.content_region.x - button.region.x >= 2

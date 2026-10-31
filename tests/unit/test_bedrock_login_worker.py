@@ -12,7 +12,7 @@ def tuple_json(**changes):
     return json.dumps(dict(Version=1, AccessKeyId='key', SecretAccessKey='secret', SessionToken='token', Expiration='2999-01-01T00:00:00Z', **changes)).encode()
 
 
-@pytest.mark.parametrize('raw', [b'{}', b'[]\n', b'x\n', b'x'*(module.MAX_FRAME+1)])
+@pytest.mark.parametrize('raw', [b'{}', b'[]\n', b'x\n', pytest.param(b'x'*(module.MAX_FRAME+1), id='oversized-request')])
 def test_bad_request(raw):
     with pytest.raises(ValueError):
         module.read_frame(io.BytesIO(raw))
@@ -179,7 +179,7 @@ def test_cli_private_replies_chunked(native_cli, chunks):
     assert process.stdin.closed and process.stdout.closed
 
 
-@pytest.mark.parametrize('reply', [b'',b'{"input":2}\n',b'{"input":"bad\\nvalue"}\n',b'{"input":"bad\\rvalue"}\n',b'{"other":"value"}\n',b'x'*(module.MAX_FRAME+1)])
+@pytest.mark.parametrize('reply', [b'',b'{"input":2}\n',b'{"input":"bad\\nvalue"}\n',b'{"input":"bad\\rvalue"}\n',b'{"other":"value"}\n',pytest.param(b'x'*(module.MAX_FRAME+1), id='oversized-reply')])
 def test_cli_rejects_invalid_reply_and_reaps(native_cli,reply):
     process, _ = native_cli([('reply',reply)],interactive=True)
     with pytest.raises(ValueError):
@@ -188,7 +188,7 @@ def test_cli_rejects_invalid_reply_and_reaps(native_cli,reply):
     assert process.poll() is not None
 
 
-@pytest.mark.parametrize('output,status',[(b'x'*(module.MAX_OUTPUT+1),0),(b'',1)])
+@pytest.mark.parametrize('output,status',[pytest.param(b'x'*(module.MAX_OUTPUT+1),0, id='oversized-output'),(b'',1)])
 def test_cli_rejects_output_limit_or_child_failure(native_cli,output,status):
     process, frames = native_cli([('output',output)],status=status)
     with pytest.raises(module.CLIExecutionFailure if status else ValueError):

@@ -12,7 +12,7 @@ from test_bedrock_login_worker import native_cli
 
 @pytest.mark.parametrize('raw,reason', [
     (b'', 'input_closed'),
-    (b'x' * (worker.MAX_FRAME + 1), 'input_limit'),
+    pytest.param(b'x' * (worker.MAX_FRAME + 1), 'input_limit', id='oversized-frame'),
     (b'{\n', 'input_malformed'),
     (b'\xff\n', 'input_malformed'),
     (b'null\n', 'input_malformed'),

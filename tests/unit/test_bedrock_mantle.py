@@ -361,7 +361,7 @@ def test_chat_native_reasoning_is_suppressed_in_result_and_stream():
     assert decoder.finish().payload.continuation is None
 
 
-@pytest.mark.parametrize('value',[1,'x'*(m._LIMIT+1)])
+@pytest.mark.parametrize('value',[1,pytest.param('x'*(m._LIMIT+1), id='over-limit')])
 def test_chat_native_reasoning_validated(value):
     raw=completion();raw['choices'][0]['message']['reasoning_content']=value
     with pytest.raises(ProviderAccessError):m.decode(raw,'completions',selected_llm=MODEL)

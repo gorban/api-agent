@@ -55,7 +55,7 @@ def test_unrecognized_error_fields_are_not_diagnostics(data):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('raw', [b'not json', b'[]', b'x' * (oauth.LIMIT + 1), b'[' * 2000])
+@pytest.mark.parametrize('raw', [b'not json', b'[]', pytest.param(b'x' * (oauth.LIMIT + 1), id='oversized-response'), b'[' * 2000])
 def test_malformed_or_oversized_http_failure_keeps_status_without_content(raw):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(

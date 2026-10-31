@@ -35,6 +35,7 @@ class BedrockProvider:
         self.sessions = []
         self.closed = False
         self._setups = set()
+        self._describes = set()
         self._closing = None
         self._session_closes = {}
         self.emissions = self.services.get("emissions")
@@ -129,9 +130,49 @@ class BedrockProvider:
             self._setups.discard(task)
 
     async def adescribe(self, *, auth=None):
+        self._join_active_authority()
+        self._ensure_authority()
         self._open()
-        async with component_timeout('Bedrock regional catalog', 60):
-            return catalog.catalog(await self.transport.call('models', {}, auth=auth), self.api_mode)
+        async def describe():
+            async with component_timeout('Bedrock regional catalog', 60):
+                response = await self.transport.call('models', {}, auth=auth, join=self._join_credentials)
+                selections = catalog.catalog(response, self.api_mode)
+                from api_agent.providers.catalog import catalog_from_wire, catalog_to_wire
+                from api_agent.providers.credential_guard import async_guard_json, CredentialProtectionError
+                secrets, lease = await self._join_credentials(())
+                try:
+                    rows = await async_guard_json(catalog_to_wire(selections), secrets)
+                    result = catalog_from_wire(rows)
+                    self._open()
+                    return result, lease
+                except CredentialProtectionError:
+                    lease.release()
+                    raise ContractError('Bedrock catalog could not be safely released.') from None
+                except BaseException:
+                    lease.release()
+                    raise
+
+        with independent_timeout_scope():
+            task = asyncio.create_task(describe())
+        self._describes.add(task)
+        try:
+            result, lease = await asyncio.shield(task)
+            try:
+                self._open()
+                return result
+            finally:
+                lease.release()
+        except asyncio.CancelledError:
+            if not task.cancelling():
+                task.cancel()
+            async def drain_describe():
+                outcome, = await asyncio.gather(task, return_exceptions=True)
+                if not isinstance(outcome, BaseException):
+                    outcome[1].release()
+            await finish_cleanup(drain_describe())
+            raise
+        finally:
+            self._describes.discard(task)
 
     def validate_request(self, request):
         self._open()
@@ -312,6 +353,11 @@ class BedrockProvider:
                         if not task.cancelling():
                             task.cancel()
                     await asyncio.gather(*setups, return_exceptions=True)
+                    describes = tuple(self._describes)
+                    for task in describes:
+                        if not task.cancelling():
+                            task.cancel()
+                    await asyncio.gather(*describes, return_exceptions=True)
                     sessions = tuple(self.sessions)
                     results = await asyncio.gather(self.transport.aclose(),
                         *(self._close_session(session) for session in sessions), return_exceptions=True)

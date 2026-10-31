@@ -237,7 +237,12 @@ def test_descriptor_acquisition_failure_restores_previous_flags(monkeypatch, fai
             raise OSError('descriptor unavailable')
         return original_set(fd, blocking)
     async def run():
-        monkeypatch.setattr(os, failure, fail_stat if failure == 'fstat' else fail_set)
+        if failure == 'fstat':
+            from types import SimpleNamespace
+            from api_agent.runtime import local_terminal
+            monkeypatch.setattr(local_terminal, 'os', SimpleNamespace(**(vars(os) | {'fstat': fail_stat})))
+        else:
+            monkeypatch.setattr(os, 'set_blocking', fail_set)
         with pytest.raises(OSError, match='descriptor unavailable'):
             TerminalWriter((write, duplicate))
         assert os.get_blocking(write)

@@ -15,6 +15,15 @@ BINDING={'worker_id':'graph-worker'}
 NONCE='a'*64
 
 
+@pytest.fixture
+def short_fake_socket():
+    import tempfile
+    from pathlib import Path
+    from api_agent.providers.authority_channel import _short_control_root
+    with tempfile.TemporaryDirectory(prefix='gf-', dir=_short_control_root()) as directory:
+        yield str(Path(directory) / 'channel')
+
+
 @pytest.mark.parametrize('stage',['hello','confirm','receipt','release','owner_before_transfer','owner_after_transfer'])
 def test_reverse_source_rejects_only_corrupted_stage_and_releases_lease(stage):
     async def run():
@@ -60,7 +69,7 @@ def test_reverse_source_rejects_only_corrupted_stage_and_releases_lease(stage):
 
 
 @pytest.mark.parametrize('stage',['challenge_shape','challenge_proof','snapshot_shape','snapshot_proof','ready','released'])
-def test_reverse_consumer_rejects_authenticated_wrong_purpose_or_shape(tmp_path,stage):
+def test_reverse_consumer_rejects_authenticated_wrong_purpose_or_shape(short_fake_socket,stage):
     async def run():
         done=asyncio.Event()
         received=[]
@@ -90,7 +99,7 @@ def test_reverse_consumer_rejects_authenticated_wrong_purpose_or_shape(tmp_path,
                 writer.close()
                 await writer.wait_closed()
                 done.set()
-        path=str(tmp_path/'channel')
+        path=short_fake_socket
         server=await asyncio.start_unix_server(fake,path)
         try:
             with pytest.raises(ContractError):

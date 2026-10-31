@@ -6,6 +6,10 @@ This pending extension covers the entire application operation, including work
 that returns a typed failure without raising. Existing bounded local tracing is
 not full signal or end-to-end request conformance.
 
+Coordinate backend selection and field mappings with the
+[resource-pack tracing-provider contract](implementation_plan_k1a2.md), preserving
+one shared capture path across built-in and pack-selected implementations.
+
 ## Execution boundaries and outcomes
 
 - [ ] Keep one explicitly owned inbound request trace through graph entry,

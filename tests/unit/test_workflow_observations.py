@@ -217,7 +217,7 @@ def test_observational_failures_do_not_replace_execution_or_contract_validation(
 
 
 @pytest.mark.parametrize('log,trace', [(False,False),(False,True),(True,False),(True,True)])
-@pytest.mark.parametrize('kind,value,reason', [('string','x'*65537,'payload_limit'),('array',[], 'unsupported')])
+@pytest.mark.parametrize('kind,value,reason', [pytest.param('string','x'*65537,'payload_limit', id='oversized-string'),('array',[], 'unsupported')])
 def test_unavailable_capture_does_not_depend_on_destination_opt_in(log,trace,kind,value,reason):
     from unittest.mock import Mock
     rows = []

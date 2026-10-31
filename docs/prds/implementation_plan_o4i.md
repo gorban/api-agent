@@ -65,6 +65,23 @@ The diagram and runtime consume the same captured declarations.
   affected integrations, scoped public-boundary/license checks, independent
   adversarial review and external PR-style review before requesting human acceptance.
   Combined-candidate publication/history checks remain a separate gate.
-- [ ] Human review: follow primary from declaration to consuming nodes in the
-  static/managed demo diagrams, run the API demo and named-tool integrations,
-  and inspect matching node/port/instance tool evidence in Allure.
+- [x] Human review of declarative tool links and node-local permissions: follow
+  the instance from consuming nodes and inspect local operation lists. Controlled
+  integration mutations verify rejection of an undeclared operation and an
+  undeclared port; restoring the original source restores passing execution.
+- [x] Human review of shared-primary named-tool execution and matching separate
+  tool request/response attribution in Allure, despite one shared backend.
+- [x] Human review of independent-target named-tool execution and matching
+  node/port/instance tool evidence in Allure.
+- [ ] Human review of any remaining API demo execution and broader lifecycle
+  behavior; independent-target acceptance does not close those separate gates.
+
+Declarative tool links and permission enforcement received human acceptance on
+October 30, 2026. This does not claim additional manual execution or reporting
+observations beyond the reviewed controlled mutations.
+
+Shared-primary execution and its Allure attribution received human acceptance on
+October 30, 2026. Independent-target and broader lifecycle acceptance remain separate.
+
+Independent-target tool execution and Allure attribution received human acceptance
+on October 30, 2026. The primary and secondary retain independent targets.

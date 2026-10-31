@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -67,6 +68,7 @@ def test_bad_root(tmp_path, kind):
     root = tmp_path / 'private'
     if kind == 'permissions':
         root.mkdir(mode=0o755)
+        root.chmod(0o755)
     elif kind == 'symlink':
         root.symlink_to(tmp_path, target_is_directory=True)
     else:
@@ -95,7 +97,7 @@ def test_bad_file(store, record, tmp_path, kind):
         store.load(key)
 
 
-@pytest.mark.parametrize('raw', [b'x', b'\xff', b'x' * 65537, b'[]', b'{}'])
+@pytest.mark.parametrize('raw', [b'x', b'\xff', pytest.param(b'x' * 65537, id='oversized-response'), b'[]', b'{}'])
 def test_corrupt(store, record, raw):
     key = store.save(record)
     (store.root / (key + '.json')).write_bytes(raw)
@@ -136,7 +138,8 @@ def test_file_foreign_owner(store, record, monkeypatch):
         data = list(real(fd))
         data[4] = -1
         return os.stat_result(data)
-    monkeypatch.setattr(os, 'fstat', foreign)
+    from api_agent.llm_providers.gpt import connections
+    monkeypatch.setattr(connections, 'os', SimpleNamespace(**(vars(os) | {'fstat': foreign})))
     with pytest.raises(AuthError):
         store.load(key)
 
@@ -437,18 +440,25 @@ def test_ancestor_symlink(tmp_path, record):
 
 @pytest.mark.parametrize('which', ['directory', 'file'])
 def test_fstat_failure_closes(store, record, monkeypatch, which):
+    from api_agent.llm_providers.gpt import connections
     key = store.save(record)
     count = len(os.listdir('/proc/self/fd'))
     original = os.fstat
+    failures = []
     def fail(fd):
         info = original(fd)
         if (which == 'directory') == stat.S_ISDIR(info.st_mode):
+            failures.append(fd)
             raise OSError('failure')
         return info
-    monkeypatch.setattr(os, 'fstat', fail)
+    provider_os = SimpleNamespace(**vars(os))
+    provider_os.fstat = fail
+    monkeypatch.setattr(connections, 'os', provider_os)
     for _ in range(5):
         with pytest.raises(AuthError):
             store.load(key)
+    assert len(failures) == 5
+    assert os.fstat is original
     assert len(os.listdir('/proc/self/fd')) == count
 
 

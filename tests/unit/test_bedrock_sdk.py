@@ -350,7 +350,12 @@ async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatc
     original = asyncio.create_subprocess_exec
     pidfile = tmp_path / 'helper.pid'
     # Helpers stay in the isolated worker group; fake worker can exit first.
-    script = "import subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); open(sys.argv[1],'w').write(str(p.pid)); " + ("print('{\"result\":{}}', flush=True)" if parent_exits else "time.sleep(60)")
+    # Publish only the complete PID so readiness cannot expose an empty file.
+    script = ("import os,subprocess,sys,time; from pathlib import Path; "
+              "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+              "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+              "pending=sys.argv[1]+'.pending'; Path(pending).write_text(str(p.pid)); "
+              "os.replace(pending,sys.argv[1]); ") + ("print('{\"result\":{}}', flush=True)" if parent_exits else "time.sleep(60)")
     children = []
     async def spawn(*args, **kwargs):
         child = await original(sys.executable, '-c', script, str(pidfile), **kwargs)
@@ -854,7 +859,7 @@ async def test_wire_timeout_cannot_overflow_frame_limit(auth, fake_process, monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('wire', [b'{bad}\n', b'{}\n', b'[""]\n', b'"' + b'x' * 33000])
+@pytest.mark.parametrize('wire', [b'{bad}\n', b'{}\n', b'[""]\n', pytest.param(b'"' + b'x' * 33000, id='oversized-handoff')])
 async def test_worker_authority_channel_rejects_invalid_handoffs(auth, fake_process, monkeypatch, wire):
     import os
     import socket

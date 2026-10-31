@@ -279,6 +279,98 @@ def test_listener_ready_timeout_and_start(monkeypatch):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(('number', 'expected'), [
+    (__import__('errno').EADDRINUSE, 'listener_bind_in_use'),
+    (__import__('errno').EADDRNOTAVAIL, 'listener_bind_unavailable'),
+    (__import__('errno').EACCES, 'listener_bind_denied'),
+    (__import__('errno').EINVAL, 'listener_start_failed'),
+])
+def test_listener_classifies_bind_context_without_os_text(monkeypatch, number, expected):
+    class Server:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+        async def serve(self):
+            try:
+                raise OSError(number, 'synthetic sensitive path')
+            except OSError:
+                raise SystemExit(1)
+    monkeypatch.setitem(sys.modules, 'uvicorn', SimpleNamespace(Config=lambda *a, **kw: kw, Server=Server))
+    async def scenario():
+        listener = UvicornListener()
+        await listener.start('app', SimpleNamespace(cert_file='cert', key_file='key'), SimpleNamespace(port=1234))
+        with pytest.raises(ListenerError, match=expected) as caught:
+            await listener.wait_ready(2)
+        assert 'synthetic sensitive path' not in str(caught.value)
+        with pytest.raises(ListenerError):
+            await listener.stop()
+        assert listener.task is None
+    asyncio.run(scenario())
+
+
+def test_listener_context_walk_is_bounded_and_cycle_safe():
+    import errno
+    from api_agent.runtime.listener import _start_failure
+
+    error = SystemExit(1)
+    middle = RuntimeError('synthetic private text')
+    middle.__cause__ = OSError(errno.EADDRINUSE, 'synthetic private text')
+    error.__context__ = middle
+    assert _start_failure(error).startswith('listener_bind_in_use')
+    middle.__cause__ = None
+    middle.__context__ = middle
+    assert _start_failure(error) == 'listener_start_failed'
+    head = error
+    for _ in range(9):
+        child = RuntimeError('synthetic')
+        head.__context__ = child
+        head = child
+    head.__context__ = OSError(errno.EADDRINUSE, 'synthetic')
+    assert _start_failure(error) == 'listener_start_failed'
+
+
+def test_real_listener_reports_occupied_ephemeral_port(tmp_path):
+    import datetime
+    import ipaddress
+    import socket
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'localhost')])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(minutes=1))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]), False)
+            .sign(key, hashes.SHA256()))
+    cert_file, key_file = tmp_path / 'cert.pem', tmp_path / 'key.pem'
+    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            while True:
+                message = await receive()
+                await send({'type': message['type'] + '.complete'})
+                if message['type'] == 'lifespan.shutdown':
+                    return
+    async def scenario(port):
+        listener = UvicornListener()
+        await listener.start(app, SimpleNamespace(cert_file=cert_file, key_file=key_file), SimpleNamespace(port=port))
+        with pytest.raises(ListenerError, match='listener_bind_in_use'):
+            await listener.wait_ready(5)
+        with pytest.raises(ListenerError):
+            await listener.stop()
+        assert listener.task is None
+    with socket.socket() as occupied:
+        occupied.bind(('127.0.0.1', 0))
+        occupied.listen()
+        asyncio.run(scenario(occupied.getsockname()[1]))
+        assert occupied.fileno() >= 0
+
+
 def test_callback_type_and_runner_timeout(rig):
     runner, events, config = rig
     config.values['AGENT_DJANGO_URL'] = None
@@ -562,6 +654,41 @@ def test_bind_exit_is_owned_failure_and_drains_every_owner(rig, monkeypatch):
         assert runner.pending_cleanup is not None
         await runner.pending_cleanup.retry()
         assert events[-2:] == ['runtime-close', 'release:False']
+    asyncio.run(scenario())
+
+
+def test_operation_failure_callback_cannot_replace_primary_or_cleanup(rig):
+    runner, events, _ = rig
+    primary = ListenerError('listener_bind_in_use')
+    class Listener:
+        async def start(self, *args): pass
+        async def wait_ready(self, timeout): raise primary
+        async def stop(self): events.append('listener-stop')
+    runner.listener = Listener
+    def failing_callback(error):
+        assert error is primary
+        events.append('failure-callback')
+        raise asyncio.CancelledError('synthetic observer fault')
+    runner.on_failure = failing_callback
+    async def scenario():
+        with pytest.raises(ListenerError) as caught:
+            async with runner.open():
+                pytest.fail('startup cannot succeed')
+        assert caught.value is primary
+        assert events.index('failure-callback') < events.index('listener-stop')
+        assert events[-3:] == ['listener-stop', 'runtime-close', 'release:False']
+    asyncio.run(scenario())
+
+
+def test_operation_workload_failure_does_not_report_as_startup(rig):
+    runner, _, _ = rig
+    failures = []
+    runner.on_failure = failures.append
+    async def scenario():
+        with pytest.raises(ValueError, match='workload'):
+            async with runner.open():
+                raise ValueError('workload')
+        assert failures == []
     asyncio.run(scenario())
 
 

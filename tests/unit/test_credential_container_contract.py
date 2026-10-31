@@ -233,7 +233,7 @@ def test_malformed_ordinary_encoded_keys_retain_original_spelling(key):
     assert boundary.export({key: 'retained'}) == {key: 'retained'}
 
 
-@pytest.mark.parametrize('key', ['{"omega":9,"omega":3}', '[' * 10000 + '0' + ']' * 10000])
+@pytest.mark.parametrize('key', ['{"omega":9,"omega":3}', pytest.param('[' * 10000 + '0' + ']' * 10000, id='oversized-key')])
 def test_ambiguous_or_unbounded_encoded_key_is_omitted(key):
     boundary = EmissionBoundary(ContentPolicy(True), secrets=('true',))
     assert boundary.export({key: 'ignored', 'duration_ms': 7}) == {'duration_ms': 7}

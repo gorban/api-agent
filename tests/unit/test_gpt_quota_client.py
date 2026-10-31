@@ -101,7 +101,7 @@ def test_changed_account_is_not_attributed(client, changed):
     client[0].frames[3]['result'] = changed
     assert asyncio.run(q.read_quota(CONNECTION, period='week')) == QuotaReadError('source')
 
-@pytest.mark.parametrize('bad', [b'', b'X'*65537, b'not-json', [], {'id':1,'error':{'message':'private'}},
+@pytest.mark.parametrize('bad', [b'', pytest.param(b'X'*65537, id='oversized-response'), b'not-json', [], {'id':1,'error':{'message':'private'}},
                                {'id':1,'result':[]}, {'id':1,'result':{},'error':{}}])
 def test_malformed_rpc_does_not_bubble_private_output(client, bad):
     client[0].frames[0] = bad

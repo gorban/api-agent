@@ -27,7 +27,8 @@
 
 ## Human acceptance
 
-- [ ] Review the delivered shared-target configuration, actual named-tool execution and final-use cleanup. Broader transport, service-capability and trace-attribution acceptance remains with its owning requirements.
+- [x] Review shared-primary named-tool execution and distinct tool request/response attribution in Allure while both instances share one backend; human-approved on October 30, 2026.
+- [ ] Review final-use cleanup and any remaining configuration/lifecycle behavior separately. Broader transport, service-capability and tracing acceptance remains with its owning requirements.
 
 ## Durable failed-run result evidence
 

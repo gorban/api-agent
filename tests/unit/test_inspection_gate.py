@@ -42,7 +42,7 @@ def test_standalone_worker_has_no_implicit_ready_state(monkeypatch):
 @pytest.mark.parametrize('body', ['{}', '[]', 'null', '{',
     '{"version":true,"status":"finalized"}', '{"version":2,"status":"finalized"}',
     '{"version":1,"status":"pending"}', '{"version":1,"status":"finalized","extra":0}',
-    'x' * 65537])
+    pytest.param('x' * 65537, id='oversized-marker')])
 def test_invalid_marker_never_allows_manual_requests(channel, body):
     channel.write_text(body)
     channel.chmod(0o600)
@@ -101,7 +101,7 @@ def test_fstat_trust_is_checked_on_open_descriptors(channel, monkeypatch, target
                 values[0] = gate.stat.S_IFIFO | 0o600
             return os.stat_result(values)
         return result
-    monkeypatch.setattr(os, 'fstat', changed)
+    monkeypatch.setattr(gate, 'os', SimpleNamespace(**(vars(os) | {'fstat': changed})))
     assert not gate.manual_accounting_ready()
 
 
@@ -140,7 +140,7 @@ def test_sticky_parent_other_owner_does_not_disqualify_private_leaf(tmp_path, mo
         result = real(fd)
         seen.append(result.st_ino)
         return result
-    monkeypatch.setattr(os, 'fstat', observed)
+    monkeypatch.setattr(gate, 'os', SimpleNamespace(**(vars(os) | {'fstat': observed})))
     gate.publish_manual_accounting_ready([inspection(leaf)])
     assert gate.manual_accounting_ready()
     assert parent.stat().st_ino not in seen

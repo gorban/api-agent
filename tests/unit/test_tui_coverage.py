@@ -9,10 +9,10 @@ from textual.events import Key
 from textual.widgets import Button, DataTable, Input, Static
 from textual.containers import VerticalScroll
 
-from test_tui import fixture
+from test_tui import fixture, confirm_full_unit
 from api_agent.testing.collection import TestIdentity as Identity
 from api_agent.testing.lifecycle import TestRunLifecycle
-from api_agent.testing.selection import SelectionModel
+from api_agent.testing.selection import SelectionModel, SelectionRow
 from api_agent.tui.app import ApiAgentApp, WorkbenchScreen, display, run_tui
 from api_agent.tui.test_results import reconcile_results_table, styled_summary
 
@@ -233,6 +233,7 @@ def test_real_green_execution_from_picker_and_completed_nonfailure_row(tmp_path)
                 await pilot.pause(.03)
             assert app.screen.kind == 'tests'
             await pilot.press('s')
+            await confirm_full_unit(pilot, app)
             while app.unit_result is None and asyncio.get_running_loop().time() < deadline:
                 await pilot.pause(.03)
             assert app.unit_result is not None
@@ -402,7 +403,8 @@ def test_failure_scroll_bindings_and_navigation_ignore_empty_tables(tmp_path):
             screen.action_failure_up()
             screen.action_failure_page_up()
             await pilot.pause()
-            app.show('tests', 'Empty selector', rows=[('a', ('', 'a', '0/1', 'test'))])
+            row = SelectionRow('a', 'a', 'test', frozenset({'a'}), False, 0, 1)
+            app.show('tests', 'Empty selector', rows=[row])
             await pilot.pause()
             table = app.screen.query_one(DataTable)
             table.styles.overflow_x = "hidden"

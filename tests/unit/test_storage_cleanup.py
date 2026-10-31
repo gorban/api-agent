@@ -612,7 +612,8 @@ def test_owned_creation_fstat_failure_is_cleaned_after_retryable_observation(
         if current_thread() is not main_thread():
             raise OSError('synthetic creation observation failure')
         return fstat(fd)
-    monkeypatch.setattr(os, 'fstat', refuse_worker_stat)
+    from api_agent.testing import storage
+    monkeypatch.setattr(storage, 'os', SimpleNamespace(**(vars(os) | {'fstat': refuse_worker_stat})))
 
     with pytest.raises(StorageError):
         publication.storage.persist(publication.source, publication.manifest)

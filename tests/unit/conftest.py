@@ -2,6 +2,18 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_managed_tools(monkeypatch):
+    """Only tests that explicitly opt in may prepare managed tools."""
+    monkeypatch.delenv('API_AGENT_MISE', raising=False)
+
+
+@pytest.fixture(autouse=True)
+def isolated_playwright_inspector(monkeypatch):
+    """An inherited inspector setting forces even headless browsers to be headed."""
+    monkeypatch.delenv('PWDEBUG', raising=False)
+
+
 @pytest.fixture
 def isolated_native_login_gate(tmp_path, monkeypatch):
     """Native admission tests never create coordination files in a user home."""

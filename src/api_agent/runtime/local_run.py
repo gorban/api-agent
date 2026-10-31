@@ -135,6 +135,7 @@ class LocalRunOwner:
         self._cleanup_warnings_published = set()
         self._diagnostic_projection = None
         self._requires_api = False
+        self._startup_failure_reported = False
 
     def _publish(self, phase, *, components=(), destinations=(), inspection=None, activity=None):
         self.snapshot = LocalSnapshot(phase, tuple(components), tuple(destinations), self._available_sources,
@@ -332,7 +333,7 @@ class LocalRunOwner:
                     runtime_factory=self._runtime,
                     application_wrapper=lambda app: LocalStatusApplication(app, self._status),
                     prepared_plan=plan, engine_environment=self._engine_environment,
-                    on_stage=self._startup_stage, **operation_options)
+                    on_stage=self._startup_stage, on_failure=self._report_startup_failure, **operation_options)
                 opening = self._operation.open(retain=False)
                 exited = False
                 async def close_operation():
@@ -404,6 +405,7 @@ class LocalRunOwner:
         except BaseException as primary:
             self._starting = None
             self._start_done.set()
+            self._report_startup_failure(primary)
             try:
                 self._publish('failed', components=(LocalComponent('agent', 'unavailable'),))
             except BaseException:
@@ -418,6 +420,29 @@ class LocalRunOwner:
                 if pending is not None:
                     primary.cleanup_pending = pending
             raise
+
+    def _report_startup_failure(self, primary):
+        if self._startup_failure_reported:
+            return
+        self._startup_failure_reported = True
+        try:
+            from api_agent.runtime.listener import ListenerError
+            stage = self.snapshot.activity or 'startup'
+            diagnostic = primary.diagnostic() if type(primary) is ListenerError else None
+            if diagnostic is not None:
+                detail = diagnostic
+            elif isinstance(primary, asyncio.CancelledError):
+                detail = 'Startup was cancelled.'
+            elif isinstance(primary, TimeoutError):
+                detail = 'Startup timed out; check local prerequisites.'
+            elif isinstance(primary, ValueError):
+                detail = 'Startup input or configuration was rejected; check local prerequisites.'
+            else:
+                detail = 'Startup encountered an error; check configuration and prerequisites.'
+            self._log('agent', f'Local startup failed during {stage}: {detail}\n')
+        except BaseException:
+            # Diagnostic delivery never owns startup failure or cleanup.
+            pass
 
     def _safe_text(self, text, commit=None):
         from api_agent.testing.diagnostics import CredentialScrubber

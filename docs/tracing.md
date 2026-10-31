@@ -5,6 +5,9 @@ Leave TRACE_MODE empty to disable it. Set TRACE_MODE=OTEL for an OTLP HTTP trace
 endpoint, or TRACE_MODE=LangFuse for a LangFuse server. The normal configuration
 review exposes the applicable settings and validates their values before startup.
 
+For resource-pack extension boundaries and planned provider support, see
+[tracing extensions](resource-packs.md#tracing-extensions-planned).
+
 ## Destinations and dashboard login
 
 TRACE_TARGET identifies the collector's complete traces URL for OTEL, or the

@@ -10,7 +10,7 @@ from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.testing.runner import UnitRunResult
 from api_agent.tui.test_results import elapsed_time
 from api_agent.tui.test_table import TestTable
-from test_tui import fixture
+from test_tui import fixture, confirm_full_unit
 
 
 @pytest.mark.parametrize('seconds,expected', [(0, '0s'), (.02, '0.02s'), (59, '59s'),
@@ -96,6 +96,7 @@ def test_real_unit_start_clock_precedes_recollection(tmp_path, monkeypatch):
             assert app.screen.query_one('#suite-elapsed', Static).content == '12s'
             assert app.unit_rows[identity.id][0] == 'PENDING'
             held.set()
+            await confirm_full_unit(pilot, app)
             await pilot.pause(.3)
             assert not app.test_run_active()
             assert not app.screen.query_one('#suite-elapsed').display

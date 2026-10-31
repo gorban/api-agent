@@ -19,6 +19,7 @@ class SelectionModel:
         self.tests = tuple(dict((test.id, test) for test in tests).values())
         self.selected_ids = {test.id for test in self.tests}
         self.selected_scopes = {"all"}
+        self._index_catalog()
 
     def preselect(self, selectors):
         """Select startup matches against the full suite, retaining group intent."""
@@ -35,16 +36,25 @@ class SelectionModel:
                            and value == test.file]
                 self.selected_scopes.update(f"file:{test.repo}::{test.file}" for test in matches)
 
+    def _index_catalog(self):
+        tags, files = {}, {}
+        for test in self.tests:
+            files.setdefault((test.repo, test.file), set()).add(test.id)
+            for tag in test.tags:
+                tags.setdefault(tag, set()).add(test.id)
+        specs = [('all', 'All tests', 'all', frozenset(test.id for test in self.tests))]
+        specs.extend((f'tag:{tag}', tag, 'tag', frozenset(tags[tag])) for tag in sorted(tags))
+        specs.extend((f'file:{repo}::{file}', f'{repo}::{file}', 'file', frozenset(files[repo, file]))
+                     for repo, file in sorted(files))
+        specs.extend((test.id, test.id, 'test', frozenset((test.id,))) for test in self.tests)
+        self._specifications = tuple(specs)
+        self._spec_by_key = {key: (kind, members) for key, _, kind, members in specs}
+
     def groups(self):
-        specifications = [("all", "All tests", "all", frozenset(test.id for test in self.tests))]
-        for tag in sorted({tag for test in self.tests for tag in test.tags}):
-            specifications.append((f"tag:{tag}", tag, "tag", frozenset(test.id for test in self.tests if tag in test.tags)))
-        for repo, file in sorted({(test.repo, test.file) for test in self.tests}):
-            specifications.append((f"file:{repo}::{file}", f"{repo}::{file}", "file", frozenset(test.id for test in self.tests if (test.repo, test.file) == (repo, file))))
-        specifications.extend((test.id, test.id, "test", frozenset({test.id})) for test in self.tests)
-        return tuple(SelectionRow(key, label, kind, members, bool(members) and members <= self.selected_ids,
-                                  len(members & self.selected_ids), len(members))
-                     for key, label, kind, members in specifications)
+        selected = self.selected_ids
+        return tuple(SelectionRow(key, label, kind, members, bool(members) and members <= selected,
+                                  len(members & selected), len(members))
+                     for key, label, kind, members in self._specifications)
 
     def toggle(self, group_or_id):
         key = group_or_id.id if isinstance(group_or_id, SelectionRow) else group_or_id
@@ -52,16 +62,16 @@ class SelectionModel:
 
     def toggle_many(self, keys):
         """Toggle the union once, so overlapping groups never toggle twice."""
-        rows_by_key = {row.id: row for row in self.groups()}
         rows = []
         for key in keys:
-            if key not in rows_by_key:
+            if key not in self._spec_by_key:
                 raise CollectionError(f"Unknown selection group or test: {key}")
-            rows.append(rows_by_key[key])
+            kind, members = self._spec_by_key[key]
+            rows.append((key, kind, members))
         if not rows:
             return
-        members = frozenset().union(*(row.members for row in rows))
-        self.toggle_members(members, (row.id for row in rows if row.kind != "test"))
+        members = frozenset().union(*(members for _, _, members in rows))
+        self.toggle_members(members, (key for key, kind, _ in rows if kind != 'test'))
 
     def toggle_members(self, members, scopes=()):
         """Toggle a projected union while retaining only complete group intent."""
@@ -69,11 +79,17 @@ class SelectionModel:
         if not members:
             return
         if members <= self.selected_ids:
+            previous_count = len(self.selected_ids)
             self.selected_ids.difference_update(members)
+            if previous_count - len(self.selected_ids) > len(self.selected_ids):
+                retained = self.selected_ids.copy()
+                self.selected_ids.clear()
+                self.selected_ids.update(retained)
         else:
             self.selected_ids.update(members)
             self.selected_scopes.update(scopes)
-        checked = {group.id for group in self.groups() if group.selected}
+        checked = {scope for scope in self.selected_scopes if scope in self._spec_by_key
+                   and self._spec_by_key[scope][1] and self._spec_by_key[scope][1] <= self.selected_ids}
         self.selected_scopes = {scope for scope in self.selected_scopes if scope in checked or (
             "::tag:" in scope and any(test.repo == scope.split("::tag:", 1)[0]
                                       and scope.split("::tag:", 1)[1] in test.tags
@@ -90,6 +106,7 @@ class SelectionModel:
         old_ids = {test.id for test in self.tests}
         selected = self.selected_ids.copy()
         self.tests = tuple(dict((test.id, test) for test in tests).values())
+        self._index_catalog()
         self.selected_ids = {
             test.id for test in self.tests
             if test.id in selected or (test.id not in old_ids and (

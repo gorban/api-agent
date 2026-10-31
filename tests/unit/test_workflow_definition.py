@@ -678,7 +678,7 @@ def test_bounded_reader_rejects_invalid_relative_path_and_growth(tmp_path, monke
         result = original(fd)
         return SimpleNamespace(st_mode=result.st_mode, st_size=0, st_dev=result.st_dev,
                                st_ino=result.st_ino, st_mtime_ns=result.st_mtime_ns)
-    monkeypatch.setattr(module.os, 'fstat', underestimated)
+    monkeypatch.setattr(module, 'os', SimpleNamespace(**(vars(module.os) | {'fstat': underestimated})))
     with pytest.raises(LayoutError, match='exceeds 8 MiB'):
         module._read_bounded(source, tmp_path)
 
@@ -697,7 +697,7 @@ def test_bounded_reader_rejects_change_while_reading(tmp_path, monkeypatch):
         return SimpleNamespace(st_mode=result.st_mode, st_size=result.st_size,
                                st_dev=result.st_dev, st_ino=result.st_ino,
                                st_mtime_ns=result.st_mtime_ns + (1 if calls == 2 else 0))
-    monkeypatch.setattr(module.os, 'fstat', changed_metadata)
+    monkeypatch.setattr(module, 'os', SimpleNamespace(**(vars(module.os) | {'fstat': changed_metadata})))
     with pytest.raises(LayoutError, match='changed during read'):
         module._read_bounded(source, tmp_path)
 

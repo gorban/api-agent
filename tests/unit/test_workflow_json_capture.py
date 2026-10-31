@@ -167,7 +167,7 @@ def test_json_capture_drops_runtime_objects_and_cycles_without_losing_visible_si
     (None, {'type': 'null'}, {'value': None}),
     (float('inf'), {'type': 'number'}, {}),
     (1 << 60, {'type': 'integer'}, {}),
-    ('x' * 65537, {'type': 'string'}, {}),
+    pytest.param('x' * 65537, {'type': 'string'}, {}, id='oversized-string'),
     ('value', False, {}),
 ])
 def test_json_capture_checks_declared_types_and_scalar_limits(value, rule, expected):
@@ -295,7 +295,7 @@ def test_local_schema_reference_retains_its_restrictions():
                           EmissionBoundary()) == {'value': {'text': 'visible'}}
 
 
-@pytest.mark.parametrize('value', [float('inf'), 1 << 60, {1: 'non-string key'}, 'x' * 65537])
+@pytest.mark.parametrize('value', [float('inf'), 1 << 60, {1: 'non-string key'}, pytest.param('x' * 65537, id='oversized-string')])
 def test_incomplete_original_json_fails_closed_for_entire_capture(value):
     secret = json.dumps({'public': 'sensitive-sentinel', 'other': value})
     result = project_values({'public': 'sensitive-sentinel', 'other': value},

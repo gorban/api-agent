@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import stat
 import struct
 import sys
 import tempfile
@@ -15,6 +16,18 @@ import tempfile
 from .contracts import ContractError
 
 _LIMIT = 32768
+_SOCKET_LIMIT = 100
+_CONTROL_ROOTS = ('/var/tmp', '/tmp')
+
+
+def _short_control_root():
+    """Choose a trusted short sticky system temporary directory."""
+    from api_agent.runtime.short_temp import trusted_short_root
+    try:
+        return trusted_short_root(_CONTROL_ROOTS, suffix='aa-xxxxxxxx/channel',
+                                  limit=_SOCKET_LIMIT, uid=os.geteuid())
+    except OSError:
+        raise ContractError('No trusted short directory for authority channel') from None
 
 
 def _encode(value):
@@ -101,11 +114,38 @@ class AuthorityChannel:
 
     async def start(self):
         self._directory = tempfile.TemporaryDirectory(prefix='api-agent-authority-')
-        os.chmod(self._directory.name, 0o700)
-        path = str(Path(self._directory.name) / 'channel')
-        self._server = await asyncio.start_unix_server(self._accept, path, limit=_LIMIT)
-        os.chmod(path, 0o600)
-        return path
+        try:
+            path = str(Path(self._directory.name) / 'channel')
+            if len(path.encode()) > _SOCKET_LIMIT:
+                self._directory.cleanup()
+                self._directory = None
+                self._directory = tempfile.TemporaryDirectory(prefix='aa-', dir=_short_control_root())
+                path = str(Path(self._directory.name) / 'channel')
+            if len(path.encode()) > _SOCKET_LIMIT:
+                raise ContractError('Authority endpoint exceeds portable path limit')
+            descriptor = os.open(self._directory.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                info = os.fstat(descriptor)
+                if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                    raise ContractError('Invalid authority directory')
+            finally:
+                os.close(descriptor)
+            self._server = await asyncio.start_unix_server(self._accept, path, limit=_LIMIT, start_serving=False)
+            await self._server.start_serving()
+            os.chmod(path, 0o600)
+            return path
+        except BaseException as error:
+            try:
+                try:
+                    if self._server is not None:
+                        self._server.close()
+                        await self._server.wait_closed()
+                finally:
+                    if self._directory is not None:
+                        self._directory.cleanup()
+            except BaseException as cleanup_error:
+                error.add_note(f'Authority channel cleanup failed: {type(cleanup_error).__name__}')
+            raise
 
     def _accept(self, reader, writer):
         if len(self._tasks) >= 128:

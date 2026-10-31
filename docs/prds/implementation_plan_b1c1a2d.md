@@ -33,6 +33,10 @@
 
 - [x] Preserve admitted valid empty request and response carriers as complete canonical payloads. Malformed or unsupported carriers remain explicitly unavailable; they must never claim complete content.
 
+## Bounded local endpoint path
+
+- [x] Keep the authenticated operation-owned credential channel usable when the configured temporary directory would make its Unix socket path exceed the portable descriptor bound. Preserve private socket ownership, peer authentication, operation binding, fail-closed admission and cleanup. Use a short trusted system temporary location only for the control socket; leave bulk temporary data in its configured location. Verify normal and long paths, unsafe roots, failure and cancellation.
+
 ## Remaining acceptance
 
 - [ ] Verify the best-effort memory watchdog on native macOS. Deterministic platform controls do not establish native macOS execution.
