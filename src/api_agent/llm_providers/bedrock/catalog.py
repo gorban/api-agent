@@ -12,6 +12,8 @@ https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html
 https://docs.aws.amazon.com/bedrock/latest/userguide/inference-responses-api.html
 K-token limits use conservative decimal units as published by AWS.
 """
+import re
+
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.llm import AvailableSelection
 
@@ -61,6 +63,20 @@ for suffix in ('20b', '120b'):
     _RUNTIME[f'openai.gpt-oss-{suffix}-1:0'] = (f'GPT OSS {suffix.upper()}', 'oss', 128000, 16000)
 
 
+def _discovered_display(identifier):
+    """Parse display identity only; this grants no model capabilities."""
+    match = re.fullmatch(
+        r'(?:(?P<scope>[a-z][a-z0-9-]*)\.)?openai\.gpt-'
+        r'(?P<version>\d+(?:\.\d+)*)-(?P<family>[a-z][a-z0-9]*)'
+        r'(?:-\d{4}-\d{2}-\d{2})?', identifier)
+    if match is None or match.group('scope') == 'direct':
+        return identifier, identifier, None
+    scope, version, flavor = match.group('scope', 'version', 'family')
+    family = 'gpt-' + flavor + ('-' + scope if scope else '')
+    title = f'GPT {version} {flavor.title()}' + (' [' + scope.upper() + ']' if scope else '')
+    return title, family, version
+
+
 def selection(identifier, api_mode='completions', endpoint='mantle'):
     if endpoint == 'runtime':
         if (type(identifier) is not str or not 1 <= len(identifier) <= 256
@@ -73,9 +89,10 @@ def selection(identifier, api_mode='completions', endpoint='mantle'):
         if efforts:
             features += ('reasoning_effort',)
         if metadata is None:
+            title, family, version = _discovered_display(identifier)
             return AvailableSelection(identifier, description='Runtime discovery does not establish API or feature availability.',
-                                      features=features, reasoning_efforts=efforts, display_name=identifier,
-                                      family=identifier)
+                                      features=features, reasoning_efforts=efforts, display_name=title,
+                                      family=family, version=version)
         title, kind, context, output = metadata
         if ((kind == 'openai' and api_mode in ('responses', 'completions')
                 or kind == 'anthropic' and api_mode == 'converse')

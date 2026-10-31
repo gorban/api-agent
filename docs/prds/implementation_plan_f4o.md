@@ -33,6 +33,12 @@ existing Mantle defaults and authentication ownership. Messages API is out of sc
   access; retain failed attempts and exact model/profile/region/API provenance.
 - [ ] Human acceptance: select Runtime and a supported inference profile, populate
   Studio models and complete a user turn; inspect tools and content-enabled reporting.
+- [x] Parse recognizable discovered OpenAI GPT identifiers into display family and
+  version, including bare IDs such as `openai.gpt-5.6-luna` → `gpt-luna` / `5.6`.
+  Preserve routing scopes and exact execution IDs. Display parsing must not grant
+  native schema support, limits or other model capabilities.
+- [ ] Human acceptance: Studio shows a bare GPT model's family and numeric version,
+  with routing scopes separate and default selection choosing the newest matching version.
 
 Converse may initially publish a validated buffered completion through the stream
 interface; incremental ConverseStream delivery is separate from correctness of
@@ -53,7 +59,7 @@ capability caching, optional accounted preflight probes, and fallback after a
 confirmed pre-inference rejection. This endpoint work does not add hidden probes
 or automatic inference route changes.
 
-Offline qualification passed 22,346 unit tests with exact 100% line and branch
+Offline qualification passed 22,376 unit tests with exact 100% line and branch
 coverage. Source distributions, installed and relocated packages, workflow
 resources and independent/external source reviews passed. Real Runtime access
 and the Studio acceptance above remain separate checks.

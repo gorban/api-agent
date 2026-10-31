@@ -1231,7 +1231,11 @@ def test_download_process_start_failure_closes_temporary_file(tmp_path, monkeypa
     assert not list(tmp_path.glob(".plantuml-*"))
 
 
-def test_download_worker_that_ignores_termination_is_killed_and_reaped(tmp_path, monkeypatch):
+@pytest.mark.parametrize('stops_on_terminate, expected_cleanup', [
+    (True, ['terminate', ('join', 0.05)]),
+    (False, ['terminate', ('join', 0.05), 'kill', ('join', None)]),
+])
+def test_download_worker_is_reaped_with_kill_fallback(tmp_path, monkeypatch, stops_on_terminate, expected_cleanup):
     context = viewer_build.multiprocessing.get_context("spawn")
     events = []
 
@@ -1254,6 +1258,7 @@ def test_download_worker_that_ignores_termination_is_killed_and_reaped(tmp_path,
 
         def terminate(self):
             events.append("terminate")
+            self.alive = not stops_on_terminate
 
         def kill(self):
             events.append("kill")
@@ -1268,7 +1273,7 @@ def test_download_worker_that_ignores_termination_is_killed_and_reaped(tmp_path,
     monkeypatch.setattr(viewer_build.multiprocessing, "get_context", lambda method: StuckContext())
     with pytest.raises(RenderError, match="preparation timed out"):
         viewer_build._prepare_renderer(cache=tmp_path, budget=SimpleNamespace(remaining=0.01))
-    assert events[1:4] == ["terminate", ("join", 0.05), "kill"]
+    assert events[1:] == expected_cleanup
     assert not list(tmp_path.glob(".plantuml-*"))
 
 
