@@ -33,7 +33,8 @@ class StudioBackend:
     scrub callback must remove caller-known credential values from safe errors.
     """
     def __init__(self, *, owner, describe, complete, policy, origin, nonce,
-                 scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None):
+                 scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None,
+                 on_error=None):
         parts = urlsplit(origin)
         if (parts.scheme not in ('http', 'https') or parts.hostname not in ('localhost', '127.0.0.1', '::1')
                 or parts.path or parts.query or parts.fragment or parts.username or parts.password
@@ -50,7 +51,7 @@ class StudioBackend:
         if stream is not None and not callable(stream):
             raise ValueError('Invalid stream callback')
         self.reasoning_default, self.stream = reasoning_default, stream
-        self.lifecycle = ChatLifecycle()
+        self.lifecycle = ChatLifecycle(on_error=on_error)
         self._owner_id = str(uuid4())
         self._contexts = {}
         self._responses = {}
@@ -102,7 +103,10 @@ class StudioBackend:
         response['Cache-Control'] = 'private, no-store'
         return response
 
-    def _error(self, error):
+    def _error(self, error, *, turn=None):
+        # The local diagnostic owner admits and scrubs exceptions separately
+        # from the deliberately small public HTTP/stream error response.
+        self.lifecycle.report_error(error, turn=turn)
         if isinstance(error, ProviderAccessError):
             try:
                 message = self.scrub(error.message)
@@ -328,6 +332,8 @@ class StudioBackend:
                     except CleanupPendingError:
                         pass
                     raise
+                except Exception as error:
+                    return self._error(error, turn=turn)
             finally:
                 if not transferred:
                     await self._release_context(context)
@@ -384,7 +390,7 @@ class StudioBackend:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            payload = json.loads(self._error(error).content)
+            payload = json.loads(self._error(error, turn=turn).content)
             yield chat_contract.frame('error', {'session_id': session_id, **payload})
         finally:
             try:

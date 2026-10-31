@@ -34,8 +34,8 @@ class BufferedProvider(RetainedStudio):
 def controlled_lifecycle(monkeypatch):
     clock=SimpleNamespace(now=0,lifecycles=[],acknowledged={},waiters={})
     monkeypatch.setattr('api_agent.api.chat_lifecycle.time',SimpleNamespace(monotonic=lambda:clock.now))
-    def create():
-        lifecycle=ChatLifecycle()  # The real ten-second interval and thirty-second expiry.
+    def create(**options):
+        lifecycle=ChatLifecycle(**options)  # The real ten-second interval and thirty-second expiry.
         original=lifecycle.heartbeat
         def heartbeat(owner,session):
             status=original(owner,session)

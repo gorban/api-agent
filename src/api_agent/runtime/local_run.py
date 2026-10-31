@@ -209,6 +209,7 @@ class LocalRunOwner:
             policy=ModelSelectionPolicy(config.values),
             origin=config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/'),
             nonce=nonce, scrub=lambda message: 'Selected provider rejected the request.',
+            on_error=self._execution_error,
             reasoning_default=config.values.get('LLM_REASONING_EFFORT') or None)
         services = {**runtime.services, 'studio_backend': backend, 'ui_access_token': nonce,
                     'ensure_llm_ready': self._llm.ensure_ready,
@@ -440,6 +441,7 @@ class LocalRunOwner:
             else:
                 detail = 'Startup encountered an error; check configuration and prerequisites.'
             self._log('agent', f'Local startup failed during {stage}: {detail}\n')
+            self._execution_error(primary)
         except BaseException:
             # Diagnostic delivery never owns startup failure or cleanup.
             pass
@@ -471,6 +473,11 @@ class LocalRunOwner:
         """Preserve the actionable cause without exposing owned credentials."""
         return self._safe_text(str(error))
 
+    def _execution_error(self, error):
+        """Execution failures are credential-scrubbed even without LOG_CONTENT."""
+        from api_agent.testing.diagnostics import format_exception
+        self._log('agent', format_exception(error, 'Local execution failed').rstrip('\n') + '\n')
+
     def interactive_dashboard_credentials(self):
         """Literal terminal status only; excluded from snapshots and events."""
         return (self._tracing_dashboard.interactive_credentials()
@@ -494,7 +501,7 @@ class LocalRunOwner:
         # Commit the scrubbed projection under the same authority generation;
         # callbacks run only after releasing its lock.
         from hashlib import sha256
-        fingerprint = sha256(text.encode()).hexdigest()
+        fingerprint = sha256(text.encode(errors='surrogatepass')).hexdigest()
         event = []
         def commit(safe):
             safe = safe[-16384:]

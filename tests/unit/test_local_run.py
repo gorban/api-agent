@@ -152,7 +152,10 @@ def test_startup_failure_is_logged_before_owned_cleanup(local, error, expected):
         failed = next(index for index, event in enumerate(local.events)
                       if event.snapshot is not None and event.snapshot.phase == 'failed')
         assert local.events.index(failure) < failed
-        assert local.owner._logs['agent'] == failure.text
+        traceback = local.owner._logs['agent']
+        assert 'Local execution failed' in traceback
+        assert str(error) in traceback
+        assert traceback.endswith('\n')
         assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
     asyncio.run(run())
 
@@ -461,6 +464,7 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
         compose.assert_called_once_with(local.owner.context, config, callback_origin=origin,
                                          tls_material=material, required_kinds=())
         assert local.owner.llm_factory.call_args.kwargs['trace'] is runtime.tracing
+        assert result.services['studio_backend'].lifecycle.on_error == local.owner._execution_error
         if requires_api:
             assert runtime.factory_plan[0][:2] == ('api', 'adapter.py:create')
             assert local.owner._graph.tool_owner.runtime is runtime
@@ -1024,6 +1028,36 @@ def test_local_workflow_projection_does_not_apply_process_log_tail_limit(local):
     assert local.owner.interactive_dashboard_credentials() == ('admin@example.test', 'literal-password')
     local.owner.on_event = None
     local.owner._workflow_event(row)
+
+
+@pytest.mark.parametrize('log_content', [False, True])
+def test_execution_error_logs_chain_and_traceback_with_credentials_masked(local, log_content):
+    local.config.values.update(LOG_CONTENT=log_content, LLM_API_KEY='configured-private-value')
+    local.owner._config = local.config
+    local.owner._emissions = local.session.runtime.emissions
+    local.owner._emissions.register_secret('runtime-private-value')
+    try:
+        try:
+            raise ValueError('catalog root cause runtime-private-value')
+        except ValueError as cause:
+            raise RuntimeError('catalog unavailable configured-private-value') from cause
+    except RuntimeError as failure:
+        local.owner._execution_error(failure)
+    event = local.events[-1]
+    assert event.kind == 'log' and event.source == 'agent'
+    assert 'Traceback (most recent call last)' in event.text
+    assert 'ValueError: catalog root cause' in event.text
+    assert 'RuntimeError: catalog unavailable' in event.text
+    assert 'direct cause' in event.text and event.text.endswith('\n')
+    assert 'configured-private-value' not in event.text
+    assert 'runtime-private-value' not in event.text
+    assert '[REDACTED]' in event.text
+
+
+def test_unencodable_execution_error_is_withheld_by_credential_boundary(local):
+    local.owner._execution_error(ValueError('unencodable \ud800'))
+    assert local.events[-1].kind == 'log'
+    assert local.events[-1].text == '[REDACTED]'
 
 
 @pytest.mark.parametrize('ready', [True, False])
