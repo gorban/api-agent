@@ -136,7 +136,9 @@ def test_provider_declarations_define_mantle_defaults():
     from pathlib import Path
     fields = tomllib.loads((Path(__file__).parents[2] / 'src/api_agent/llm_providers/bedrock/cfg/config.toml').read_text())['fields']
     assert fields['BEDROCK_AUTH_MODE']['enum'] == ['session', 'access_key', 'api_key']
-    assert fields['BEDROCK_API_MODE']['enum'] == ['completions', 'responses']
+    assert fields['BEDROCK_API_MODE']['enum'] == ['completions', 'responses', 'converse']
+    assert fields['BEDROCK_ENDPOINT']['enum'] == ['mantle', 'runtime']
+    assert fields['BEDROCK_ENDPOINT']['default'] == 'mantle'
     assert fields['BEDROCK_API_MODE']['default'] == 'responses'
     default = fields['LLM_DEFAULT_MODEL']
     assert default['override'] is True and default['override_if_present'] is True

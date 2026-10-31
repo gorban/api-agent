@@ -99,8 +99,8 @@ def safe_boundary(text, maximum):
 
 
 class WorkerStream:
-    def __init__(self, mode, model, secrets):
-        self.decoder = StreamDecoder(mode, selected_llm=model)
+    def __init__(self, mode, model, secrets, *, endpoint="mantle"):
+        self.decoder = StreamDecoder(mode, selected_llm=model, endpoint=endpoint)
         self.secrets = registered_values(secrets)
         self.lookbehind = max((len(s) for s in self.secrets), default=1) - 1
         if self.lookbehind > _LIMIT:

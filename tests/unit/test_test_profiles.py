@@ -566,3 +566,50 @@ def test_unrecorded_runner_forwards_real_collection_root_context_before_setup(tm
     rows = captured[0][1]
     assert rows[tests[0].id]['config']['LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'] is None
     assert rows[tests[1].id]['config']['LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS'] == 1024
+
+
+def test_runtime_endpoint_keeps_selected_models_api_and_test_overrides():
+    result = configuration(BEDROCK_ENDPOINT='runtime', BEDROCK_API_MODE='converse',
+                           LLM_DEFAULT_MODEL=r'us\.anthropic\.claude-haiku-4-5-20251001-v1:0',
+                           LLM_REASONING_TEST_MODEL='user-selected')
+    original = deepcopy(result.values)
+    rows = resolve_test_profiles(CASES, result.values, owner_root=ROOT, fields=result.fields)
+    for row in rows.values():
+        assert row['config']['BEDROCK_ENDPOINT'] == 'runtime'
+        assert row['config']['BEDROCK_API_MODE'] == 'converse'
+        assert row['config']['LLM_DEFAULT_MODEL'] == original['LLM_DEFAULT_MODEL']
+        assert row['config']['LLM_REASONING_TEST_MODEL'] == 'user-selected'
+        assert not any(source.startswith('provider_test_profile:') for source in row['provenance'].values())
+    assert result.values == original
+
+
+def test_missing_endpoint_uses_mantle_declaration_default():
+    result = configuration()
+    values = dict(result.values)
+    values.pop('BEDROCK_ENDPOINT')
+    _, _, profiles = declaration(values, owner_root=ROOT)
+    assert 'ordinary' in profiles
+
+
+@pytest.mark.parametrize('condition', [None, 'invalid', {'MISSING': 'x'},
+                                       {'LLM_DEFAULT_MODEL': 'x'}, {'EXAMPLE_OTHER': 'x'},
+                                       {'EXAMPLE_API_MODE': 'unknown'}, {'EXAMPLE_API_MODE': 1},
+                                       {'EXAMPLE_SECRET_API_MODE': 'responses'}])
+def test_profile_condition_rejects_unsafe_or_invalid_fields(synthetic_declaration, monkeypatch, condition):
+    with pytest.raises(ValueError, match='condition'):
+        load_synthetic_declaration(monkeypatch, synthetic_declaration,
+                                   lambda data: data.update(applies_when=condition))
+
+
+def test_inactive_profile_is_still_validated(synthetic_declaration, monkeypatch):
+    def mutate(data):
+        data['applies_when'] = {'EXAMPLE_API_MODE': 'completions'}
+        data['profiles']['ordinary']['settings']['UNKNOWN_FIELD'] = 'invalid'
+    with pytest.raises(ValueError, match='Forbidden'):
+        load_synthetic_declaration(monkeypatch, synthetic_declaration, mutate)
+
+
+def test_inactive_profile_condition_has_no_settings(synthetic_declaration, monkeypatch):
+    _, _, profiles = load_synthetic_declaration(monkeypatch, synthetic_declaration,
+        lambda data: data.update(applies_when={'EXAMPLE_API_MODE': 'completions'}))
+    assert profiles == {}

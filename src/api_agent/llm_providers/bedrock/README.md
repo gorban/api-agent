@@ -1,8 +1,6 @@
 # Amazon Bedrock provider
 
-This optional provider uses only regional bedrock-mantle
-endpoint through the ordinary provider interface. The OpenAI SDK owns signing, HTTP and SSE in a worker.
-Converse, InvokeModel, Bedrock Runtime and direct OpenAI fallback remain unsupported.
+This optional provider supports regional bedrock-mantle and bedrock-runtime endpoints through the ordinary provider interface. The worker owns SDK signing and transport. InvokeModel, the Messages API and direct OpenAI fallback remain unsupported.
 Controlled tests qualify the initial matrix below; live account access remains
 a separate acceptance step.
 
@@ -33,12 +31,27 @@ api_agent.llm_providers.bedrock.__file__.
 ## Modes, models and defaults
 
 BEDROCK_AUTH_MODE selects session, access_key or api_key.
-BEDROCK_API_MODE independently selects completions (Chat Completions) or
-responses. The default API is responses. Both APIs use the literal model-ID
+BEDROCK_ENDPOINT selects mantle (the default) or runtime; discovery follows the same endpoint. BEDROCK_API_MODE independently selects completions (Chat Completions), responses, or Runtime-only converse. The default API is responses. The original Mantle modes use the literal model-ID
 regex `openai\.gpt-oss-20b` when no default model is configured. Explicit dotenv, environment, CLI and interactive
 values always retain precedence; switching APIs never rewrites a saved model.
+Known closed-weight GPT models on Runtime Responses use system inference-profile IDs, for example
+`LLM_DEFAULT_MODEL=us\.openai\.gpt-5\.6-luna`; the provider never chooses a
+geographic profile on the user's behalf. Studio lists routing scopes as separate
+model families (for example, US versus GLOBAL), preserving the selected scope when
+choosing a version. Runtime discovery uses the AWS control-plane
+model and inference-profile APIs and does not establish invocation permission.
+Runtime discovery projects valid model and profile IDs without claiming that every
+model supports the selected endpoint or API. Use `LLM_ALLOWED_MODELS` to filter
+the list against AWS documentation and account access. Incompatible requests may
+be rejected by AWS. Runtime prices are unavailable until independently qualified.
+Native structured output is limited to documented strict schemas; the existing
+fallback policy handles unqualified models and unsupported streaming combinations.
+GPT-5.4 is documented as Mantle-only. Some Claude models emit signed reasoning
+content that the current Converse codec cannot retain for continuation; such a
+response fails safely.
 
-| Model ID | Qualified API formats |
+
+| Mantle model ID | Qualified API formats |
 | --- | --- |
 | zai.glm-5 | completions |
 | zai.glm-4.7 | completions |
@@ -46,15 +59,15 @@ values always retain precedence; switching APIs never rewrites a saved model.
 | openai.gpt-oss-20b | completions, responses |
 | openai.gpt-oss-120b | completions, responses |
 
-Inference uses /v1; discovery uses /v1/models, never the SDK's /openai/v1 default. Models outside
-this matrix fail explicitly, including allowlisted Claude families that need a
-separately qualified Messages transport. Catalog visibility proves neither invocation permission nor free-tier/account
+Mantle inference uses /v1; discovery uses /v1/models, never the SDK's /openai/v1 default. Mantle models outside
+this matrix fail explicitly. Runtime supports a separate OpenAI-compatible path
+and native Converse, as described above. Catalog visibility proves neither invocation permission nor free-tier/account
 availability; discovery never runs paid probes.
 
-LLM_ALLOWED_MODELS remains a shared full-model-ID regex. Bedrock contributes
-OpenAI GPT, numeric GLM with optional Flash, and Claude Haiku/Sonnet/Opus
-patterns; the execution matrix remains a separate restriction. Remove an old
-saved GPT-only regex to accept this provider default. Provider declaration
+LLM_ALLOWED_MODELS remains a shared full-model-ID regex. Bedrock defaults to
+`.+`; configure a narrower filter for your endpoint, API and account access.
+The Mantle execution matrix remains a separate restriction. Explicit saved
+filters retain precedence. Provider declaration
 defaults replace pack manifest/config declaration defaults under the existing
 composition order; explicit pack dotenv values still win. LLM_DEFAULT_MODEL is
 a separate regex: ambiguous families, incomparable versions or ties fail rather
@@ -157,7 +170,8 @@ unknown spend as zero.
 
 ## Ordinary integration profiles
 
-[test-profiles.toml](test-profiles.toml) supplies exact-case defaults. The launcher
+[test-profiles.toml](test-profiles.toml) supplies Mantle-only exact-case defaults. Runtime retains
+the operator's application and test-specific selections. The launcher
 resolves API/model/controls/deadlines before backend creation; select ordinary
 cases together without manual API switching.
 Application configuration, saved dotenv values and authentication identity stay
@@ -239,3 +253,8 @@ reviews; launcher follow-up acceptance was conditional.
 The historical native-adapter checkpoint qualified cap 52, passed 17 core plus
 one provider UI case and 18,674 units. This is not a new full 18-case SDK run.
 See the [qualification guide](QUALIFICATION.md) for evidence and acceptance scopes.
+
+
+Structured-output fallback follows the declared workflow policy and the known
+schema capability catalog. Configurable capability caching and optional probes
+remain in the [capability-discovery plan](../../../../docs/prds/implementation_plan_f1a2.md).

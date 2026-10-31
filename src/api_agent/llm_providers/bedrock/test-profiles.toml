@@ -1,5 +1,6 @@
 version = 1
 factory = "factory"
+applies_when = {BEDROCK_ENDPOINT = "mantle"}
 provider_fields = ["BEDROCK_API_MODE", "BEDROCK_INFERENCE_TIMEOUT_SECONDS"]
 
 [profiles.ordinary]

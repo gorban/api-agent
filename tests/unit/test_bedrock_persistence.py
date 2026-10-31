@@ -664,7 +664,8 @@ def test_bedrock_install_routes_include_native_login_crypto():
     for dependencies in (package['project']['optional-dependencies']['bedrock'], provider['dependencies']):
         boto = next(Requirement(value) for value in dependencies if Requirement(value).name == 'boto3')
         assert 'crt' in boto.extras
-        assert boto.specifier.contains('1.41.0')
+        assert not boto.specifier.contains('1.41.0')
+        assert boto.specifier.contains('1.43.121')
         assert not boto.specifier.contains('2.0.0')
 
 

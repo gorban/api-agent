@@ -21,7 +21,7 @@ MODEL = 'openai.gpt-oss-20b'
 
 def bundled_rate_card(config):
     """Return fresh exact regional evidence; unqualified scopes stay unavailable."""
-    if config.get('BEDROCK_REGION') != 'us-east-1' or config.get('BEDROCK_API_MODE', 'responses') not in ('responses', 'completions'):
+    if config.get('BEDROCK_ENDPOINT', 'mantle') != 'mantle' or config.get('BEDROCK_REGION') != 'us-east-1' or config.get('BEDROCK_API_MODE', 'responses') not in ('responses', 'completions'):
         return None
     return validate_rate_card(dict(version=1, source=SOURCE, revision='20261016210806',
         verified_at='2026-10-25T00:00:00+00:00', fallback=True, currency='USD', unit='token',

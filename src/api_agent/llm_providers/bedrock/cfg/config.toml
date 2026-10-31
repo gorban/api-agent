@@ -45,15 +45,22 @@ type = "str"
 validation = "regex"
 override = true
 override_if_present = true
-default = '(?:openai\.gpt-[a-z0-9]+(?:[.-][a-z0-9]+)*(?::\d+)?|zai\.glm-\d+(?:\.\d+)*(?:-flash)?|anthropic\.claude-(?:(?:haiku|sonnet|opus)-\d+(?:[.-]\d+)*|\d+(?:[.-]\d+)*-(?:haiku|sonnet|opus)(?:-\d+)*)(?:-v\d+)?(?::\d+)?)'
-help = "Full model-ID regular expression for bare Bedrock vendor.model IDs. Default allows version variants of OpenAI GPT, Z.ai GLM (including Flash), and Anthropic Claude Haiku, Sonnet and Opus. Regional/global inference-profile prefixes and other families are excluded. Admission does not establish API support or invocation permission. Explicit configuration replaces this default."
+default = '.+'
+help = "Full model-ID regular expression for Bedrock discovery. Filter IDs according to AWS documentation, account access, endpoint and API. Discovery does not establish invocation or feature support; explicit configuration replaces this default."
+
+[fields.BEDROCK_ENDPOINT]
+type = "str"
+enum = ["mantle", "runtime"]
+default = "mantle"
+cost_affecting = true
+help = "Select the inference and discovery endpoint. Known closed-weight GPT models on Runtime Responses use system inference-profile IDs; select an exact supported model or profile according to AWS documentation. No geographic prefix is selected automatically."
 
 [fields.BEDROCK_API_MODE]
 type = "str"
-enum = ["completions", "responses"]
+enum = ["completions", "responses", "converse"]
 default = "responses"
 cost_affecting = true
-help = "Mantle API format. Model admission also requires support for the selected API."
+help = "Inference API format. Converse requires Runtime. Use the model filter and AWS documentation to select models supported by the endpoint and API."
 
 [fields.LLM_DEFAULT_MODEL]
 type = "str"
@@ -61,7 +68,7 @@ validation = "regex"
 override = true
 override_if_present = true
 default = 'openai\.gpt-oss-20b'
-help = "Full model-ID regular expression for the default model. Both completions and responses default to openai.gpt-oss-20b. Explicit configuration replaces the default and is preserved when API mode changes."
+help = "Full model-ID regular expression for the default model. Mantle defaults to openai.gpt-oss-20b. For Runtime select an exact supported model or profile; known closed-weight GPT Responses models use system profile IDs such as us.openai.gpt-5.6-luna (escape dots in the regular expression). Explicit configuration replaces the default and is preserved when API mode changes."
 
 [fields.BEDROCK_LOGIN_EXPECTED_ACCOUNT_ID]
 type = "str"

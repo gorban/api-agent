@@ -38,8 +38,8 @@ def controlled(monkeypatch):
     transport.stream = stream
     monkeypatch.setattr(module, 'SDKTransport', lambda **kw: transport)
     codec = types.ModuleType('api_agent.llm_providers.bedrock.mantle')
-    codec.validate_request = lambda request: None
-    codec.encode = lambda request, mode: {'modelId': request.selected_llm}
+    codec.validate_request = lambda request, **kwargs: None
+    codec.encode = lambda request, mode, **kwargs: {'modelId': request.selected_llm}
     codec.decode = lambda response, mode, **kw: result
     codec.RESPONSE_CODES = RESPONSE_CODES
     class Decoder:
@@ -408,7 +408,8 @@ def test_model_defaults_follow_selected_provider_without_loading_factory(monkeyp
         schema, config = selected_model_config(provider)
         assert not config.errors
         policy = ModelSelectionPolicy(config.values)
-        assert policy.filter((AvailableSelection(admitted), AvailableSelection(denied))) == (AvailableSelection(admitted),)
+        expected = (AvailableSelection(admitted), AvailableSelection(denied)) if provider == 'bedrock' else (AvailableSelection(admitted),)
+        assert policy.filter((AvailableSelection(admitted), AvailableSelection(denied))) == expected
         assert schema.fields['LLM_ALLOWED_MODELS'].validation == 'regex'
         patterns.append(config.values['LLM_ALLOWED_MODELS'])
     assert patterns[0] == patterns[2] != patterns[1]
@@ -426,25 +427,23 @@ def test_bedrock_default_filters_catalog_with_version_wildcards(identifier):
     from api_agent.providers.selection import ModelSelectionPolicy
     _, config = selected_model_config('bedrock')
     allowed = AvailableSelection(identifier)
-    assert ModelSelectionPolicy(config.values).filter((AvailableSelection('other.model'), allowed)) == (allowed,)
+    assert ModelSelectionPolicy(config.values).filter((AvailableSelection('other.model'), allowed)) == (AvailableSelection('other.model'), allowed)
 
 
 @pytest.mark.parametrize('identifier', [
     'amazon.nova-micro-v1:0', 'other.gpt-6-sol', 'gpt-6-sol', 'openai/gpt-6-sol',
-    'us.openai.gpt-oss-120b-1:0', 'global.anthropic.claude-sonnet-4-6',
+    'us.openai.gpt-oss-120b-1:0',
     'eu.zai.glm-5', 'zai.glm-flash', 'zai.glm-5-fable', 'zai.glm-5..1',
     'zai.glm-5-flash-extra', 'anthropic.claude-fable-5', 'anthropic.claude-mythos-5',
     'anthropic.claude-5-mythos', 'anthropic.claude-sonnet', 'anthropic.claude-sonnet-4-extra',
     'anthropic.claude-3-5-sonnet-extra', 'anthropic.claude-3-5-fable-20241022-v1:0',
 ])
-def test_bedrock_default_rejects_other_families_and_profile_ids(identifier):
-    from api_agent.providers.contracts import ProviderAccessError
+def test_bedrock_default_allows_discovered_families_and_profile_ids(identifier):
     from api_agent.providers.selection import ModelSelectionPolicy
     _, config = selected_model_config('bedrock')
     policy = ModelSelectionPolicy(config.values)
-    assert policy.filter((AvailableSelection(identifier),)) == ()
-    with pytest.raises(ProviderAccessError, match='not permitted'):
-        policy.require_allowed(identifier)
+    assert policy.filter((AvailableSelection(identifier),)) == (AvailableSelection(identifier),)
+    policy.require_allowed(identifier)
 
 
 @pytest.mark.parametrize('provider', ['gpt', 'bedrock'])
@@ -672,8 +671,8 @@ async def test_responses_stream_dispatches_with_store_disabled(controlled, monke
         yield {'part': 1}
     transport.stream = stream
     provider = module.factory({'BEDROCK_API_MODE': 'responses'}, {})
-    monkeypatch.setattr(provider, 'validate_request', lambda request: None)
-    monkeypatch.setattr(module.catalog, 'route', lambda model, mode: '/v1')
+    monkeypatch.setattr(provider, 'validate_request', lambda request, **kwargs: None)
+    monkeypatch.setattr(module.catalog, 'route', lambda model, mode, endpoint='mantle': '/v1')
     try:
         events = [event async for event in provider.astream(request)]
         assert events == [StreamEvent(TextContent('answer')), StreamEvent(result, 'completed')]

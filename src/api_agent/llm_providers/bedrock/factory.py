@@ -24,6 +24,7 @@ class BedrockProvider:
         self.config = dict(config)
         self.services = dict(services or {})
         self.api_mode = auth.validate_config(self.config)
+        self.endpoint = self.config.get('BEDROCK_ENDPOINT', 'mantle')
         self.cost_compatibility = compatibility(config)
         self.rate_card = pricing.bundled_rate_card(self.config)
         try:
@@ -135,8 +136,9 @@ class BedrockProvider:
         self._open()
         async def describe():
             async with component_timeout('Bedrock regional catalog', 60):
-                response = await self.transport.call('models', {}, auth=auth, join=self._join_credentials)
-                selections = catalog.catalog(response, self.api_mode)
+                response = await self.transport.call('runtime_models' if self.endpoint == 'runtime' else 'models', {},
+                                                     auth=auth, join=self._join_credentials)
+                selections = catalog.catalog(response, self.api_mode, self.endpoint)
                 from api_agent.providers.catalog import catalog_from_wire, catalog_to_wire
                 from api_agent.providers.credential_guard import async_guard_json, CredentialProtectionError
                 secrets, lease = await self._join_credentials(())
@@ -174,13 +176,19 @@ class BedrockProvider:
         finally:
             self._describes.discard(task)
 
-    def validate_request(self, request):
+    def validate_request(self, request, *, stream=False):
         self._open()
-        from .mantle import validate_request
+        if self.api_mode == 'converse':
+            from .converse import validate_request
+        else:
+            from .mantle import validate_request
         from .response_policy import prepare_response
-        prepared, _ = prepare_response(request, self.api_mode)
-        catalog.selection(prepared.selected_llm, self.api_mode).validate(prepared)
-        validate_request(prepared)
+        prepared, _ = prepare_response(request, self.api_mode, endpoint=self.endpoint, stream=stream)
+        if (stream and self.endpoint == 'runtime' and self.api_mode != 'converse'
+                and prepared.payload.structured is not None):
+            raise OperationalError('unsupported')
+        catalog.selection(prepared.selected_llm, self.api_mode, self.endpoint).validate(prepared)
+        validate_request(prepared, endpoint=self.endpoint, api_mode=self.api_mode)
 
     async def acomplete(self, request, *, auth=None):
         from api_agent.providers.call_authority import require_remote_admission
@@ -188,18 +196,28 @@ class BedrockProvider:
         self._join_active_authority()
         self._ensure_authority()
         self.validate_request(request)
-        from .mantle import encode, decode, RESPONSE_CODES
+        from .mantle import RESPONSE_CODES
+        if self.api_mode == 'converse':
+            from .converse import encode, decode
+        else:
+            from .mantle import encode, decode
         from .response_policy import prepare_response
-        from api_agent.llm_providers.response_policy import capture_payload, format_payload
+        from api_agent.llm_providers.response_policy import capture_payload
+        if self.api_mode == 'converse':
+            from .converse import format_payload
+        else:
+            from api_agent.llm_providers.response_policy import format_payload
         from api_agent.workflows.inference_capture import record_response_dispatch, record_response_failure
         from api_agent.providers.inference import error_usage
-        prepared, evidence = prepare_response(request, self.api_mode)
+        prepared, evidence = prepare_response(request, self.api_mode, endpoint=self.endpoint)
         failure_usage = None
         dispatched = False
         try:
             async with component_timeout('Bedrock completion', self.inference_timeout) as budget:
-                payload = {'prefix': catalog.route(request.selected_llm, self.api_mode),
-                           'body': format_payload(request, encode(prepared, self.api_mode), evidence)}
+                payload = {'prefix': catalog.route(request.selected_llm, self.api_mode, self.endpoint),
+                           'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint), evidence)}
+                if self.endpoint == 'runtime':
+                    payload['endpoint'] = 'runtime'
                 if budget.remaining == 0:
                     raise TimeoutError('Bedrock deadline expired before dispatch.')
                 def dispatch():
@@ -214,7 +232,7 @@ class BedrockProvider:
                     response = await self.transport.call(self.api_mode, payload, auth=auth,
                         join=self._join_credentials, on_dispatch=dispatch)
                     from api_agent.workflows.inference_capture import capture_inference
-                    result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm), response=evidence)
+                    result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm, endpoint=self.endpoint), response=evidence)
                     capture_inference('output', {'provider_response': response}, request.request_id, auth=auth,
                                       decoded_visible_text_characters=sum(len(part.text) for part in result.payload.content))
                     from api_agent.providers.generation_attempts import snapshot_transport_result
@@ -244,28 +262,39 @@ class BedrockProvider:
         require_remote_admission(self.emissions)
         self._join_active_authority()
         self._ensure_authority()
-        self.validate_request(request)
-        from .mantle import encode
+        self.validate_request(request, stream=True)
+        if self.api_mode == 'converse':
+            from .converse import encode
+        else:
+            from .mantle import encode
         from .normalized_stream import ParentStream
         from .response_policy import prepare_response
-        from api_agent.llm_providers.response_policy import capture_payload, format_payload
+        from api_agent.llm_providers.response_policy import capture_payload
+        if self.api_mode == 'converse':
+            from .converse import format_payload
+        else:
+            from api_agent.llm_providers.response_policy import format_payload
         from api_agent.workflows.inference_capture import record_response_dispatch, record_response_failure
         from api_agent.providers.inference import error_usage
-        prepared, evidence = prepare_response(request, self.api_mode)
+        prepared, evidence = prepare_response(request, self.api_mode, endpoint=self.endpoint, stream=True)
         failure_usage = None
         dispatched = False
         try:
             decoder = ParentStream(self.api_mode, selected_llm=request.selected_llm)
             async with component_timeout('Bedrock streaming completion', self.inference_timeout) as budget:
-                payload = {'prefix': catalog.route(request.selected_llm, self.api_mode),
-                           'body': format_payload(request, encode(prepared, self.api_mode), evidence)}
+                payload = {'prefix': catalog.route(request.selected_llm, self.api_mode, self.endpoint),
+                           'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint), evidence)}
+                if self.endpoint == 'runtime':
+                    payload['endpoint'] = 'runtime'
                 def dispatch():
                     nonlocal dispatched
-                    final_body = dict(payload['body'], stream=True)
-                    if self.api_mode == 'completions':
-                        final_body['stream_options'] = {'include_usage': True}
-                    else:
-                        final_body['store'] = False
+                    final_body = dict(payload['body'])
+                    if self.api_mode != 'converse':
+                        final_body['stream'] = True
+                        if self.api_mode == 'completions':
+                            final_body['stream_options'] = {'include_usage': True}
+                        else:
+                            final_body['store'] = False
                     capture_payload(request, final_body, evidence, auth=auth)
                     if budget.remaining == 0:
                         raise TimeoutError('Bedrock stream deadline expired before dispatch.')
