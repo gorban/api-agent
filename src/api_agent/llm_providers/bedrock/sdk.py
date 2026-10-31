@@ -10,7 +10,7 @@ from pathlib import Path
 from api_agent.providers.contracts import ContractError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError
 from api_agent.providers.progress import component_timeout
 from api_agent.providers.control import finish_cleanup
-from .worker import MAX_FRAME, OPERATIONS, json_value, DEFAULT_INFERENCE_TIMEOUT, inference_timeout
+from .worker import MAX_FRAME, ALL_OPERATIONS, json_value, DEFAULT_INFERENCE_TIMEOUT, inference_timeout
 
 
 class SDKTransport:
@@ -60,7 +60,7 @@ class SDKTransport:
             raise SetupPrerequisiteError('Bedrock SDK process isolation currently requires POSIX.')
         if self._closed:
             raise SessionClosedError('Bedrock transport is closed')
-        if operation not in OPERATIONS or not isinstance(payload, dict):
+        if operation not in ALL_OPERATIONS or not isinstance(payload, dict):
             raise ContractError('Unsupported Bedrock SDK request')
         try:
             json_value(payload)
@@ -69,6 +69,7 @@ class SDKTransport:
         owned = []
         channels = []
         authority_lease = None
+        authority_values = None
         async with component_timeout('Bedrock SDK operation', self.timeout) as budget:
             pass
         try:
@@ -177,6 +178,7 @@ class SDKTransport:
                     if on_dispatch is not None:
                         on_dispatch()
                     await self._timed(lambda: loop.sock_sendall(parent_channel, b'1'), budget)
+                    authority_values = tuple(union)
                 parent_channel.close()
             elif on_dispatch is not None:
                 on_dispatch()
@@ -213,10 +215,24 @@ class SDKTransport:
                             raise ContractError('Invalid Bedrock worker response code')
                         message = ('Bedrock inference response could not be safely released.' if code == 'response_safety_rejected'
                                    else 'Bedrock inference response failed contract validation.')
-                    error = ProviderAccessError(kind, message, status=status, code=code)
+                    validation_code = code
+                    request_id = None
+                    if 'aws_error_rejected' in frame and frame['aws_error_rejected'] is not True:
+                        raise ContractError('Invalid Bedrock AWS diagnostic marker')
+                    if frame.get('aws_error_rejected') is True:
+                        message += ' (additional AWS diagnostic withheld)'
+                    if 'aws_error' in frame:
+                        if (authority_values is None or execution != 'possibly_executed'
+                                or code is not None or 'aws_error_rejected' in frame):
+                            raise ContractError('Unadmitted Bedrock AWS diagnostic')
+                        from .runtime_worker import validate_aws_error
+                        detail = validate_aws_error(frame['aws_error'], authority_values)
+                        message, code = detail['message'], detail.get('code')
+                        request_id = detail.get('request_id')
+                    error = ProviderAccessError(kind, message, status=status, code=code, request_id=request_id)
                     if 'diagnostics' in frame:
                         from api_agent.telemetry.inference_diagnostics import valid_diagnostics
-                        if code is None or not valid_diagnostics(frame['diagnostics']):
+                        if validation_code is None or not valid_diagnostics(frame['diagnostics']):
                             raise ContractError('Invalid Bedrock worker diagnostics')
                         error.provider_diagnostics = frame['diagnostics']
                         from api_agent.workflows.inference_capture import capture_transport_diagnostics
@@ -227,7 +243,8 @@ class SDKTransport:
                     error.execution = execution
                     if 'provider_response' in frame:
                         if (type(frame['provider_response']) is not dict or join is None
-                                or code == 'response_safety_rejected'):
+                                or validation_code == 'response_safety_rejected'
+                                or frame.get('aws_error_rejected') is True):
                             raise ContractError('Invalid Bedrock worker response')
                         error.provider_response = frame['provider_response']
                     hint = frame.get('retry_after')

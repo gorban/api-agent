@@ -269,8 +269,8 @@ def test_bedrock_encode_expiry_stops_before_optional_capture_and_transport(monke
     encoded = []
     monkeypatch.setattr(progress, '_clock', lambda: clock[0])
     original_encode = mantle.encode
-    def encode(value, api_mode):
-        body = original_encode(value, api_mode)
+    def encode(value, api_mode, **kwargs):
+        body = original_encode(value, api_mode, **kwargs)
         encoded.append(True)
         clock[0] = 2.0
         return body

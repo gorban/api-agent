@@ -2,7 +2,7 @@
 
 [Integration readiness](implementation_plan_f4l2.md) · [Provider requirements](implementation_plan_f4.md)
 
-Bedrock supplies defaults under [profile precedence](../integration_test_profiles.md).
+Bedrock supplies defaults under [profile precedence](../integration_test_profiles.md); the [Runtime endpoint follow-up](implementation_plan_f4o.md) scopes them to Mantle.
 The earlier 18-case catalog passed; the launcher follow-up is technically closed.
 
 - [x] Reinventory exact integration cases, including tool/application flows.

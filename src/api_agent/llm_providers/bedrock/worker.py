@@ -1,4 +1,4 @@
-"""Owned synchronous Mantle SDK lifecycle; diagnostics contain no SDK text."""
+"""Owned synchronous Bedrock SDK lifecycle; diagnostics contain no SDK text."""
 import json
 import os
 import socket
@@ -18,7 +18,10 @@ def inference_timeout(value):
     return value
 
 
+RUNTIME_OPERATIONS = {'runtime_models', 'converse', 'converse_stream'}
 OPERATIONS = {'models', 'completions', 'responses', 'completions_stream', 'responses_stream'}
+
+ALL_OPERATIONS = OPERATIONS | RUNTIME_OPERATIONS
 
 
 def sdk_session(**kwargs):
@@ -95,10 +98,22 @@ def sdk_http(timeout=DEFAULT_INFERENCE_TIMEOUT):
 
 
 
-def qualified_schema(value, model, prefix):
-    """Independently validate the sole qualified native schema route before auth."""
+def qualified_schema(value, model, prefix, *, endpoint='mantle', response=False):
+    """Validate the selected endpoint and native schema carrier before auth."""
     from api_agent.providers.rich_inference import schema
-    if (model != 'zai.glm-5' or prefix != '/v1' or type(value) is not dict
+    if endpoint == 'runtime':
+        from api_agent.llm_providers.bedrock.catalog import selection
+        selected = selection(model, 'responses' if response else 'completions', endpoint=endpoint)
+        if prefix != '/openai/v1' or 'structured' not in selected.features:
+            raise ValueError()
+        if response:
+            if type(value) is not dict or set(value) != {'format'} or type(value['format']) is not dict:
+                raise ValueError()
+            format_spec = dict(value['format'])
+            value = {'type': format_spec.pop('type', None), 'json_schema': format_spec}
+    elif model != 'zai.glm-5' or prefix != '/v1':
+        raise ValueError()
+    if (type(value) is not dict
             or set(value) != {'type', 'json_schema'} or value['type'] != 'json_schema'):
         raise ValueError()
     definition = value['json_schema']
@@ -108,38 +123,69 @@ def qualified_schema(value, model, prefix):
         raise ValueError()
     schema(json.dumps(definition['schema'], allow_nan=False), True)
 
-def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_client, http_factory=sdk_http, join=None):
+def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_client, http_factory=sdk_http, join=None, runtime_client_factory=None, boto_client_factory=None):
     started = time.monotonic()
     client = body = http = None
     execution = 'not_started'
     received = {}
     secrets = None
     joined = False
+    native = False
+    endpoint = None
     decode_failure = None
     failed_observation = None
     try:
         json_value(request)
-        if set(request) != {'operation', 'auth', 'payload', 'timeout'} or request['operation'] not in OPERATIONS:
+        if set(request) != {'operation', 'auth', 'payload', 'timeout'} or request['operation'] not in ALL_OPERATIONS:
             raise ValueError()
         timeout = inference_timeout(request['timeout'])
         deadline = started + timeout
         operation, payload = request['operation'], request['payload']
-        if operation == 'models':
+        endpoint = payload.get('endpoint', 'mantle') if type(payload) is dict else None
+        if endpoint not in ('mantle', 'runtime'):
+            raise ValueError()
+        if operation == 'runtime_models':
+            endpoint = 'runtime'
+        native = operation in RUNTIME_OPERATIONS
+        if operation in ('models', 'runtime_models'):
             if payload != {}:
                 raise ValueError()
             prefix, arguments = '/v1', {}
         else:
-            if set(payload) != {'prefix', 'body'} or payload['prefix'] not in {'/v1', '/openai/v1'} or type(payload['body']) is not dict:
+            if (set(payload) not in ({'prefix', 'body'}, {'prefix', 'body', 'endpoint'})
+                    or payload['prefix'] not in {'/v1', '/openai/v1', '/converse'}
+                    or type(payload['body']) is not dict):
                 raise ValueError()
             prefix, arguments = payload['prefix'], dict(payload['body'])
+            if (endpoint == 'runtime' and prefix != ('/converse' if native else '/openai/v1')
+                    or endpoint == 'mantle' and (native or prefix == '/converse')):
+                raise ValueError()
             response = operation.startswith('responses')
-            allowed = ({'model', 'input', 'tools', 'temperature', 'max_output_tokens', 'store', 'reasoning'}
+            allowed = ({'modelId', 'messages', 'system', 'inferenceConfig', 'toolConfig', 'outputConfig'}
+                       if native else {'model', 'input', 'tools', 'temperature', 'max_output_tokens', 'store', 'reasoning', 'text'}
                        if response else {'model', 'messages', 'tools', 'temperature', 'max_tokens', 'reasoning_effort', 'response_format'})
             if (not set(arguments) <= allowed
                     or 'store' in arguments and arguments['store'] is not False):
                 raise ValueError()
+            if endpoint == 'runtime':
+                from api_agent.llm_providers.bedrock.catalog import selection
+                selected = selection(arguments.get('modelId') if native else arguments.get('model'),
+                                     'converse' if native else ('responses' if response else 'completions'),
+                                     endpoint=endpoint)
+            if endpoint == 'runtime' and not native and operation.endswith('_stream') and ('response_format' in arguments or 'text' in arguments):
+                raise ValueError()
+            if native and 'outputConfig' in arguments:
+                from api_agent.llm_providers.bedrock.runtime_worker import converse_schema
+                converse_schema(arguments['outputConfig'], selected)
             if 'response_format' in arguments:
-                qualified_schema(arguments['response_format'], arguments.get('model'), prefix)
+                if endpoint == 'runtime' and 'structured' not in selected.features:
+                    raise ValueError()
+                qualified_schema(arguments['response_format'], arguments.get('model'), prefix,
+                                 **({'endpoint': endpoint} if endpoint != 'mantle' else {}))
+            if 'text' in arguments:
+                if endpoint != 'runtime' or not response:
+                    raise ValueError()
+                qualified_schema(arguments['text'], arguments.get('model'), prefix, endpoint=endpoint, response=True)
             control = 'reasoning' if response else 'reasoning_effort'
             if control in arguments:
                 effort = arguments[control]
@@ -147,13 +193,16 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     if type(effort) is not dict or set(effort) != {'effort'}:
                         raise ValueError()
                     effort = effort['effort']
-                if (prefix != '/v1' or arguments.get('model') not in
-                        ('openai.gpt-oss-20b', 'openai.gpt-oss-120b')
-                        or type(effort) is not str or effort not in ('low', 'medium', 'high')):
+                if (type(effort) is not str
+                        or endpoint == 'runtime' and ('reasoning_effort' not in selected.features
+                            or effort not in (selected.reasoning_efforts or ()))
+                        or endpoint == 'mantle' and (prefix != '/v1' or arguments.get('model') not in
+                            ('openai.gpt-oss-20b', 'openai.gpt-oss-120b')
+                            or effort not in ('low', 'medium', 'high'))):
                     raise ValueError()
             if operation.startswith('responses'):
                 arguments['store'] = False
-            if operation.endswith('_stream'):
+            if operation.endswith('_stream') and not native:
                 arguments['stream'] = True
                 if not response:
                     arguments['stream_options'] = {'include_usage': True}
@@ -165,7 +214,12 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             secrets = set(join(sorted(secrets), arguments))
             joined = True
         timeout = inference_timeout(deadline - time.monotonic())
-        http = http_factory(timeout=timeout)
+        if native:
+            from api_agent.llm_providers.bedrock.runtime_worker import boto_client, catalog
+            factory = boto_client_factory or boto_client
+            client = factory(region, 'bedrock' if operation == 'runtime_models' else 'bedrock-runtime', options, timeout)
+        else:
+            http = http_factory(timeout=timeout)
         hooks = getattr(http, 'event_hooks', None)
         if isinstance(hooks, dict) and isinstance(hooks.get('response'), list):
             def capture_headers(response):
@@ -176,18 +230,27 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 from api_agent.providers.inference_retry import retry_after
                 received['retry_after'] = retry_after(response.headers.get('retry-after'))
             hooks['response'].append(capture_headers)
-        client = client_factory(region, prefix, options, http)
+        if not native:
+            if endpoint == 'runtime':
+                from api_agent.llm_providers.bedrock.runtime_worker import openai_client
+                client = (runtime_client_factory or openai_client)(region, prefix, options, http)
+            else:
+                client = client_factory(region, prefix, options, http)
         execution = 'possibly_executed'
-        if operation == 'models':
+        if operation == 'runtime_models':
+            result = catalog(client, deadline)
+        elif native:
+            result = client.converse(**arguments)
+        elif operation == 'models':
             result = client.models.list()
         elif operation.startswith('completions'):
             result = client.chat.completions.create(**arguments)
         else:
             result = client.responses.create(**arguments)
-        if operation.endswith('_stream'):
+        if operation.endswith('_stream') and not native:
             body = result
             from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
-            decoder = WorkerStream('responses' if response else 'completions', arguments['model'], secrets)
+            decoder = WorkerStream('responses' if response else 'completions', arguments['model'], secrets, **({'endpoint': endpoint} if endpoint != 'mantle' else {}))
             for event in body:
                 value = json_value(event.model_dump(exclude_unset=True))
                 if type(value) is not dict or value.get('error') is not None or value.get('type') in {'error', 'response.failed'}:
@@ -204,7 +267,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             for frame in decoder.finish():
                 emit({'event': frame})
         else:
-            value = json_value(result.model_dump(exclude_unset=True))
+            value = json_value(result if native else result.model_dump(exclude_unset=True))
             if type(value) is not dict or value.get('error') is not None:
                 if type(value) is dict:
                     from api_agent.llm_providers.bedrock.mantle import _reported_error
@@ -219,12 +282,16 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 decode_failure = 'response_safety_rejected'
                 failed_observation = {'version':1, 'response_validation':'rejected'}
                 raise
-            if operation != 'models':
-                from api_agent.llm_providers.bedrock.mantle import decode
+            if operation not in ('models', 'runtime_models'):
+                if native:
+                    from api_agent.llm_providers.bedrock.converse import decode
+                else:
+                    from api_agent.llm_providers.bedrock.mantle import decode
                 from api_agent.llm_providers.bedrock.normalized_stream import guard_result
                 try:
-                    decoded = decode(value, 'responses' if response else 'completions',
-                                     selected_llm=arguments['model'])
+                    decoded = decode(value, 'converse' if native else ('responses' if response else 'completions'),
+                                     selected_llm=arguments['modelId'] if native else arguments['model'],
+                                     **({'endpoint': endpoint} if endpoint != 'mantle' else {}))
                 except Exception as error:
                     from api_agent.providers.contracts import ProviderAccessError
                     from api_agent.llm_providers.bedrock.mantle import RESPONSE_CODES
@@ -258,7 +325,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     failed_observation = {'version':1, 'response_validation':'rejected'}
                     raise
             metadata = {}
-            if operation != 'models':
+            if operation not in ('models', 'runtime_models'):
                 from api_agent.telemetry.inference_diagnostics import valid_diagnostics, scrub_diagnostics
                 from api_agent.telemetry.privacy import EmissionBoundary
                 from importlib.metadata import version
@@ -277,12 +344,26 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     if valid_diagnostics(candidate):
                         metadata[target] = candidate[target]
                 metadata = scrub_diagnostics(metadata, EmissionBoundary(secrets=secrets))
-            emit(dict(result=value, **({'diagnostics': metadata} if metadata else {})))
+            if native and operation.endswith('_stream'):
+                from api_agent.providers.inference import result_to_wire
+                text = ''.join(part.text for part in decoded.payload.content)
+                if text:
+                    emit({'event': {'kind': 'text', 'text': text}})
+                emit({'event': {'kind': 'completed', 'result': result_to_wire(decoded)}})
+            else:
+                emit(dict(result=value, **({'diagnostics': metadata} if metadata else {})))
     except Exception as error:
         name = type(error).__name__
         status = getattr(error, 'status_code', None)
         if status is None:
             status = received.get('status')
+        native_metadata = {}
+        if native and type(getattr(error, 'response', None)) is dict:
+            candidate = error.response.get('ResponseMetadata')
+            if type(candidate) is dict:
+                native_metadata = candidate
+                if status is None:
+                    status = candidate.get('HTTPStatusCode')
         kind = {401: 'authentication', 403: 'authorization', 429: 'rate_limited',
                 400: 'invalid_request', 404: 'invalid_request', 422: 'invalid_request',
                 500: 'unavailable', 502: 'unavailable', 503: 'unavailable', 504: 'unavailable'}.get(status)
@@ -296,14 +377,41 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             from api_agent.providers.inference_retry import transient_network_failure
             if transient_network_failure(error, httpx2):
                 kind = 'network'
+        if native and kind == 'unknown' and status in (None, 200):
+            from api_agent.llm_providers.bedrock.runtime_worker import transient_network_failure
+            if transient_network_failure(error):
+                kind = 'network'
         frame = {'error': kind, 'execution': execution}
+        if native and joined and execution == 'possibly_executed' and decode_failure is None:
+            aws_response = getattr(error, 'response', None)
+            if type(aws_response) is dict and 'Error' in aws_response:
+                from api_agent.llm_providers.bedrock.runtime_worker import aws_error
+                try:
+                    frame['aws_error'] = aws_error(aws_response, secrets)
+                except Exception:
+                    frame['aws_error_rejected'] = True
+        if not native and joined and execution == 'possibly_executed' and decode_failure is None:
+            sdk_body = getattr(error, 'body', None)
+            if sdk_body is not None:
+                try:
+                    from openai import APIStatusError
+                except ImportError:
+                    pass
+                else:
+                    if isinstance(error, APIStatusError):
+                        from api_agent.llm_providers.bedrock.runtime_worker import openai_error
+                        try:
+                            request_id = received.get('request_id') or getattr(error, 'request_id', None)
+                            frame['aws_error'] = openai_error(sdk_body, request_id, secrets)
+                        except Exception:
+                            frame['aws_error_rejected'] = True
         if decode_failure is not None:
             frame['code'] = decode_failure
             if failed_observation:
                 frame['diagnostics'] = failed_observation
         # Only an observed JSON response, checked against the same frozen
         # credentials already joined by this call, can cross the process boundary.
-        if joined and execution == 'possibly_executed':
+        if joined and execution == 'possibly_executed' and frame.get('aws_error_rejected') is not True:
             raw_response = getattr(error, 'provider_response', None)
             if raw_response is None:
                 raw_response = getattr(error, 'body', None)
@@ -320,6 +428,8 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             frame['http_status'] = status
             response = getattr(error, 'response', None)
             headers = getattr(response, 'headers', None)
+            if native and type(native_metadata.get('HTTPHeaders')) is dict:
+                headers = native_metadata['HTTPHeaders']
             from api_agent.providers.inference_retry import retry_after
             hint = retry_after(headers.get('retry-after')) if headers is not None else received.get('retry_after')
             if hint is not None:

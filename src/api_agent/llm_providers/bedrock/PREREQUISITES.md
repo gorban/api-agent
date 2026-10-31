@@ -21,7 +21,7 @@
   both api-agent[bedrock] and the selected provider dependency declaration. For an
   older environment that has only plain boto3, install the compatible extra:
 
-      python -m pip install 'boto3[crt]>=1.41,<2'
+      python -m pip install 'boto3[crt]>=1.43.121,<2'
 
   Install CLI v2 through the [official platform instructions](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
   only for a workflow that needs it. Verify aws --version in the environment

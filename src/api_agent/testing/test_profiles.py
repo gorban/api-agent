@@ -64,11 +64,21 @@ def declaration(config, *, owner_root):
     if not path.is_file():
         return None
     data = tomllib.loads(path.read_text())
-    if set(data) != {'version', 'factory', 'provider_fields', 'profiles'} or data['version'] != 1 or data['factory'] != symbol:
+    if (not {'version', 'factory', 'provider_fields', 'profiles'} <= set(data)
+            or set(data) - {'version', 'factory', 'provider_fields', 'profiles', 'applies_when'}
+            or data['version'] != 1 or data['factory'] != symbol):
         raise ValueError('Invalid provider test profile declaration')
     shared = load_shared_schema()
     schema = compose_schema(shared, load_declarations(factory.parent / 'cfg/config.toml', base_schema=shared))
     provider_fields = data['provider_fields']
+    condition = data.get('applies_when', {})
+    if type(condition) is not dict:
+        raise ValueError('Invalid provider test profile condition')
+    for key, expected in condition.items():
+        field = schema.fields.get(key) if type(key) is str else None
+        if (field is None or key in shared.fields or field.sensitive or field.type != 'str'
+                or not field.enum or type(expected) is not str or expected not in field.enum):
+            raise ValueError('Invalid provider test profile condition')
     def safe_provider_control(key):
         if type(key) is not str or key not in schema.fields or key in shared.fields:
             return False
@@ -105,6 +115,9 @@ def declaration(config, *, owner_root):
             if key not in SHARED_KEYS | set(provider_fields) or schema.fields[key].sensitive:
                 raise ValueError('Forbidden test profile setting: ' + key)
             convert_value(schema.fields[key], value, external=False, anchors=None)
+    if any(config.get(key, schema.fields[key].default) != expected
+           for key, expected in condition.items()):
+        profiles = {}
     return path, schema, profiles
 
 

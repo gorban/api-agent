@@ -71,15 +71,15 @@ def _reasoning(item, *, incomplete=False):
             _text(row.get('text'))
 
 
-def validate_request(request):
+def validate_request(request, *, endpoint="mantle", api_mode="completions"):
     if not isinstance(request, LLMRequest):
         raise ProviderAccessError('invalid_request', 'Invalid Bedrock request.')
     payload = request.payload
     if (payload.structured is not None and
-            (request.selected_llm != 'zai.glm-5' or not payload.structured.strict)
+            (endpoint != 'runtime' and request.selected_llm != 'zai.glm-5' or not payload.structured.strict)
             or payload.generation.cache_policy is not None
             or payload.generation.reasoning_effort not in (None, '') and
-               (request.selected_llm not in ('openai.gpt-oss-20b', 'openai.gpt-oss-120b')
+               (endpoint != 'runtime' and request.selected_llm not in ('openai.gpt-oss-20b', 'openai.gpt-oss-120b')
                 or payload.generation.reasoning_effort not in ('low', 'medium', 'high'))
             or any(m.cache_boundary is not None or m.continuation is not None for m in payload.messages)):
         raise ProviderAccessError('unsupported', 'Bedrock request feature is unsupported.')
@@ -92,9 +92,9 @@ def validate_request(request):
         raise ProviderAccessError('invalid_request', 'Invalid Bedrock request.') from None
 
 
-def encode(request, api_mode):
-    validate_request(request)
-    selected = selection(request.selected_llm, api_mode)
+def encode(request, api_mode, *, endpoint="mantle"):
+    validate_request(request, endpoint=endpoint, api_mode=api_mode)
+    selected = selection(request.selected_llm, api_mode, endpoint=endpoint)
     selected.validate(request)
     payload = request.payload
     response = api_mode == 'responses'
@@ -133,8 +133,11 @@ def encode(request, api_mode):
             body[name] = value
     if payload.structured is not None:
         definition = payload.structured
-        body['response_format'] = {'type': 'json_schema', 'json_schema': {
-            'name': definition.name, 'schema': schema(definition.schema, True), 'strict': True}}
+        format_spec = {'name': definition.name, 'schema': schema(definition.schema, True), 'strict': True}
+        if response:
+            body['text'] = {'format': {'type': 'json_schema', **format_spec}}
+        else:
+            body['response_format'] = {'type': 'json_schema', 'json_schema': format_spec}
     effort = payload.generation.reasoning_effort
     if effort:
         body['reasoning' if response else 'reasoning_effort'] = {'effort': effort} if response else effort
@@ -191,6 +194,13 @@ def _calls(rows, response):
     return tuple(calls)
 
 
+def same_model(reported, selected, endpoint):
+    """A geographic profile may report its underlying model, never another target."""
+    return reported == selected or (endpoint == 'runtime'
+        and selected.split('.', 1)[0] in {'us', 'us-gov', 'eu', 'au', 'jp', 'in', 'global'}
+        and reported == selected.split('.', 1)[1])
+
+
 def _metadata(raw):
     values = {key: raw.get(key) for key in ('model', 'service_tier', 'serving_revision')}
     _require(all(value is None or type(value) is str and 0 < len(value) <= 200 and value.isprintable()
@@ -208,18 +218,18 @@ def _reported_error(error, raw, response):
     return error
 
 
-def decode(raw, api_mode, *, selected_llm):
+def decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
     try:
-        return _decode(raw, api_mode, selected_llm=selected_llm)
+        return _decode(raw, api_mode, selected_llm=selected_llm, endpoint=endpoint)
     except ProviderAccessError as error:
         raise _reported_error(error, raw, api_mode == 'responses')
 
 
-def _decode(raw, api_mode, *, selected_llm):
-    selection(selected_llm, api_mode)
+def _decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
+    selection(selected_llm, api_mode, endpoint=endpoint)
     _bounded(raw)
     _require(type(raw) is dict and raw.get('error') is None, rule='response_object', path='$')
-    _require(raw.get('model', selected_llm) == selected_llm, rule='selected_model', path='$.model')
+    _require(same_model(raw.get('model', selected_llm), selected_llm, endpoint), rule='selected_model', path='$.model')
     response = api_mode == 'responses'
     if response:
         _require(raw.get('status') in ('completed', 'incomplete'), rule='response_status', path='$.status')
@@ -281,8 +291,9 @@ def _decode(raw, api_mode, *, selected_llm):
 
 class StreamDecoder:
     """Ordered SDK dictionaries; terminal snapshots are withheld until EOF."""
-    def __init__(self, api_mode, *, selected_llm):
-        selection(selected_llm, api_mode)
+    def __init__(self, api_mode, *, selected_llm, endpoint="mantle"):
+        selection(selected_llm, api_mode, endpoint=endpoint)
+        self.endpoint = endpoint
         self.mode, self.model = api_mode, selected_llm
         self.finished = False
         self.terminal = None
@@ -327,7 +338,7 @@ class StreamDecoder:
                 self.metadata[key] = value
 
     def _completions(self, event):
-        _require(event.get('object') == 'chat.completion.chunk' and event.get('model') == self.model)
+        _require(event.get('object') == 'chat.completion.chunk' and same_model(event.get('model'), self.model, self.endpoint))
         self._remember_metadata(event)
         identity = _text(event.get('id'), empty=False)
         _require(self.identity is None or self.identity == identity)
@@ -339,7 +350,7 @@ class StreamDecoder:
             self.terminal = {**self.metadata, 'usage': event.get('usage'), 'choices': [{'index': 0,
                 'message': {'role': 'assistant', 'content': self.text, 'tool_calls': list(self.tools.values())},
                 'finish_reason': self.reason}]}
-            decode(self.terminal, self.mode, selected_llm=self.model)
+            decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint)
             return ()
         _require(self.reason is None and len(choices) == 1 and type(choices[0]) is dict and choices[0].get('index') == 0
                  and event.get('usage') is None)
@@ -388,7 +399,7 @@ class StreamDecoder:
         if kind == 'response.created':
             raw = event.get('response')
             _require(not self.started and type(raw) is dict and raw.get('status') == 'in_progress'
-                     and raw.get('error') is None and raw.get('model', self.model) == self.model)
+                     and raw.get('error') is None and same_model(raw.get('model', self.model), self.model, self.endpoint))
             self._remember_metadata(raw)
             self.identity = _text(raw.get('id'), empty=False)
             self.started = True
@@ -397,7 +408,7 @@ class StreamDecoder:
         if kind == 'response.in_progress':
             raw = event.get('response')
             _require(not self.items and type(raw) is dict and raw.get('id') == self.identity and raw.get('status') == 'in_progress'
-                     and raw.get('error') is None and raw.get('model', self.model) == self.model)
+                     and raw.get('error') is None and same_model(raw.get('model', self.model), self.model, self.endpoint))
             self._remember_metadata(raw)
             return ()
         if kind in ('response.completed', 'response.incomplete'):
@@ -407,7 +418,7 @@ class StreamDecoder:
                      and raw.get('status') == ('completed' if kind == 'response.completed' else 'incomplete'))
             self._remember_metadata(raw)
             raw = {**raw, **self.metadata}
-            decoded = decode(raw, self.mode, selected_llm=self.model)
+            decoded = decode(raw, self.mode, selected_llm=self.model, endpoint=self.endpoint)
             _require(decoded.payload.content == (TextContent(self.text),))
             self.terminal = deepcopy(raw)
             return ()
@@ -518,6 +529,6 @@ class StreamDecoder:
 
     def finish(self):
         _require(not self.finished and self.terminal is not None)
-        result = decode(self.terminal, self.mode, selected_llm=self.model)
+        result = decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint)
         self.finished = True
         return result

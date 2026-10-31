@@ -4,7 +4,7 @@
 
 Deliver Bedrock through replaceable contracts owning configuration, credentials, catalog, transport, pricing and lifecycle. Earlier catalog/artifact review passed; the launcher follow-up has conditional acceptance after technical closure. Broader live gates remain open. [Acquisition foundation](implementation_plan_f4a1.md) defines replaceable session adapters.
 
-Target only bedrock-mantle with [OpenAI-compatible APIs and three authentication choices](implementation_plan_f4d.md). Offline tests qualify both formats and reusable acquisition ownership; broader live capabilities remain open.
+Preserve bedrock-mantle with [OpenAI-compatible APIs and three authentication choices](implementation_plan_f4d.md); add [Runtime discovery, OpenAI profiles and Claude Converse](implementation_plan_f4o.md). Offline tests qualify the original formats and reusable acquisition ownership; broader live capabilities remain open.
 
 - [x] Qualify [provider-selected reasoning and integration tests](implementation_plan_f4l.md).
 - [x] Qualify [snapshot-only reuse](implementation_plan_f4j.md) and [Mantle list-price accounting](implementation_plan_f4k.md).
