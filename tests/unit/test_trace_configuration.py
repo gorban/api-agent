@@ -67,7 +67,8 @@ def test_session_review_admin_defaults_follow_target_without_writes(tmp_path, mo
     result = session.result(_review=True)
 
     names = ('LANGFUSE_ADMIN_EMAIL', 'LANGFUSE_ADMIN_PASSWORD')
-    assert tuple(result.values.get(name) for name in names) == expected
+    assert tuple(result.values.get(name) for name in names) == (expected if mode == 'LangFuse' else (None, None))
+    assert set(names).intersection(result.active_fields) == (set(names) if mode == 'LangFuse' else set())
     assert set(names).intersection(result.missing) == (set(names) if mode == 'LangFuse' and expected == (None, None) else set())
     assert not list(tmp_path.iterdir())
 

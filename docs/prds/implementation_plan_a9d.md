@@ -52,3 +52,21 @@ retain their review items; completion does not grant human acceptance.
 Current human acceptance covers the delivered terminal configuration, test selection/launch controls, results/navigation and timing presentation. Future operation consumers and unrelated technical gates remain separate.
 
 - [x] Correct [Clear configuration visit membership](implementation_plan_a9j.md).
+
+## Controller-sensitive review membership
+
+- [x] Shared configuration-review resolution may span operation choices before
+  one is selected, but must honor
+  explicit non-operation applicability controllers, including nested alternatives.
+  The UI consumes that resolved applicability rather than evaluating backend
+  conditions separately. Show Jaeger settings only for OTEL and LangFuse settings only for LangFuse;
+  empty trace mode shows neither group. Do not hardcode backend field lists.
+- [x] Recompute both displayed rows and pending-default membership after edits,
+  including when a saved inactive value exists. Preserve source precedence,
+  explicit runtime-required recovery rows and normal operation admission.
+- [x] Clear .env continues to expose saved inactive settings for deletion without
+  altering or deleting them merely because the selected mode changed.
+- [x] Verify actual tracing declarations and fresh/saved mode transitions with
+  mounted tests, operation-independent review and generic predicate controls;
+  renew coverage, independent/external and public-boundary checks.
+- [ ] Human acceptance of the corrected conditional review.

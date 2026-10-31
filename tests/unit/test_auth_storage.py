@@ -389,5 +389,9 @@ def test_manager_reset_preserves_accounts_when_auth_field_is_inactive(tmp_path):
     assert saved(config.dotenv_path) == {'roles': {'LLM User': [account('kept')]}}
     assert config.auth_sources()['password_manager'] == 'Not provided'
     review = config.result(_review=True)
+    assert 'UNATTENDED_AUTH' not in review.fields
+    assert 'UNATTENDED_AUTH' not in review.active_fields
+    config.set_value('AUTH_ENABLED', 'True')
+    review = config.result(_review=True)
     assert review.values['UNATTENDED_AUTH']['roles']['LLM User'] == [account('kept')]
     assert review.values['UNATTENDED_AUTH']['password_manager'] == {'manager': '', 'cli_path': ''}

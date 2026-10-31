@@ -1168,8 +1168,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                           else self.session.runtime_required_fields)
         missing = [name for name in review.missing
                    if schema.fields[name].acknowledge_default or name in runtime_fields]
+        active = set(review.active_fields) | set(review.fields) | set(review.missing)
         optional = [name for name, field in schema.fields.items()
-                    if name in self.tool_review_fields(snapshot) and include_optional and field.review_optional and field.acknowledge_default
+                    if name in active and name in self.tool_review_fields(snapshot) and include_optional and field.review_optional and field.acknowledge_default
                     and (not field.pack_only or self.context.external_pack)
                     and (name not in review.fields or not review.fields[name].explicit)]
         return set(candidates + missing + optional)
@@ -1373,8 +1374,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         schema = snapshot.schema if snapshot else self.schema
         required_review = set(snapshot.runtime_required_fields if snapshot is not None
                               else self.session.runtime_required_fields)
-        active = set(result.fields) | set(result.missing) | {
-            name for name, field in schema.fields.items() if field.review_optional}
+        active = set(result.active_fields) | set(result.fields) | set(result.missing)
         review = result
         default_names = {name for name, field in schema.fields.items()
                          if field.default is not UNSET or field.conditional_defaults}
@@ -1383,7 +1383,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         rows = []
         for name in sorted(schema.fields):
             if (name not in self.tool_review_fields(snapshot) or (not schema.fields[name].acknowledge_default and name not in required_review) or name not in self.review_names
-                    or (name not in active and name not in default_names)):
+                    or name not in active):
                 continue
             resolved = review.fields.get(name) if name in default_names else result.fields.get(name)
             if name in default_names and resolved is None and name not in result.missing and not schema.fields[name].review_optional:
