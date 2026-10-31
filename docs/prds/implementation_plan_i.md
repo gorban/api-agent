@@ -36,6 +36,8 @@ The shared text application contract is documented in [Application HTTP](../arch
 
 ## Local HTTPS preparation
 
+[Portable certificate validation](implementation_plan_i3.md) owns OpenSSL/LibreSSL compatibility and selected mkcert behavior.
+
 - [x] Human-review and approve the automatic local HTTPS approach using mkcert/OpenSSL and Linux certutil instead of requiring .NET for certificates (2026-10-05). Approval covers the proposed setup; actual host/browser trust, listener wiring and readiness remain below.
 
 - [x] Implement `src/api_agent/runtime/https.py` with mkcert/OpenSSL preparation, renewal/SAN/key/CA checks, private key permissions, cooperating-preparer locking and recoverable replacement rollback. Preserve certificate-directory symlinks and ignore `.certs/`. Deterministic tests use synthetic command results and failure injection; no CA trust installation is claimed.

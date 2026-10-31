@@ -78,6 +78,8 @@ def _safe_key(path):
 def _san_identity(value, san_type=None):
     if san_type == 'DNS':
         return ('dns', value.lower().rstrip('.'))
+    if san_type == 'IP Address':
+        return ('ip', ipaddress.ip_address(value))
     try:
         return ('ip', ipaddress.ip_address(value))
     except ValueError:
@@ -125,24 +127,70 @@ def _staging_directory(directory):
             shutil.rmtree(staged_dir)
 
 
-def _valid_existing(material, names, runner, timeout, renewal_seconds):
+def _san_extension(text):
+    """Read the SAN block only at the certificate extension-header level."""
+    lines = [(len(line) - len(line.lstrip()), line.strip())
+             for line in text.splitlines() if line.strip()]
+    sections = [index for index, (_, value) in enumerate(lines)
+                if value == 'X509v3 extensions:']
+    if len(sections) != 1:
+        return ''
+    start = sections[0]
+    section_indent = lines[start][0]
+    body = []
+    for indent, value in lines[start + 1:]:
+        if indent <= section_indent:
+            break
+        body.append((indent, value))
+    if not body:
+        return ''
+    header_indent = min(indent for indent, _ in body)
+    headers = [index for index, (indent, value) in enumerate(body)
+               if indent == header_indent and value in (
+                   'X509v3 Subject Alternative Name:', 'X509v3 Subject Alternative Name: critical')]
+    if len(headers) != 1:
+        return ''
+    values = []
+    for indent, value in body[headers[0] + 1:]:
+        if indent <= header_indent:
+            break
+        values.append(value)
+    return '\n'.join(values)
+
+
+def _valid_existing(material, names, runner, timeout, renewal_seconds, *, failure=None):
     if not material.cert_file.is_file() or not material.key_file.is_file():
         return False
+    stage = 'expiry'
     try:
         def check(argv):
             return _invoke(runner, argv, timeout=timeout, interactive=False, label='certificate validation')
         check(['openssl', 'x509', '-in', str(material.cert_file), '-noout', '-checkend', str(renewal_seconds)])
-        sans = check(['openssl', 'x509', '-in', str(material.cert_file), '-noout', '-ext', 'subjectAltName'])
-        present = {_san_identity(value, kind) for kind, value in re.findall(r'(DNS|IP Address):([^,\s]+)', sans)}
+        stage = 'subject alternative names'
+        text = check(['openssl', 'x509', '-in', str(material.cert_file), '-noout', '-text'])
+        sans = _san_extension(text)
+        present = set()
+        for entry in sans.split(','):
+            match = re.fullmatch(r'(DNS|IP Address):([^,\s]+)', entry.strip())
+            if match is None:
+                raise HTTPSPreparationError('Unsupported certificate identity entry')
+            try:
+                present.add(_san_identity(match[2], match[1]))
+            except ValueError:
+                raise HTTPSPreparationError('Invalid certificate IP identity') from None
         if not {_san_identity(name) for name in names}.issubset(present):
-            return False
+            raise HTTPSPreparationError('Certificate names do not match')
+        stage = 'key pair'
         cert_key = check(['openssl', 'x509', '-in', str(material.cert_file), '-noout', '-pubkey'])
         private_key = check(['openssl', 'pkey', '-in', str(material.key_file), '-pubout'])
         if cert_key.strip() != private_key.strip():
-            return False
+            raise HTTPSPreparationError('Certificate key pair does not match')
+        stage = 'CA chain'
         check(['openssl', 'verify', '-CAfile', str(material.ca_file), str(material.cert_file)])
         return True
     except HTTPSPreparationError:
+        if failure is not None:
+            failure[0] = stage
         return False
 
 
@@ -211,8 +259,10 @@ def _prepare_locked(directory, hostname, names, runner, interactive, timeout, re
             raise HTTPSPreparationError('mkcert did not create certificate and key files')
         os.chmod(staged_key, 0o600)
         os.chmod(staged_cert, 0o644)
-        if not _valid_existing(TLSMaterial(staged_cert, staged_key, ca), names, runner, timeout, renewal_seconds):
-            raise HTTPSPreparationError('Generated certificate failed validation')
+        failure = ['certificate files']
+        if not _valid_existing(TLSMaterial(staged_cert, staged_key, ca), names, runner, timeout, renewal_seconds,
+                               failure=failure):
+            raise HTTPSPreparationError(f'Generated certificate failed validation ({failure[0]})')
         _safe_file(cert)
         _safe_key(key)
         old_cert, old_key = staged_dir / 'old-cert.pem', staged_dir / 'old-key.pem'
@@ -226,8 +276,8 @@ def _prepare_locked(directory, hostname, names, runner, interactive, timeout, re
             installed[cert] = True
             os.replace(staged_key, key)
             installed[key] = True
-            if not _valid_existing(material, names, runner, timeout, renewal_seconds):
-                raise HTTPSPreparationError('Installed certificate failed validation')
+            if not _valid_existing(material, names, runner, timeout, renewal_seconds, failure=failure):
+                raise HTTPSPreparationError(f'Installed certificate failed validation ({failure[0]})')
         except BaseException as exc:
             # Never leave a newly mixed pair available after a failed install.
             restore_failed = False
