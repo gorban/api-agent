@@ -14,6 +14,7 @@ from api_agent.testing.lifecycle import TestRunLifecycle
 from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_result_rows,
                                           reconcile_results_table, styled_summary, component_timing, elapsed_time)
 from api_agent.tui.select import AdvancingSelect
+from api_agent.tui.editable_input import EditableInput
 from api_agent.tui.test_table import TestTable
 from api_agent.tui.virtual_picker import PickerRows, VirtualPicker
 from api_agent.tui.search import GroupedUserFooter, SearchBar, SearchInput
@@ -200,7 +201,7 @@ class QuitDialog(SelectedTextCopy, FocusNavigation, ModalScreen):
 
     def compose(self) -> ComposeResult:
         yield Static(self.message, id="quit-message", markup=False)
-        yield Input(id="quit-answer")
+        yield EditableInput(id="quit-answer")
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="quit-submit")
             yield Button("Cancel", id="quit-cancel")
@@ -220,7 +221,7 @@ class DeleteDialog(QuitDialog):
 
     def compose(self) -> ComposeResult:
         yield Static(f"Delete {self.setting_name} from .env? Enter literal y to confirm; every other response cancels.", markup=False)
-        yield Input(id="delete-answer")
+        yield EditableInput(id="delete-answer")
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="delete-submit")
             yield Button("Cancel", id="delete-cancel")
@@ -236,7 +237,7 @@ class StopContainersDialog(QuitDialog):
         yield Static("Stop these running containers?\n" + "\n".join(
             f"{item.name} ({item.id})" for item in self.containers) +
             "\nEnter literal y to stop; every other response cancels.", markup=False)
-        yield Input(id="stop-answer")
+        yield EditableInput(id="stop-answer")
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="stop-submit")
             yield Button("Cancel", id="stop-cancel")
@@ -377,7 +378,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                     yield AdvancingSelect(options, value=current, allow_blank=current is Select.NULL,
                                  prompt='-', id='config-value')
                 else:
-                    yield Input(id="config-value", password=field.sensitive)
+                    yield EditableInput(id="config-value", password=field.sensitive)
             if self.kind not in {"cleanup", "test-results"}:
                 if self.kind == 'tests' and app.mode == 'integration' and 'UNATTENDED_USER_INDEX' in app.schema.fields:
                     yield Static(app.account_summary(screen=self), id='account-selection', markup=False)

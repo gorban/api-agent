@@ -14,6 +14,7 @@ from api_agent.auth.interaction import Reply
 from .app import ButtonFooter, FocusNavigation, QuitDialog
 from .clipboard import ClipboardError, copy_text
 from . import clipboard
+from .editable_input import EditableInput
 
 
 _LIMIT = 65536
@@ -25,7 +26,7 @@ def transcript_text(value):
     return ''.join(char for char in value if char in '\n\r\t' or ord(char) >= 32 and ord(char) != 127)
 
 
-class _PrivateInput(Input):
+class _PrivateInput(EditableInput):
     """Explicit paste reads the operating-system clipboard outside the UI loop."""
 
     def __init__(self, **kwargs):

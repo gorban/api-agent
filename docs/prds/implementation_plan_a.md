@@ -233,3 +233,7 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 ## Picker responsiveness
 
 - [ ] Profile and improve [test-picker responsiveness](implementation_plan_a12.md), preserving selected-test configuration freshness, account controls and estimates.
+
+## Editable text
+
+- [x] Deliver [portable text selection](implementation_plan_a14.md), including Mac modifiers and an explicit select-all fallback.

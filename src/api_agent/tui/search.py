@@ -8,12 +8,13 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.reactive import reactive
-from textual.widgets import Footer, Input, Static
+from textual.widgets import Footer, Static
 
 from api_agent.tui.clipboard import ClipboardError, copy_text
+from api_agent.tui.editable_input import EditableInput
 
 
-class SearchInput(Input):
+class SearchInput(EditableInput):
     """Native text editing with table navigation on vertical keys."""
 
     def __init__(self, *args, **kwargs):
