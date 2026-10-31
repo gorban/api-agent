@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,81 @@ from .processes import disposal_complete, finalize
 from .suite_lock import suite_locked
 from .unit_watchdog import UnitWatchdog
 from .coverage_reports import CoverageReport, coverage_table, retain_report
+
+
+def _private_unit_cache(cache):
+    """Create the cache through trusted directories without following links."""
+    target = cache.absolute() / 'api-agent' / 'unit-scratch'
+    if not hasattr(os, 'getuid'):
+        path = Path(target.anchor)
+        for component in target.parts[1:]:
+            path /= component
+            path.mkdir(mode=0o700, exist_ok=True)
+            if not stat.S_ISDIR(path.lstat().st_mode):
+                raise OSError('cache directory is not trusted')
+        return target
+    parts = target.parts
+    descriptor = os.open(parts[0], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for index, component in enumerate(parts[1:], 1):
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            parent = descriptor
+            descriptor = child
+            os.close(parent)
+            info = os.fstat(descriptor)
+            if (info.st_uid not in {0, os.getuid()}
+                    or (info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))
+                    or (index >= len(parts) - 3 and (info.st_uid != os.getuid() or info.st_mode & 0o022))):
+                raise OSError('cache ancestor is not trusted')
+        return target
+    finally:
+        os.close(descriptor)
+
+
+def _unit_scratch_parent():
+    """Select scratch without changing the process-wide tempfile configuration."""
+    explicit = os.environ.get('TMPDIR')
+    if explicit:
+        return Path(explicit).absolute()
+    if sys.platform == 'darwin':
+        cache = Path.home() / 'Library' / 'Caches'
+    elif sys.platform == 'win32':
+        configured = os.environ.get('LOCALAPPDATA')
+        cache = Path(configured) if configured and Path(configured).is_absolute() else Path.home() / 'AppData' / 'Local'
+    else:
+        configured = os.environ.get('XDG_CACHE_HOME')
+        cache = Path(configured) if configured and Path(configured).is_absolute() else Path.home() / '.cache'
+    try:
+        return _private_unit_cache(cache)
+    except OSError as exc:
+        raise OSError(f'Cannot prepare unit scratch in user cache {cache}: {exc}. Set TMPDIR to a writable private directory.') from exc
+
+
+class _UnitScratch(tempfile.TemporaryDirectory):
+    """Keep scratch if an owned process could not be confirmed disposed."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._retain = False
+
+    def retain(self):
+        self._retain = True
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._retain:
+            self._finalizer.detach()
+            return False
+        return super().__exit__(exc_type, exc, tb)
+
+
+def _unit_scratch(prefix):
+    try:
+        return _UnitScratch(prefix=prefix, dir=_unit_scratch_parent())
+    except OSError as exc:
+        raise OSError(f'Cannot create unit scratch: {exc}. Set TMPDIR to a writable private directory.') from exc
 
 
 def unit_parallel_jobs(config):
@@ -189,14 +265,15 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
         if cancel_event is not None and cancel_event.is_set():
             cancelled = True
             break
-        with tempfile.TemporaryDirectory(prefix='api-agent-unit-') as temporary:
+        scratch_owner = _unit_scratch('api-agent-unit-')
+        with scratch_owner as temporary:
             events = Path(temporary) / 'events.jsonl'
             coverage = Path(temporary) / 'coverage.json'
             events.touch()
             env['API_AGENT_COMPONENT_EVENTS'] = str(events)
             from .progress import write_lazy_plugin
             plugin = write_lazy_plugin(Path(temporary))
-            args = [sys.executable, '-c', _PLUGIN, str(events), '-p', plugin, '-o', 'addopts=', '--rootdir', str(root)]
+            args = [sys.executable, '-c', _PLUGIN, str(events), '-p', plugin, '-o', 'addopts=', '--rootdir', str(root), '--basetemp', str(Path(temporary) / 'pytest')]
             sources = _production_sources(context, root)
             has_code = bool(sources)
             env.pop('API_AGENT_COVERAGE_OUTPUT', None)
@@ -234,6 +311,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                 try:
                     try:
                         child_env = dict(env)
+                        child_env['TMPDIR'] = temporary
                         child_env['PYTHONPATH'] = temporary + os.pathsep + env['PYTHONPATH']
                         process = subprocess.Popen(args, cwd=root, env=child_env, stdout=subprocess.PIPE,
                                                    stderr=subprocess.STDOUT, text=True, start_new_session=os.name == 'posix')
@@ -367,6 +445,11 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                         try:
                             stop_owned()
                         finally:
+                            if not disposal_complete(process):
+                                scratch_owner.retain()
+                                error = sys.exception()
+                                if error is not None:
+                                    error.add_note(f"Unit scratch retained pending process disposal: {temporary}")
                             if reader_started and not reader_joined:
                                 reader.join(timeout=5)
                             if not reader_started or not reader.is_alive():
@@ -395,7 +478,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             continue
         try:
             from coverage import Coverage
-            with tempfile.TemporaryDirectory(prefix='api-agent-unselected-') as temporary:
+            with _unit_scratch('api-agent-unselected-') as temporary:
                 coverage = Coverage(source=[str(source) for source in sources], branch=True, config_file=False,
                                     data_file=str(Path(temporary) / '.coverage'))
                 coverage.set_option("run:disable_warnings", ["no-data-collected"])

@@ -270,7 +270,7 @@ def test_reader_detects_inode_size_change(tmp_path, monkeypatch):
     def changed_size(descriptor):
         info = original(descriptor)
         return SimpleNamespace(st_mode=info.st_mode, st_size=info.st_size + 1)
-    monkeypatch.setattr(viewer_repository.os, "fstat", changed_size)
+    monkeypatch.setattr(viewer_repository, 'os', SimpleNamespace(**(vars(viewer_repository.os) | {'fstat': changed_size})))
     with pytest.raises(ValueError, match="changed during read"):
         read_repository_identity(tmp_path)
 

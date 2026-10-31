@@ -273,7 +273,7 @@ def test_projection_source_renders_component_children_and_schema_fields():
     assert len(local_links) == 2
 
 
-@pytest.mark.parametrize("content", [b"not-json", b"x" * 70000])
+@pytest.mark.parametrize("content", [b"not-json", pytest.param(b"x" * 70000, id='oversized-schema')])
 def test_projection_source_rejects_unusable_schema_details(content):
     root = SimpleNamespace(logical_path="base/flow.md.html")
     task = SimpleNamespace(id="task", kind="node", parent=None,
@@ -694,7 +694,7 @@ def test_moved_output_match_closes_descriptor_if_fstat_fails(tmp_path, monkeypat
         seen.append(descriptor)
         raise OSError("injected descriptor failure")
 
-    monkeypatch.setattr(viewer_build.os, "fstat", fail_fstat)
+    monkeypatch.setattr(viewer_build, 'os', SimpleNamespace(**(vars(viewer_build.os) | {'fstat': fail_fstat})))
     with pytest.raises(OSError, match="descriptor failure"):
         viewer_build._moved_output_matches(original, b"original", (info.st_dev, info.st_ino))
     assert len(seen) == 1
@@ -1126,7 +1126,7 @@ def test_drain_waits_for_leader_then_tolerates_empty_process_group(monkeypatch):
 @pytest.mark.parametrize("timeout,source", [
     (0, b"@startuml\nA\n@enduml\n"),
     (121, b"@startuml\nA\n@enduml\n"),
-    (1, b"x" * 250001),
+    pytest.param(1, b"x" * 250001, id='oversized-source'),
 ])
 def test_renderer_rejects_invalid_limits_before_process(fake_renderer, timeout, source):
     renderer = fake_renderer("exit 0", timeout=timeout)

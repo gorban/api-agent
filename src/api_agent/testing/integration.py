@@ -124,7 +124,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
-    function never starts prerequisites itself; ``before_run`` is their hook.
+    function prepares recording through ``before_run``. Shared provider backends
+    independently acquire configured managed trace collectors before readiness.
     No callback receives a raw exception. ``on_result`` receives a transient
     ``local_diagnostic`` field for TUI or explicitly scrubbed terminal display;
     reporting callbacks must use explicit report fields and exclude this field
@@ -325,10 +326,13 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 if config is not None and backend is None and plan_integration_requirements(tests).requires_llm:
                     stage = 'Integration shared setup backend startup'
                     from .setup_pool import SetupPool
+                    from .prerequisites import local_trace_prerequisites
                     backend = SetupPool(test_profiles, context.owner_root,
                         unattended_index_source=unattended_index_source,
                         password_manager_registry=manager_registry, interaction=interaction, quota_observer=quota_observer,
                         authority=evidence_boundary,
+                        trace_prerequisites_factory=lambda values: local_trace_prerequisites(
+                            context, values, cancel_event=cancel_event, tool_plan=tool_plan),
                         **({'config_fields': config_fields} if config_fields is not None else {}))
                     try:
                         backend_descriptor = backend.start()

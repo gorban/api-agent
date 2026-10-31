@@ -209,7 +209,7 @@ def test_detects_asset_change_during_capture(tmp_path, monkeypatch):
             return Changed()
         return info
 
-    monkeypatch.setattr(contract.os, "fstat", changed_after_read)
+    monkeypatch.setattr(contract, 'os', SimpleNamespace(**(vars(contract.os) | {'fstat': changed_after_read})))
     with pytest.raises(InfrastructureDeclarationError, match="changed"):
         load_infrastructure_contributions(context)
 

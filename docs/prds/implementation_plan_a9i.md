@@ -21,5 +21,6 @@ separate measurements and approval.
 
 - [x] Human accepts the latest 20,743-test NO_STD_IN run, runtime, exact line/branch coverage and produced report. This accepts the recent delivered unit repairs; interactive selection remains a reported issue.
 - [ ] Complete the [visible-window and desktop-free CI audit](implementation_plan_a9i3.md) after the large-picker plan and before final credential-sanitization profiling.
+- [ ] Resolve the [full unit-run admission and temporary-storage investigation](implementation_plan_a9i4.md).
 
 - [x] Human accepts the delivered parallel integration scheduling improvement. This does not establish future E2E execution or remove xdist lookahead behavior.

@@ -1,6 +1,7 @@
 """Shared Stealth-enabled Chromium for provider, test and local UI sessions."""
 import asyncio
 import os
+import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -8,6 +9,8 @@ from urllib.parse import urlsplit
 from api_agent.providers.sessions import BrowserOwner
 from api_agent.providers.control import finish_cleanup as _dispose
 from api_agent.runtime.browser import ensure_chromium_ready
+
+_CHROMIUM_SINGLETON_SUFFIX = "/org.chromium.Chromium.XXXXXX/SingletonSocket"
 
 
 class ChromiumDriver:
@@ -19,6 +22,7 @@ class ChromiumDriver:
         self.inspectable = inspectable
         self.inspection_endpoint = None
         self.browser_pid = None
+        self.process_temp = None
 
     async def launch(self, *, headless):
         self.preparing = asyncio.create_task(asyncio.to_thread(
@@ -30,6 +34,12 @@ class ChromiumDriver:
         from playwright_stealth import Stealth
         Stealth().hook_playwright_context(playwright)
         options = {'headless': headless}
+        temporary_base = os.environ.get('TMPDIR') or tempfile.gettempdir()
+        if os.name == 'posix' and len(os.fsencode(temporary_base + _CHROMIUM_SINGLETON_SUFFIX)) > 100:
+            from api_agent.runtime.short_temp import trusted_short_root
+            root = trusted_short_root(('/var/tmp', '/tmp'), suffix='bc-xxxxxxxx/org.chromium.Chromium.XXXXXX/SingletonSocket')
+            self.process_temp = tempfile.TemporaryDirectory(prefix='bc-', dir=root)
+            options['env'] = dict(os.environ, TMPDIR=self.process_temp.name)
         if self.inspectable:
             options['args'] = ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--enable-automation']
         self.launching = asyncio.create_task(playwright.chromium.launch(**options))
@@ -74,10 +84,15 @@ class ChromiumDriver:
         if browser is not None and not self.handed_browser:
             await browser.close()
             self.launching = None
+        if self.process_temp is not None and browser is not None and self.handed_browser and browser.is_connected():
+            raise RuntimeError('Browser disposal is not confirmed')
         playwright = await self._result(self.starting)
         if playwright is not None:
             await playwright.stop()
             self.starting = None
+        if self.process_temp is not None:
+            self.process_temp.cleanup()
+            self.process_temp = None
 
     async def stop(self):
         await _dispose(self._close())
@@ -119,6 +134,9 @@ class ChromiumDriver:
                 failure = transport.on_error_future
                 if failure.done() and not failure.cancelled():
                     failure.exception()
+                if self.process_temp is not None:
+                    self.process_temp.cleanup()
+                    self.process_temp = None
                 return True
         except (AttributeError, ValueError, asyncio.TimeoutError, OSError):
             return False

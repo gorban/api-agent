@@ -229,7 +229,7 @@ def test_completion_ignores_other_notifications(client):
     assert asyncio.run(setup.prepare_quota_client(CONNECTION, interactive=True, present_login=present)) == '/tools/codex'
 
 
-@pytest.mark.parametrize('frame', [b'', b'x' * 65537, b'garbage', 'list'])
+@pytest.mark.parametrize('frame', [b'', pytest.param(b'x' * 65537, id='oversized-frame'), b'garbage', 'list'])
 def test_malformed_completion_returns_safe_error(client, frame):
     process, _ = client
     process.frames[1]['result'] = EMPTY
@@ -544,7 +544,7 @@ def test_stale_cached_binary_version_triggers_reinstall(monkeypatch, tmp_path):
     assert len(calls) == 3
 
 
-@pytest.mark.parametrize('raw', [b'', b'x' * 65537])
+@pytest.mark.parametrize('raw', [b'', pytest.param(b'x' * 65537, id='oversized-frame')])
 def test_completion_rejects_missing_or_oversized_frame(raw):
     async def readline():
         return raw

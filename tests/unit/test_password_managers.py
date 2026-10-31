@@ -262,7 +262,7 @@ def test_replaced_nonregular_implementation_is_rejected(tmp_path, monkeypatch):
     (tmp_path / 'adapter.py').write_text(VALID)
     declaration(tmp_path)
     registry = managers.load_manager_registry(pack_root=tmp_path)
-    monkeypatch.setattr(managers.os, 'fstat', lambda fd: SimpleNamespace(st_mode=0))
+    monkeypatch.setattr(managers, 'os', SimpleNamespace(**(vars(managers.os) | {'fstat': lambda fd: SimpleNamespace(st_mode=0)})))
     with pytest.raises(managers.ManagerError, match='regular Python file'):
         registry.load('third')
 

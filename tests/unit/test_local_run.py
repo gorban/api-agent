@@ -11,6 +11,7 @@ import pytest
 from api_agent.providers.control import CleanupPendingError
 from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
 from api_agent.runtime.local_run import LocalRunOwner, LocalCleanup
+from api_agent.runtime.listener import ListenerError
 
 
 @pytest.fixture
@@ -126,6 +127,99 @@ def test_observer_fault_does_not_mask_startup_failure_or_skip_cleanup(local):
         assert local.owner.snapshot.phase == 'stopped'
         assert local.owner.pending_cleanup is None
 
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(('error', 'expected'), [
+    (ValueError('synthetic private detail'), 'Startup input or configuration was rejected'),
+    (TimeoutError('synthetic private detail'), 'Startup timed out'),
+    (RuntimeError('synthetic private detail'), 'Startup encountered an error'),
+    (asyncio.CancelledError('synthetic private detail'), 'Startup was cancelled'),
+    (ListenerError('listener_bind_in_use'),
+     'Address already in use; choose an available AGENT_DJANGO_URL port.'),
+    (ListenerError('synthetic private detail'), 'Startup encountered an error'),
+])
+def test_startup_failure_is_logged_before_owned_cleanup(local, error, expected):
+    local.browser.start = AsyncMock(side_effect=error)
+    async def run():
+        with pytest.raises(type(error)) as caught:
+            await local.owner.start()
+        assert caught.value is error
+        failure, = [event for event in local.events if event.kind == 'log' and 'startup failed' in event.text]
+        assert failure.source == 'agent' and failure.text.endswith('\n')
+        assert 'during browser' in failure.text and expected in failure.text
+        assert 'synthetic private detail' not in failure.text
+        failed = next(index for index, event in enumerate(local.events)
+                      if event.snapshot is not None and event.snapshot.phase == 'failed')
+        assert local.events.index(failure) < failed
+        assert local.owner._logs['agent'] == failure.text
+        assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
+    asyncio.run(run())
+
+
+def test_startup_log_failure_does_not_mask_primary_or_cleanup(local, monkeypatch):
+    error = ValueError('original startup error')
+    local.browser.start = AsyncMock(side_effect=error)
+    original_log = local.owner._log
+    def failing_log(source, text):
+        if 'startup failed' in text:
+            raise RuntimeError('logging failed')
+        return original_log(source, text)
+    monkeypatch.setattr(local.owner, '_log', failing_log)
+    async def run():
+        with pytest.raises(ValueError) as caught:
+            await local.owner.start()
+        assert caught.value is error
+        assert local.calls == ['operation-start', 'browser-stop', 'operation-stop']
+        assert local.owner.pending_cleanup is None
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('logging_fails', [False, True])
+def test_operation_failure_is_reported_before_slow_cleanup(local, monkeypatch, logging_fails):
+    from test_operation_lifecycle import rig
+    runner, calls, _ = rig.__wrapped__()
+    primary = ListenerError('listener_bind_in_use')
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+        class Listener:
+            async def start(self, application, material, endpoint):
+                pass
+            async def wait_ready(self, timeout):
+                raise primary
+            async def stop(self):
+                calls.append('listener-close')
+                entered.set()
+                await release.wait()
+        runner.listener = Listener
+        def factory(*args, **kwargs):
+            runner.on_stage = kwargs['on_stage']
+            runner.on_failure = kwargs['on_failure']
+            return runner
+        local.owner.operation_factory = factory
+        if logging_fails:
+            original = local.owner._log
+            def fail(source, text):
+                if 'startup failed' in text:
+                    raise RuntimeError('synthetic logging fault')
+                original(source, text)
+            monkeypatch.setattr(local.owner, '_log', fail)
+        task = asyncio.create_task(local.owner.start())
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            failures = [event for event in local.events if event.kind == 'log' and 'startup failed' in event.text]
+            assert len(failures) == (0 if logging_fails else 1)
+            if failures:
+                assert 'AGENT_DJANGO_URL' in failures[0].text
+            assert not task.done()
+        finally:
+            release.set()
+            outcome, = await asyncio.gather(task, return_exceptions=True)
+        assert isinstance(outcome, ListenerError)
+        assert outcome is primary
+        assert len([event for event in local.events if event.kind == 'log' and 'startup failed' in event.text]) == (0 if logging_fails else 1)
+        assert calls.index('listener-close') < calls.index('runtime-close') < calls.index('release:False')
+        assert local.owner.pending_cleanup is None
     asyncio.run(run())
 
 

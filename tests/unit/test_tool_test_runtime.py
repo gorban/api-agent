@@ -340,7 +340,7 @@ def test_packet_growth_read_bound_is_independent_of_hash_and_final_stat(packet, 
         return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid,
                                st_size=limit, st_mtime_ns=info.st_mtime_ns)
     monkeypatch.setattr(worker, 'MAX_PACKET_BYTES', limit)
-    monkeypatch.setattr(worker.os, 'fstat', smaller_size)
+    monkeypatch.setattr(worker, 'os', SimpleNamespace(**(vars(worker.os) | {'fstat': smaller_size})))
     with pytest.raises(ContractError, match='changed after launch'):
         worker.read_tool_packet(packet.path, packet.data['tool_plan'])
 
@@ -352,7 +352,7 @@ def test_packet_stat_change_is_rejected_even_when_hash_still_matches(packet, mon
         observations.append(info)
         return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid,
             st_size=info.st_size, st_mtime_ns=info.st_mtime_ns + len(observations))
-    monkeypatch.setattr(worker.os, 'fstat', changing_stat)
+    monkeypatch.setattr(worker, 'os', SimpleNamespace(**(vars(worker.os) | {'fstat': changing_stat})))
     with pytest.raises(ContractError, match='changed after launch'):
         worker.read_tool_packet(packet.path, packet.data['tool_plan'])
 

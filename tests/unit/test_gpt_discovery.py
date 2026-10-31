@@ -168,7 +168,7 @@ def test_redirect_is_not_followed_even_when_injected_client_follows():
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize('token', ['', None, 'secret\n', '秘密', 'x' * 16385])
+@pytest.mark.parametrize('token', ['', None, 'secret\n', '秘密', pytest.param('x' * 16385, id='oversized-token')])
 def test_invalid_auth_is_rejected_before_request(token):
     with pytest.raises(ModelDiscoveryError, match='valid authentication'):
         run_discovery(token=token)

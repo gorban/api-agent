@@ -38,7 +38,7 @@ def test_outside_launch_does_not_create_files(channel,monkeypatch,missing):
 @pytest.mark.parametrize('title,body,mime',[
     ('secret title',b'x','image/png'),('UI failure context 1 page 1',bytearray(b'x'),'image/png'),
     ('UI failure context 1 page 1',b'not png','image/png'),
-    ('UI failure context 1 page 1',PNG_SIGNATURE+b'x'*MAX_IMAGE_BYTES,'image/png'),
+    pytest.param('UI failure context 1 page 1',PNG_SIGNATURE+b'x'*MAX_IMAGE_BYTES,'image/png', id='oversized-image'),
     ('UI failure context 1 page 1',b'x','text/html'),
     ('UI failure context 1 page 1',b'x'*1025,'application/json'),
     ('UI failure context 1 page 1',b'\xff','application/json'),

@@ -564,6 +564,17 @@ def test_tables_fit_grow_and_recover_after_resize(tmp_path, count):
             users = screen.query_one('#auth-table', DataTable)
             manager = screen.query_one('#auth-manager-table', DataTable)
             viewport = screen.query_one('#auth-content', VerticalScroll)
+            identity = screen.query_one('#auth-identity', Static)
+            spacious_height = 35 + max(0, identity.size.height - 2)
+            await pilot.resize_terminal(100, spacious_height)
+            for _ in range(100):
+                if (users.size.height >= 5 and manager.size.height >= 2
+                        and manager.region.y == users.region.bottom + 1
+                        and viewport.max_scroll_y == 0
+                        and (count == 1 or users.size.height > 5)
+                        and (count != 40 or users.max_scroll_y > 0)):
+                    break
+                await pilot.pause(.02)
             assert users.size.height >= 5
             assert manager.region.y == users.region.bottom + 1
             assert manager.size.height >= 2
@@ -576,8 +587,11 @@ def test_tables_fit_grow_and_recover_after_resize(tmp_path, count):
             await pilot.pause()
             assert users.size.height >= 5 and manager.size.height >= 2
             assert viewport.max_scroll_y > 0
-            await pilot.resize_terminal(100, 35)
-            await pilot.pause()
+            await pilot.resize_terminal(100, spacious_height)
+            for _ in range(100):
+                if viewport.max_scroll_y == 0 and manager.region.bottom <= viewport.region.bottom:
+                    break
+                await pilot.pause(.02)
             assert viewport.max_scroll_y == 0
             assert manager.region.bottom <= viewport.region.bottom
     asyncio.run(scenario())

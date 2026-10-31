@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from hashlib import sha256
 import json
 import sys
 import threading
@@ -14,6 +15,7 @@ from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_
                                           reconcile_results_table, styled_summary, component_timing, elapsed_time)
 from api_agent.tui.select import AdvancingSelect
 from api_agent.tui.test_table import TestTable
+from api_agent.tui.virtual_picker import PickerRows, VirtualPicker
 from api_agent.tui.search import GroupedUserFooter, SearchBar, SearchInput
 from api_agent.tui.clipboard import ClipboardError, copy_text
 from api_agent.tui.allure import AllureNavigation
@@ -34,6 +36,13 @@ E2E_WARNING = ("Human acceptance is mandatory to continue with E2E tests. If you
                "decline unless you have first checked with the user and received their explicit "
                "authorization to accept for this run. The user may authorize an agent to provide this acceptance.")
 NO_TEST_SELECTION_MESSAGE = "Select at least one test before continuing"
+
+
+def picker_label(label):
+    """Bound display work while keeping distinct long identities recognizable."""
+    if len(label) <= 256:
+        return label
+    return f'{label[:180]}… [sha256:{sha256(label.encode("utf-8", errors="surrogatepass")).hexdigest()}]'
 
 
 def display(value):
@@ -132,8 +141,55 @@ class FocusNavigation:
         event.stop()
 
 
-class QuitDialog(FocusNavigation, ModalScreen):
-    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
+class SelectedTextCopy:
+    """Shared terminal shortcut and clipboard feedback for read-only selections."""
+    COPY_BINDINGS = [Binding('ctrl+c', 'copy_value', 'Copy value', key_display='^c', priority=True)]
+
+    async def _watch_selections(self, old_selections, selections):
+        await super()._watch_selections(old_selections, selections)
+        available = self.get_selected_text() is not None
+        if available != getattr(self, '_selected_text_available', False):
+            self._selected_text_available = available
+            self.refresh_bindings()
+
+    @property
+    def active_bindings(self):
+        bindings = super().active_bindings
+        if 'ctrl+c' in bindings and bindings['ctrl+c'].binding.action == 'copy_value':
+            copy = bindings.pop('ctrl+c')
+            bindings['ctrl+c'] = copy
+        return bindings
+
+    def check_copy_action(self):
+        return (self.app.screen is self
+                and self.copy_target()[0] is not None)
+
+    def check_action(self, action, parameters):
+        if action == 'copy_value':
+            return self.check_copy_action()
+        return super().check_action(action, parameters)
+
+    def copy_target(self):
+        return self.get_selected_text(), True
+
+    async def _copy_with_feedback(self, value, on_copied):
+        if value is None:
+            return
+        try:
+            native = await copy_text(self.app, value)
+            on_copied()
+            self.app.notify('Value copied.' if native else 'Value sent to terminal clipboard.', timeout=2)
+        except ClipboardError:
+            self.app.notify('Could not copy the value.', severity='error', timeout=2)
+
+    async def action_copy_value(self):
+        value, _ = self.copy_target()
+        await self._copy_with_feedback(value, self.clear_selection)
+
+
+class QuitDialog(SelectedTextCopy, FocusNavigation, ModalScreen):
+    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True),
+                *SelectedTextCopy.COPY_BINDINGS]
 
     def __init__(self, message="Quit this operation? Enter literal y to confirm; every other response cancels."):
         super().__init__()
@@ -185,52 +241,6 @@ class StopContainersDialog(QuitDialog):
             yield Button("Confirm response", id="stop-submit")
             yield Button("Cancel", id="stop-cancel")
         yield ButtonFooter()
-
-
-class SelectedTextCopy:
-    """Shared terminal shortcut and clipboard feedback for read-only selections."""
-    COPY_BINDINGS = [Binding('ctrl+c', 'copy_value', 'Copy value', key_display='^c', priority=True)]
-
-    async def _watch_selections(self, old_selections, selections):
-        await super()._watch_selections(old_selections, selections)
-        available = self.get_selected_text() is not None
-        if available != getattr(self, '_selected_text_available', False):
-            self._selected_text_available = available
-            self.refresh_bindings()
-
-    @property
-    def active_bindings(self):
-        bindings = super().active_bindings
-        if 'ctrl+c' in bindings and bindings['ctrl+c'].binding.action == 'copy_value':
-            copy = bindings.pop('ctrl+c')
-            bindings['ctrl+c'] = copy
-        return bindings
-
-    def check_copy_action(self):
-        return (self.app.screen is self
-                and self.copy_target()[0] is not None)
-
-    def check_action(self, action, parameters):
-        if action == 'copy_value':
-            return self.check_copy_action()
-        return super().check_action(action, parameters)
-
-    def copy_target(self):
-        return self.get_selected_text(), True
-
-    async def _copy_with_feedback(self, value, on_copied):
-        if value is None:
-            return
-        try:
-            native = await copy_text(self.app, value)
-            on_copied()
-            self.app.notify('Value copied.' if native else 'Value sent to terminal clipboard.', timeout=2)
-        except ClipboardError:
-            self.app.notify('Could not copy the value.', severity='error', timeout=2)
-
-    async def action_copy_value(self):
-        value, _ = self.copy_target()
-        await self._copy_with_feedback(value, self.clear_selection)
 
 
 class SettingHelpDialog(SelectedTextCopy, ModalScreen):
@@ -315,12 +325,13 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             return [widget for widget in chain if isinstance(widget, DataTable)]
         return chain
 
-    def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None, configuration_error=""):
+    def __init__(self, kind, title, text="", actions=(), rows=(), *, selected_row=None, configuration_error="", full_labels=None):
         super().__init__()
         self.kind, self.heading, self.body = kind, title, text
         self.account_cycle_available = False
         self.actions, self.rows = actions, rows
         self.selected_row = selected_row
+        self.full_test_labels = full_labels or {}
         self.test_run_complete = False
         self.style_results = None
         self.config_saved = set()
@@ -349,7 +360,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             else:
                 yield Static(self.body, id="body", markup=False)
             if self.rows or self.kind == "cleanup":
-                table_type = TestTable if self.kind in {'tests', 'test-results'} else DataTable
+                table_type = VirtualPicker if self.kind == 'tests' else TestTable if self.kind == 'test-results' else DataTable
                 if self.kind == 'test-results':
                     yield table_type(id="choices", cursor_type="row", sticky_timing=True)
                 else:
@@ -431,16 +442,23 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             elif self.kind == "cleanup":
                 table.add_column("", width=1)
                 table.add_columns("Setting", "Effective value", "Source")
+            elif self.kind == 'tests':
+                for label, width in (("Selected / present", 18), ("Setting / test", 80),
+                                     ("Value / count", 14), ("Source", 12)):
+                    table.add_column(label, width=width)
+                if getattr(self.rows, 'estimator', self.app.cost_estimator) is not None:
+                    table.add_column("Est. $", width=11, key='estimated-cost')
             else:
                 table.add_columns("Selected / present", "Setting / test", "Value / count", "Source")
-                if self.kind == "tests" and self.app.cost_estimator is not None:
-                    table.add_column("Est. $", width=11, key='estimated-cost')
-            for key, cells in self.rows:
-                table.add_row(*(literal_cell(cell) for cell in cells), key=key)
+            if self.kind == 'tests':
+                table.set_picker_rows(self.rows)
+            else:
+                for key, cells in self.rows:
+                    table.add_row(*(literal_cell(cell) for cell in cells), key=key)
             if self.kind == "defaults":
                 self.app.refresh_configuration_rows(self)
-            table.move_cursor(row=next((i for i, (key, _) in enumerate(self.rows)
-                                        if key == self.selected_row), 0))
+            table.move_cursor(row=next((i for i, row in enumerate(self.rows)
+                                        if (row.id if self.kind == 'tests' else row[0]) == self.selected_row), 0))
             if self.kind == "test-results":
                 table.results_completed = self.test_run_complete
             table.focus()
@@ -578,16 +596,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         cursor = table.cursor_row
         previous = table.ordered_rows[cursor].key.value if table.row_count else None
         rows = self.selection_rows()
-        stable_rows = not reset_cursor and [row.key.value for row in table.ordered_rows] == [row.id for row in rows]
-        if stable_rows:
-            for row in rows:
-                cells = self.app.selection_cells(row)
-                for column, value in zip(table.columns, cells):
-                    table.update_cell(row.id, column, literal_cell(value))
-        else:
-            table.clear()
-            for row in rows:
-                table.add_row(*(literal_cell(cell) for cell in self.app.selection_cells(row)), key=row.id)
+        self.full_test_labels = {row.id: row.label for row in rows}
+        table.set_picker_rows(rows, reset_range=reset_cursor)
         if rows:
             matches = [index for index, row in enumerate(rows) if row.kind != 'other']
             if reset_cursor:
@@ -646,10 +656,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         self.test_search = None
         self.query_one(SearchBar).display = False
         self.query_one(ButtonFooter).display = True
-        table.clear()
         rows = self.selection_rows()
-        for row in rows:
-            table.add_row(*(literal_cell(cell) for cell in self.app.selection_cells(row)), key=row.id)
+        self.full_test_labels = {row.id: row.label for row in rows}
+        table.set_picker_rows(rows, reset_range=True)
         table.move_cursor(row=next((i for i, row in enumerate(rows) if row.id == selected), min(cursor, len(rows) - 1)))
         self.query_one('#error', Static).update(self.configuration_error)
         table.focus()
@@ -840,8 +849,13 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if self.kind in {'tests', 'test-results'} and self.query(DataTable):
             table = self.query_one(DataTable)
             if table.row_count:
-                return '\n'.join(str(table.get_row_at(index)[1])
-                                 for index in table.selected_row_indices)
+                if self.kind == 'tests':
+                    keys = [table.ordered_rows[index].key.value for index in table.selected_row_indices]
+                    if any(key not in self.full_test_labels for key in keys) and self.app.selection is not None:
+                        self.full_test_labels.update({row.id: row.label for row in self.app.selection.groups()})
+                    return '\n'.join(self.full_test_labels[key] if key in self.full_test_labels else str(table.get_row_at(index)[1])
+                                     for index, key in zip(table.selected_row_indices, keys))
+                return '\n'.join(str(table.get_row_at(index)[1]) for index in table.selected_row_indices)
         if self.kind == 'test-failure' and self.body:
             return (self.body.plain if isinstance(self.body, Text) else self.body).splitlines()[0]
         return None
@@ -1051,9 +1065,11 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         else:
             self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
 
-    def show(self, kind, title, text="", actions=(), rows=(), *, selected_row=None, configuration_error=""):
+    def show(self, kind, title, text="", actions=(), rows=(), *, selected_row=None, configuration_error="", full_labels=None):
+        if kind == 'tests' and full_labels is None and self.selection is not None:
+            full_labels = {row.id: row.label for row in self.selection.groups()}
         screen = WorkbenchScreen(kind, title, text, actions, rows, selected_row=selected_row,
-                                 configuration_error=configuration_error)
+                                 configuration_error=configuration_error, full_labels=full_labels)
         if isinstance(self.screen, WorkbenchScreen) or getattr(self.screen, "kind", None) == "local-run":
             return self.switch_screen(screen)
         return self.push_screen(screen)
@@ -1064,6 +1080,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                                 e2e_debug=self.session.result().values.get('E2E_DEBUG'))
         if warning is None:
             return True
+        return await self.confirm_test_warning(warning, cancel_event)
+
+    async def confirm_test_warning(self, warning, cancel_event):
         confirmation = asyncio.get_running_loop().create_future()
         def respond(accepted):
             if not confirmation.done():
@@ -1080,6 +1099,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return await confirmation
         finally:
             confirmation.cancel()
+            if self.screen_stack and self.screen is dialog:
+                self.pop_screen()
 
     async def on_mount(self):
         result = self.session.result()
@@ -1749,6 +1770,16 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.selection.refresh_for_run(fresh_tests)
             if not self.selection.selected_tests:
                 raise ValueError("No selected tests remain after recollection")
+            if (not self.session.result().values.get('NO_STD_IN')
+                    and len(self.selection.selected_ids) == len(self.selection.tests)):
+                warning = ("Full-suite execution in the TUI is slower. Run the full unit suite with "
+                           "./launch.sh --tui-mode unit --no-std-in. "
+                           "The TUI is best for focused partial selections. "
+                           "Enter literal y to run the full suite; every other response cancels.")
+                if not await self.confirm_test_warning(warning, self.collection_cancel):
+                    if not self.collection_cancel.is_set():
+                        self.show_selection()
+                    return
             self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
             self.show_unit_results(self.unit_progress())
             result = await asyncio.to_thread(
@@ -2322,11 +2353,11 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return True
         return False
 
-    def selection_cells(self, row):
-        cells = ("✓" if row.selected else "", row.label, f"{row.count}/{row.total}", row.kind)
-        if self.cost_estimator is not None:
+    def selection_cells(self, row, estimator):
+        cells = ("✓" if row.selected else "", picker_label(row.label), f"{row.count}/{row.total}", row.kind)
+        if estimator is not None:
             from .cost_history import total_cell
-            cells += (total_cell(self.cost_estimator, row.members),)
+            cells += (total_cell(estimator, row.members),)
         return cells
 
     def refresh_cost_summary(self):
@@ -2411,13 +2442,14 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.cost_estimator = self.fresh_cost_estimator()
             except Exception:
                 pass
-        rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
+        groups = self.selection.groups()
+        rows = PickerRows(groups, self.cost_estimator)
         actions = (("continue", "(s) Start selected tests"),)
         plan = getattr(self.session, 'tool_plan', None)
         if self.mode in {'integration', 'e2e'} or (plan is not None and (plan.tool_fields or plan.inactive_fields)):
             actions += (('review-config', 'Review selected-test configuration'),)
         self.show("tests", f"Select {self.mode} tests", "Toggle groups or individual tests with Enter. Press s to start selected tests.", actions, rows,
-                  configuration_error=configuration_error)
+                  configuration_error=configuration_error, full_labels={row.id: row.label for row in groups})
         if self.cost_estimator is not None:
             self.call_after_refresh(self.refresh_cost_summary)
             self.run_worker(self.synchronize_cost_history(self.cost_estimator, self.selection),
@@ -2505,19 +2537,18 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.refresh_cost_summary()
             return
         if self.screen.kind == "tests":
-            rows = [(row.id, self.selection_cells(row)) for row in self.selection.groups()]
+            groups = self.selection.groups()
+            self.screen.full_test_labels = {row.id: row.label for row in groups}
+            table.set_picker_rows(groups)
+            self.screen.refresh_bindings()
+            self.refresh_cost_summary()
+            return
         else:
             refresher = getattr(self.screen, 'configuration_refresher', None)
             if refresher is not None:
                 refresher.invalidate()
             self.apply_cleanup_rows(self.screen, self.session.cleanup_rows(retained=self.cleanup_names))
             return
-        for key, cells in rows:
-            for column, value in zip(table.columns, cells):
-                table.update_cell(key, column, literal_cell(value))
-        self.screen.refresh_bindings()
-        self.refresh_cost_summary()
-
     def apply_cleanup_rows(self, screen, cleanup_rows):
         # Declaration metadata belongs to the same display snapshot as values;
         # the fork must not replace the live session's execution schema.

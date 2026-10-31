@@ -86,10 +86,12 @@ def test_manifest_rechecks_open_descriptor_and_reports_open_failure(tmp_path, mo
     import os
     import stat
     from types import SimpleNamespace
+    from api_agent.providers import distribution
     manifest = tmp_path / 'provider-dependencies.toml'
     manifest.write_text('version = 1\n')
     with monkeypatch.context() as patch:
-        patch.setattr(os, 'fstat', lambda descriptor: SimpleNamespace(st_mode=stat.S_IFIFO))
+        patch.setattr(distribution, 'os', SimpleNamespace(**(vars(os) | {
+            'fstat': lambda descriptor: SimpleNamespace(st_mode=stat.S_IFIFO)})))
         with pytest.raises(ValueError, match='regular file'):
             read_provider_manifest(tmp_path, owner='sample')
     with monkeypatch.context() as patch:
@@ -97,8 +99,8 @@ def test_manifest_rechecks_open_descriptor_and_reports_open_failure(tmp_path, mo
         with pytest.raises(ValueError, match='cannot be read safely'):
             read_provider_manifest(tmp_path, owner='sample')
     with monkeypatch.context() as patch:
-        patch.setattr(os, 'fstat', lambda descriptor: SimpleNamespace(
-            st_mode=stat.S_IFREG, st_dev=999, st_ino=999))
+        patch.setattr(distribution, 'os', SimpleNamespace(**(vars(os) | {
+            'fstat': lambda descriptor: SimpleNamespace(st_mode=stat.S_IFREG, st_dev=999, st_ino=999)})))
         with pytest.raises(ValueError, match='regular file'):
             read_provider_manifest(tmp_path, owner='sample')
 

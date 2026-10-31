@@ -94,6 +94,22 @@ def request(mode, messages=None, tools=()):
     return LLMRequest(MODELS[mode], CompletionRequest(messages or (Message('user',(TextContent('Return Ok.'),)),),
         tools=tools, generation=GenerationOptions(max_output_tokens=16)))
 
+
+def joined_transport(call):
+    """Model the transport's optional dispatch callback and lease lifetime."""
+    async def invoke(operation, payload, *, auth, join=None, on_dispatch=None):
+        lease = None
+        try:
+            if join is not None:
+                _, lease = await join(['synthetic-worker-secret'])
+            if on_dispatch is not None:
+                on_dispatch()
+            return await call(operation, payload, auth=auth)
+        finally:
+            if lease is not None:
+                lease.release()
+    return invoke
+
 @pytest.mark.parametrize('mode', MODELS)
 @pytest.mark.parametrize('auth_mode', ['session', 'access_key', 'api_key'])
 def test_parsed_application_runs_real_auth_factory_codec_and_local_llm(monkeypatch, mode, auth_mode):
@@ -109,10 +125,8 @@ def test_parsed_application_runs_real_auth_factory_codec_and_local_llm(monkeypat
         owner=LocalLLM(config,ROOT,registry={}); calls=[]
         try:
             await owner.ensure_ready(); implementation=owner.provider.implementation
-            async def sdk(operation,payload,*,auth,join=None,on_dispatch=None):
-                if join is not None:
-                    await join(["synthetic-worker-secret"])
-                    on_dispatch()
+            @joined_transport
+            async def sdk(operation,payload,*,auth):
                 values=auth.worker_config(); assert values['mode']==('access_key' if auth_mode=='session' else auth_mode) and values['region']=='us-east-1'
                 calls.append((operation,payload))
                 if operation=='models': return {'data':[{'id':MODELS[mode]}]}
@@ -148,10 +162,8 @@ def test_tool_turn_round_trip(mode):
         owner=LocalLLM(configuration(mode),ROOT,registry={}); calls=[]
         try:
             await owner.ensure_ready()
-            async def sdk(operation,payload,*,auth,join=None,on_dispatch=None):
-                if join is not None:
-                    await join(["synthetic-worker-secret"])
-                    on_dispatch()
+            @joined_transport
+            async def sdk(operation,payload,*,auth):
                 if operation=='models': return {'data':[{'id':MODELS[mode]}]}
                 calls.append(payload['body'])
                 if len(calls)==1: return raw(mode,calls=(('lookup-1','lookup','{}'),))
@@ -203,10 +215,8 @@ def test_missing_usage_fails_without_completed_accounting(mode,usage):
         owner=LocalLLM(configuration(mode),ROOT,registry={})
         try:
             await owner.ensure_ready()
-            async def sdk(operation,payload,*,auth,join=None,on_dispatch=None):
-                if join is not None:
-                    await join(["synthetic-worker-secret"])
-                    on_dispatch()
+            @joined_transport
+            async def sdk(operation,payload,*,auth):
                 return {'data':[{'id':MODELS[mode]}]} if operation=='models' else raw(mode,usage=usage)
             owner.provider.implementation.transport.call=sdk
             with pytest.raises(OperationalError): await owner.complete(request(mode))
@@ -245,10 +255,8 @@ def test_bootstrapped_provider_default_selects_oss20b_from_real_local_catalog(mo
         owner=LocalLLM(config.values,ROOT,registry={})
         try:
             await owner.ensure_ready()
-            async def sdk(operation,payload,*,auth,join=None,on_dispatch=None):
-                if join is not None:
-                    await join(["synthetic-worker-secret"])
-                    on_dispatch()
+            @joined_transport
+            async def sdk(operation,payload,*,auth):
                 assert operation=='models'
                 return {'data':[{'id':'zai.glm-5'},{'id':'openai.gpt-oss-20b'},{'id':'zai.glm-4.7-flash'}]}
             owner.provider.implementation.transport.call=sdk

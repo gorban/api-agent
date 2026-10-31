@@ -108,7 +108,7 @@ def test_payload_rejects_structure_or_encoded_byte_overflow(value, maximum):
         _json_value(value, max_bytes=maximum)
 
 
-@pytest.mark.parametrize('payload', [b'x' * (6 * 1024 * 1024 + 1), b'{}', b'not-json'])
+@pytest.mark.parametrize('payload', [pytest.param(b'x' * (6 * 1024 * 1024 + 1), id='over-limit'), b'{}', b'not-json'])
 def test_worker_rejects_oversized_or_invalid_input_without_output(monkeypatch, payload):
     import resource
     from api_agent.providers import evidence_worker

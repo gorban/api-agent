@@ -223,6 +223,16 @@ Partial selections show coverage informationally. Units use no live LLM calls
 and are excluded from Allure. Integration has no reruns; E2E has its configured
 consecutive-pass confirmation protocol after an initial failure.
 
+Unit runs use private per-run scratch in the user cache for coverage, workers and
+nested temporary files. An explicit `TMPDIR` chooses the scratch base. Scratch is
+removed after confirmed process disposal; if disposal cannot be confirmed, the
+run directory is retained and identified in the error note. An authenticated local
+control socket uses a short private system-temporary directory if its path under
+the scratch base, including an explicit `TMPDIR`, would exceed the portable Unix
+socket limit. Managed Chromium similarly uses a private short process-temporary
+directory when needed for its singleton socket; its Playwright profile and bulk
+scratch stay under the selected base.
+
 Integration/E2E results go to configured Allure destinations. Optional local
 results/secondary directories can be disabled with explicit blank values.
 Publication failure is an operation failure even if individual tests passed.
@@ -318,6 +328,10 @@ uv pip install --python .venv/bin/python -e '.[dev]'
 
 Use the launcher for the applicable combined unit/coverage gate before code
 commits. Narrow pytest runs help iteration but do not replace that full gate.
+On Linux, two unit proofs exercise headed Chromium on a test-owned display;
+they require Xvfb on `PATH` but no desktop. A missing Xvfb fails those tests
+with a prerequisite message. Display isolation on other platforms remains
+unverified.
 Environments and build artifacts are ignored. Another worktree can share local
 certificates through intentional symlinks. A .env symlink permits shared reads,
 but configuration editors refuse to write through it; use an independent copy

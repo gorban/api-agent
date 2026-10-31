@@ -115,7 +115,7 @@ browser or authenticating an LLM. To use the same operation without the TUI:
 Press Ctrl+C to stop the terminal operation; use Stop or Quit in the TUI.
 Shutdown waits for owned requests and resources to finish cleanup.
 [Tracing configuration](docs/tracing.md) enables a ready Jaeger or LangFuse dashboard;
-LangFuse dashboard login uses its separately configured admin account.
+LangFuse dashboard login uses its separately configured admin account. To inspect a managed local collector without starting the app or a provider, run `./launch.sh --trace-viewer`; the command prints its viewer/CDP URLs and, for LangFuse, the configured dashboard username and password unmasked for login from another browser. Closing its browser leaves the collector available; press Ctrl+C in the terminal to release the collector lease.
 UI-process logs show safe activity messages rather than
 arbitrary child output, which may contain credentials even with `LOG_CONTENT=True`.
 
@@ -124,7 +124,7 @@ arbitrary child output, which may contain credentials even with `LOG_CONTENT=Tru
 - [Settings and TUI controls](docs/workbench.md)
 - [Credentials and LLM connections](docs/connections.md)
 - [Included Bedrock provider and conditional AWS setup](src/api_agent/llm_providers/bedrock/README.md)
-- [Resource packs, providers and named tools](docs/resource-packs.md#workflow-selected-named-tools)
+- [Resource packs: tools, LLM/UI providers and configuration](docs/resource-packs.md)
 - [Provider-owned integration test profiles](docs/integration_test_profiles.md)
 - [Running, debugging and testing](docs/development.md)
 - [Workflow diagrams and browser inspection](docs/workflow_viewer.md)

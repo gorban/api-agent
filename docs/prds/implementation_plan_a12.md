@@ -60,7 +60,7 @@ sampling, an agreed latency budget and human acceptance stay open above.
 - [x] Keep local history validation and cost-estimator reconstruction off the UI event loop when switching account selection. Coalesce obsolete work, apply only results matching the active visit/configuration/account, preserve selected-test profiles and authoritative Start validation, and retain safe ownership through cancellation or exit.
 - [x] Verify rapid index changes, stale deliveries, resolver failures, history changes and subsequent navigation with deterministic and causal checks. Complete independent/external source review.
 - [x] Remeasure the same three/six-second interactions in the controlled 18-test catalog with its current history. In the repeated-account/key phase, maximum event-loop pauses fell from 3.769/3.742 seconds to 226/224 milliseconds. The separate unchanged-configuration synchronization phase measured maximum pauses of 309/298 milliseconds with a bounded synthetic empty remote source. These controlled catalog/history and transport measurements leave broader sampling, an agreed latency budget and human acceptance open under the [TUI requirements](implementation_plan_a.md) and above.
-- [ ] Human acceptance of sustained responsiveness and account switching.
+- [x] Human acceptance of integration-picker responsiveness and attended/unattended account switching, with selected tests preserved; approved on October 30, 2026. Broader resource-pack/history sampling remains separate.
 
 ## Large unit-suite follow-up
 

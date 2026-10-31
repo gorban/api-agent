@@ -192,7 +192,7 @@ def test_pinned_reader_rejects_changed_inode_size(anchored_stage, monkeypatch):
     def changed_size(fd):
         info = original(fd)
         return SimpleNamespace(st_mode=info.st_mode, st_size=info.st_size + 1)
-    monkeypatch.setattr(vb.os, 'fstat', changed_size)
+    monkeypatch.setattr(vb, 'os', SimpleNamespace(**(vars(vb.os) | {'fstat': changed_size})))
     with pytest.raises(ValueError, match='changed during read'):
         vb._output_at(stage.parent, stage.path.name)
 

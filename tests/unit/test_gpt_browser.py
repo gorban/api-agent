@@ -12,6 +12,7 @@ from api_agent.providers.control import CleanupPendingError
 
 @pytest.fixture
 def chromium(monkeypatch):
+    monkeypatch.setenv('TMPDIR', '/var/tmp')
     page = SimpleNamespace()
     context = SimpleNamespace(new_page=AsyncMock(return_value=page), close=AsyncMock())
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
@@ -102,7 +103,11 @@ def test_failed_acquisition_disposes_previous_resources(chromium, monkeypatch, s
 
 
 @pytest.mark.parametrize('stage', ['driver', 'launch'])
-def test_canceled_start_retains_late_acquisition_until_disposed(chromium, stage):
+def test_canceled_start_retains_late_acquisition_until_disposed(chromium, stage, monkeypatch, tmp_path):
+    from pathlib import Path
+    if stage == 'launch':
+        monkeypatch.setenv('TMPDIR', str(tmp_path / ('long-' + 'x' * 120)))
+        chromium.browser.is_connected = Mock(return_value=False)
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()
         value = chromium.playwright if stage == 'driver' else chromium.browser
@@ -116,6 +121,8 @@ def test_canceled_start_retains_late_acquisition_until_disposed(chromium, stage)
         owner._timeout = .01
         starting = asyncio.create_task(owner.start())
         await entered.wait()
+        short = (Path(chromium.playwright.chromium.launch.await_args.kwargs['env']['TMPDIR'])
+                 if stage == 'launch' else None)
         starting.cancel()
         with pytest.raises(asyncio.CancelledError):
             await starting
@@ -123,6 +130,7 @@ def test_canceled_start_retains_late_acquisition_until_disposed(chromium, stage)
             with pytest.raises(CleanupPendingError):
                 await owner.aclose()
             assert owner._resources
+            assert short is None or short.is_dir()
             chromium.playwright.stop.assert_not_awaited()
             release.set()
             # A previously canceled cleanup wrapper may require a retry after
@@ -134,6 +142,7 @@ def test_canceled_start_retains_late_acquisition_until_disposed(chromium, stage)
                 except CleanupPendingError:
                     await asyncio.sleep(.01)
             assert not owner._resources
+            assert short is None or not short.exists()
             chromium.playwright.stop.assert_awaited_once()
             assert chromium.browser.close.await_count == int(stage == 'launch')
             if stage == 'driver':
@@ -199,7 +208,11 @@ def test_preparation_cancellation_is_signaled_and_drained(chromium, monkeypatch)
 @pytest.mark.parametrize('stage', ['browser', 'driver'])
 def test_driver_retains_late_resources_after_close_failure(chromium, stage):
     async def scenario():
+        import tempfile
+        from pathlib import Path
         driver = module.ChromiumDriver()
+        driver.process_temp = tempfile.TemporaryDirectory(prefix='browser-test-', dir='/var/tmp')
+        owned_path = Path(driver.process_temp.name)
         # A launch that finishes after its awaiter was canceled never hands the
         # browser to BrowserOwner, so the driver must dispose it itself.
         driver.starting = asyncio.create_task(asyncio.sleep(0, result=chromium.playwright))
@@ -208,10 +221,11 @@ def test_driver_retains_late_resources_after_close_failure(chromium, stage):
         target.side_effect = [RuntimeError('disposal unconfirmed'), None]
         with pytest.raises(RuntimeError, match='disposal unconfirmed'):
             await driver.stop()
-        assert driver.starting is not None
+        assert driver.starting is not None and owned_path.is_dir()
         assert (driver.launching is not None) == (stage == 'browser')
         await driver.stop()
         assert driver.starting is None and driver.launching is None
+        assert not owned_path.exists() and driver.process_temp is None
         assert target.await_count == 2
         assert chromium.browser.close.await_count == (2 if stage == 'browser' else 1)
         assert chromium.playwright.stop.await_count == (2 if stage == 'driver' else 1)
@@ -343,13 +357,41 @@ def test_terminated_inspection_requires_confirmed_browser_pid_exit(monkeypatch):
             return_value=(object(), SimpleNamespace(close=Mock(), wait_closed=AsyncMock()))))
         assert not await driver.terminated_inspection(session)
 
-        process.wait.reset_mock()
         monkeypatch.setattr(module.asyncio, 'open_connection', AsyncMock(side_effect=ConnectionRefusedError))
+        owned_temp = SimpleNamespace(cleanup=Mock(side_effect=[OSError('cleanup pending'), None]))
+        driver.process_temp = owned_temp
+        assert not await driver.terminated_inspection(session)
+        assert driver.process_temp is owned_temp
+        process.wait.reset_mock()
+        module.asyncio.open_connection.reset_mock()
         assert await driver.terminated_inspection(session)
+        assert driver.process_temp is None and owned_temp.cleanup.call_count == 2
         process.wait.assert_awaited_once()
         module.asyncio.open_connection.assert_awaited_once_with('127.0.0.1', 32123)
         transport.on_error_future = asyncio.get_running_loop().create_future()
         transport.on_error_future.cancel()
         assert await driver.terminated_inspection(session)
 
+    asyncio.run(scenario())
+
+
+def test_long_browser_process_temp_is_owned_until_browser_disposal(chromium, monkeypatch, tmp_path):
+    import os
+    from pathlib import Path
+    bulk = tmp_path / ('bulk-' + 'x' * 120)
+    bulk.mkdir()
+    monkeypatch.setenv('TMPDIR', str(bulk))
+    chromium.browser.is_connected = Mock(side_effect=[True, False])
+    async def scenario():
+        driver = module.ChromiumDriver()
+        await driver.launch(headless=False)
+        child_env = chromium.playwright.chromium.launch.await_args.kwargs['env']
+        short = Path(child_env['TMPDIR'])
+        assert short != bulk and short.stat().st_mode & 0o777 == 0o700
+        assert os.environ['TMPDIR'] == str(bulk)
+        with pytest.raises(RuntimeError, match='disposal is not confirmed'):
+            await driver.stop()
+        assert short.is_dir() and not chromium.playwright.stop.await_count
+        await driver.stop()
+        assert not short.exists() and driver.process_temp is None
     asyncio.run(scenario())

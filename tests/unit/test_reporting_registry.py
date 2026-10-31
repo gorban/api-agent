@@ -763,6 +763,7 @@ def test_inert_release_idempotent_acquire_and_changed_directory_preserve_owner(s
 def test_private_registry_and_supported_profile_are_required(storage):
     owner = storage.create()
     storage.registry.mkdir(mode=0o755)
+    storage.registry.chmod(0o755)
     with pytest.raises(p.PrerequisiteError, match='must be private'): owner.acquire()
     storage.registry.chmod(0o700)
     with pytest.raises(p.PrerequisiteError, match='deadline'): storage.create(deadline_seconds=0)
@@ -822,7 +823,7 @@ def test_metadata_growth_after_stat_is_still_bounded(tmp_path, monkeypatch):
         info = original(descriptor)
         path.write_bytes(b'{}' + b' ' * (metadata.LIMIT - 1))
         return info
-    monkeypatch.setattr(metadata.os, 'fstat', fstat)
+    monkeypatch.setattr(metadata, 'os', SimpleNamespace(**(vars(metadata.os) | {'fstat': fstat})))
     with pytest.raises(p.PrerequisiteError, match='Invalid reporting'):
         metadata._read(path)
 

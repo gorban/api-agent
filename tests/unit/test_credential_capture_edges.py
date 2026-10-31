@@ -55,8 +55,8 @@ def test_printable_detection_retains_original_offsets_and_controls():
     (b'context owned-\xe2\x80\x8beuro-\xe2\x82\xac-re', ('owned-euro-€-remaining',), b'context [REDACTED]'),
     (b'context abcdefg', ('cdefgh', 'abcdefgh'), b'context [REDACTED]'),
     (b'context ' + 'owned-€'.encode()[:-1], ('owned-€-suffix',), b'context [REDACTED]'),
-    (b'q' * 10000 + b'z', ('q' * 10000 + 'y',), b'q' * 10000 + b'z'),
-    (b'context ' + b'q' * 9999, ('q' * 10000 + 'y',), b'context [REDACTED]'),
+    pytest.param(b'q' * 10000 + b'z', ('q' * 10000 + 'y',), b'q' * 10000 + b'z', id='long-overlap'),
+    pytest.param(b'context ' + b'q' * 9999, ('q' * 10000 + 'y',), b'context [REDACTED]', id='long-prefix'),
 ])
 def test_incomplete_capture_prefix_union(captured, secrets, expected):
     assert CredentialScrubber(secret_values=secrets).capture(captured).encode() == expected

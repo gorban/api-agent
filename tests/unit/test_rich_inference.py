@@ -84,7 +84,7 @@ def test_native_tool_call_limit_is_checked_before_wire_validation(monkeypatch):
         rich.tool_result(data, False, TOKEN)
 
 
-@pytest.mark.parametrize('source', ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '[]', '{', 'null', '{"x":1e999}', 'x'*32769, 4])
+@pytest.mark.parametrize('source', ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '[]', '{', 'null', '{"x":1e999}', pytest.param('x'*32769, id='oversized-json'), 4])
 def test_object_json_rejects_ambiguous_nonfinite_or_unbounded_values(source):
     with pytest.raises(ContractError):
         wire.object_json(source)

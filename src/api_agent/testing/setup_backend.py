@@ -25,13 +25,30 @@ class _SetupOwner:
             interaction=backend.interaction, quota_observer=backend.quota_observer,
             authority=backend.authority)
         self.trace = None
+        factory = getattr(backend, 'trace_prerequisites_factory', None)
+        self.trace_prerequisites = factory(backend.config) if factory is not None else None
         if backend.config.get('TRACE_MODE', ''):
             from api_agent.telemetry.remote_inference import RemoteInferenceTrace
             from .workflow_capture import capture_config
             self.trace = RemoteInferenceTrace(capture_config(backend.config, backend.capture_sources),
                                               self.provider.emissions)
 
+    async def _ensure_tracing(self):
+        if self.trace_prerequisites is not None:
+            from api_agent.runtime.tasks import offload
+            manager = self.trace_prerequisites
+            async with report_timeout('Integration trace collector readiness', manager.timeout) as budget:
+                await offload(manager.acquire, _deadline=manager.now() + budget.remaining)
+
+    async def _close_tracing(self):
+        if self.trace is not None:
+            await self.trace.aclose()
+        if self.trace_prerequisites is not None:
+            from api_agent.runtime.tasks import offload
+            await offload(self.trace_prerequisites.release, retain=False)
+
     async def ensure_ready(self):
+        await self._ensure_tracing()
         await self.provider._ensure()
 
     async def describe(self):
@@ -41,6 +58,7 @@ class _SetupOwner:
         from api_agent.workflows.inference_capture import bind_boundary, bind_inference_trace
         bind_boundary(self.provider.emissions)
         if self.trace is not None:
+            await self._ensure_tracing()
             await self.trace.astart()
             bind_inference_trace(self.trace)
         return await self.provider._complete(request)
@@ -54,14 +72,12 @@ class _SetupOwner:
 
     async def aclose(self):
         await self.provider._close()
-        if self.trace is not None:
-            await self.trace.aclose()
+        await self._close_tracing()
         self.provider.closed = True
 
     async def finish_execution(self):
         await self.provider._finish_execution()
-        if self.trace is not None:
-            await self.trace.aclose()
+        await self._close_tracing()
 
 
 from .suite_lock import CleanupLeaseOwner
@@ -79,9 +95,10 @@ class SetupBackend(CleanupLeaseOwner):
 
     def __init__(self, config, owner_root, *, unattended_index_source=None,
                  password_manager_registry=None, interaction=None, quota_observer=None, authority=None,
-                 capture_sources=None):
+                 capture_sources=None, trace_prerequisites_factory=None):
         from api_agent.providers.setup_transport import _timeout
         self.timeout = _timeout(config.get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', self.timeout))
+        self.trace_prerequisites_factory = trace_prerequisites_factory
         self.quota_observer = quota_observer
         self.interaction = interaction
         from api_agent.telemetry.privacy import EmissionBoundary
@@ -89,6 +106,14 @@ class SetupBackend(CleanupLeaseOwner):
             raise ContractError('Invalid integration credential authority')
         self.authority = authority
         self._config = deepcopy(dict(config))
+        if trace_prerequisites_factory is not None:
+            from api_agent.runtime.compose import selected_profiles
+            trace_values = {key: self._config[key] for key in ('TRACE_MODE', 'TRACE_TARGET')
+                            if key in self._config}
+            if selected_profiles(trace_values):
+                # Provider/SDK disposal precedes the whole collector-stack stop (60s).
+                # Retain the ordinary short IPC budget for remote/disabled tracing.
+                self.cleanup_timeout = 90
         from .workflow_capture import capture_config
         self._capture_sources = deepcopy({} if capture_sources is None else capture_sources)
         capture_config(self._config, self._capture_sources)
@@ -222,22 +247,23 @@ class SetupBackend(CleanupLeaseOwner):
                     await asyncio.wrap_future(self._publication_future)
                 except Exception:
                     pass
-            failed = False
+            failure = None
             interruption = None
             for owner in (self.server, self.registry):
                 if owner is not None:
                     try:
                         await owner.aclose()
                     except BaseException as error:
-                        failed = True
+                        if failure is None:
+                            failure = error
                         if not isinstance(error, Exception):
                             interruption = interruption or error
             if interruption is not None:
                 # Raising KeyboardInterrupt inside an asyncio task stops its loop.
                 # Return it for the synchronous owner to preserve after disposal.
                 return interruption
-            if failed:
-                raise self._receipt() from None
+            if failure is not None:
+                raise self._receipt() from failure
 
     def _inspector(self):
         owner = getattr(self.registry, '_owner', None)
@@ -275,7 +301,7 @@ class SetupBackend(CleanupLeaseOwner):
                     error.inspections = (self,)
                     error.cleanup_pending = self._receipt()
                     raise
-                raise self._receipt() from None
+                raise self._receipt() from error
             self._publication_prepared = True
 
     def finish_run(self):
@@ -305,7 +331,7 @@ class SetupBackend(CleanupLeaseOwner):
                         error.inspections = (self,)
                         error.cleanup_pending = self._receipt()
                         raise
-                    raise self._receipt() from None
+                    raise self._receipt() from error
                 self._disposed = True
             inspector = self._inspector()
             self.inspection_open = bool(inspector is not None and inspector.sessions)
@@ -416,7 +442,7 @@ class SetupBackend(CleanupLeaseOwner):
             except BaseException as error:
                 self.pending = True
                 if isinstance(error, Exception):
-                    raise self._receipt() from None
+                    raise self._receipt() from error
                 error.inspections = (self,)
                 error.cleanup_pending = self._receipt()
                 raise

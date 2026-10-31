@@ -1,13 +1,48 @@
 """An owned, single-worker HTTPS ASGI listener for local operations."""
 
 import asyncio
+import errno
 import time
 
 from api_agent.providers.progress import independent_timeout_scope
 
 
 class ListenerError(RuntimeError):
-    pass
+    _DIAGNOSTICS = {
+        'listener_bind_in_use': 'Address already in use; choose an available AGENT_DJANGO_URL port.',
+        'listener_bind_unavailable': 'Listener address is unavailable; check AGENT_DJANGO_URL.',
+        'listener_bind_denied': 'Listener bind was denied; check AGENT_DJANGO_URL port permissions.',
+        'listener_start_failed': 'Listener stopped during startup; check local listener configuration.',
+        'listener_readiness_timeout': 'Listener readiness timed out; check local listener configuration.',
+        'listener_stopped_before_ready': 'Listener stopped before it became ready.',
+    }
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+    def diagnostic(self):
+        """Return only a recognized, fixed message for local presentation."""
+        return self._DIAGNOSTICS.get(self.code) if type(self.code) is str else None
+
+
+def _start_failure(error):
+    """Classify bounded exception context without retaining OS diagnostics."""
+    messages = {
+        errno.EADDRINUSE: 'listener_bind_in_use',
+        errno.EADDRNOTAVAIL: 'listener_bind_unavailable',
+        errno.EACCES: 'listener_bind_denied',
+    }
+    seen = set()
+    current = error.__context__
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if isinstance(current, OSError) and current.errno in messages:
+            return messages[current.errno]
+        current = current.__cause__ or current.__context__
+    return 'listener_start_failed'
 
 
 class UvicornListener:
@@ -29,10 +64,10 @@ class UvicornListener:
         async def serve():
             try:
                 await self.server.serve()
-            except SystemExit:
+            except SystemExit as error:
                 # Uvicorn exits on bind failures; an owned background task must
                 # report failure without terminating its coordinator's loop.
-                raise ListenerError('listener_start_failed') from None
+                raise ListenerError(_start_failure(error)) from None
         # Connections inherit this task context. Startup bounds acquisition,
         # while later requests own fresh budgets and retain the progress sink.
         with independent_timeout_scope():

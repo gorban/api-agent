@@ -48,7 +48,7 @@ interruption follow-through below has now closed its technical repair.
 
 ## Default engine and error-copy follow-through
 
-- [x] Close [default engine binding and copyable errors](implementation_plan_k2b3.md). Earlier implementation and acceptance remain recorded.
+- [ ] Close the new mouse-selection and copy follow-up in [default engine binding and copyable errors](implementation_plan_k2b3.md), including external recheck and human acceptance. Earlier default-engine implementation and acceptance remain recorded.
 
 ## Menu layout follow-through
 
@@ -66,11 +66,9 @@ interruption follow-through below has now closed its technical repair.
 
 - [ ] Close [bounded model catalog startup](implementation_plan_k2b7.md).
 
-**Deferred human review**
+## Related details
 
-Substantive implementation and independent/external review are complete. The
-cleanup child is human-approved; combined, startup and default-engine/error-copy
-and menu-layout/trace-disposal human retests remain unchecked in their owning details.
+Earlier cleanup approval remains accepted. Outstanding implementation, external recheck and human acceptance are recorded in their owning details.
 
 - [Native terminal interruption](implementation_plan_k2b1.md)
 
@@ -87,3 +85,7 @@ and menu-layout/trace-disposal human retests remain unchecked in their owning de
 - [Bounded model catalog startup](implementation_plan_k2b7.md)
 
 - [Concurrent cleanup acknowledgement](implementation_plan_k2b8.md)
+
+## Startup diagnostics and account selection
+
+- [ ] Complete [startup diagnostics and explicit local account selection](implementation_plan_k2b9.md). Safe failure logs and listener classification are delivered and independently reviewed; account selection and the original initiating cause remain open. Preserve lazy authentication and earlier cleanup ownership.

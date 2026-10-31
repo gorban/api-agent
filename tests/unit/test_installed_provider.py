@@ -56,6 +56,7 @@ import asyncio
 import importlib.metadata
 from pathlib import Path
 import sys
+import sysconfig
 import api_agent
 from api_agent.providers import loading
 from api_agent.config.resolve import resolve_config
@@ -66,12 +67,20 @@ installed, pack, original, checkout, mode = sys.argv[1:]
 installed, pack, original, checkout = map(Path, (installed, pack, original, checkout))
 assert not original.exists()
 assert not Path.cwd().is_relative_to(checkout)
-assert all(not Path(p).resolve().is_relative_to(checkout) for p in sys.path if p)
+stdlib = Path(sysconfig.get_path('stdlib')).resolve()
+interpreter_paths = {stdlib, stdlib / 'lib-dynload',
+                     stdlib.parent / ('python%d%d.zip' % sys.version_info[:2])}
+assert all(not Path(p).resolve().is_relative_to(checkout) or Path(p).resolve() in interpreter_paths
+           for p in sys.path if p), 'unsafe checkout path'
 distribution = importlib.metadata.distribution('api-agent')
 assert distribution.version == '0.1.0'
 assert Path(distribution.locate_file('')).resolve().is_relative_to(installed)
-for module in (api_agent, loading):
-    assert Path(module.__file__).resolve().is_relative_to(installed)
+def assert_installed_modules():
+    for name, module in tuple(sys.modules.items()):
+        if name == 'api_agent' or name.startswith('api_agent.'):
+            assert module is not None and getattr(module, '__file__', None), name
+            assert Path(module.__file__).resolve().is_relative_to(installed), name
+assert_installed_modules()
 base = Path(api_agent.__file__).parent
 def assert_inert_discovery(stage):
     assert not (pack / 'active-factory-ran').exists(), stage + ': active factory executed during discovery'
@@ -149,6 +158,7 @@ async def exercise():
     assert events.count('disposed') == 1
 
 asyncio.run(exercise())
+assert_installed_modules()
 assert (pack / 'active-import-ran').is_file()
 assert (pack / 'active-factory-ran').is_file() == (mode != 'invalid_factory')
 assert not (pack / 'inactive-ran').exists()
@@ -481,6 +491,29 @@ def test_installed_provider_lifecycle(installed_wheel, relocated_pack, mode):
                   str(original), str(repository), mode], cwd=consumer_cwd)
 
     assert output.strip() == 'installed lifecycle verified:' + mode
+
+
+@pytest.mark.parametrize('relative', ['src', 'tests', '.api-agent/bootstrap/unrelated'])
+def test_installed_consumer_rejects_checkout_path_injection(installed_wheel, relocated_pack, relative):
+    python, environment, repository, _ = installed_wheel
+    pack, original, consumer_cwd = relocated_pack
+    anchor = 'assert all(not Path(p).resolve().is_relative_to(checkout)'
+    assert CONSUMER.count(anchor) == 1
+    consumer = CONSUMER.replace(anchor, 'sys.path.append(str(checkout / ' + repr(relative) + '))\n' + anchor, 1)
+    with pytest.raises(AssertionError, match='unsafe checkout path'):
+        run([str(python), '-I', '-c', consumer, str(environment), str(pack),
+             str(original), str(repository), 'success'], cwd=consumer_cwd)
+
+
+def test_installed_consumer_rejects_checkout_module_origin(installed_wheel, relocated_pack):
+    python, environment, repository, _ = installed_wheel
+    pack, original, consumer_cwd = relocated_pack
+    anchor = 'assert_installed_modules()\nbase ='
+    assert CONSUMER.count(anchor) == 1
+    consumer = CONSUMER.replace(anchor, "loading.__file__ = str(checkout / 'src/api_agent/providers/loading.py')\n" + anchor, 1)
+    with pytest.raises(AssertionError, match='api_agent.providers.loading'):
+        run([str(python), '-I', '-c', consumer, str(environment), str(pack),
+             str(original), str(repository), 'success'], cwd=consumer_cwd)
 
 
 @pytest.mark.parametrize('stage', ['inspect_relocated_pack', 'selected_manifests'])

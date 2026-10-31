@@ -149,7 +149,7 @@ def test_production_recording_places_custom_and_legacy_after_grouping(tmp_path, 
     assert len(set(sources)) == 2 and len(list(result.directory.glob('workflow-0-*.json'))) == 2
 
 
-@pytest.mark.parametrize('value,count', [(None, 257), ('x' * 64000, 70)])
+@pytest.mark.parametrize('value,count', [(None, 257), pytest.param('x' * 64000, 70, id='aggregate-overflow')])
 def test_recording_rejects_aggregate_custom_attachment_overflow(tmp_path, value, count):
     context, selected, config = fixture(tmp_path)
     config['LOG_CONTENT'] = True

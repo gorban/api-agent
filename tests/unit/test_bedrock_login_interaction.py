@@ -94,7 +94,7 @@ async def test_noninput_is_fixed_failure(action):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('value', [123, 'x' * 65537])
+@pytest.mark.parametrize('value', [123, pytest.param('x' * 65537, id='oversized-string')])
 async def test_invalid_bounded_strings(value):
     owner = Interaction()
     login = bridge(owner)

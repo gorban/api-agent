@@ -6,6 +6,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import sys
 import time
@@ -17,6 +18,114 @@ import pytest
 from api_agent.providers.sessions import InspectionOwner
 from api_agent.testing import provider_setup
 from api_agent.testing.setup_backend import SetupBackend
+
+
+_DISPLAY_START_TIMEOUT = 10
+
+
+def _display_number(process):
+    deadline = time.monotonic() + _DISPLAY_START_TIMEOUT
+    data = b''
+    while b'\n' not in data:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
+            pytest.fail('Isolated Xvfb display did not start within 10 seconds', pytrace=False)
+        chunk = os.read(process.stdout.fileno(), 32 - len(data))
+        if not chunk:
+            pytest.fail('Isolated Xvfb display failed to start', pytrace=False)
+        data += chunk
+        if len(data) == 32 and b'\n' not in data:
+            pytest.fail('Isolated Xvfb display failed to start', pytrace=False)
+    number = data[:-1]
+    if not number.isdigit() or process.poll() is not None:
+        pytest.fail('Isolated Xvfb display failed to start', pytrace=False)
+    return number.decode('ascii')
+
+
+@pytest.fixture
+def isolated_headed_display(monkeypatch):
+    """Give real headed browser proofs a display owned by this test."""
+    if sys.platform != 'linux':
+        pytest.skip('Headed browser isolation requires a verified platform-specific display')
+    executable = shutil.which('Xvfb')
+    if not executable:
+        pytest.fail('Headed browser proofs require Xvfb for an isolated display')
+    try:
+        process = subprocess.Popen([executable, '-displayfd', '1', '-nolisten', 'tcp'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except OSError:
+        pytest.fail('Could not start isolated Xvfb display', pytrace=False)
+    try:
+        number = _display_number(process)
+        monkeypatch.setenv('DISPLAY', ':' + number)
+        monkeypatch.delenv('WAYLAND_DISPLAY', raising=False)
+        monkeypatch.delenv('XAUTHORITY', raising=False)
+        yield process, ':' + number
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        process.stdout.close()
+        process.stderr.close()
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Xvfb isolation is Linux-specific')
+@pytest.mark.parametrize('payload,expected', [
+    (b'123', 'did not start within'),
+    (b'bad\n', 'failed to start'),
+    (b'1' * 32, 'failed to start'),
+    (b'', 'failed to start'),
+])
+def test_isolated_display_rejects_incomplete_or_invalid_startup(tmp_path, monkeypatch, payload, expected):
+    import test_shared_debug_backend as module
+
+    executable = tmp_path / 'Xvfb'
+    executable.write_text(f'#!{sys.executable}\nimport os, time\nos.write(1, {payload!r})\n'
+                          + ('time.sleep(5)\n' if payload else ''))
+    executable.chmod(0o755)
+    monkeypatch.setattr(module.shutil, 'which', lambda name: str(executable))
+    monkeypatch.setattr(module, '_DISPLAY_START_TIMEOUT', .2)
+    started = []
+    popen = subprocess.Popen
+    def start(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        started.append(process)
+        return process
+    monkeypatch.setattr(module.subprocess, 'Popen', start)
+    fixture = isolated_headed_display.__wrapped__(monkeypatch)
+    began = time.monotonic()
+    with pytest.raises(pytest.fail.Exception, match=expected):
+        next(fixture)
+    assert time.monotonic() - began < 3
+    assert len(started) == 1 and started[0].poll() is not None
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Xvfb isolation is Linux-specific')
+def test_isolated_display_reaps_process_after_startup_interrupt(tmp_path, monkeypatch):
+    import test_shared_debug_backend as module
+
+    executable = tmp_path / 'Xvfb'
+    executable.write_text(f'#!{sys.executable}\nimport time\ntime.sleep(5)\n')
+    executable.chmod(0o755)
+    monkeypatch.setattr(module.shutil, 'which', lambda name: str(executable))
+    popen = subprocess.Popen
+    started = []
+    def start(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        started.append(process)
+        return process
+    monkeypatch.setattr(module.subprocess, 'Popen', start)
+    def interrupt(*args):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(module.select, 'select', interrupt)
+    fixture = isolated_headed_display.__wrapped__(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        next(fixture)
+    assert len(started) == 1 and started[0].poll() is not None
 
 
 def test_pending_publication_future_is_drained_before_provider_disposal(tmp_path):
@@ -702,11 +811,13 @@ def test_recorded_remote_fixture_publishes_before_backend_inspection_opens(monke
             inspection.end_inspection()
 
 
-def test_original_controlled_browser_survives_parallel_workers_and_client_disconnect(monkeypatch, tmp_path):
-    pytest.importorskip('playwright.async_api')
+def test_original_controlled_browser_survives_parallel_workers_and_client_disconnect(monkeypatch, tmp_path, isolated_headed_display):
+    display_process, display = isolated_headed_display
+    assert display_process.poll() is None and os.environ['DISPLAY'] == display
+    assert 'WAYLAND_DISPLAY' not in os.environ
     from api_agent.runtime.browser import _default_paths
     if not all(path.exists() for path in _default_paths(True)):
-        pytest.skip('Installed headed Chromium is required')
+        pytest.fail('Headed browser proofs require installed Playwright Chromium')
     from playwright.async_api import async_playwright
     from api_agent.runtime.managed_browser import managed_browser
 
@@ -771,11 +882,13 @@ def test_original_controlled_browser_survives_parallel_workers_and_client_discon
 
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='Linux process ancestry proof')
-def test_abrupt_launcher_exit_reaps_its_controlled_backend_browser(tmp_path):
-    pytest.importorskip('playwright.async_api')
+def test_abrupt_launcher_exit_reaps_its_controlled_backend_browser(tmp_path, isolated_headed_display):
+    display_process, display = isolated_headed_display
+    assert display_process.poll() is None and os.environ['DISPLAY'] == display
+    assert 'WAYLAND_DISPLAY' not in os.environ
     from api_agent.runtime.browser import _default_paths
     if not all(path.exists() for path in _default_paths(True)):
-        pytest.skip('Installed headed Chromium is required')
+        pytest.fail('Headed browser proofs require installed Playwright Chromium')
     script = '''
 import asyncio, json, os, time
 from pathlib import Path
@@ -841,3 +954,77 @@ time.sleep(60)
             process.wait(timeout=5)
         process.stdout.close()
         process.stderr.close()
+
+
+def test_managed_browser_long_temp_keeps_profile_in_bulk_and_cleans_child(tmp_path, monkeypatch, isolated_headed_display):
+    from pathlib import Path
+    from api_agent.runtime.managed_browser import ChromiumDriver
+    display_process, display = isolated_headed_display
+    assert display_process.poll() is None and os.environ['DISPLAY'] == display
+    bulk = tmp_path / ('browser-bulk-' + 'x' * 100)
+    bulk.mkdir()
+    monkeypatch.setenv('TMPDIR', str(bulk))
+    async def run():
+        driver = ChromiumDriver(inspectable=True)
+        browser = await driver.launch(headless=False)
+        process_temp = Path(driver.process_temp.name)
+        try:
+            session = await browser.new_browser_cdp_session()
+            try:
+                arguments = (await session.send('Browser.getBrowserCommandLine'))['arguments']
+                profile = next(arg.split('=', 1)[1] for arg in arguments if arg.startswith('--user-data-dir='))
+                assert Path(profile).is_relative_to(bulk)
+                assert process_temp.is_dir() and process_temp.stat().st_mode & 0o777 == 0o700
+                assert os.environ['TMPDIR'] == str(bulk)
+            finally:
+                await session.detach()
+        finally:
+            await browser.close()
+            await driver.stop()
+        assert not process_temp.exists() and driver.process_temp is None
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('closed', [False, True])
+@pytest.mark.parametrize('observer_raises', [False, True])
+def test_inspection_monitor_error_reports_disposition_and_acknowledges_closed(
+        tmp_path, monkeypatch, closed, observer_raises):
+    backend = SetupBackend({'DEBUG': True}, tmp_path,
+        password_manager_registry=SimpleNamespace(definitions=()))
+    backend.inspection_open = True
+    entered, release = threading.Event(), threading.Event()
+    events, acknowledgements = [], []
+    backend._when_closed(lambda: acknowledgements.append('released'))
+
+    def wait_closed():
+        entered.set()
+        if not release.wait(timeout=3):
+            raise AssertionError('monitor barrier timed out')
+        raise RuntimeError('synthetic inspection wait failure')
+
+    def observe(kind):
+        events.append(kind)
+        if observer_raises:
+            raise RuntimeError('synthetic observer failure')
+
+    monkeypatch.setattr(backend, 'wait_closed', wait_closed)
+    backend.watch_inspection(observe)
+    try:
+        assert entered.wait(timeout=3)
+        with backend._lock:
+            backend.closed = closed
+        release.set()
+        backend._inspection_monitor.join(timeout=3)
+        assert not backend._inspection_monitor.is_alive()
+        assert events == ['inspection_closed' if closed else 'inspection_cleanup_pending']
+        assert acknowledgements == (['released'] if closed else [])
+        if not closed:
+            assert len(backend._cleanup_callbacks) == 1
+            with backend._lock:
+                backend.closed = True
+                backend._acknowledge_closed()
+            assert acknowledgements == ['released']
+    finally:
+        release.set()
+        backend._inspection_monitor.join(timeout=3)
+        assert not backend._inspection_monitor.is_alive()

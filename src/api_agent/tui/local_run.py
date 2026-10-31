@@ -2,6 +2,7 @@
 import asyncio
 import time
 import ipaddress
+import re
 from urllib.parse import urlsplit
 from collections import deque
 from dataclasses import replace
@@ -9,14 +10,42 @@ from rich.text import Text
 
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
+from textual.events import Click
 from textual.screen import Screen
 from textual.widgets import Button, Static, TextArea
+from textual.widgets.text_area import Selection
 
 from api_agent.runtime.local_terminal import format_log
 from api_agent.runtime.local_contracts import LocalSnapshot, LocalDestination
 from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.progress import component_timeout, independent_timeout_scope
 from .clipboard import ClipboardError, copy_text
+
+
+class SelectableOutput(TextArea):
+    """Keep the streaming text area while supporting mouse word selection."""
+
+    def _watch_selection(self, previous_selection, selection):
+        screen = self.screen if self.is_mounted else None
+        updating = screen is not None and getattr(screen, '_updating_output', False)
+        saved = screen.selections.copy() if updating else None
+        super()._watch_selection(previous_selection, selection)
+        if updating and saved:
+            screen.selections = saved
+        elif screen is not None and not updating:
+            screen._native_copy_snapshot = None
+            screen._native_selection_invalid = False
+
+    def on_click(self, event: Click):
+        if event.button != 1 or event.chain != 2:
+            return
+        row, column = self.clamp_visitable(self.get_target_document_location(event))
+        line = self.document[row]
+        for match in re.finditer(r'\w+|[^\w\s]+', line):
+            if match.start() <= column < match.end():
+                self.selection = Selection((row, match.start()), (row, match.end()))
+                event.stop()
+                break
 
 
 class LocalRunScreen(Screen):
@@ -78,13 +107,39 @@ class LocalRunScreen(Screen):
         self._interaction_cancel = None
         self._unclaimed_interaction = None
         self._interaction_close_task = None
+        self._native_copy_snapshot = None
+        self._native_selection_invalid = False
+        self._updating_output = False
 
     def compose(self):
         yield Static('Starting local operation…', id='local-status', markup=False)
-        yield TextArea('', id='local-output', read_only=True, soft_wrap=False)
+        yield SelectableOutput('', id='local-output', read_only=True, soft_wrap=False)
         yield VerticalScroll(id='local-choices')
         yield Static(self.VIEW_HINT, id='local-hint', markup=False)
-        yield TextArea('', id='local-error', read_only=True, soft_wrap=True)
+        yield SelectableOutput('', id='local-error', read_only=True, soft_wrap=True)
+
+    async def _watch_selections(self, old_selections, selections):
+        await super()._watch_selections(old_selections, selections)
+        if selections == self.selections and not self._updating_output:
+            native = any(not isinstance(widget, SelectableOutput) for widget in selections)
+            selected = self.get_selected_text() if native else None
+            if selected:
+                self._native_copy_snapshot = selected
+                self._native_selection_invalid = False
+                self._updating_output = True
+                try:
+                    for area in self.query(SelectableOutput):
+                        if area.selected_text:
+                            area.selection = Selection.cursor(area.selection.end)
+                finally:
+                    self._updating_output = False
+            elif self._native_copy_snapshot:
+                self._native_copy_snapshot = None
+                self._native_selection_invalid = True
+        available = bool(self.get_selected_text())
+        if available != getattr(self, '_selected_text_available', False):
+            self._selected_text_available = available
+            self.refresh_bindings()
 
     def on_mount(self):
         self._local_app = self.app
@@ -119,9 +174,15 @@ class LocalRunScreen(Screen):
                        if self._startup_started is not None else 0)
             status += f'\n{self.snapshot.activity or "Starting local operation"} — {elapsed}s elapsed'
         self.query_one('#local-status', Static).update(status)
+        if self.selections and self._native_copy_snapshot is not None:
+            self.native_copy_selection()
         error_area = self.query_one('#local-error', TextArea)
         if error_area.text != self.failure:
-            error_area.load_text(self.failure)
+            self._updating_output = True
+            try:
+                error_area.load_text(self.failure)
+            finally:
+                self._updating_output = False
         error_area.display = bool(self.failure)
 
     async def run(self):
@@ -214,22 +275,28 @@ class LocalRunScreen(Screen):
         if self.configuration_required:
             hint += '\nr Review configuration'
         self.query_one('#local-hint', Static).update(hint)
+        if self.selections and self._native_copy_snapshot is not None:
+            self.native_copy_selection()
         text = ''.join(format_log(event, self.source) for event in self.events)
         area = self.query_one('#local-output', TextArea)
         previous = area.text
         if text != previous:
-            if text.startswith(previous) and previous:
-                selection = area.selection
-                scroll = area.scroll_offset
-                area.insert(text[len(previous):], area.document.end)
-                area.selection = selection
-                if area.selected_text:
-                    area.scroll_to(scroll.x, scroll.y, animate=False)
+            self._updating_output = True
+            try:
+                if text.startswith(previous) and previous:
+                    selection = area.selection
+                    scroll = area.scroll_offset
+                    area.insert(text[len(previous):], area.document.end)
+                    area.selection = selection
+                    if area.selected_text:
+                        area.scroll_to(scroll.x, scroll.y, animate=False)
+                    else:
+                        area.scroll_end(animate=False)
                 else:
+                    area.load_text(text)
                     area.scroll_end(animate=False)
-            else:
-                area.load_text(text)
-                area.scroll_end(animate=False)
+            finally:
+                self._updating_output = False
         area.display = self.menu is None
         self.query_one('#local-choices', VerticalScroll).display = self.menu is not None
 
@@ -338,6 +405,23 @@ class LocalRunScreen(Screen):
         self.source = 'all'
         self.action_view()
 
+    def native_copy_selection(self):
+        """Reject native selections if their text changed or their widget hid."""
+        if not self.selections:
+            return None
+        if all(isinstance(widget, SelectableOutput) for widget in self.selections):
+            return None
+        selected = self.get_selected_text()
+        if (not selected or selected != self._native_copy_snapshot
+                or any(not widget.is_attached or not widget.display or not widget.visible
+                       or any(not ancestor.display for ancestor in widget.ancestors)
+                       for widget in self.selections)):
+            self._native_copy_snapshot = None
+            self._native_selection_invalid = True
+            self.clear_selection()
+            return None
+        return selected
+
     def check_action(self, action, parameters):
         if action == 'review_configuration':
             return self.configuration_required
@@ -346,7 +430,11 @@ class LocalRunScreen(Screen):
         if action == 'copy_choice':
             if not self.is_mounted or self.app.screen is not self:
                 return False
+            if self.native_copy_selection():
+                return True
             focused = self.app.focused
+            if self._native_selection_invalid and isinstance(focused, TextArea):
+                return False
             if (isinstance(focused, TextArea) and focused.id == 'local-error'
                     and focused.screen is self and focused.display):
                 return bool(focused.selected_text)
@@ -395,6 +483,20 @@ class LocalRunScreen(Screen):
 
     async def action_copy_choice(self):
         focused = self.app.focused
+        selected = self.native_copy_selection()
+        if selected:
+            try:
+                native = await copy_text(self.app, selected)
+            except ClipboardError:
+                self.app.notify('Could not copy the selected value.', severity='error', timeout=2)
+            else:
+                self.clear_selection()
+                self._native_copy_snapshot = None
+                self._native_selection_invalid = True
+                self.app.notify('Value copied.' if native else 'Value sent to terminal clipboard.', timeout=2)
+            return
+        if self._native_selection_invalid and isinstance(focused, TextArea):
+            return
         if isinstance(focused, TextArea) and focused.id == 'local-error':
             if self.check_action('copy_choice', ()):
                 await self.copy_value(focused.selected_text)

@@ -31,3 +31,6 @@ coverage/
 
 # Ephemeral uv process locks; keep the project uv.lock eligible for tracking.
 /uv-????????????????.lock
+
+# Local report residue produced by older synthetic executable fixtures.
+/--no-hooks/

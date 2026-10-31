@@ -87,7 +87,7 @@ def test_actual_sdk_denies_redirects_and_retries(status, kind):
     assert emitted == [{'error': kind, 'execution': 'possibly_executed', 'http_status': status}]
 
 
-@pytest.mark.parametrize('value', [{1: 'bad'}, (1,), float('nan'), {'x': object()}, 'x' * (worker.MAX_FRAME+1)])
+@pytest.mark.parametrize('value', [{1: 'bad'}, (1,), float('nan'), {'x': object()}, pytest.param('x' * (worker.MAX_FRAME+1), id='over-limit')])
 def test_json_rejects_coercion_and_limits(value):
     with pytest.raises(ValueError):
         worker.json_value(value)
@@ -312,7 +312,7 @@ def test_http_policy():
     finally: client.close()
 
 
-@pytest.mark.parametrize('raw',['{','x'*(worker.MAX_FRAME+1)])
+@pytest.mark.parametrize('raw',['{', pytest.param('x'*(worker.MAX_FRAME+1), id='over-limit')])
 def test_main_bounded_input(raw):
     output=io.StringIO();worker.main(io.StringIO(raw),output)
     assert json.loads(output.getvalue())=={'error':'protocol'}

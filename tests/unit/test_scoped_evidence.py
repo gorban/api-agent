@@ -86,7 +86,7 @@ def test_disabled_content_keeps_safe_title_and_withholding_marker(channel, trace
 
 
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), object(), (1,), {1: 'x'},
-    1 << 53, 'x' * 65_537, [0] * 2_049])
+    1 << 53, pytest.param('x' * 65_537, id='oversized-string'), [0] * 2_049])
 def test_invalid_json_is_rejected_before_writing(channel, value):
     with pytest.raises(ValueError):
         publish('Result', value, boundary=EmissionBoundary(ContentPolicy(True)))

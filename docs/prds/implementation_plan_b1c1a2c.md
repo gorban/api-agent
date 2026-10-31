@@ -34,9 +34,9 @@ it must not change execution, accounting, coverage qualification or privacy.
 - [x] Applicable unit tests pass with exact line/branch coverage; installed and
   relocated artifacts, public boundaries and unchanged sampling fingerprints pass.
   Independent and external reviews close reported findings.
-- [ ] Human review confirms per-run evidence is available beneath GRAPH, cumulative
+- [x] Human review confirms per-run evidence is available beneath GRAPH, cumulative
   progress beneath Trial, and only relevant test-wide summaries remain at top level.
 
-**Deferred human review**
-
-Implementation and required automated, independent and external reviews are complete. Only explicit human acceptance above remains unchecked.
+Implementation and required automated, independent and external reviews are complete.
+Human acceptance of scoped evidence placement was recorded on October 30, 2026.
+Historical reports retain their stored layout; execution overlays remain separate.

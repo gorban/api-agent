@@ -168,6 +168,32 @@ def test_range_rendering_clear_and_empty_table(tmp_path):
     asyncio.run(scenario())
 
 
+def test_plain_navigation_keeps_caches_until_a_range_needs_clearing(tmp_path, monkeypatch):
+    async def scenario():
+        app = fixture(tmp_path, 'unit', collector=lambda *a: identities())
+        async with app.run_test(size=(140, 40)) as pilot:
+            table = await show_table(app, pilot, 'test-results')
+            table.move_cursor(row=3)
+            await pilot.pause()
+            original = table._clear_caches
+            calls = []
+            def clear():
+                calls.append(True)
+                original()
+            monkeypatch.setattr(table, '_clear_caches', clear)
+            table.action_clear_range()
+            assert not calls
+            await pilot.press('shift+down')
+            await pilot.pause()
+            highlighted = list(table.render_line(4))
+            await pilot.press('down')
+            await pilot.pause()
+            assert table.range_anchor is None
+            assert calls
+            assert list(table.render_line(4)) != highlighted
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('key,edge', [('up', 0), ('k', 0), ('pageup', 0), ('ctrl+home', 0),
                                     ('home', 0), ('down', -1), ('j', -1), ('pagedown', -1),
                                     ('ctrl+end', -1), ('end', -1)])

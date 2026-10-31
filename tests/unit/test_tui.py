@@ -28,6 +28,31 @@ def setting_row(table, name):
     return next(i for i, row in enumerate(table.ordered_rows) if row.key.value == name)
 
 
+async def confirm_full_unit(pilot, app):
+    deadline = asyncio.get_running_loop().time() + 10
+    while True:
+        assert asyncio.get_running_loop().time() < deadline, 'Full unit confirmation did not appear'
+        dialog = app.screen
+        if dialog.__class__.__name__ == 'QuitDialog' and dialog.is_mounted:
+            messages = list(dialog.query('#quit-message'))
+            answers = list(dialog.query('#quit-answer'))
+            submits = list(dialog.query('#quit-submit'))
+            if all(len(items) == 1 and items[0].is_mounted for items in (messages, answers, submits)):
+                break
+        await pilot.pause(.02)
+    assert './launch.sh --tui-mode unit --no-std-in' in str(messages[0].content)
+    answer = answers[0]
+    answer.focus()
+    while app.focused is not answer:
+        assert asyncio.get_running_loop().time() < deadline, 'Full unit confirmation input did not gain focus'
+        await pilot.pause(.02)
+    await pilot.press('y', 'enter')
+    deadline = asyncio.get_running_loop().time() + 10
+    while app.screen is dialog:
+        assert asyncio.get_running_loop().time() < deadline, 'Full unit confirmation did not close'
+        await pilot.pause(.02)
+
+
 def test_defaults_save_and_typed_prompt(tmp_path):
     async def scenario():
         app = fixture(tmp_path, fields={"COUNT": {"type": "int", "default": 4}})
@@ -1149,6 +1174,7 @@ def test_unit_runner_events_final_failure_and_view(tmp_path, workers, expected):
             await pilot.pause()
             assert app.screen.kind == 'tests'
             await pilot.press('s')
+            await confirm_full_unit(pilot, app)
             for _ in range(20):
                 await pilot.pause(.05)
                 if app.unit_result is not None:
@@ -1314,6 +1340,7 @@ def test_close_running_tests_confirms_and_waits_for_runner_stop(tmp_path):
             await pilot.click('#mode-unit')
             await pilot.pause()
             await pilot.press('s')
+            await confirm_full_unit(pilot, app)
             for _ in range(20):
                 await pilot.pause(.02)
                 if started.is_set():

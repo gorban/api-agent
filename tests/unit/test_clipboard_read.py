@@ -43,7 +43,7 @@ def test_read_success_and_exact_limit(monkeypatch):
                                   stderr=asyncio.subprocess.DEVNULL, limit=65537)
 
 
-@pytest.mark.parametrize('data,status', [(b'x' * 65537, 0), (b'\xff', 0), (b'synthetic', 1)])
+@pytest.mark.parametrize('data,status', [pytest.param(b'x' * 65537, 0, id='oversized-output'), (b'\xff', 0), (b'synthetic', 1)])
 def test_invalid_output_has_fixed_error(monkeypatch, data, status):
     proc = process(data, status)
     setup(monkeypatch, proc)

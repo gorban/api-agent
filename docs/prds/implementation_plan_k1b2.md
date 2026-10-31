@@ -18,6 +18,14 @@
 - [x] Use causal mutations for a LOG_CONTENT veto of trace-only capture, trace content entering the report stream and credential-union bypass. Complete scoped coverage, public-boundary and independent review gates.
 - [ ] Human review; complete joined delivery/publication gates before committing or publishing.
 
+Standalone local trace inspection is specified in [Standalone local trace viewer](implementation_plan_k1b3.md).
+
+## Remaining integration lifecycle requirements
+
+- [x] Before integration/E2E inference exports to a configured managed local collector, acquire and verify that collector through the existing shared infrastructure owners. Keep reporting storage and tracing leases independent; remote targets must not start local services. Release the tracing lease only after all shared provider exporters finish, including failure and cancellation.
+- [x] Human accepted automatic managed integration collector startup/readiness, shared leases, exporter-before-collector shutdown and retained trace data on October 30, 2026. This approval does not close native backend payload views, full GenAI conformance or the separate delivery-loss summary requirement.
+- [ ] Surface confirmed trace-delivery loss in the final suite summary and retained diagnostics, separately from test outcomes and Allure publication. Preserve successful tests when optional export fails and disposal is acknowledged; do not silently discard the warning or reopen disposed resources. Verify reachable, unavailable and rejected collectors plus shared ownership and shutdown ordering.
+
 ## Implementation and evidence
 
 The backend owns `telemetry/remote_inference.py`; the two destination collectors
@@ -47,3 +55,14 @@ External PR-style review closed live-destination field filtering and attempt/eve
 timestamp findings, including serialized OTLP checks. Scoped public-boundary
 checks passed; complete intended-index/history/publication checks remain separate.
 No paid calls, account changes, commits or publication were needed.
+
+Managed collector lifecycle verification passes the exact three-case integration
+launch with Allure publication and no trace-delivery warning. Authenticated
+LangFuse readback confirms new inference observations. The final full unit run
+passes 21,870 tests with 100% lines and branches. Regression checks cover local
+versus remote/disabled planning, readiness ordering and inherited deadlines,
+exporter-before-service disposal, failure retention and cleanup retry. Isolated
+causal controls detect skipped acquisition, extended deadlines and early release.
+Independent and external source review are complete; human acceptance
+of this automatic integration lifecycle was granted on October 30, 2026. Final-summary visibility of
+confirmed delivery loss is the separate unchecked requirement above.

@@ -67,7 +67,7 @@ def test_setup_catalog_completion_stream_and_cleanup(controlled, monkeypatch):
         create.assert_awaited_once_with({'BEDROCK_API_MODE': 'completions'}, interactive=False, user_index=None, credentials=None, services={})
         transport.call.return_value = {'data': []}
         assert await provider.adescribe(auth=session) == ()
-        transport.call.assert_awaited_with('models', {}, auth=session)
+        transport.call.assert_awaited_with('models', {}, auth=session, join=ANY)
         assert await provider.acomplete(request, auth=session) == result
         transport.call.assert_awaited_with('completions', {'prefix': '/v1', 'body': {'modelId': MODEL}}, auth=session, join=ANY, on_dispatch=ANY)
         assert [event async for event in provider.astream(request, auth=session)] == [
@@ -90,6 +90,115 @@ def test_unknown_model_fails_before_transport(controlled):
         with pytest.raises(ContractError, match='Unsupported'):
             await module.factory({'BEDROCK_API_MODE': 'completions'}, {}).acomplete(unknown)
         transport.call.assert_not_awaited()
+    asyncio.run(run())
+
+
+def test_catalog_handoff_holds_lease_through_concurrent_registration(controlled, monkeypatch):
+    from api_agent.providers import credential_guard
+    from api_agent.telemetry.privacy import EmissionBoundary
+
+    _, _, transport, _ = controlled
+    transport.call.return_value = {'data': [{'id': MODEL}]}
+    boundary = EmissionBoundary()
+    async def run():
+        original = credential_guard.async_guard_json
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def gated_guard(value, secrets):
+            entered.set()
+            await release.wait()
+            return await original(value, secrets)
+        monkeypatch.setattr(credential_guard, 'async_guard_json', gated_guard)
+        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        async def consume():
+            result = await provider.adescribe(auth=None)
+            assert not registration.done()
+            return result
+        task = asyncio.create_task(consume())
+        await entered.wait()
+        registration = asyncio.create_task(boundary.aregister_secret('GLM 4.7 Flash'))
+        await asyncio.sleep(0)
+        assert not registration.done()
+        release.set()
+        result = await task
+        assert result[0].display_name == 'GLM 4.7 Flash'
+        await registration
+        await provider.aclose()
+    asyncio.run(run())
+
+
+def test_catalog_handoff_rejects_credential_in_generated_metadata(controlled):
+    from api_agent.telemetry.privacy import EmissionBoundary
+
+    _, _, transport, _ = controlled
+    transport.call.return_value = {'data': [{'id': MODEL}]}
+    async def run():
+        boundary = EmissionBoundary(secrets=('GLM 4.7 Flash',))
+        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        with pytest.raises(ContractError, match='safely released'):
+            await provider.adescribe(auth=None)
+        await provider.aclose()
+    asyncio.run(run())
+
+
+def test_catalog_close_waits_for_already_cancelling_owner(controlled):
+    _, _, transport, _ = controlled
+    async def run():
+        entered, cancelling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def blocked(*args, **kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelling.set()
+                await release.wait()
+                raise
+        transport.call.side_effect = blocked
+        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        task = asyncio.create_task(provider.adescribe(auth=None))
+        await entered.wait()
+        task.cancel()
+        await cancelling.wait()
+        closing = asyncio.create_task(provider.aclose())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not closing.done()
+        transport.aclose.assert_not_awaited()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await closing
+        transport.aclose.assert_awaited_once()
+        assert not provider._describes
+    asyncio.run(run())
+
+
+def test_catalog_cancel_after_child_handoff_releases_lease(controlled, monkeypatch):
+    from api_agent.telemetry.privacy import EmissionBoundary
+
+    _, _, transport, _ = controlled
+    transport.call.return_value = {'data': [{'id': MODEL}]}
+    async def run():
+        boundary = EmissionBoundary()
+        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        entered = asyncio.Event()
+        original = asyncio.shield
+        def gated_shield(task):
+            if task not in provider._describes:
+                return original(task)
+            async def wait():
+                result = await original(task)
+                entered.set()
+                await asyncio.Event().wait()
+                return result
+            return wait()
+        monkeypatch.setattr(asyncio, 'shield', gated_shield)
+        task = asyncio.create_task(provider.adescribe(auth=None))
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(boundary.aregister_secret('after-cancel'), 1)
+        await provider.aclose()
     asyncio.run(run())
 
 
