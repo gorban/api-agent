@@ -100,11 +100,13 @@ def joined_transport(call):
     async def invoke(operation, payload, *, auth, join=None, on_dispatch=None):
         lease = None
         try:
+            # Mirror the SDK transport's admission before dispatch or release.
+            admitted = await auth()
             if join is not None:
                 _, lease = await join(['synthetic-worker-secret'])
             if on_dispatch is not None:
                 on_dispatch()
-            return await call(operation, payload, auth=auth)
+            return await call(operation, payload, auth=admitted)
         finally:
             if lease is not None:
                 lease.release()

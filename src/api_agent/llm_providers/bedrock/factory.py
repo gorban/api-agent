@@ -2,6 +2,7 @@
 from contextlib import aclosing
 from dataclasses import replace
 import asyncio
+import secrets
 from api_agent.providers.contracts import ContractError, ProviderCapabilities
 from api_agent.providers.llm import StreamEvent
 from api_agent.providers.rich_inference import async_validate_result
@@ -41,6 +42,7 @@ class BedrockProvider:
         self._session_closes = {}
         self.emissions = self.services.get("emissions")
         self._credential_setup_started = False
+        self._continuation_key = secrets.token_bytes(32)
 
     def bind_credential_authority(self, authority):
         from api_agent.telemetry.privacy import EmissionBoundary
@@ -210,6 +212,8 @@ class BedrockProvider:
         from api_agent.workflows.inference_capture import record_response_dispatch, record_response_failure
         from api_agent.providers.inference import error_usage
         prepared, evidence = prepare_response(request, self.api_mode, endpoint=self.endpoint)
+        from .continuation_scope import NativeScope
+        native_scope = NativeScope(self._continuation_key, prepared, self.endpoint, self.api_mode)
         failure_usage = None
         dispatched = False
         try:
@@ -229,10 +233,12 @@ class BedrockProvider:
                         record_response_dispatch(evidence)
                     dispatched = True
                 try:
-                    response = await self.transport.call(self.api_mode, payload, auth=auth,
+                    response = await self.transport.call(self.api_mode, payload,
+                        auth=native_scope.wrap_auth(auth) if self.api_mode == 'responses' else auth,
                         join=self._join_credentials, on_dispatch=dispatch)
                     from api_agent.workflows.inference_capture import capture_inference
                     result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm, endpoint=self.endpoint), response=evidence)
+                    result = native_scope.seal(result)
                     capture_inference('output', {'provider_response': response}, request.request_id, auth=auth,
                                       decoded_visible_text_characters=sum(len(part.text) for part in result.payload.content))
                     from api_agent.providers.generation_attempts import snapshot_transport_result
@@ -277,6 +283,8 @@ class BedrockProvider:
         from api_agent.workflows.inference_capture import record_response_dispatch, record_response_failure
         from api_agent.providers.inference import error_usage
         prepared, evidence = prepare_response(request, self.api_mode, endpoint=self.endpoint, stream=True)
+        from .continuation_scope import NativeScope
+        native_scope = NativeScope(self._continuation_key, prepared, self.endpoint, self.api_mode)
         failure_usage = None
         dispatched = False
         try:
@@ -301,7 +309,8 @@ class BedrockProvider:
                     if evidence is not None:
                         record_response_dispatch(evidence)
                     dispatched = True
-                stream = self.transport.stream(self.api_mode + '_stream', payload, auth=auth,
+                stream = self.transport.stream(self.api_mode + '_stream', payload,
+                    auth=native_scope.wrap_auth(auth) if self.api_mode == 'responses' else auth,
                     join=self._join_credentials, on_dispatch=dispatch)
             async with aclosing(stream):
                 while True:
@@ -328,7 +337,8 @@ class BedrockProvider:
             if budget.remaining == 0:
                 raise TimeoutError('Bedrock stream deadline exceeded.')
             async with component_timeout('Bedrock stream result', budget.remaining):
-                result = await async_validate_result(request, replace(decoder.finish(), response=evidence))
+                result = await async_validate_result(request,
+                    native_scope.seal(replace(decoder.finish(), response=evidence)))
             from api_agent.providers.inference import result_to_wire
             from api_agent.workflows.inference_capture import capture_inference
             capture_inference('output', result_to_wire(result), request.request_id,

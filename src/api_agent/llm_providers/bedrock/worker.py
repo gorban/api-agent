@@ -162,10 +162,12 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 raise ValueError()
             response = operation.startswith('responses')
             allowed = ({'modelId', 'messages', 'system', 'inferenceConfig', 'toolConfig', 'outputConfig'}
-                       if native else {'model', 'input', 'tools', 'temperature', 'max_output_tokens', 'store', 'reasoning', 'text'}
+                       if native else {'model', 'input', 'tools', 'temperature', 'max_output_tokens', 'store', 'reasoning', 'text', 'include'}
                        if response else {'model', 'messages', 'tools', 'temperature', 'max_tokens', 'reasoning_effort', 'response_format'})
             if (not set(arguments) <= allowed
                     or 'store' in arguments and arguments['store'] is not False):
+                raise ValueError()
+            if 'include' in arguments and arguments['include'] != ['reasoning.encrypted_content']:
                 raise ValueError()
             if endpoint == 'runtime':
                 from api_agent.llm_providers.bedrock.catalog import selection
