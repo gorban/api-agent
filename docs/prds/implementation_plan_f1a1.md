@@ -141,7 +141,7 @@ their own containing-document-relative links.
   `structured`/`allow`; unsupported strict schemas require an explicitly recorded
   weaker mechanism and original-schema validation, never a silently closed schema.
 - The useful demo reviewer declares its four generated Boolean verdicts separately
-  from the complete `accepted`/`feedback` node Output. It uses `structured`/`reject`.
+  from the complete `accepted`/`feedback` node Output. It uses `structured`/`allow`: native structured output is preferred, while permitted JSON fallback retains validation of the original four-Boolean schema and selected reasoning effort. Invalid verdicts must fail before rendering or tool execution.
 - The local chat application and useful demo renderer remain intentionally textual.
   Their original runtime metadata is assembled separately from generated text.
 - Tool conversations retain explicit native requests: conversational rounds and
