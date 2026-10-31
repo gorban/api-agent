@@ -145,8 +145,16 @@ qualified without additional inference. Requests default to a finite 1024 output
 supplied. Responses always sends store=False. Actionable streamed tool calls wait
 for EOF, terminal reconstruction and validation against the original tool schemas.
 Missing/invalid input, output or total usage prevents successful completion.
-Native reasoning output is bounded and suppressed; it is not displayed, persisted
-as continuation or promised to preserve thinking across tool turns.
+Native reasoning text is bounded and suppressed. Legacy plaintext-only reasoning
+without replay-relevant native metadata retains the existing suppression behavior
+and no continuation. Responses tool turns that return encrypted native state retain
+validated opaque state in opaque, report-excluded continuation; replay
+preserves admitted message and function-call metadata without duplicating the
+normalized assistant. State belongs to the same provider owner, exact model, API,
+endpoint, resolved region and frozen authentication identity. Credential rotation,
+a recreated provider or unresolved default-chain identity/region prevents replay.
+Final answers without tool calls retain no continuation. See
+[the continuation requirements](../../../../docs/prds/implementation_plan_f4o1.md).
 
 GPT-OSS 20B and 120B support explicit low, medium and high reasoning effort on
 both APIs. Responses is the qualified route for reasoning-token contrast tests;
@@ -161,8 +169,9 @@ combinations remain unqualified; allowed fallback uses the same text route.
 Original-schema validation and legacy behavior remain intact. See
 [response modes and evidence](../gpt/RESPONSE_MODES.md).
 
-Explicit cache controls, cache boundaries, native continuations, preserved
-reasoning continuity and additional model routes remain unsupported.
+Explicit cache controls, cache boundaries and continuation on Completions or
+Converse remain unsupported. Native Responses replay supports only the validated
+encrypted tool-turn contract; unsupported reasoning shapes fail explicitly.
 Token/context caps interpret published K units conservatively in
 decimal units. Usage is normalized, with bounded AWS list-price estimates described in [costs](COSTS.md).
 Reported invoice charges remain unavailable; quotes never use GPT rates or report

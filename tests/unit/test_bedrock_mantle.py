@@ -286,7 +286,7 @@ def test_reasoning_capture_cannot_make_an_empty_answer_a_valid_measurement():
         usage={'output_tokens': 3}, response_text_present=bool(result.payload.content[0].text)), MODEL) == 'visible_answer_missing'
 
 
-@pytest.mark.parametrize('change',[{'encrypted_content':'opaque'},{'summary':None},{'summary':[{'type':'unknown','text':'bad'}]},
+@pytest.mark.parametrize('change',[{'encrypted_content':0},{'summary':None},{'summary':[{'type':'unknown','text':'bad'}]},
     {'content':[{'type':'reasoning_text','text':1}]},{'status':'in_progress'}])
 def test_invalid_native_reasoning_rejected(change):
     with pytest.raises(ProviderAccessError):

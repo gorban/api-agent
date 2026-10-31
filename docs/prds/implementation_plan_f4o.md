@@ -51,7 +51,7 @@ Public contracts: [AWS endpoint comparison](https://docs.aws.amazon.com/bedrock/
 [Converse](https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html).
 
 
-Runtime model visibility does not guarantee that the selected endpoint, API, region or feature is supported. Operators should filter models according to AWS documentation. Responses that contain unsupported reasoning continuation fail safely; they are not silently discarded or replayed.
+Runtime model visibility does not guarantee that the selected endpoint, API, region or feature is supported. Operators should filter models according to AWS documentation. The [Responses native continuation follow-up](implementation_plan_f4o1.md) owns encrypted assistant-state replay for client tool results, including owner/authentication binding and report exclusion. Unqualified continuation fails safely rather than being silently discarded.
 
 
 [Capability discovery and fallback](implementation_plan_f1a2.md) owns configurable
@@ -59,7 +59,7 @@ capability caching, optional accounted preflight probes, and fallback after a
 confirmed pre-inference rejection. This endpoint work does not add hidden probes
 or automatic inference route changes.
 
-Offline qualification passed 22,376 unit tests with exact 100% line and branch
+Offline qualification passed 22,464 unit tests with exact 100% line and branch
 coverage. Source distributions, installed and relocated packages, workflow
 resources and independent/external source reviews passed. Real Runtime access
 and the Studio acceptance above remain separate checks.

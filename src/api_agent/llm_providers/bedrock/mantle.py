@@ -5,10 +5,12 @@ buffered until EOF; the factory validates their schemas before publication.
 """
 from copy import deepcopy
 import json
+import re
 
 from api_agent.providers.contracts import ContractError, ProviderAccessError
 from api_agent.providers.llm import LLMRequest, LLMResult, Message, StreamEvent, TextContent, ToolCall, Usage
-from api_agent.providers.rich_inference import object_json, request_to_wire, schema
+from api_agent.providers.rich_inference import object_json, request_to_wire, schema, continuation
+from api_agent.providers.response_metadata import _logprobs
 from .catalog import selection
 
 _LIMIT = 524288
@@ -56,12 +58,14 @@ def _fields(row, allowed, *, path='$'):
 
 
 def _reasoning(item, *, incomplete=False):
-    _fields(item, {'type', 'id', 'status', 'summary', 'content'}, path='$.output[]')
+    _fields(item, {'type', 'id', 'status', 'summary', 'content', 'encrypted_content'}, path='$.output[]')
     status = item.get('status')
     status = 'completed' if status is None else status
     _require(item.get('type') == 'reasoning'
              and status in (('completed', 'incomplete') if incomplete else ('completed',)))
     _text(item.get('id'), empty=False)
+    if item.get('encrypted_content') is not None:
+        _cipher(item['encrypted_content'])
     for key, kind in (('summary', 'summary_text'), ('content', 'reasoning_text')):
         rows = item.get(key)
         rows = [] if key == 'content' and rows is None else rows
@@ -69,6 +73,74 @@ def _reasoning(item, *, incomplete=False):
         for row in rows:
             _require(type(row) is dict and set(row) == {'type', 'text'} and row.get('type') == kind)
             _text(row.get('text'))
+
+
+def _cipher(value, *, empty=False):
+    _require(type(value) is str and (empty or bool(value)) and len(value) <= 32768
+             and (not value or value.isprintable()))
+    return value
+
+
+def native_state(items, message=None):
+    """Validate exact native replay rows; never retain plaintext reasoning."""
+    _bounded(items)
+    _require(type(items) is list and 1 <= len(items) <= 64)
+    text, tools, identifiers = [], [], set()
+    replay_metadata = False
+    for item in items:
+        _require(type(item) is dict)
+        kind = item.get('type')
+        if kind == 'reasoning':
+            _reasoning(item)
+            _require(set(item) <= {'type', 'id', 'status', 'summary', 'content', 'encrypted_content'}
+                     and item.get('summary') == [] and item.get('content') in (None, []))
+            _cipher(item.get('encrypted_content'))
+            replay_metadata = True
+        elif kind == 'message':
+            _require(set(item) <= {'type', 'id', 'status', 'role', 'content', 'phase'}
+                     and item.get('role') == 'assistant'
+                     and item.get('phase') in (None, 'commentary', 'final_answer')
+                     and type(item.get('content')) is list and len(item['content']) <= 64)
+            replay_metadata |= item.get('phase') is not None
+            for part in item['content']:
+                _require(type(part) is dict and set(part) <= {'type', 'text', 'annotations', 'logprobs'}
+                         and part.get('type') == 'output_text' and part.get('annotations', []) == [])
+                try:
+                    _logprobs(part.get('logprobs'))
+                except ContractError:
+                    _require(False)
+                replay_metadata |= 'logprobs' in part
+                text.append(_text(part.get('text')))
+        elif kind == 'function_call':
+            _call_metadata(item)
+            _require(set(item) <= {'type', 'id', 'status', 'call_id', 'name', 'arguments', 'item_id', 'output_index', 'namespace', 'async', 'caller'})
+            tools.append(item)
+        else:
+            _require(False)
+        _require(item.get('status') in (None, 'completed'))
+        identifier = item.get('id')
+        if kind != 'function_call' or identifier is not None:
+            _text(identifier, empty=False)
+            _require(len(identifier) <= 200 and identifier.isprintable() and identifier not in identifiers)
+            identifiers.add(identifier)
+    calls = _calls(tools, True)
+    _require(bool(calls) and replay_metadata)
+    visible = (TextContent(_text(''.join(text))),)
+    if message is not None:
+        _require(message.role == 'assistant' and not message.results
+                 and message.content == visible and message.calls == calls)
+    return deepcopy(items)
+
+
+def continuation_state(message):
+    """Validate a provider-owned envelope without interpreting its owner seal."""
+    try:
+        envelope = continuation(message.continuation)
+        if re.fullmatch(r'bedrock\.responses(?:\.[0-9a-f]{64})?', envelope['provider']) is None:
+            raise ContractError('Invalid Bedrock continuation provider')
+        return native_state(envelope['state'], message)
+    except (ProviderAccessError, ContractError, ValueError):
+        raise ProviderAccessError('invalid_request', 'Invalid Bedrock Responses continuation.') from None
 
 
 def validate_request(request, *, endpoint="mantle", api_mode="completions"):
@@ -81,8 +153,13 @@ def validate_request(request, *, endpoint="mantle", api_mode="completions"):
             or payload.generation.reasoning_effort not in (None, '') and
                (endpoint != 'runtime' and request.selected_llm not in ('openai.gpt-oss-20b', 'openai.gpt-oss-120b')
                 or payload.generation.reasoning_effort not in ('low', 'medium', 'high'))
-            or any(m.cache_boundary is not None or m.continuation is not None for m in payload.messages)):
+            or any(m.cache_boundary is not None for m in payload.messages)):
         raise ProviderAccessError('unsupported', 'Bedrock request feature is unsupported.')
+    for message in payload.messages:
+        if message.continuation is not None:
+            if api_mode != 'responses':
+                raise ProviderAccessError('unsupported', 'Bedrock continuation requires Responses.')
+            continuation_state(message)
     maximum_temperature = 1 if request.selected_llm.startswith('zai.') else 2
     if payload.generation.temperature is not None and payload.generation.temperature > maximum_temperature:
         raise ProviderAccessError('invalid_request', 'Bedrock model temperature is out of range.')
@@ -101,6 +178,9 @@ def encode(request, api_mode, *, endpoint="mantle"):
     items = []
     for message in payload.messages:
         text = ''.join(part.text for part in message.content)
+        if message.continuation is not None:
+            items.extend(continuation_state(message))
+            continue
         if response:
             if message.content:
                 items.append({'role': message.role, 'content': text})
@@ -120,6 +200,7 @@ def encode(request, api_mode, *, endpoint="mantle"):
     body = {'model': request.selected_llm, 'input' if response else 'messages': items}
     if response:
         body['store'] = False
+        body['include'] = ['reasoning.encrypted_content']
     if payload.tools:
         tools = []
         for tool in payload.tools:
@@ -285,7 +366,17 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
         reason = _REASONS[finish]
     content = _text(''.join(text))
     metadata = _metadata(raw)
-    return LLMResult(Message('assistant', (TextContent(content),), calls), _usage(raw.get('usage'), response),
+    state = None
+    if response and calls and any(item.get('type') == 'reasoning' and item.get('encrypted_content') is not None
+            or item.get('type') == 'message' and (item.get('phase') is not None
+                or any('logprobs' in part for part in item.get('content', []))) for item in raw['output']):
+        rows = native_state(raw['output'])
+        state = json.dumps({'provider': 'bedrock.responses', 'state': rows}, allow_nan=False, separators=(',', ':'))
+        try:
+            continuation(state)
+        except ContractError:
+            _require(False)
+    return LLMResult(Message('assistant', (TextContent(content),), calls, continuation=state), _usage(raw.get('usage'), response),
                      reason, metadata['model'], metadata['service_tier'], metadata['serving_revision'])
 
 
@@ -427,12 +518,16 @@ class StreamDecoder:
         if kind == 'response.output_item.added':
             item = event.get('item')
             _require(index == len(self.items) and type(item) is dict
-                     and item.get('type') in ('message', 'function_call', 'reasoning') and item.get('status') == 'in_progress')
+                     and item.get('type') in ('message', 'function_call', 'reasoning')
+                     and (item.get('status') in (None, 'in_progress') if item['type'] == 'reasoning'
+                          else item.get('status') == 'in_progress'))
             _text(item.get('id'), empty=False)
             _require(all(existing['id'] != item['id'] for existing in self.items))
             if item['type'] == 'reasoning':
                 _require(item.get('summary') == [] and item.get('content') in (None, []))
-                _fields(item, {'type', 'id', 'status', 'summary', 'content'})
+                _fields(item, {'type', 'id', 'status', 'summary', 'content', 'encrypted_content'})
+                if item.get('encrypted_content') is not None:
+                    _cipher(item['encrypted_content'], empty=True)
             elif item['type'] == 'message':
                 _require(item.get('role') == 'assistant' and item.get('content') == [])
             else:
@@ -446,8 +541,17 @@ class StreamDecoder:
         item = self.items[index]
         if kind == 'response.output_item.done':
             done = event.get('item')
-            _require(type(done) is dict and done.get('status') in ('completed', 'incomplete'))
-            expected = dict(item, status=done['status'])
+            _require(type(done) is dict and done.get('status') in (
+                (None, 'completed', 'incomplete') if item['type'] == 'reasoning' else ('completed', 'incomplete')))
+            expected = dict(item)
+            if 'status' in done:
+                expected['status'] = done['status']
+            else:
+                expected.pop('status', None)
+            if item['type'] == 'reasoning':
+                _reasoning(done, incomplete=done.get('status') == 'incomplete')
+                if 'encrypted_content' in done:
+                    expected['encrypted_content'] = done['encrypted_content']
             _require(event.get('item') == expected and not any(key[0] == index for key in self.parts)
                      and (item['type'] != 'function_call' or index in self.arguments_done))
             self.items[index] = expected

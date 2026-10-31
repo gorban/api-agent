@@ -98,7 +98,8 @@ async def test_bundled_native_acquirer_reaches_real_parsed_flow(monkeypatch, met
                     SessionToken='synthetic-token', expires_at=time.time() + 180, identity=dict(Account='123456789012', Arn='arn:aws:iam::123456789012:user/example'))
 
     async def inference(operation, payload, *, auth, join=None, on_dispatch=None):
-        values = auth.worker_config()
+        # Mirror the real SDK transport's per-call auth admission.
+        values = (await auth()).worker_config()
         assert values['mode'] == 'temporary' and values['session_token'] == 'synthetic-token'
         if join is not None:
             _, lease = await join([values['access_key'], values['secret_key'], values['session_token']])
