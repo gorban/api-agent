@@ -6,6 +6,12 @@ import pytest
 from api_agent.runtime.https import HTTPSPreparationError, prepare_local_https
 
 
+def certificate_text(names):
+    return ('Certificate:\n    Data:\n        X509v3 extensions:\n'
+            '            X509v3 Subject Alternative Name:\n                ' + names + '\n'
+            '    Signature Algorithm: sha256WithRSAEncryption\n')
+
+
 class FakeRunner:
     def __init__(self, root):
         self.root = root
@@ -26,9 +32,9 @@ class FakeRunner:
         if argv[:2] == ['openssl', 'x509']:
             if '-checkend' in argv and not self.valid:
                 return subprocess.CompletedProcess(argv, 1, '', '')
-            if '-ext' in argv:
+            if '-text' in argv:
                 names = 'DNS:localhost, DNS:localhost, IP Address:127.0.0.1, IP Address:::1'
-                return subprocess.CompletedProcess(argv, 0, names, '')
+                return subprocess.CompletedProcess(argv, 0, certificate_text(names), '')
             if '-pubkey' in argv:
                 return subprocess.CompletedProcess(argv, 0, 'PUBLIC\n', '')
         if argv[:2] == ['openssl', 'pkey']:
@@ -160,7 +166,7 @@ def test_existing_validation_causes_regeneration(tmp_path, invalid):
             if not self.generated:
                 if invalid == 'expiry' and argv[:2] == ['openssl', 'x509'] and '-checkend' in argv:
                     return subprocess.CompletedProcess(argv, 1, '', '')
-                if invalid == 'sans' and '-ext' in argv:
+                if invalid == 'sans' and '-text' in argv:
                     return subprocess.CompletedProcess(argv, 0, 'DNS:unrelated.example', '')
                 if invalid == 'key' and argv[:2] == ['openssl', 'pkey']:
                     return subprocess.CompletedProcess(argv, 0, 'OTHER', '')
@@ -229,9 +235,9 @@ def test_expanded_ipv6_san_reuses_and_checks_renewal_window(tmp_path):
     calls = []
     def expanded(argv, *, timeout, interactive):
         calls.append(argv)
-        if '-ext' in argv:
+        if '-text' in argv:
             return subprocess.CompletedProcess(argv, 0,
-                'DNS:localhost, DNS:localhost, IP Address:127.0.0.1, IP Address:0:0:0:0:0:0:0:1', '')
+                certificate_text('DNS:localhost, DNS:localhost, IP Address:127.0.0.1, IP Address:0:0:0:0:0:0:0:1'), '')
         return base(argv, timeout=timeout, interactive=interactive)
     result = prepare_local_https(directory, runner=expanded, renewal_days=3)
     assert result.diagnostics[0] == 'Local certificate reused.'
@@ -339,9 +345,9 @@ def test_dns_san_cannot_satisfy_ip_address(tmp_path):
     root = tmp_path / 'ca'; root.mkdir()
     base = FakeRunner(root)
     def wrong_type(argv, *, timeout, interactive):
-        if '-ext' in argv:
+        if '-text' in argv:
             return subprocess.CompletedProcess(argv, 0,
-                'DNS:localhost, DNS:localhost, DNS:127.0.0.1, DNS:::1', '')
+                certificate_text('DNS:localhost, DNS:localhost, DNS:127.0.0.1, DNS:::1'), '')
         return base(argv, timeout=timeout, interactive=interactive)
     with pytest.raises(HTTPSPreparationError, match='Generated certificate failed validation'):
         prepare_local_https(tmp_path / '.certs', runner=wrong_type)
