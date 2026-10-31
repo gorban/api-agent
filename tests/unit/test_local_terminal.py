@@ -288,7 +288,9 @@ def test_terminal_progress_displays_admitted_component_names(phase):
         'agent, service:extension/database, profile:extension-profile']
 
 
-def test_terminal_startup_activity_is_visible_with_other_log_source():
+@pytest.mark.parametrize('source, expected', [('agent', ['ordinary activity\n']),
+    ('all', ['[agent] ordinary activity\n']), ('ui', [''])])
+def test_terminal_startup_activity_is_visible_once_with_any_log_source(source, expected):
     from api_agent.runtime.local_contracts import LocalComponent, LocalEvent, LocalSnapshot
     diagnostics, output = [], []
     class Owner:
@@ -300,14 +302,15 @@ def test_terminal_startup_activity_is_visible_with_other_log_source():
             self.event(LocalEvent('status', snapshot))
             self.event(LocalEvent('status', snapshot))
             self.event(LocalEvent('log', source='agent', text='Local startup: view preparation.\n'))
+            self.event(LocalEvent('log', source='agent', text='ordinary activity\n'))
         async def wait(self): return 0
         async def aclose(self): pass
 
-    asyncio.run(run_local_terminal(None, lambda: NS(values={'RUN_LOG_SOURCE': 'ui'}),
+    asyncio.run(run_local_terminal(None, lambda: NS(values={'RUN_LOG_SOURCE': source}),
         owner_factory=Owner, output=output.append, diagnostic=diagnostics.append))
     assert diagnostics == ['Run local: starting', 'Selected components: agent',
                            'Local startup: view preparation']
-    assert output == ['']
+    assert output == expected
 
 
 @pytest.mark.parametrize('stall', ['owner', 'writer', 'writer-only'])

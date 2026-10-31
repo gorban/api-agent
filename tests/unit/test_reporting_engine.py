@@ -159,6 +159,7 @@ def test_socket_trust_checks_precede_cli(engine, monkeypatch, kind):
 
 
 def test_default_aliases_are_deduplicated_and_missing_or_distinct_sockets_refused(engine, monkeypatch):
+    monkeypatch.setattr(subject, 'sys', SimpleNamespace(platform='linux'))
     runtime = engine.path.parent / 'runtime'
     (runtime / 'podman').mkdir(parents=True)
     local = runtime / 'podman/podman.sock'
@@ -185,6 +186,7 @@ def test_default_aliases_are_deduplicated_and_missing_or_distinct_sockets_refuse
 
 
 def test_relative_runtime_socket_and_untrusted_resolved_parent_are_refused(engine, monkeypatch):
+    monkeypatch.setattr(subject, 'sys', SimpleNamespace(platform='linux'))
     runtime = engine.path.parent / 'podman'; runtime.mkdir()
     (runtime / 'podman.sock').symlink_to(engine.path)
     monkeypatch.chdir(engine.path.parent)
@@ -378,3 +380,145 @@ def test_different_unix_transport_partitions_fallback_even_with_matching_invento
         assert changed != original
     finally:
         listener.close()
+
+
+@pytest.fixture
+def compatibility_engine(engine):
+    """Docker CLI observes Podman's per-request compatibility IDs."""
+    engine.cli = dict(engine.direct, ID='different-response')
+    engine.version = {'Components': [{'Name': 'Podman Engine', 'Version': '5.0.0'}]}
+    engine.cli_version = json.loads(json.dumps(engine.version))
+    original_connection, original_runner = engine.connection, engine.runner
+    engine.routes, engine.commands = [], []
+
+    class Connection(original_connection):
+        def request(self, method, route):
+            engine.routes.append(route)
+            super().request(method, route)
+
+        def getresponse(self):
+            if self.route == '/version':
+                return SimpleNamespace(status=200,
+                    read=lambda limit: json.dumps(engine.version).encode(), close=lambda: None)
+            return super().getresponse()
+
+    def runner(command, **kwargs):
+        engine.commands.append(command)
+        if command[1] == 'version':
+            return json.dumps(engine.cli_version)
+        return original_runner(command, **kwargs)
+
+    engine.connection, engine.runner = Connection, runner
+    return engine
+
+
+def test_docker_cli_podman_uses_existing_stable_namespace(compatibility_engine):
+    engine = compatibility_engine
+    identity = identify(engine)
+    engine.direct['ID'] = 'next-direct-response'
+    engine.cli['ID'] = 'next-cli-response'
+    assert identify(engine) == identity
+    assert engine.routes.count('/version') == 2
+    assert engine.commands.count(('docker', 'version', '--format', '{{json .Server}}')) == 2
+    engine.cli = {'host': {'hostname': 'host'}, 'store': {'graphRoot': '/store'}}
+    assert identify(engine) == identity
+
+
+@pytest.mark.parametrize('kind', ['direct-platform', 'cli-platform', 'missing-version',
+    'empty-version', 'invalid-version', 'different-version', 'duplicate-engine', 'wrong-host', 'wrong-store',
+    'wrong-inventory', 'empty-inventory'])
+def test_compatibility_evidence_cannot_bypass_identity_checks(compatibility_engine, kind):
+    engine = compatibility_engine
+    if kind == 'direct-platform': engine.version['Components'][0]['Name'] = 'other'
+    if kind == 'cli-platform': engine.cli_version['Components'][0]['Name'] = 'other'
+    if kind == 'missing-version': engine.version['Components'][0].pop('Version')
+    if kind == 'empty-version': engine.version['Components'][0]['Version'] = ''
+    if kind == 'invalid-version': engine.version['Components'][0]['Version'] = 5
+    if kind == 'different-version': engine.cli_version['Components'][0]['Version'] = '6.0.0'
+    if kind == 'duplicate-engine': engine.version['Components'] *= 2
+    if kind == 'wrong-host': engine.cli['Name'] = 'different'
+    if kind == 'wrong-store': engine.cli['DockerRootDir'] = '/different'
+    if kind == 'wrong-inventory': engine.cli_ids = ['b' * 64]
+    if kind == 'empty-inventory': engine.cli_ids = engine.direct_ids = []
+    with pytest.raises(PrerequisiteError, match='Cannot verify'):
+        identify(engine)
+    assert len(engine.closed) == 3
+
+
+def test_native_identity_never_queries_compatibility_version(engine):
+    assert identify(engine)
+    assert len(engine.closed) == 2
+
+
+@pytest.mark.parametrize('identifier', [{'bad': 1}, '../bad', 42])
+def test_compatibility_rejects_malformed_cli_identity(compatibility_engine, identifier):
+    engine = compatibility_engine
+    engine.cli['ID'] = identifier
+    with pytest.raises(PrerequisiteError, match='Cannot verify'):
+        identify(engine)
+    assert '/version' not in engine.routes
+
+
+@pytest.mark.parametrize('empty', [False, True])
+def test_macos_uses_selected_context_and_pins_its_socket(engine, monkeypatch, empty):
+    monkeypatch.setattr(subject, 'sys', SimpleNamespace(platform='darwin'))
+    if empty:
+        engine.cli_ids = engine.direct_ids = []
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if command[1] == 'context':
+            assert command == ('docker', 'context', 'inspect', '--format', '{{json .Endpoints.docker.Host}}')
+            assert kwargs['environment'] == {}
+            assert kwargs['deadline'] > kwargs['now']()
+            assert not kwargs['cancelled']()
+            return json.dumps('unix://' + str(engine.path))
+        return engine.runner(command, **kwargs)
+
+    identity, transport = subject.verified_engine_binding(runner=runner, connection=engine.connection)
+    assert identity == identify(engine)
+    assert transport == 'unix://' + str(engine.path.resolve())
+    assert len(calls) == 3
+
+
+def test_macos_explicit_transport_does_not_inspect_context(engine, monkeypatch):
+    monkeypatch.setattr(subject, 'sys', SimpleNamespace(platform='darwin'))
+    assert identify(engine)
+    assert len(engine.closed) == 2
+
+
+@pytest.mark.parametrize('evidence', ['"tcp://localhost:2375"', '"ssh://remote"',
+    '"unix://relative"', 'null', '{}', 'not JSON'])
+def test_macos_context_rejects_nonlocal_or_malformed_transport(engine, monkeypatch, evidence):
+    monkeypatch.setattr(subject, 'sys', SimpleNamespace(platform='darwin'))
+    with pytest.raises(PrerequisiteError, match='selected Docker context'):
+        subject.verified_engine_binding(runner=lambda *args, **kwargs: evidence,
+                                        connection=engine.connection)
+    assert engine.closed == []
+
+
+@pytest.mark.parametrize('error', [OSError('missing command'), PrerequisiteError('context unavailable'),
+    subject.PrerequisiteCancelled('cancelled')])
+def test_macos_context_failure_preserves_cancellation_and_refuses_fallback(engine, monkeypatch, error):
+    monkeypatch.setattr(subject, 'sys', SimpleNamespace(platform='darwin'))
+    def runner(*args, **kwargs):
+        raise error
+    if isinstance(error, subject.PrerequisiteCancelled):
+        with pytest.raises(subject.PrerequisiteCancelled) as caught:
+            subject.verified_engine_binding(runner=runner, connection=engine.connection)
+        assert caught.value is error
+    else:
+        with pytest.raises(PrerequisiteError, match='selected Docker context') as caught:
+            subject.verified_engine_binding(runner=runner, connection=engine.connection)
+        assert caught.value.__cause__ is error
+    assert engine.closed == []
+
+
+@pytest.mark.parametrize('identifier', ['../bad', None, 42])
+def test_compatibility_rejects_malformed_direct_identity(compatibility_engine, identifier):
+    engine = compatibility_engine
+    engine.direct['ID'] = identifier
+    with pytest.raises(PrerequisiteError, match='Cannot verify'):
+        identify(engine)
+    assert engine.routes == ['/info', '/containers/json?all=1', '/version']

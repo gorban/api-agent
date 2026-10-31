@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import socket
 import stat
+import sys
 import time
 
 from .compose import controlled_engine_environment
@@ -64,6 +65,22 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
         if len(selected) != 1 or not next(iter(selected)).startswith('unix:///'):
             raise PrerequisiteError('Shared reporting requires an unambiguous local Unix engine transport.')
         paths = [Path(next(iter(selected))[7:])]
+    elif sys.platform == 'darwin':
+        try:
+            with report_timeout_sync('Reporting engine context', 5) as budget:
+                transport = json.loads(runner(
+                    (executable, 'context', 'inspect', '--format', '{{json .Endpoints.docker.Host}}'),
+                    environment=environment, directory=Path.home(),
+                    deadline=time.monotonic() + budget.remaining, cancelled=cancelled, now=time.monotonic))
+            if not isinstance(transport, str) or not transport.startswith('unix:///'):
+                raise ValueError()
+            environment = {**environment, 'DOCKER_HOST': transport}
+            paths = [Path(transport[7:])]
+        except PrerequisiteCancelled:
+            raise
+        except (PrerequisiteError, OSError, ValueError, TypeError) as error:
+            raise PrerequisiteError('Cannot resolve the selected Docker context to a local Unix socket; '
+                                    'check docker context inspect or set DOCKER_HOST explicitly.') from error
     else:
         runtime = environment.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
         paths = [path for path in (Path(runtime) / 'podman/podman.sock', Path('/var/run/docker.sock'))
@@ -123,14 +140,31 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
                               now=time.monotonic)
             cli = json.loads(command(('info', '--format', '{{json .}}')))
             identifiers = command(('ps', '-a', '--no-trunc', '--format', '{{.ID}}')).split()
+            if cli.get('ID') and (not isinstance(cli['ID'], str)
+                    or not re.fullmatch('[A-Za-z0-9:-]{1,128}', cli['ID'])):
+                raise ValueError()
+            compatibility = False
+            if cli.get('ID') and cli['ID'] != direct.get('ID'):
+                direct_version = get('/version')
+                cli_version = json.loads(command(('version', '--format', '{{json .Server}}')))
+                def podman_version(document):
+                    versions = [item.get('Version') for item in document.get('Components', [])
+                                if item.get('Name') == 'Podman Engine']
+                    return versions[0] if (len(versions) == 1 and isinstance(versions[0], str)
+                                           and versions[0]) else None
+                version = podman_version(direct_version)
+                compatibility = version is not None and version == podman_version(cli_version)
         engine_id = direct['ID']
         if not isinstance(engine_id, str) or not re.fullmatch('[A-Za-z0-9:-]{1,128}', engine_id):
             raise ValueError()
-        if cli.get('ID'):
+        if cli.get('ID') and not compatibility:
             matches = cli['ID'] == engine_id
             stable_identity = engine_id
         else:
-            hostname, store = cli['host']['hostname'], cli['store']['graphRoot']
+            if compatibility:
+                hostname, store = cli['Name'], cli['DockerRootDir']
+            else:
+                hostname, store = cli['host']['hostname'], cli['store']['graphRoot']
             if (not isinstance(hostname, str) or not re.fullmatch('[A-Za-z0-9_.:-]{1,253}', hostname)
                     or not isinstance(store, str) or not store.startswith('/')
                     or len(store) > 4096 or not store.isprintable()):
