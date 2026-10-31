@@ -133,6 +133,47 @@ def test_safe_provider_errors(error, code, status):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('capability', ['models', 'chat', 'chat_stream'])
+def test_execution_failure_reaches_local_diagnostic_without_expanding_public_error(capability):
+    failure = RuntimeError('original execution failure')
+    reported = []
+    async def fail(*args, **kwargs):
+        raise failure
+    async def run():
+        backend, _ = setup_bridge(on_error=reported.append,
+            **({'describe': fail} if capability == 'models' else {'complete': fail}))
+        response = await backend.handle(request() if capability == 'models' else request('POST', payload()), capability)
+        if capability == 'chat_stream':
+            body = b''.join([part async for part in response.streaming_content])
+            assert b'event: error' in body and b'unknown' in body
+        else:
+            assert response.status_code == 502
+            body = response.content
+            assert json.loads(body) == {'code': 'unknown'}
+        from api_agent.testing.diagnostics import format_exception
+        assert len(reported) == 1
+        diagnostic = format_exception(reported[0])
+        assert 'RuntimeError: original execution failure' in diagnostic
+        assert 'Traceback (most recent call last)' in diagnostic
+        assert b'original execution failure' not in body
+        await backend.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('diagnostic_failure', [RuntimeError('sink failed'), asyncio.CancelledError()])
+def test_failed_diagnostic_sink_preserves_original_public_error(diagnostic_failure):
+    reported = []
+    def report(error):
+        reported.append(error)
+        raise diagnostic_failure
+    backend, _ = setup_bridge(on_error=report)
+    error = ProviderAccessError('authorization', 'original rejection', status=403)
+    response = backend._error(error)
+    assert reported == [error]
+    assert response.status_code == 502
+    assert json.loads(response.content) == {'code': 'authorization', 'message': 'original rejection', 'status': 403}
+
+
 def test_disconnect_cancellation_drains_inference():
     async def run():
         entered, stopped = asyncio.Event(), asyncio.Event()

@@ -42,6 +42,7 @@ class Turn:
     _cleanup_task: asyncio.Task | None = None
     _finished: float | None = None
     _lifecycle: object = field(default=None, repr=False, compare=False)
+    _diagnostic_errors: tuple = field(default=(), repr=False, compare=False)
 
 
 class ChatLifecycle:
@@ -51,7 +52,7 @@ class ChatLifecycle:
     a watchdog. A terminal status is published only after disposal settles.
     """
     def __init__(self, *, heartbeat_interval=10, expiry=30, max_active=16,
-                 max_terminal=128, cleanup_timeout=5, terminal_ttl=300):
+                 max_terminal=128, cleanup_timeout=5, terminal_ttl=300, on_error=None):
         for value in (heartbeat_interval, expiry, cleanup_timeout, terminal_ttl):
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError('Invalid chat lifetime')
@@ -65,6 +66,25 @@ class ChatLifecycle:
         self.cleanup_timeout, self.terminal_ttl = cleanup_timeout, terminal_ttl
         self._turns = OrderedDict()
         self.closed = False
+        self.on_error = on_error
+
+    def report_error(self, error, *, turn=None):
+        """Observe failures even after disconnect, within existing turn ownership."""
+        if self.on_error is None:
+            return
+        try:
+            has_failure = (error.subgroup(Exception) is not None
+                           if isinstance(error, BaseExceptionGroup) else isinstance(error, Exception))
+            if not has_failure:
+                return
+            if turn is not None and any(error is previous for previous in turn._diagnostic_errors):
+                return
+            self.on_error(error)
+        except BaseException:
+            # Optional diagnostics never own execution, cancellation or disposal.
+            return
+        if turn is not None:
+            turn._diagnostic_errors = (*turn._diagnostic_errors, error)[-16:]
 
     def _prune(self):
         terminals = [key for key, turn in self._turns.items() if turn.done.is_set()]
@@ -108,6 +128,7 @@ class ChatLifecycle:
         if turn._monitor_stopping or turn.done.is_set():
             return
         turn._watch_error = error
+        self.report_error(error, turn=turn)
         turn.state, turn._cancelled = 'cleanup_pending', True
         _cancel_once(turn.task, turn._requested)
         try:
@@ -128,6 +149,7 @@ class ChatLifecycle:
                 turn.result = await turn.context.run(invocation)
         except BaseException as error:
             turn.error = error
+            self.report_error(error, turn=turn)
             self._remember_receipts(turn, error)
         finally:
             if inspect.getcoroutinestate(invocation) == inspect.CORO_CREATED:
@@ -140,6 +162,7 @@ class ChatLifecycle:
             # Context cancellation/deadline can return before this task. Capture
             # its cleanup ownership before the context consumes its exception.
             self._remember_receipts(turn, error)
+            self.report_error(error, turn=turn)
             raise
 
     def _remember_receipts(self, turn, error):
@@ -220,7 +243,8 @@ class ChatLifecycle:
                         turn._monitor_stopping = True
                         turn._monitor.cancel()
                         await asyncio.gather(turn._monitor, return_exceptions=True)
-        except BaseException:
+        except BaseException as error:
+            self.report_error(error, turn=turn)
             turn.state = 'cleanup_pending'
             return
         turn.state = ('cancelled' if turn._cancelled or isinstance(turn.error, asyncio.CancelledError)

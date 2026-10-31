@@ -12,6 +12,102 @@ def registry(**options):
     return ChatLifecycle(heartbeat_interval=.01, expiry=.04, cleanup_timeout=.01, **options)
 
 
+def test_disconnected_invocation_failure_is_reported_without_a_response_consumer():
+    async def exercise():
+        reported = []
+        engine = ChatLifecycle(on_error=reported.append)
+        entered = asyncio.Event()
+        failure = ValueError('late tool failure')
+        async def invoke(context):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise failure
+        turn = engine.start('owner', 'session', invoke, context=OperationContext('request'))
+        await entered.wait()
+        await engine.disconnect_turn('owner', turn)
+        assert reported == [failure]
+        engine.report_error(failure, turn=turn)
+        assert reported == [failure]
+        engine.report_error(asyncio.CancelledError())
+        assert reported == [failure]
+        await engine.aclose()
+    asyncio.run(exercise())
+
+
+def test_same_exception_instance_is_reported_again_for_a_new_turn_or_catalog():
+    async def exercise():
+        reported = []
+        engine = ChatLifecycle(on_error=reported.append)
+        failure = ValueError('reused provider exception')
+        async def invoke(context):
+            raise failure
+        for index in range(2):
+            turn = engine.start('owner', str(index), invoke, context=OperationContext(str(index)))
+            await engine.wait_turn('owner', turn)
+            engine.report_error(failure, turn=turn)
+        engine.report_error(failure)
+        assert reported == [failure, failure, failure]
+        await engine.aclose()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('grouped', [False, True])
+def test_failed_context_disposal_is_reported_before_cleanup_retry(grouped):
+    async def exercise():
+        reported = []
+        engine = ChatLifecycle(on_error=reported.append)
+        failure = ValueError('resource disposal failed')
+        if grouped:
+            failure = BaseExceptionGroup('disposal failures', [failure, asyncio.CancelledError()])
+        repaired = asyncio.Event()
+        class Context(OperationContext):
+            async def aclose(self, **options):
+                if not repaired.is_set():
+                    raise failure
+                await super().aclose(**options)
+        context = Context('request')
+        async def invoke(context):
+            return 'completed'
+        turn = engine.start('owner', 'session', invoke, context=context)
+        with pytest.raises(CleanupPendingError):
+            await engine.wait_turn('owner', turn)
+        assert reported == [failure] and not turn.done.is_set()
+        repaired.set()
+        await engine.aclose()
+    asyncio.run(exercise())
+
+
+def test_cancellation_only_group_is_not_reported_as_execution_error():
+    reported = []
+    engine = ChatLifecycle(on_error=reported.append)
+    engine.report_error(BaseExceptionGroup('cancelled', [asyncio.CancelledError()]))
+    assert reported == []
+
+
+def test_derived_base_exception_group_retains_ordinary_failure_diagnostic():
+    class Group(BaseExceptionGroup):
+        def derive(self, errors):
+            return Group(self.message, errors)
+    reported = []
+    engine = ChatLifecycle(on_error=reported.append)
+    failure = Group('failure', [ValueError('ordinary failure'), asyncio.CancelledError()])
+    engine.report_error(failure)
+    assert reported == [failure]
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_exception_group_classification_failure_cannot_interrupt_execution(enabled):
+    class Group(BaseExceptionGroup):
+        def subgroup(self, *args):
+            raise ValueError('diagnostic classification failed')
+    reported = []
+    engine = ChatLifecycle(on_error=reported.append if enabled else None)
+    engine.report_error(Group('failure', [RuntimeError('original error'), asyncio.CancelledError()]))
+    assert reported == []
+
+
 def test_result_is_retained_and_owner_scoped():
     async def exercise():
         engine = registry()
