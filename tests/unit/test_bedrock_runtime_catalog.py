@@ -9,6 +9,70 @@ from api_agent.llm_providers.bedrock import auth, catalog, pricing
 from api_agent.providers.contracts import ContractError
 
 
+@pytest.mark.parametrize('identifier, family, version, title', [
+    ('openai.gpt-5.6-luna', 'gpt-luna', '5.6', 'GPT 5.6 Luna'),
+    ('openai.gpt-6-luna', 'gpt-luna', '6', 'GPT 6 Luna'),
+    ('openai.gpt-6.1-terra', 'gpt-terra', '6.1', 'GPT 6.1 Terra'),
+    ('openai.gpt-6-sol-2026-10-31', 'gpt-sol', '6', 'GPT 6 Sol'),
+    ('eu.openai.gpt-5.6-luna', 'gpt-luna-eu', '5.6', 'GPT 5.6 Luna [EU]'),
+    ('moon.openai.gpt-8-nova', 'gpt-nova-moon', '8', 'GPT 8 Nova [MOON]'),
+])
+@pytest.mark.parametrize('mode', ['responses', 'completions', 'converse'])
+def test_discovered_gpt_display_metadata_does_not_grant_capabilities(identifier, family, version, title, mode):
+    row = catalog.selection(identifier, mode, 'runtime')
+    assert (row.family, row.version, row.display_name) == (family, version, title)
+    assert row.selected_llm == identifier
+    assert row.context_length is None and row.max_output_tokens is None
+    assert 'structured' not in row.features
+    assert catalog.route(identifier, mode, 'runtime') == ('/converse' if mode == 'converse' else '/openai/v1')
+
+
+@pytest.mark.parametrize('identifier', ['other.future-model-v1', 'openai.gpt-oss-20b',
+                                        'openai.gpt-5.6', 'vendor.gpt-5.6-luna',
+                                        'openai.gpt-6-luna-us', 'openai.gpt-8-nova-moon',
+                                        'direct.openai.gpt-8-oss'])
+def test_unrecognized_display_identity_stays_exact(identifier):
+    row = catalog.selection(identifier, 'responses', 'runtime')
+    assert (row.display_name, row.family, row.version) == (identifier, identifier, None)
+
+
+def test_bedrock_regex_filter_and_latest_bare_gpt_version():
+    from api_agent.providers.selection import ModelSelectionPolicy
+    from api_agent.providers.contracts import ProviderAccessError
+    rows = tuple(catalog.selection(identifier, 'responses', 'runtime') for identifier in
+                 ('openai.gpt-5.6-luna', 'openai.gpt-6-luna', 'openai.gpt-6.1-luna',
+                  'openai.gpt-6.1-terra', 'us.openai.gpt-6-luna'))
+    old = ModelSelectionPolicy({'LLM_ALLOWED_MODELS': r'(?:openai/)?gpt-\d+(?:\.\d+)*-luna',
+                                'LLM_DEFAULT_MODEL': r'(?:openai/)?gpt-6(?:\.\d+)*-luna'})
+    with pytest.raises(ProviderAccessError, match='matches no allowed model'):
+        old.select_default(rows)
+    policy = ModelSelectionPolicy({'LLM_ALLOWED_MODELS': r'openai\.gpt-\d+(?:\.\d+)*-(?:luna|terra|sol)',
+                                   'LLM_DEFAULT_MODEL': r'openai\.gpt-6(?:\.\d+)*-luna'})
+    assert policy.select_default(rows) == 'openai.gpt-6.1-luna'
+    assert [row.selected_llm for row in policy.filter(rows)] == [row.selected_llm for row in rows[:-1]]
+
+
+@pytest.mark.parametrize('scoped, compound', [
+    ('us.openai.gpt-5.6-luna', 'openai.gpt-6-luna-us'),
+    ('moon.openai.gpt-8-nova', 'openai.gpt-9-nova-moon'),
+])
+def test_display_parser_does_not_merge_scope_with_compound_flavor(scoped, compound):
+    from api_agent.providers.selection import ModelSelectionPolicy
+    from api_agent.providers.contracts import ProviderAccessError
+    rows = tuple(catalog.selection(identifier, 'responses', 'runtime') for identifier in (scoped, compound))
+    assert rows[0].family != rows[1].family
+    policy = ModelSelectionPolicy({'LLM_ALLOWED_MODELS': '.*', 'LLM_DEFAULT_MODEL': '.*'})
+    with pytest.raises(ProviderAccessError, match='one model family'):
+        policy.select_default(rows)
+
+
+def test_display_scope_does_not_merge_with_existing_direct_oss_family():
+    direct = catalog.selection('openai.gpt-oss-20b-1:0', 'responses', 'runtime')
+    scoped = catalog.selection('direct.openai.gpt-8-oss', 'responses', 'runtime')
+    assert direct.family != scoped.family
+    assert scoped.selected_llm == 'direct.openai.gpt-8-oss'
+
+
 @pytest.mark.parametrize('identifier', [
     'us.openai.gpt-5.6-luna', 'global.openai.gpt-5.6-terra',
     'in.openai.gpt-5.6-luna', 'us.openai.gpt-5.6-sol',
