@@ -8,6 +8,7 @@ from api_agent.auth.profiles import _canonical_shape, normalize_auth, DEFAULT_PA
 from api_agent.config.dotenv import read_dotenv
 from api_agent.tui.app import ButtonFooter, FocusNavigation, QuitDialog, SelectedTextCopy
 from api_agent.tui.select import AdvancingSelect
+from api_agent.tui.editable_input import EditableInput
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
@@ -73,7 +74,7 @@ class AuthTable(DataTable):
             super().action_cursor_up()
 
 
-class AuthInput(Input):
+class AuthInput(EditableInput):
     """Keep masked replies private even when a screen shortcut is unavailable."""
 
     def action_copy(self):

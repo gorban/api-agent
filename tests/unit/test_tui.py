@@ -87,6 +87,25 @@ def test_defaults_save_and_typed_prompt(tmp_path):
     asyncio.run(save())
 
 
+def test_long_effective_configuration_value_can_be_selected_and_replaced(tmp_path):
+    async def scenario():
+        original = 'long-default-' * 20
+        app = fixture(tmp_path, fields={'MODEL_PATTERN': {'type': 'str', 'default': original}})
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            await pilot.press('e')
+            field = app.screen.query_one('#config-value', Input)
+            assert field.value == original
+            await pilot.press('ctrl+g')
+            assert sorted(field.selection) == [0, len(original)]
+            assert not (tmp_path / '.env').exists()
+            await pilot.press('x', 'enter')
+            assert app.session.result().values['MODEL_PATTERN'] == 'x'
+            assert 'MODEL_PATTERN="x"' in (tmp_path / '.env').read_text()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('mode', [None, 'config-cleanup'])
 def test_configuration_tables_sort_names_alphabetically(tmp_path, mode):
     async def scenario():

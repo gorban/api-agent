@@ -34,3 +34,6 @@ coverage/
 
 # Local report residue produced by older synthetic executable fixtures.
 /--no-hooks/
+
+# Optional terminal-parser debug output is local state.
+/keys.log

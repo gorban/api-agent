@@ -94,6 +94,8 @@ async def test_failed_recovery_estimate_removes_previous_price(conflicting_app, 
         app.screen.toggle_test_rows((OTHER,))
         app.screen.toggle_test_rows((PRIMARY,))
         await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
 
         assert app.session.tool_plan.selection.test_ids == (OTHER,)
         assert app.cost_estimator is None
