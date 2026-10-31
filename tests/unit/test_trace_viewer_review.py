@@ -10,6 +10,7 @@ from test_tui import fixture
 def test_empty_viewer_default_can_be_accepted_and_stays_saved_after_restart(tmp_path):
     async def scenario():
         app = fixture(tmp_path)
+        app.session.environ['TRACE_MODE'] = 'OTEL'
         app.schema = load_shared_schema()
         app.session.schema = app.schema
         app.context.anchors = {name: tmp_path for name in ('owner_root', 'base_root', 'pack_root')}
@@ -29,6 +30,7 @@ def test_empty_viewer_default_can_be_accepted_and_stays_saved_after_restart(tmp_
             assert app.session.result(_review=True).fields['TRACE_VIEWER_URL'].explicit
             assert 'TRACE_VIEWER_URL' not in app.configuration_pending()
         relaunched = fixture(tmp_path)
+        relaunched.session.environ['TRACE_MODE'] = 'OTEL'
         relaunched.schema = app.schema
         relaunched.session.schema = app.schema
         relaunched.context.anchors = app.context.anchors

@@ -124,8 +124,8 @@ def test_tui_effective_provider_settings_and_default_review(tmp_path):
             table = app.screen.query_one(DataTable)
             names = {str(table.get_row_at(i)[0]) for i in range(table.row_count)}
             assert 'GPT_BASE_URL' in names
-            assert {'GPT_STATE_DIR', 'GPT_APP_NAME'} <= names
-            assert {'GPT_STATE_DIR', 'GPT_APP_NAME'} <= {c.name for c in app.session.default_candidates()}
+            assert not {'GPT_STATE_DIR', 'GPT_APP_NAME'} & names
+            assert not {'GPT_STATE_DIR', 'GPT_APP_NAME'} & {c.name for c in app.session.default_candidates()}
             assert not {'GPT_STATE_DIR', 'GPT_APP_NAME'} & app.session.result().values.keys()
             app.session.set_value('GPT_AUTH_MODE', 'subscription')
             app.show_configuration()
@@ -133,7 +133,8 @@ def test_tui_effective_provider_settings_and_default_review(tmp_path):
             table = app.screen.query_one(DataTable)
             names = {str(table.get_row_at(i)[0]) for i in range(table.row_count)}
             assert {'GPT_STATE_DIR', 'GPT_APP_NAME'} <= names
-            assert 'GPT_BASE_URL' in names
+            assert {'GPT_STATE_DIR', 'GPT_APP_NAME'} <= {c.name for c in app.session.default_candidates()}
+            assert 'GPT_BASE_URL' not in names
             assert 'GPT_BASE_URL' not in app.session.result().values
             app.session.set_value('LLM_PROVIDER', '')
             assert 'GPT_BASE_URL' not in app.session.schema.fields

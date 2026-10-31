@@ -395,8 +395,10 @@ def test_checklist_refreshes_conditional_rows_and_excludes_default_optouts(tmp_p
             await pilot.click("#submit")
             await pilot.pause(0.4)
             table = app.screen.query_one(DataTable)
-            assert table.row_count == 2
-            assert table.get_row_at(1)[0:3] == ["ENABLED", "False", app.session._source(app.session.dotenv_path)]
+            assert table.row_count == 1
+            assert table.get_row_at(0)[0:3] == ["ENABLED", "False", app.session._source(app.session.dotenv_path)]
+            assert app.session.cleanup_rows()[0].name == 'DETAIL'
+            assert 'DETAIL' not in app.configuration_pending()
             await pilot.press("e")
             await pilot.pause(0.4)
             await pilot.press("escape")

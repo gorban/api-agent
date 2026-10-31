@@ -15,6 +15,14 @@ from api_agent.auth.profiles import DEFAULT_PASSWORD_MANAGER, _canonical_shape, 
 from api_agent.auth.managers import registry_for_context
 
 
+def _review_predicate(predicate):
+    """Span execution contexts without erasing provider/feature controllers."""
+    return {name: ([_review_predicate(branch) for branch in expected]
+                   if name == 'any' else expected)
+            for name, expected in predicate.items()
+            if name not in ('TUI_MODE', 'COLLECT_ONLY', 'operation')}
+
+
 @dataclass(frozen=True)
 class DefaultCandidate:
     name: str
@@ -493,7 +501,7 @@ class ConfigSession:
         if _cleanup or _review:
             review_names = frozenset(schema.fields) - (
                 set(plan.tool_fields) - set(plan.active_fields) if plan is not None else set())
-            schema = ConfigSchema({name: replace(field, applies_when={},
+            schema = ConfigSchema({name: replace(field, applies_when={} if _cleanup else _review_predicate(field.applies_when),
                                                  pack_only=False if _cleanup else field.pack_only)
                                    for name, field in schema.fields.items()
                                    if _cleanup or name in review_names})

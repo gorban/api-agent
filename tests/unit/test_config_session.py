@@ -434,7 +434,11 @@ def test_review_conditional_requirement_uses_effective_mode(session, mode, requi
     review = session.result(_review=True)
 
     assert ('PASSWORD' in review.missing) is required
-    assert review.values['OTHER_DEFAULT'] == 'saved'
+    assert 'OTHER_DEFAULT' not in review.active_fields
+    assert 'OTHER_DEFAULT' not in review.fields
     assert not session.dotenv_path.exists()
+    with pytest.raises(ConfigError):
+        session.save_defaults(['OTHER_DEFAULT'])
+    session.set_value('TRACE_MODE', 'other')
     session.save_defaults(['OTHER_DEFAULT'])
     assert read_dotenv(session.dotenv_path)['OTHER_DEFAULT'] == 'saved'
