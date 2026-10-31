@@ -26,3 +26,33 @@ retest above remains unchecked; earlier core and cleanup approval stay accepted.
 - [x] Human accepted local output selection/copying on October 30, 2026, covering header, log and startup-error selection, latest-selection precedence, refresh retention and Ctrl+C copying without Quit.
 
 Focused mouse and keyboard checks cover all three surfaces, both selection directions, appended logs, changed or hidden header selections, menu copying and shutdown. Isolated in-memory mutations show the regressions detect disabled double-click, header copy, selection precedence and append preservation. The full applicable unit suite passed with exact line and branch coverage; source, installed, boundary and independent causal reviews also passed. The merged external recheck passed; human acceptance of this output-selection follow-up is complete. The separate ordinary-startup retest above remains scoped independently.
+
+## Selected macOS context and Podman compatibility
+
+- [x] Without an explicit transport on macOS, resolve the stored current Docker context's
+  endpoint using a bounded read-only command. Require a local Unix socket, verify
+  its trusted ownership and engine identity, and pin the same canonical transport
+  for subsequent CLI, planning and acquisition. Never switch contexts or start
+  another engine. Explicit transport retains precedence; missing, remote or invalid
+  context evidence fails with actionable guidance.
+
+- [x] Verify the Docker CLI against Podman's Docker-compatible API even when its
+  per-response ID changes. Require both version responses to identify Podman with
+  the same nonempty version before using the existing corroborated Unix namespace.
+- [x] Retain trusted socket generation, matching stable host/store values and
+  nonempty immutable inventory checks. Native Docker identity mismatches, unknown
+  servers, malformed evidence and differing inventories still reject. Verification
+  performs read-only requests and never creates or adopts a service.
+- [x] Display each startup phase once in terminal mode, including agent/all log
+  selections, while retaining the phase in interactive logs and status.
+- [x] Verify regressions, causal controls, applicable coverage, installed behavior
+  and independent/external review before delivery.
+- [ ] Human retest ordinary Run local startup on the affected installation.
+
+Environment-selected contexts remain separate follow-up work:
+
+- [ ] Carry `DOCKER_CONTEXT` through controlled inspection on supported platforms,
+  honor its documented precedence, then remove it after pinning the verified Unix
+  transport. Verify conflicting saved/environment contexts and endpoint overrides.
+  This checkpoint supports the stored current macOS context and explicit transport;
+  it does not qualify an environment-selected context.

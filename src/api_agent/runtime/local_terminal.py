@@ -480,6 +480,10 @@ async def _run_local_terminal(context, resolve, *, argv=(), schema=None, owner_f
     present_status = _TerminalStatus(diagnostic)
     def event_received(event):
         if event.kind in {'log', 'diagnostic'}:
+            if (event.kind == 'log' and event.source == 'agent'
+                    and present_status.startup_activity is not None
+                    and event.text == f'Local startup: {present_status.startup_activity}.\n'):
+                return
             output(format_log(event, source))
         elif event.kind == 'status' and event.snapshot is not None:
             present_status(event.snapshot)
