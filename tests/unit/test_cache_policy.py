@@ -207,6 +207,7 @@ def test_backend_transport_rejects_cache_before_login_and_preserves_precedence(t
     from api_agent.testing.setup_backend import SetupBackend
     from api_agent.providers.setup_transport import SetupClient
     adapter=GPTProvider({'GPT_AUTH_MODE':'api_key'})
+    adapter.adescribe=AsyncMock(return_value=(AvailableSelection('gpt-4.1',features=('cache_policy','max_output_tokens')),))
     adapter.asetup=AsyncMock(return_value=AsyncMock(return_value='secret'))
     adapter.acomplete=AsyncMock(return_value=LLMResult(Message('assistant',(TextContent('Ok'),))))
     monkeypatch.setattr(provider_setup,'aload_provider',AsyncMock(return_value=SimpleNamespace(implementation=adapter,aclose=AsyncMock())))

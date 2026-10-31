@@ -132,7 +132,7 @@ def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config
     native=[];closed=[];properties=[]
     class Provider:
         config = {}
-        def describe(self):return (AvailableSelection(c.MODEL,family='synthetic',version='1',features=('reasoning_effort','max_output_tokens'),reasoning_efforts=('low','high'),max_output_tokens=advertised),)
+        def describe(self):return (AvailableSelection(c.MODEL,family='synthetic',version='1',features=('reasoning_effort',) + (() if limit is None else ('max_output_tokens',)),reasoning_efforts=('low','high'),max_output_tokens=advertised),)
         def complete(self,request):
             request = configured_request(request, None, reasoning_effort='medium')
             async def invoke():
@@ -317,7 +317,7 @@ def test_scope_rejects_unqualified_counter_reporting(config, value):
         c.scope(config | {'LLM_REASONING_TEST_MODEL':'synthetic', 'LLM_REASONING_TEST_TOKEN_REPORTING':value})
 
 
-@pytest.mark.parametrize('limit', [0, -1, True, '', '4096', 16385])
+@pytest.mark.parametrize('limit', [0, -1, True, '', '4096', 1048577])
 def test_reasoning_configuration_rejects_invalid_output_cap(config, limit):
     values = config | {'LLM_REASONING_TEST_MODEL':c.MODEL, 'LLM_REASONING_TEST_LOW_EFFORT':'low',
         'LLM_REASONING_TEST_HIGH_EFFORT':'high', 'LLM_REASONING_TEST_MAX_OUTPUT_TOKENS':limit}

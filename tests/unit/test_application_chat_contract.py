@@ -203,7 +203,7 @@ def test_catalog_rejects_unoffered_defaults(default, effort):
         catalog((AvailableSelection('example'),), default, effort)
 
 
-@pytest.mark.parametrize('changes', [dict(reasoning_default='bad'), dict(stream=1)])
+@pytest.mark.parametrize('changes', [dict(reasoning_default='bad'), dict(stream=1), *[dict(max_output_tokens=value) for value in (None, True, 0, 1048577)]])
 def test_invalid_optional_backend_configuration(changes):
     with pytest.raises(ValueError):
         backend(**changes)
@@ -1041,3 +1041,38 @@ def test_models_http_catalog_resolves_only_advertised_family_defaults():
         finally:
             await bridge.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('requested,ceiling,advertised,expected', [
+    (None, 200000, 128000, 128000),
+    (None, 200000, None, 200000),
+    (32000, 200000, 128000, 32000),
+    (200000, 16000, 128000, 16000),
+    (200000, 200000, 128000, 128000),
+])
+def test_studio_applies_shared_ceiling_before_model_validation(requested, ceiling, advertised, expected):
+    async def scenario():
+        observed = []
+        async def describe(*, auth):
+            return (AvailableSelection('example', features=('max_output_tokens',), max_output_tokens=advertised),)
+        async def complete(value, *, auth, context):
+            observed.append(value.payload.generation.max_output_tokens)
+            return LLMResult(Message('assistant', (TextContent('answer'),)))
+        bridge = backend(describe=describe, complete=complete, max_output_tokens=ceiling)
+        body = payload(**({} if requested is None else dict(max_output_tokens=requested)))
+        response = await bridge.handle(request(body), 'chat')
+        assert response.status_code == 200
+        assert observed == [expected]
+        await bridge.aclose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('maximum', [16385, 200000, 1048576])
+def test_application_contract_admits_large_explicit_output_budgets(maximum):
+    _, value = completion(payload(max_output_tokens=maximum), 'example', None)
+    assert value.payload.generation.max_output_tokens == maximum
+
+
+def test_application_contract_rejects_over_transport_output_budget():
+    with pytest.raises(ContractError, match='Invalid output limit'):
+        completion(payload(max_output_tokens=1048577), 'example', None)

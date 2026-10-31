@@ -734,3 +734,55 @@ async def test_missing_authority_at_handoff_never_falls_back_or_dispatches(contr
         assert dispatched == []
     finally:
         await provider.aclose()
+
+
+@pytest.mark.parametrize('requested,expected', [(200000, 64000), (500, 500), (None, None)])
+def test_advertised_output_ceiling_clamps_preflight_and_direct_dispatch(controlled, monkeypatch, requested, expected):
+    from dataclasses import replace
+    from api_agent.providers.llm import GenerationOptions
+    request, result, transport, _ = controlled
+    request = replace(request, payload=replace(request.payload, generation=GenerationOptions(requested)))
+    original_selection = module.catalog.selection
+    def selected(*args):
+        return replace(original_selection(*args), max_output_tokens=64000)
+    monkeypatch.setattr(module.catalog, 'selection', selected)
+    encoded = []
+    def encode(effective, *args, **kwargs):
+        encoded.append(effective.payload.generation.max_output_tokens)
+        return {'modelId': effective.selected_llm}
+    monkeypatch.setattr(sys.modules['api_agent.llm_providers.bedrock.mantle'], 'encode', encode)
+    async def run():
+        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider.validate_request(request)
+        assert await provider.acomplete(request) == result
+        assert [event async for event in provider.astream(request)][-1].payload == result
+        assert encoded == [expected, expected]
+        assert request.payload.generation.max_output_tokens == requested
+        await provider.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('requested', [200000, 500, None])
+def test_runtime_converse_actual_catalog_ceiling_allows_preflight(requested):
+    from api_agent.providers.llm import GenerationOptions
+    model = 'us.anthropic.claude-haiku-4-5-20251001-v1:0'
+    request = LLMRequest(model, CompletionRequest((Message('user', (TextContent('hello'),)),),
+        generation=GenerationOptions(requested)))
+    provider = module.factory({'BEDROCK_ENDPOINT': 'runtime', 'BEDROCK_API_MODE': 'converse'}, {})
+    provider.validate_request(request)
+    assert provider._effective_request(request).payload.generation.max_output_tokens == (
+        64000 if requested == 200000 else requested)
+
+
+@pytest.mark.parametrize('requested,expected', [(300000, 300000), (500000, 400000)])
+def test_provider_cap_does_not_reapply_shared_default(controlled, monkeypatch, requested, expected):
+    from dataclasses import replace
+    from api_agent.providers.llm import GenerationOptions
+    request, _, _, _ = controlled
+    request = replace(request, payload=replace(request.payload, generation=GenerationOptions(requested)))
+    original_selection = module.catalog.selection
+    monkeypatch.setattr(module.catalog, 'selection', lambda *args:
+        replace(original_selection(*args), max_output_tokens=400000))
+    provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+    provider.validate_request(request)
+    assert provider._effective_request(request).payload.generation.max_output_tokens == expected

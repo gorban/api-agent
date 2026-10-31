@@ -79,7 +79,7 @@ class SharedSetupOwner(_Owner):
     Wrapped completions may explicitly preserve provider-owned payload capture;
     None retains marker discovery on an ordinary bound completion method.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600, max_attempts=5, inference_timeout=None, withhold_inference_content=False):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600, max_attempts=5, inference_timeout=None, withhold_inference_content=False, max_output_tokens=200000, output_limit_cache_ttl=3600, supports_output_limit=None):
         super().__init__(timeout)
         if type(catalog_ttl) not in (int, float):
             raise ContractError('Invalid shared setup binding')
@@ -97,6 +97,14 @@ class SharedSetupOwner(_Owner):
             raise ContractError('Invalid inference attempt limit')
         if inference_timeout is not None and (type(inference_timeout) not in (int, float) or not math.isfinite(inference_timeout) or inference_timeout <= 0):
             raise ContractError('Invalid inference timeout')
+        from .output_limits import OutputLimitCache
+        if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 1048576:
+            raise ContractError('Invalid inference output limit')
+        if supports_output_limit is not None and type(supports_output_limit) is not bool:
+            raise ContractError('Invalid output limit capability')
+        self._supports_output_limit = supports_output_limit
+        self._max_output_tokens = max_output_tokens
+        self._output_limits = OutputLimitCache(output_limit_cache_ttl)
         self._max_attempts = max_attempts
         self._inference_timeout = inference_timeout
         self.operation_id = operation_id
@@ -156,6 +164,9 @@ class SharedSetupOwner(_Owner):
 
     async def describe(self, *, selected_identity=None):
         await self.ensure_ready(selected_identity=selected_identity)
+        return await self._describe_ready()
+
+    async def _describe_ready(self):
         if not callable(self._describe):
             from .contracts import SetupPrerequisiteError
             raise SetupPrerequisiteError('The selected LLM provider has no catalog capability.')
@@ -212,15 +223,28 @@ class SharedSetupOwner(_Owner):
         if not callable(self._complete):
             from .contracts import SetupPrerequisiteError
             raise SetupPrerequisiteError('The selected LLM provider has no completion capability.')
+        from .output_limits import with_output_limit, rejected_limit
         selection = None
         maximum = request.payload.generation.max_output_tokens
-        if maximum is not None or any(message.cache_boundary is not None for message in request.payload.messages):
-            if not callable(self._describe) and maximum is not None:
-                raise OperationalError('unsupported')
-            if callable(self._describe):
-                from .rich_inference import resolve_catalog_selection
-                selection = await resolve_catalog_selection(lambda: self.describe(selected_identity=selected_identity), request)
+        needs_catalog = maximum is not None or any(message.cache_boundary is not None for message in request.payload.messages)
+        if callable(self._describe) and (needs_catalog or self._supports_output_limit is not False):
+            from .rich_inference import resolve_catalog_selection
+            selection = await resolve_catalog_selection(self._describe_ready, request,
+                                                        clamp_output_limit=True)
+        elif maximum is not None:
+            raise OperationalError('unsupported')
+        from .output_limits import clamp_request
+        learned = self._output_limits.get(request.selected_llm)
+        effective = clamp_request(request, selection, self._max_output_tokens, learned)
+        if selection is None and not needs_catalog and self._supports_output_limit is True:
+            effective = with_output_limit(request, min(self._max_output_tokens, learned)
+                                          if learned is not None else self._max_output_tokens)
+        if self._validate_request is not None and effective != request:
+            self._validate_request(effective)
+        request = effective
+        request_wire = await async_request_to_wire(request)
         async def invoke(*, auth):
+            nonlocal request, request_wire
             from api_agent.workflows.inference_capture import capture_inference, bind_inference_call, prepare_capture_auth
             await prepare_capture_auth(auth)
             cause_id = str(uuid4())
@@ -234,6 +258,8 @@ class SharedSetupOwner(_Owner):
                 from .progress import component_timeout
                 async with component_timeout('LLM inference', self._inference_timeout) as budget:
                     index = 1
+                    transport_index = 1
+                    negotiated = False
                     while True:
                         token = begin_transport_attempt(index)
                         attempt_dispatch = None
@@ -256,8 +282,12 @@ class SharedSetupOwner(_Owner):
                                     from .inference import error_usage
                                     if error_usage(error) is None and error_usage(conflict) is not None:
                                         error.usage = conflict.usage
-                            delay = (retry_delay(index, getattr(error, 'retry_after', None))
-                                     if (conflict is None and index < self._max_attempts and retryable(error)
+                            learned = rejected_limit(error, request) if conflict is None else None
+                            if learned is not None:
+                                self._output_limits.remember(request.selected_llm, learned)
+                            negotiate = learned is not None and not negotiated
+                            delay = (0 if negotiate else retry_delay(transport_index, getattr(error, 'retry_after', None))
+                                     if (conflict is None and transport_index < self._max_attempts and retryable(error)
                                          and retry_hint_supported(getattr(error, 'retry_after', None))) else None)
                             remaining = budget.remaining
                             if delay is not None and remaining is not None and remaining <= delay:
@@ -272,7 +302,15 @@ class SharedSetupOwner(_Owner):
                                 if conflict is not None:
                                     raise conflict from error
                                 raise
-                            await asyncio.sleep(delay)
+                            if negotiate:
+                                negotiated = True
+                                request = with_output_limit(request, learned)
+                                request_wire = await async_request_to_wire(request)
+                                # Zero backoff still admits cancellation before redispatch.
+                                await asyncio.sleep(0)
+                            else:
+                                transport_index += 1
+                                await asyncio.sleep(delay)
                             index += 1
                         else:
                             capture_inference('output', result_to_wire(result), cause_id, auth=auth, fallback=True)

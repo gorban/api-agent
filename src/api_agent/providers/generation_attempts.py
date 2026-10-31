@@ -14,11 +14,17 @@ from .costs import validate_billing, validate_quote
 _CURRENT = ContextVar('generation_attempt_ledger', default=None)
 
 
+def _limit_negotiation(row):
+    return (row['status'] in (400, 422) and row['error_kind'] == 'invalid_request'
+            and row['execution'] == 'not_started' and row['usage'] is None
+            and row['retry_delay_seconds'] == 0)
+
+
 def validate_transport_attempts(value):
     if (type(value) is not dict or set(value) != {'version', 'complete', 'attempts'}
             or type(value['version']) is not int or value['version'] != 1
             or type(value['complete']) is not bool or type(value['attempts']) is not list
-            or len(value['attempts']) > 20):
+            or len(value['attempts']) > 21):
         raise ContractError('Invalid transport attempt ledger')
     ids = set()
     for index, row in enumerate(value['attempts'], 1):
@@ -63,11 +69,15 @@ def validate_transport_attempts(value):
             if delay is not None and (type(delay) not in (int, float) or not math.isfinite(delay)
                     or not 0 <= delay <= 86400 or row['outcome'] != 'failed'
                     or not (row['status'] == 429 or type(row['status']) is int and 500 <= row['status'] <= 599
-                            or row['status'] in (None, 200) and row['error_kind'] == 'network')):
+                            or row['status'] in (None, 200) and row['error_kind'] == 'network'
+                            or _limit_negotiation(row))):
                 raise ValueError()
         except (ValueError, TypeError, OverflowError):
             raise ContractError('Invalid transport attempt ledger') from None
         ids.add(row['id'])
+    negotiations = sum(_limit_negotiation(row) for row in value['attempts'])
+    if negotiations > 1 or len(value['attempts']) > 20 + negotiations:
+        raise ContractError('Invalid output limit retry sequence')
     return deepcopy(value)
 
 
@@ -87,7 +97,7 @@ class TransportAttemptLedger:
             self.observer(phase, deepcopy(row))
 
     def begin(self, index):
-        if (self._active is not None or type(index) is not int or index != len(self._rows) + 1 or index > self.max_attempts
+        if (self._active is not None or type(index) is not int or index != len(self._rows) + 1 or index > self.max_attempts + sum(_limit_negotiation(row) for row in self._rows)
                 or (self._rows and (self._rows[-1]['outcome'] != 'failed' or self._rows[-1]['retry_delay_seconds'] is None))):
             raise ContractError('Invalid transport attempt sequence')
         row = dict(id=str(uuid4()), index=index, execution='possibly_executed', usage=None,

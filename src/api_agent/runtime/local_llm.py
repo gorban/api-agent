@@ -161,6 +161,9 @@ class LocalLLM(_Owner):
             captures_effective_payload=getattr(implementation, 'captures_effective_payload', False) is True,
             timeout=self._timeout, catalog_ttl=self.config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600),
             max_attempts=self.config.get('LLM_MAX_ATTEMPTS', 5),
+            max_output_tokens=self.config.get('LLM_MAX_OUTPUT_TOKENS', 200000),
+            supports_output_limit='max_output_tokens' in getattr(getattr(implementation, 'capabilities', None), 'features', ()),
+            output_limit_cache_ttl=self.config.get('LLM_OUTPUT_LIMIT_CACHE_TTL_SECONDS', 3600),
             inference_timeout=getattr(implementation, 'inference_timeout', None))
         self._resources.append((self.shared, 'aclose'))
         start = getattr(self.provider, 'astart', None)
