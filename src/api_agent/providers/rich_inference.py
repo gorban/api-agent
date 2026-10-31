@@ -624,13 +624,18 @@ def _valid_output(definition, strict, text, *, allow_markdown_fences=False):
         return False
 
 
-def validate_catalog_selection(values, request):
+def validate_catalog_selection(values, request, *, clamp_output_limit=False):
     from .catalog import catalog_to_wire
     from .control import OperationalError
     catalog_to_wire(values)
     selected = next((value for value in values if value.selected_llm == request.selected_llm), None)
     if selected is None:
         raise OperationalError('unsupported')
+    if clamp_output_limit and selected.max_output_tokens is not None:
+        from .output_limits import with_output_limit
+        maximum = request.payload.generation.max_output_tokens
+        if maximum is not None:
+            request = with_output_limit(request, min(maximum, selected.max_output_tokens))
     selected.validate(request)
     return selected
 
@@ -643,9 +648,11 @@ async def validate_request_instances(request):
                 raise ContractError('Invalid replayed tool arguments')
 
 
-async def resolve_catalog_selection(operation, request):
+async def resolve_catalog_selection(operation, request, *, clamp_output_limit=False):
     from .contracts import SetupPrerequisiteError
     from .control import OperationalError
+    optional_catalog = (request.payload.generation.max_output_tokens is None
+                        and not any(message.cache_boundary is not None for message in request.payload.messages))
     try:
         values = await operation()
     except SetupPrerequisiteError:
@@ -655,5 +662,15 @@ async def resolve_catalog_selection(operation, request):
     except OperationalError as error:
         if request.payload.generation.max_output_tokens is None and error.kind in ('unsupported', 'unavailable'):
             return None
+        if optional_catalog:
+            if (clamp_output_limit and isinstance(error, ProviderAccessError)
+                    and error.kind == 'authorization' and error.status == 403 and error.origin == 'provider'
+                    and error.usage is None and error.response is None):
+                return None
         raise
-    return validate_catalog_selection(values, request)
+    if clamp_output_limit and optional_catalog:
+        # Optional ceiling discovery must not introduce unrelated catalog gates.
+        from .catalog import catalog_to_wire
+        catalog_to_wire(values)
+        return next((value for value in values if value.selected_llm == request.selected_llm), None)
+    return validate_catalog_selection(values, request, clamp_output_limit=clamp_output_limit)

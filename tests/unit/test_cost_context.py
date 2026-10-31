@@ -272,3 +272,40 @@ def test_exact_workflow_cap_never_hashes_noncount_or_out_of_range_values(tmp_pat
 def test_explicit_sensitive_string_cannot_become_cost_identity(tmp_path, monkeypatch):
     mocked_schema(monkeypatch, [FieldDeclaration('CHOICE', 'str', cost_affecting=True, sensitive=True)])
     assert cost_config(context(tmp_path), {'CHOICE': 'synthetic-secret'})['_COST_REQUEST_SETTINGS'] is None
+
+
+@pytest.mark.parametrize('value', [1, 200000, 1048576])
+def test_shared_output_ceiling_is_a_validated_cost_setting(tmp_path, monkeypatch, value):
+    import json
+    field = FieldDeclaration('LLM_MAX_OUTPUT_TOKENS', 'int', cost_affecting=True, validation='positive')
+    mocked_schema(monkeypatch, [field])
+    assert cost_config(context(tmp_path), {field.name: value})['_COST_REQUEST_SETTINGS'] == {
+        field.name: sha256(json.dumps(value).encode()).hexdigest()}
+
+
+@pytest.mark.parametrize('value', [None, True, 'synthetic-secret', 200000.0, 0, -1, 1048577])
+def test_shared_output_ceiling_rejects_noncount_cost_values(tmp_path, monkeypatch, value):
+    field = FieldDeclaration('LLM_MAX_OUTPUT_TOKENS', 'int', cost_affecting=True, validation='positive')
+    mocked_schema(monkeypatch, [field])
+    assert cost_config(context(tmp_path), {field.name: value})['_COST_REQUEST_SETTINGS'] is None
+
+
+@pytest.mark.parametrize('changes', [dict(type='str'), dict(sensitive=True),
+    dict(validation=''), dict(allow_empty=True), dict(type='jsonobject'), dict(name='OTHER_MAX_OUTPUT_TOKENS')])
+def test_shared_output_ceiling_exception_requires_exact_count_declaration(tmp_path, monkeypatch, changes):
+    options = dict(name='LLM_MAX_OUTPUT_TOKENS', type='int', cost_affecting=True, validation='positive')
+    options.update(changes)
+    field = FieldDeclaration(**options)
+    mocked_schema(monkeypatch, [field])
+    assert cost_config(context(tmp_path), {field.name: 200000})['_COST_REQUEST_SETTINGS'] is None
+
+
+def test_shared_output_ceiling_changes_cost_compatibility():
+    from test_test_profiles import configuration, ROOT
+    from api_agent.runtime.resource_pack import load_launch_context
+    launch = load_launch_context(ROOT)
+    values = configuration().values
+    lower = cost_config(launch, dict(values, LLM_MAX_OUTPUT_TOKENS=500))['_COST_REQUEST_SETTINGS']
+    higher = cost_config(launch, dict(values, LLM_MAX_OUTPUT_TOKENS=200000))['_COST_REQUEST_SETTINGS']
+    assert lower is not None and higher is not None
+    assert lower['LLM_MAX_OUTPUT_TOKENS'] != higher['LLM_MAX_OUTPUT_TOKENS']

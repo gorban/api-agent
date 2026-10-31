@@ -215,7 +215,7 @@ async def test_custom_acquirer_joins_parsed_flow_and_actual_local_llm(tmp_path, 
         finally:
             await context.aclose()
         assert result.payload.content == (TextContent('Ok'),)
-        assert calls == ['completions']
+        assert calls == ['models', 'completions']
     finally:
         await owner.aclose()
 

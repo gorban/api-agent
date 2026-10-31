@@ -178,6 +178,13 @@ class BedrockProvider:
         finally:
             self._describes.discard(task)
 
+    def _effective_request(self, request):
+        from api_agent.providers.output_limits import clamp_request
+        if request.payload.generation.max_output_tokens is None:
+            return request
+        selected = catalog.selection(request.selected_llm, self.api_mode, self.endpoint)
+        return clamp_request(request, selected, maximum_tokens=1048576)
+
     def validate_request(self, request, *, stream=False):
         self._open()
         if self.api_mode == 'converse':
@@ -186,6 +193,7 @@ class BedrockProvider:
             from .mantle import validate_request
         from .response_policy import prepare_response
         prepared, _ = prepare_response(request, self.api_mode, endpoint=self.endpoint, stream=stream)
+        prepared = self._effective_request(prepared)
         if (stream and self.endpoint == 'runtime' and self.api_mode != 'converse'
                 and prepared.payload.structured is not None):
             raise OperationalError('unsupported')
@@ -197,6 +205,7 @@ class BedrockProvider:
         require_remote_admission(self.emissions)
         self._join_active_authority()
         self._ensure_authority()
+        request = self._effective_request(request)
         self.validate_request(request)
         from .mantle import RESPONSE_CODES
         if self.api_mode == 'converse':
@@ -268,6 +277,7 @@ class BedrockProvider:
         require_remote_admission(self.emissions)
         self._join_active_authority()
         self._ensure_authority()
+        request = self._effective_request(request)
         self.validate_request(request, stream=True)
         if self.api_mode == 'converse':
             from .converse import encode

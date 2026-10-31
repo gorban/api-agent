@@ -210,7 +210,8 @@ class LocalRunOwner:
             origin=config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/'),
             nonce=nonce, scrub=lambda message: 'Selected provider rejected the request.',
             on_error=self._execution_error,
-            reasoning_default=config.values.get('LLM_REASONING_EFFORT') or None)
+            reasoning_default=config.values.get('LLM_REASONING_EFFORT') or None,
+            max_output_tokens=config.values.get('LLM_MAX_OUTPUT_TOKENS', 200000))
         services = {**runtime.services, 'studio_backend': backend, 'ui_access_token': nonce,
                     'ensure_llm_ready': self._llm.ensure_ready,
                     'ui_processes': StudioProcesses(ssl_context=verified_client_context(str(material.ca_file)),

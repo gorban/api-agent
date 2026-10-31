@@ -70,6 +70,7 @@ class SDKTransport:
         channels = []
         authority_lease = None
         authority_values = None
+        inference_observed = False
         async with component_timeout('Bedrock SDK operation', self.timeout) as budget:
             pass
         try:
@@ -229,6 +230,16 @@ class SDKTransport:
                         detail = validate_aws_error(frame['aws_error'], authority_values)
                         message, code = detail['message'], detail.get('code')
                         request_id = detail.get('request_id')
+                    if 'maximum_output_tokens' in frame:
+                        from api_agent.providers.output_limits import OutputLimitRejected
+                        maximum = frame['maximum_output_tokens']
+                        if (authority_values is None or inference_observed
+                                or set(frame) != {'error', 'execution', 'http_status', 'maximum_output_tokens'}
+                                or kind != 'invalid_request' or execution != 'not_started'
+                                or type(status) is not int or status not in (400, 422)
+                                or type(maximum) is not int or not 0 < maximum <= 1048576):
+                            raise ContractError('Invalid Bedrock output limit rejection')
+                        raise OutputLimitRejected(maximum_tokens=maximum, status=status)
                     error = ProviderAccessError(kind, message, status=status, code=code, request_id=request_id)
                     if 'diagnostics' in frame:
                         from api_agent.telemetry.inference_diagnostics import valid_diagnostics
@@ -264,6 +275,7 @@ class SDKTransport:
                     capture_transport_diagnostics(frame.pop('diagnostics'))
                 if set(frame) not in ({'event'}, {'result'}) or not isinstance(next(iter(frame.values())), dict):
                     raise ContractError('Invalid Bedrock worker response')
+                inference_observed = True
                 yield next(iter(frame.values()))
             if await self._timed(process.wait, budget):
                 raise ContractError('Bedrock worker failed')

@@ -39,6 +39,23 @@ Core orchestration consumes these interfaces rather than hardcoding a pack's
 services. See [provider architecture](architecture/provider_architecture.md) and
 [versioned contracts](architecture/provider_contracts_v1.md) for extension details.
 
+## Output-token ceilings
+
+`LLM_MAX_OUTPUT_TOKENS` defaults to 200,000 per LLM call, including reasoning
+where the provider counts it. A pack uses this same shared setting; lower
+call-specific budgets and advertised model maxima reduce the effective limit.
+Transports without an output-limit capability omit the control.
+
+A provider may raise `api_agent.providers.output_limits.OutputLimitRejected`
+with `maximum_tokens` only after confirming a smaller output maximum was rejected
+before inference. Shared execution permits one immediate corrected request under
+the original deadline, separate from transport and workflow retry budgets.
+Ambiguous failures and already generated/truncated responses do not qualify.
+Learned limits expire according to `LLM_OUTPUT_LIMIT_CACHE_TTL_SECONDS` and stay
+within the selected provider/account/model/route owner. Effective request capture
+and physical attempts retain the correction. See the
+[output-ceiling contract](prds/implementation_plan_f1d.md).
+
 ## Generated response contracts
 
 A workflow can declare one generated response schema per node, separately from

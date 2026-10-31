@@ -25,6 +25,10 @@ Current follow-up: [complete Bedrock integration-suite readiness](implementation
 
 ## Larger reasoning budget follow-up
 
+This checkpoint records the earlier 16,384-token application limit. The
+[shared output-ceiling contract](implementation_plan_f1d.md) supersedes that
+application limit; qualified test-specific budgets below remain independent.
+
 The user requested four times the original 4096-token comparison allowance.
 Raise the generic application and integration-test ceiling to 16384, while keeping
 the Bedrock request within its conservatively advertised 16000-token maximum

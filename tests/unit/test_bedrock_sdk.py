@@ -5,6 +5,7 @@ from types import SimpleNamespace
 class Process(SimpleNamespace):
     __hash__ = object.__hash__
 import pytest
+import pytest_asyncio
 from api_agent.llm_providers.bedrock import sdk
 from api_agent.llm_providers.bedrock.auth import BedrockAuthSession
 from api_agent.providers.contracts import ContractError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError
@@ -1006,3 +1007,82 @@ async def test_joined_failure_body_cannot_contradict_safety_rejection(auth, fake
     finally:
         await transport.aclose()
         await asyncio.gather(*tasks)
+
+
+@pytest_asyncio.fixture
+async def output_limit_join(fake_process, monkeypatch):
+    import os
+    import socket
+    original_spawn = sdk.asyncio.create_subprocess_exec
+    tasks = []
+    async def spawn(*args, **kwargs):
+        channel = socket.socket(fileno=os.dup(kwargs['pass_fds'][0]))
+        channel.setblocking(False)
+        async def exchange():
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.sock_sendall(channel, b'["synthetic-key"]\n')
+                data = bytearray()
+                while not data.endswith(b'\n'):
+                    data.extend(await loop.sock_recv(channel, 1024))
+                await loop.sock_sendall(channel, b'1')
+                await loop.sock_recv(channel, 1)
+            finally:
+                channel.close()
+        tasks.append(asyncio.create_task(exchange()))
+        return await original_spawn(*args, **kwargs)
+    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    async def join(values):
+        return None
+    yield join
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+async def test_explicit_output_rejection_becomes_typed_safe_fact(auth, fake_process, output_limit_join):
+    from api_agent.providers.output_limits import OutputLimitRejected
+    fake_process[0]['frames'] = [{'error': 'invalid_request', 'execution': 'not_started',
+                                 'http_status': 400, 'maximum_output_tokens': 8192}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(OutputLimitRejected) as caught:
+            await transport.call('responses', {}, auth=auth, join=output_limit_join)
+        assert caught.value.maximum_tokens == 8192
+        assert caught.value.execution == 'not_started'
+        assert caught.value.usage is None
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', [
+    {'maximum_output_tokens': True}, {'maximum_output_tokens': 0},
+    {'maximum_output_tokens': 1048577}, {'http_status': 500},
+    {'execution': 'possibly_executed'}, {'usage': {}}, {'provider_response': {}},
+])
+async def test_output_rejection_marker_rejects_unproven_fact(auth, fake_process, change, output_limit_join):
+    fake_process[0]['frames'] = [dict({'error': 'invalid_request', 'execution': 'not_started',
+        'http_status': 400, 'maximum_output_tokens': 8192}, **change)]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ContractError):
+            await transport.call('responses', {}, auth=auth, join=output_limit_join)
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_output_rejection_marker_requires_joined_authority(auth, fake_process):
+    fake_process[0]['frames'] = [{'error': 'invalid_request', 'execution': 'not_started',
+        'http_status': 400, 'maximum_output_tokens': 8192}]
+    with pytest.raises(ContractError, match='output limit rejection'):
+        await sdk.SDKTransport().call('responses', {}, auth=auth)
+
+
+@pytest.mark.asyncio
+async def test_output_rejection_marker_after_event_is_not_preinference(auth, fake_process, output_limit_join):
+    fake_process[0]['frames'] = [{'event': {'type': 'started'}},
+        {'error': 'invalid_request', 'execution': 'not_started',
+         'http_status': 400, 'maximum_output_tokens': 8192}]
+    with pytest.raises(ContractError, match='output limit rejection'):
+        await sdk.SDKTransport().call('responses_stream', {}, auth=auth, join=output_limit_join)

@@ -22,3 +22,5 @@ See [bounded inference and schema requirements](implementation_plan_f1a.md).
 
 - [ ] Deliver [bounded inference recovery and physical-attempt evidence](implementation_plan_f1b.md), preserving application retry counters and uncertain charges.
 - [ ] Deliver [provider-owned credential protection for LLM requests and responses](implementation_plan_f1c.md), including user-visible output and evidence.
+
+- [x] Deliver [shared output ceilings and provider limit negotiation](implementation_plan_f1d.md).

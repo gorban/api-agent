@@ -98,7 +98,7 @@ Use `async with owner.stream(operation, context=budget) as stream` and iterate i
 The shared completion owner retries confirmed upstream HTTP 429 and 500..599 and
 explicitly classified transient transport errors (`OperationalError.kind = network`), with
 `LLM_MAX_ATTEMPTS` defaulting to five total attempts including the first (1..20;
-one disables recovery). Nominal delays are 200ms, 1s, 5s and 25s with bounded jitter
+one disables transport retries). Nominal delays are 200ms, 1s, 5s and 25s with bounded jitter
 and a 30-second algorithm cap. A valid Retry-After minimum may be longer, but all
 attempts and waits share the provider/enclosing deadline. Authentication, tools,
 whole workflows and already delivered streams are never replayed. Provider and
@@ -112,7 +112,8 @@ not establish an HTTP failure. Preserve the confirmed status and any parsed
 `api_agent.providers.inference_retry.retry_after` helper parses the header into
 a bounded numeric hint; an unsupported large server minimum declines recovery.
 Local validation, cancellation, local deadlines, TLS configuration failures,
-pool saturation, unknown statusless failures and other HTTP statuses stay terminal.
+pool saturation, unknown statusless failures and other HTTP statuses stay terminal
+except for the separate output-limit admission correction below.
 Providers classify typed connection/read/write-timeout/disconnect causes, not raw
 messages or a generic `unavailable` kind. Network retries preserve possible prior
 execution and unknown charges; an empty successful result is not a network error.
@@ -125,6 +126,30 @@ physical attempts, preserving partials and unknowns. Recovered attempts attract
 yellow attention without changing application-defined attempts or Max passes.
 See [recovery requirements](../prds/implementation_plan_f1b.md) for evidence,
 accounting and acceptance boundaries.
+
+## Output ceilings and admission correction
+
+`LLM_MAX_OUTPUT_TOKENS` defaults to 200,000 per generation. Effective requests
+use the smallest configured, caller-specific, advertised model and learned
+output ceiling. Providers without output-limit support omit the implicit control.
+For implicit ceilings, catalog listing is optional: a confirmed catalog-only 403
+may leave model metadata unavailable while the declared provider capability
+still supplies the configured ceiling. This does not bypass authentication,
+inference authorization, explicit-budget checks or existing cache-hint rules.
+
+An adapter may raise `api_agent.providers.output_limits.OutputLimitRejected`
+only for a confirmed pre-inference HTTP 400/422 validation rejection stating a
+smaller positive output maximum. Core does not parse arbitrary provider prose.
+Shared ownership caches the maximum for the exact model within its selected
+provider/account/endpoint/API owner, bounded to 256 entries and governed by
+`LLM_OUTPUT_LIMIT_CACHE_TTL_SECONDS` (3,600 seconds; zero disables reuse).
+
+One immediate corrected request may add one physical attempt independently of
+`LLM_MAX_ATTEMPTS`, including when that setting is one. The original deadline,
+cancellation, selected identity and other generation options remain authoritative.
+Keep distinct attempt evidence and recovered attention; never replay tools or
+an already generated/truncated response. Unknown charges remain unknown.
+See [output-ceiling requirements](../prds/implementation_plan_f1d.md).
 
 ## Shutdown and failed loads
 

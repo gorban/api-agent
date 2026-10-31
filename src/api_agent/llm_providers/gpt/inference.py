@@ -620,6 +620,12 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                     data = _json(raw)
                 except ProviderAccessError:
                     data = None
+                from .output_limits import output_rejection
+                limit_error = output_rejection(response.status_code, data,
+                    subscription=subscription, api_mode=api_mode)
+                if limit_error is not None:
+                    await _guard_error(limit_error, access_token, authority)
+                    raise limit_error
                 if type(data) is dict:
                     await _capture_safe_response(data, request.request_id, access_token, authority)
                 error = _rejection(response.status_code, data, request_id, access_token,

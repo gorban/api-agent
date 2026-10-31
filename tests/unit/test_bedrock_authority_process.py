@@ -26,11 +26,10 @@ class Session:
         counter = os.environ.get("SYNTHETIC_RETRY_COUNTER")
         if counter:
             try:
-                with open(counter) as source: count = int(source.read()) + 1
+                with open(counter) as source: count = int(source.read())
             except FileNotFoundError:
-                count = 1
-            with open(counter, "w") as target: target.write(str(count))
-            if count > 1: token = "synthetic-refreshed-token"
+                count = 0
+            if count >= 1: token = "synthetic-refreshed-token"
         return types.SimpleNamespace(access_key="synthetic-access", secret_key="synthetic-secret", token=token)
 boto.Session = Session
 sys.modules["boto3"] = boto
@@ -70,7 +69,11 @@ class ClientSDK:
                 time.sleep(60)
             counter = os.environ.get("SYNTHETIC_RETRY_COUNTER")
             if counter:
-                with open(counter) as source: count = int(source.read())
+                try:
+                    with open(counter) as source: count = int(source.read()) + 1
+                except FileNotFoundError:
+                    count = 1
+                with open(counter, "w") as target: target.write(str(count))
                 if count == 1:
                     class RetryError(Exception):
                         status_code = 503

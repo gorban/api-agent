@@ -1,6 +1,6 @@
 # Shared integration authentication
 
-Ordinary and DEBUG integration runs use one lazy authentication backend for the selected provider and account. Base, resource-pack and selected-provider suites share that backend, including parallel pytest workers. Requesting the `llm_provider` fixture is inert; `ensure_ready()` acquires authentication; `describe()` additionally verifies remote catalog access; `complete(request)` executes an explicit text request without listing first.
+Ordinary and DEBUG integration runs use one lazy authentication backend for the selected provider and account. Base, resource-pack and selected-provider suites share that backend, including parallel pytest workers. Requesting the `llm_provider` fixture is inert; `ensure_ready()` acquires authentication; `describe()` additionally verifies remote catalog access; `complete(request)` executes an explicit text request with optional catalog discovery to apply output ceilings before dispatch.
 
 ## Ownership
 

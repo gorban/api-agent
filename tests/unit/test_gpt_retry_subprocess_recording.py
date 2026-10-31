@@ -40,6 +40,8 @@ def test_gpt_retry_through_real_worker_and_recorder(tmp_path, monkeypatch, log, 
     real_client = httpx.AsyncClient
 
     def respond(request):
+        if request.method == 'GET' and request.url.path.endswith('/key'):
+            return httpx.Response(200, json={'data': {'label': 'synthetic-selected-key'}})
         if request.method == 'GET':
             return httpx.Response(200, json={'data': [{'id': 'gpt-4.1-nano'}]})
         assert request.method == 'POST' and request.url.path.endswith('/responses')

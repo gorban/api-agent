@@ -11,7 +11,7 @@ from ..providers.selection import ModelSelectionPolicy
 
 STREAM_BYTES = 1048576
 STREAM_EVENTS = 8192
-MAX_OUTPUT_TOKENS = 16384
+MAX_OUTPUT_TOKENS = 1048576
 
 EFFORTS = ('off', 'low', 'medium', 'high')
 

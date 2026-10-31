@@ -304,6 +304,9 @@ class IntegrationLLM:
                                                  validate_request=lambda request: self._validate_request(implementation, request),
                                                  catalog_ttl=self._provider_config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600),
                                                  max_attempts=self._provider_config.get('LLM_MAX_ATTEMPTS', 5),
+                                                 max_output_tokens=self._provider_config.get('LLM_MAX_OUTPUT_TOKENS', 200000),
+                                                 supports_output_limit='max_output_tokens' in getattr(getattr(implementation, 'capabilities', None), 'features', ()),
+                                                 output_limit_cache_ttl=self._provider_config.get('LLM_OUTPUT_LIMIT_CACHE_TTL_SECONDS', 3600),
                                                  inference_timeout=getattr(implementation, 'inference_timeout', None))
 
     async def _capture_quota(self, phase):

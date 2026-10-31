@@ -34,7 +34,7 @@ class StudioBackend:
     """
     def __init__(self, *, owner, describe, complete, policy, origin, nonce,
                  scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None,
-                 on_error=None):
+                 on_error=None, max_output_tokens=200000):
         parts = urlsplit(origin)
         if (parts.scheme not in ('http', 'https') or parts.hostname not in ('localhost', '127.0.0.1', '::1')
                 or parts.path or parts.query or parts.fragment or parts.username or parts.password
@@ -43,6 +43,9 @@ class StudioBackend:
                 or type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
                 or type(body_limit) is not int or not 1 <= body_limit <= 131072):
             raise ValueError('Invalid Studio bridge configuration')
+        if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= chat_contract.MAX_OUTPUT_TOKENS:
+            raise ValueError('Invalid output-token ceiling')
+        self.max_output_tokens = max_output_tokens
         self.owner, self.describe, self.complete, self.policy = owner, describe, complete, policy
         self.origin, self._nonce, self.scrub = origin, nonce, scrub
         self.timeout, self.body_limit, self.closed = timeout, body_limit, False
@@ -264,6 +267,8 @@ class StudioBackend:
                 selection = next((item for item in selections if item.selected_llm == value.selected_llm), None)
                 if selection is None:
                     raise ContractError('Unknown model')
+                from ..providers.output_limits import clamp_request
+                value = clamp_request(value, selection, self.max_output_tokens)
                 selection.validate(value)
                 queue = asyncio.Queue(maxsize=16)
                 async def invoke(context):

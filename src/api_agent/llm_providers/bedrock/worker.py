@@ -134,6 +134,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
     endpoint = None
     decode_failure = None
     failed_observation = None
+    inference_observed = False
     try:
         json_value(request)
         if set(request) != {'operation', 'auth', 'payload', 'timeout'} or request['operation'] not in ALL_OPERATIONS:
@@ -254,6 +255,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
             decoder = WorkerStream('responses' if response else 'completions', arguments['model'], secrets, **({'endpoint': endpoint} if endpoint != 'mantle' else {}))
             for event in body:
+                inference_observed = True
                 value = json_value(event.model_dump(exclude_unset=True))
                 if type(value) is not dict or value.get('error') is not None or value.get('type') in {'error', 'response.failed'}:
                     if type(value) is dict:
@@ -269,6 +271,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             for frame in decoder.finish():
                 emit({'event': frame})
         else:
+            inference_observed = True
             value = json_value(result if native else result.model_dump(exclude_unset=True))
             if type(value) is not dict or value.get('error') is not None:
                 if type(value) is dict:
@@ -383,6 +386,34 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             from api_agent.llm_providers.bedrock.runtime_worker import transient_network_failure
             if transient_network_failure(error):
                 kind = 'network'
+        # Recognize only an HTTP request-admission rejection before any result
+        # or stream event. Emit a numeric fact, never the original service text.
+        from api_agent.llm_providers.bedrock.output_limits import rejected_maximum
+        from api_agent.providers.inference import error_usage
+        detail = None
+        if native:
+            raw = getattr(error, 'response', None)
+            if type(raw) is dict and not any(key in raw for key in ('usage', 'output')):
+                candidate = raw.get('Error')
+                if type(candidate) is dict and candidate.get('Code') == 'ValidationException':
+                    detail = candidate
+        else:
+            raw = getattr(error, 'body', None)
+            if type(raw) is dict and not any(key in raw for key in ('usage', 'output', 'choices', 'response')):
+                try:
+                    from openai import APIStatusError
+                except ImportError:
+                    pass
+                else:
+                    if isinstance(error, APIStatusError):
+                        detail = raw.get('error', raw)
+        maximum = rejected_maximum(status, detail)
+        if (maximum is not None and joined and not inference_observed
+                and decode_failure is None and error_usage(error) is None
+                and operation not in ('models', 'runtime_models')):
+            emit({'error': 'invalid_request', 'execution': 'not_started',
+                  'http_status': status, 'maximum_output_tokens': maximum})
+            return
         frame = {'error': kind, 'execution': execution}
         if native and joined and execution == 'possibly_executed' and decode_failure is None:
             aws_response = getattr(error, 'response', None)

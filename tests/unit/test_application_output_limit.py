@@ -17,14 +17,14 @@ def body(maximum):
         'max_output_tokens':maximum}
 
 
-@pytest.mark.parametrize('maximum', [1, 4096, 4097, 16000, 16384])
+@pytest.mark.parametrize('maximum', [1, 4096, 4097, 16000, 16384, 200000, 1048576])
 def test_parser_accepts_exact_application_output_budget(maximum):
-    assert MAX_OUTPUT_TOKENS == 16384
+    assert MAX_OUTPUT_TOKENS == 1048576
     _, request = completion(body(maximum), 'example', None)
     assert request.payload.generation.max_output_tokens == maximum
 
 
-@pytest.mark.parametrize('maximum', [16385, True, False, 0, -1, None, '16384', 16384.0])
+@pytest.mark.parametrize('maximum', [1048577, True, False, 0, -1, None, '16384', 16384.0])
 def test_parser_rejects_invalid_output_budget(maximum):
     with pytest.raises(ContractError, match='Invalid output limit'):
         completion(body(maximum), 'example', None)
@@ -48,7 +48,7 @@ def test_real_http_preserves_accepted_budget_into_provider(maximum):
     assert len(calls) == 1 and calls[0].payload.generation.max_output_tokens == maximum
 
 
-@pytest.mark.parametrize('maximum', [16385, True, 0, None, '16384'])
+@pytest.mark.parametrize('maximum', [1048577, True, 0, None, '16384'])
 def test_real_http_rejects_invalid_budget_before_provider(maximum):
     calls=[]
     provider=SimpleNamespace(describe=lambda:calls.append('describe'), complete=lambda request:calls.append('complete'))
