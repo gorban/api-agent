@@ -106,7 +106,7 @@ def test_fenced_prompted_planner_and_native_reviewer_share_validated_json_consum
     assert len(llm.requests) == 3
     assert owner.events == ['describe']
     assert llm.requests[0].payload.response.fallback == 'allow'
-    assert llm.requests[1].payload.response.fallback == 'reject'
+    assert llm.requests[1].payload.response.fallback == 'allow'
 
 
 def test_same_declared_consumer_uses_synthetic_rest_owner_unchanged():
@@ -460,3 +460,50 @@ def test_compatibility_owner_tool_evidence_uses_captured_instance_id(monkeypatch
                verdict(), 'Ada'])
     asyncio.run(application(Owner()).complete(request(), llm=llm, context=OperationContext('request')))
     assert recorded == [('primary', 'demo/primary', 'demo/primary')]
+
+
+@pytest.mark.parametrize('effort', ['low', 'high'])
+@pytest.mark.parametrize('invalid_verdict', [False, True])
+def test_bedrock_reasoning_reviewer_fallback_preserves_schema_validation(effort, invalid_verdict):
+    from api_agent.llm_providers.bedrock.response_policy import prepare_response
+    from api_agent.providers.contracts import ProviderAccessError
+    from api_agent.providers.rich_inference import async_validate_result
+
+    class BedrockPolicyLLM(LLM):
+        def __init__(self, outputs):
+            super().__init__(outputs)
+            self.policies = []
+
+        async def complete(self, request, *, context):
+            adapted, evidence = prepare_response(request, 'responses', endpoint='runtime')
+            self.policies.append((adapted, evidence))
+            result = await super().complete(request, context=context)
+            return await async_validate_result(request, replace(result, response=evidence))
+
+    reviewer = json.loads(verdict())
+    if invalid_verdict:
+        reviewer['unexpected'] = True
+    llm = BedrockPolicyLLM([
+        json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Hello'}),
+        json.dumps(reviewer), 'Hello'])
+    owner = Owner()
+    original = request()
+    selected = replace(original, selected_llm='us.openai.gpt-5.6-luna',
+        payload=replace(original.payload, generation=GenerationOptions(reasoning_effort=effort)))
+
+    if invalid_verdict:
+        with pytest.raises(ProviderAccessError):
+            asyncio.run(application(owner).complete(selected, llm=llm, context=OperationContext('request')))
+        assert len(llm.requests) == 2
+    else:
+        result = asyncio.run(application(owner).complete(selected, llm=llm, context=OperationContext('request')))
+        assert result.payload.content[0].text == 'Hello'
+        assert len(llm.requests) == 3
+
+    adapted, evidence = llm.policies[1]
+    assert evidence.actual_mode == 'prompted_json'
+    assert evidence.requested_mode == 'structured'
+    assert adapted.payload.generation.reasoning_effort == effort
+    assert llm.requests[1].payload.response.fallback == 'allow'
+    assert json.loads(llm.requests[1].payload.response.schema.schema)['additionalProperties'] is False
+    assert owner.events == ['describe']

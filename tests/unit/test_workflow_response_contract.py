@@ -223,7 +223,7 @@ def test_bundled_planner_and_reviewer_use_distinct_generated_contracts():
     planner, reviewer, renderer = [item.payload for item in llm.requests]
     assert (planner.response.mode, planner.response.fallback) == ('structured', 'allow')
     assert json.loads(planner.response.schema.schema)['properties']['arguments'] == {'type': 'object'}
-    assert (reviewer.response.mode, reviewer.response.fallback) == ('structured', 'reject')
+    assert (reviewer.response.mode, reviewer.response.fallback) == ('structured', 'allow')
     assert set(json.loads(reviewer.response.schema.schema)['properties']) == {'correct', 'grounded', 'relevant', 'preference'}
     assert 'accepted' not in reviewer.response.schema.schema
     assert renderer.response is None and renderer.structured is None
