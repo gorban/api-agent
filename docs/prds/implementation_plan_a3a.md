@@ -7,6 +7,11 @@ prerequisites, suite exclusion, cancellation, result presentation and immutable
 Allure recording. Integration execution keeps its existing mode and one-pass
 semantics. E2E records its own operation identity and recollects only E2E suites.
 
+The E2E picker exposes the same unattended-user summary and previous/next user
+shortcuts as integration selection. Preserve manual login, eligible-account
+filtering, saved target and override precedence, test selection and cursor
+position. Unit selection does not offer authentication controls.
+
 - [x] Require explicit picker continuation and E2E acceptance before execution.
   Noninteractive execution requires explicit START=E2E; START=True does not
   grant E2E acceptance. Discovery and declined acceptance start no prerequisites.

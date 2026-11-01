@@ -380,7 +380,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                 else:
                     yield EditableInput(id="config-value", password=field.sensitive)
             if self.kind not in {"cleanup", "test-results"}:
-                if self.kind == 'tests' and app.mode == 'integration' and 'UNATTENDED_USER_INDEX' in app.schema.fields:
+                if self.kind == 'tests' and app.mode in {'integration', 'e2e'} and 'UNATTENDED_USER_INDEX' in app.schema.fields:
                     yield Static(app.account_summary(screen=self), id='account-selection', markup=False)
                 yield Static(app.target_summary(), id="dotenv-targets", markup=False)
             with Horizontal(id="actions") as actions:
@@ -715,7 +715,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if action == "start_selected":
             return self.kind == "tests"
         if action in {'previous_account', 'next_account'}:
-            return (self.kind == 'tests' and self.app.mode == 'integration'
+            return (self.kind == 'tests' and self.app.mode in {'integration', 'e2e'}
                     and self.account_cycle_available)
         if action == "stop_selected":
             return self.kind == "containers"
