@@ -128,24 +128,9 @@ def test_nested_raw_scopes_and_independent_journals(tmp_path, monkeypatch,
     outer = create('outer', outer_stateful, nested)
     async def run():
         async with progress.component_timeout('Workflow case coverage', 30):
-            if outer_stateful and not inner_stateful:
-                # Existing checkpoint-context incompatibility is a separate
-                # execution contract; failure must still restore scope ownership.
-                with pytest.raises(TypeError, match='Dict key must a type serializable with OPT_NON_STR_KEYS'):
-                    await outer()
-                assert current_structural_scope() is None
-                start = len(events)
-                sibling = create('sibling', False)
-                assert await sibling() == {'seen': True}
-                sibling_events = events[start:]
-                assert next(row for row in sibling_events if row['event'] == 'scope_start')['parent_id'] is None
-                assert scope_steps(sibling_events)
-            else:
-                assert await outer() == {'seen': True}
+            assert await outer() == {'seen': True}
             assert current_structural_scope() is None
     asyncio.run(run())
-    if outer_stateful and not inner_stateful:
-        return
     starts = [row for row in events if row['event'] == 'scope_start']
     graphs = [row for row in starts if row['kind'] == 'graph']
     node = next(row for row in starts if row['kind'] == 'node')

@@ -218,13 +218,13 @@ def test_bundled_planner_and_reviewer_use_distinct_generated_contracts():
     from test_demo_application import LLM, Owner, application, request
     from api_agent.providers.control import OperationContext
     llm = LLM(['{"use_tool":false,"arguments":{},"answer":"Hello"}',
-               '{"correct":true,"grounded":true,"relevant":true,"preference":true}', 'Hello'])
+               '{"correct":true,"grounded":true,"relevant":true,"preference":true,"details":""}', 'Hello'])
     asyncio.run(application(Owner()).complete(request(), llm=llm, context=OperationContext('turn')))
     planner, reviewer, renderer = [item.payload for item in llm.requests]
     assert (planner.response.mode, planner.response.fallback) == ('structured', 'allow')
     assert json.loads(planner.response.schema.schema)['properties']['arguments'] == {'type': 'object'}
     assert (reviewer.response.mode, reviewer.response.fallback) == ('structured', 'allow')
-    assert set(json.loads(reviewer.response.schema.schema)['properties']) == {'correct', 'grounded', 'relevant', 'preference'}
+    assert set(json.loads(reviewer.response.schema.schema)['properties']) == {'correct', 'grounded', 'relevant', 'preference', 'details'}
     assert 'accepted' not in reviewer.response.schema.schema
     assert renderer.response is None and renderer.structured is None
 
@@ -356,7 +356,7 @@ def test_legacy_useful_application_keeps_plain_native_calls(legacy_demo_root):
         base_root=legacy_demo_root, pack_root=legacy_demo_root / 'demo', entry_root='base')
     app = UsefulDemoApplication(definition, tool_owner=Owner())
     llm = LLM(['{"use_tool":false,"arguments":{},"answer":"hello"}',
-               '{"correct":true,"grounded":true,"relevant":true,"preference":true}', 'hello'])
+               '{"correct":true,"grounded":true,"relevant":true,"preference":true,"details":""}', 'hello'])
 
     result = asyncio.run(app.complete(request(), llm=llm, context=OperationContext('legacy')))
 

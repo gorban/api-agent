@@ -141,7 +141,11 @@ their own containing-document-relative links.
   `structured`/`allow`; unsupported strict schemas require an explicitly recorded
   weaker mechanism and original-schema validation, never a silently closed schema.
 - The useful demo reviewer declares its four generated Boolean verdicts separately
-  from the complete `accepted`/`feedback` node Output. It uses `structured`/`allow`: native structured output is preferred, while permitted JSON fallback retains validation of the original four-Boolean schema and selected reasoning effort. Invalid verdicts must fail before rendering or tool execution.
+  from the complete `accepted`/`feedback` node Output. It also declares specific
+  rejection details under [revision feedback](implementation_plan_f1a1b.md).
+  It uses `structured`/`allow`: native structured output is preferred, while
+  permitted JSON fallback retains validation of the original verdict schema and
+  selected reasoning effort. Invalid verdicts must fail before rendering or tool execution.
 - The local chat application and useful demo renderer remain intentionally textual.
   Their original runtime metadata is assembled separately from generated text.
 - Tool conversations retain explicit native requests: conversational rounds and
@@ -180,3 +184,6 @@ not establish access or feature support for an unverified deployment.
 - [x] Complete [scoped Runtime schema admission and visible response mechanisms](implementation_plan_f1a4.md), preserving original application schemas and explicitly allowed fallback.
 
 - [x] Complete [useful demo revision feedback](implementation_plan_f1a1b.md), retaining schema and review gates while supplying the rejected candidate to the next attempt.
+
+- [x] Deliver [ordered parsed-flow inference history](implementation_plan_f1a1c.md)
+  and exact reviewer rejection details across retrying application and test flows.

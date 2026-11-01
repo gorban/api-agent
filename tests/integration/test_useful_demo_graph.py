@@ -75,7 +75,9 @@ def run_demo(verdicts, *, render=None):
 
 
 def verdict(**changes):
-    return dict(correct=True, grounded=True, relevant=True, preference=True) | changes
+    row = dict(correct=True, grounded=True, relevant=True, preference=True) | changes
+    row['details'] = '' if all(row.values()) else 'A synthetic review check failed.'
+    return row
 
 
 def test_selected_graph_relaxes_preference_only_after_retry_and_renders_partial_evidence():

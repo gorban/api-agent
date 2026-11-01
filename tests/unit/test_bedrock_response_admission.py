@@ -127,7 +127,7 @@ def native_message(value):
 @pytest.mark.parametrize('invalid', [False, True])
 def test_factory_sends_native_reviewer_and_keeps_original_validation(monkeypatch, model, stream, invalid):
     schema_text = (ROOT / 'demo/simple/schemas/review_response.json').read_text()
-    verdict = dict(correct=True, grounded=True, relevant=True, preference=True)
+    verdict = dict(correct=True, grounded=True, relevant=True, preference=True, details='')
     if invalid:
         verdict['unexpected'] = True
     text = json.dumps(verdict)

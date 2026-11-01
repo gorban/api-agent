@@ -28,7 +28,10 @@ def declaration(tmp_path):
 def compile_workflow(path, complete, **services):
     layout = load_layout(path, base_root=ROOT, pack_root=path.parent)
     catalog = runpy.run_path(str(path.parent / 'functions.py'))
-    schema = next(row['Output schema'] for row in layout.tables['Functions'] if row['ID'] == 'first_draft')
+    # Keep the original dialect on the node validator; the legacy native
+    # generation schema uses its supported strict keyword subset.
+    schema = dict(next(row['Output schema'] for row in layout.tables['Functions'] if row['ID'] == 'first_draft'))
+    schema.pop('$schema', None)
     trial = services.pop('trial', trial_uuid())
     return Workflow(layout, {name: NodeFunction(catalog[name]) for name in ('produce', 'validate_format', 'guard')},
                     {'skip_second': lambda values: values['first_draft']['route'] == 'skip', **services.pop('conditions', {})},

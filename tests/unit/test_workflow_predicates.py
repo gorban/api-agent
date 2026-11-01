@@ -4,7 +4,7 @@ import asyncio
 from copy import deepcopy
 import json
 from pathlib import Path
-from types import SimpleNamespace
+from api_agent.providers.llm import LLMResult, Message, TextContent
 import pytest
 
 from api_agent.workflows.predicates import (
@@ -431,8 +431,7 @@ def test_compiled_format_rejection_retries_with_feedback_then_accepts():
         original = request.payload.messages[1].content[0].text
         draft = {'original_input': original, 'route': 'skip', 'ready': True,
                  'final_output': 'wrong' if metadata['attempt'] == 1 else f'echo {original}'}
-        return SimpleNamespace(outcome='completed', payload=SimpleNamespace(
-            content=(SimpleNamespace(text=json.dumps(draft)),)))
+        return LLMResult(Message('assistant', (TextContent(json.dumps(draft)),)))
 
     workflow = build(Path(__file__).resolve().parents[2], llm=llm,
                      selection='synthetic', trial=trial_uuid(), observe=events.append)
@@ -465,8 +464,7 @@ def test_compiled_format_rejection_exhausts_declared_passes():
         requests.append(metadata)
         draft = {'original_input': 'original request', 'route': 'skip', 'ready': True,
                  'final_output': 'still wrong'}
-        return SimpleNamespace(outcome='completed', payload=SimpleNamespace(
-            content=(SimpleNamespace(text=json.dumps(draft)),)))
+        return LLMResult(Message('assistant', (TextContent(json.dumps(draft)),)))
 
     workflow = build(Path(__file__).resolve().parents[2], llm=llm,
                      selection='synthetic', trial=trial_uuid(), observe=events.append)

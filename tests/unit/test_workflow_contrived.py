@@ -2,6 +2,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 import pytest
+from api_agent.providers.llm import LLMResult, Message, TextContent
 from api_agent.workflows.contrived import produce, strict_json, validate_format, guard
 from api_agent.workflows.execution import WorkflowError
 from test_workflow_trial_decisions import trial_uuid
@@ -138,7 +139,7 @@ def test_complete_fixture_repairs_without_losing_upstream(route,calls):
         metadata=json.loads(request.payload.messages[-1].content[0].text)
         requests.append(metadata)
         draft={'route':route,'original_input':request.payload.messages[1].content[0].text,'ready':metadata['attempt'] > 1,'final_output':request.payload.messages[1].content[0].text}
-        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text=json.dumps(draft)),)))
+        return LLMResult(Message('assistant', (TextContent(json.dumps(draft)),)))
     workflow=build(Path(__file__).resolve().parents[2],llm=llm,selection='synthetic',trial=trial_uuid(route,first_ready=False,second_ready=False),observe=events.append)
     values=asyncio.run(workflow.arun({'user_input':' λ\n'}))
     assert values['first_draft']['ready'] is True
@@ -220,7 +221,7 @@ def test_configured_typed_limits_clip_all_workflow_scopes():
     events=[]
     async def llm(request):
         text=request.payload.messages[1].content[0].text
-        return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text=json.dumps({'route':'skip','original_input':text,'ready':True,'final_output':text})),)))
+        return LLMResult(Message('assistant', (TextContent(json.dumps({'route':'skip','original_input':text,'ready':True,'final_output':text})),)))
     settings={'WORKFLOW_LLM_TIMEOUT_SECONDS':7.5,'WORKFLOW_COMPONENT_TIMEOUT_SECONDS':9.0,'WORKFLOW_GRAPH_TIMEOUT_SECONDS':2.0}
     workflow=build(Path(__file__).resolve().parents[2],llm=llm,selection='synthetic',trial=trial_uuid(),config=settings,observe=events.append)
     asyncio.run(workflow.arun({'user_input':'synthetic'}))

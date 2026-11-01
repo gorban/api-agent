@@ -68,8 +68,19 @@ def test_compiled_langgraph_preserves_input_and_independent_pass_budgets(route, 
     assert requests[0].payload.messages[1].content[0].text == original
     if retry_first:
         assert requests[0].payload.messages[:2] == requests[1].payload.messages[:2]
+        assert requests[1].payload.messages[:len(requests[0].payload.messages)] == requests[0].payload.messages
+        assert requests[1].payload.messages[len(requests[0].payload.messages)].role == 'assistant'
+        assert json.loads(requests[1].payload.messages[-1].content[0].text)['feedback']
         retry = json.loads(requests[1].payload.messages[-1].content[0].text)
         assert retry['previous']['ready'] is False and retry['feedback']['reason'].startswith('Repair')
+    if route != 'skip':
+        second = requests[1 + int(retry_first)]
+        assert len(second.payload.messages) == 3
+        assert json.loads(second.payload.messages[-1].content[0].text)['decisions']['component'] == 'second'
+        if retry_second:
+            following = requests[-1]
+            assert following.payload.messages[:len(second.payload.messages)] == second.payload.messages
+            assert following.payload.messages[len(second.payload.messages)].role == 'assistant'
     assert 'flowchart TD' in workflow.diagram()
 
 
@@ -163,3 +174,69 @@ def test_recorded_without_observation_factory_requires_resolved_content_authorit
     assert payload['content']==('permitted_scrubbed' if permitted else 'withheld')
     captures = [row for row in payload['events'] if row['event']=='capture']
     assert any(row.get('values') for row in captures) is permitted
+
+
+def test_same_workflow_concurrent_invocations_keep_retry_messages_separate():
+    requests = []
+    arrived = asyncio.Event()
+    async def complete(request):
+        requests.append(request)
+        if len(requests) == 2:
+            arrived.set()
+        await arrived.wait()
+        tail = json.loads(request.payload.messages[-1].content[0].text)
+        original = request.payload.messages[1].content[0].text
+        return LLMResult(Message('assistant', (TextContent(json.dumps(dict(
+            original_input=original, route='skip', ready=tail['attempt'] > 1,
+            final_output=original))),)))
+    workflow = build(ROOT, llm=complete, selection='example',
+                     trial=trial_uuid('skip', first_ready=False))
+    async def run():
+        return await asyncio.gather(workflow.arun({'user_input':'First user'}),
+                                    workflow.arun({'user_input':'Second user'}))
+
+    results = asyncio.run(run())
+
+    assert [row['first_draft']['final_output'] for row in results] == ['First user', 'Second user']
+    assert len(requests) == 4
+    for original in ('First user', 'Second user'):
+        own = [row for row in requests if row.payload.messages[1].content[0].text == original]
+        assert len(own) == 2
+        assert own[1].payload.messages[:len(own[0].payload.messages)] == own[0].payload.messages
+        assert own[1].payload.messages[len(own[0].payload.messages)].role == 'assistant'
+
+
+def test_nested_parsed_graphs_borrow_provider_without_the_parent_transcript(monkeypatch):
+    from api_agent.workflows import contrived
+    original_produce = contrived.produce
+    requests = []
+    async def complete(request):
+        requests.append(request)
+        tail = json.loads(request.payload.messages[-1].content[0].text)
+        original = request.payload.messages[1].content[0].text
+        return LLMResult(Message('assistant', (TextContent(json.dumps(dict(
+            original_input=original, route='skip', ready=tail['decisions']['ready'],
+            final_output=original))),)))
+    async def produce(inputs, context):
+        if not context.services.get('nested_child'):
+            for text in ('First child', 'Second child'):
+                child = build(ROOT, llm=context.services['llm'], selection='example',
+                              trial=trial_uuid('skip', first_ready=False))
+                child.services['nested_child'] = True
+                await child.arun({'user_input': text})
+        return await original_produce(inputs, context)
+    monkeypatch.setattr(contrived, 'produce', produce)
+    parent = build(ROOT, llm=complete, selection='example', trial=trial_uuid('skip'))
+
+    asyncio.run(parent.arun({'user_input':'Parent task'}))
+
+    assert len(requests) == 5
+    assert len(requests[0].payload.messages) == len(requests[2].payload.messages) == 3
+    for initial, retry in ((requests[0], requests[1]), (requests[2], requests[3])):
+        assert retry.payload.messages[:len(initial.payload.messages)] == initial.payload.messages
+        assert retry.payload.messages[len(initial.payload.messages)].role == 'assistant'
+    assert requests[2].payload.messages[1].content[0].text == 'Second child'
+    assert all('First child' not in part.text
+               for row in requests[3].payload.messages for part in row.content)
+    assert len(requests[4].payload.messages) == 3
+    assert requests[4].payload.messages[1].content[0].text == 'Parent task'

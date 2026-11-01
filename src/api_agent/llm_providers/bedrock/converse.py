@@ -84,9 +84,12 @@ def format_payload(request, body, evidence):
         return body
     # The shared fallback appends one instruction. Translate its content to the
     # Converse union without changing the authored history or evidence position.
-    messages = [*formatted['messages']]
-    instruction = messages[-1]
-    messages[-1] = {**instruction, 'content': [{'text': instruction['content']}]}
+    messages = [*formatted['messages'][:-1]]
+    instruction = {'text': formatted['messages'][-1]['content']}
+    if messages and messages[-1]['role'] == 'user':
+        messages[-1] = {**messages[-1], 'content': [*messages[-1]['content'], instruction]}
+    else:
+        messages.append({'role': 'user', 'content': [instruction]})
     return {**formatted, 'messages': messages}
 
 

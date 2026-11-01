@@ -676,7 +676,8 @@ class StatefulWorkflow:
                     timeout_key=self.timeout_keys.get(row['ID']))
         outcome = 'failed'
         try:
-            context = StateNodeContext(row['ID'], self._services.get(), self._request.get(),
+            services = self._turn_state.get()['llm_history'].services(self._services.get(), row['ID'])
+            context = StateNodeContext(row['ID'], services, self._request.get(),
                                        self.definition.declared_resources)
             from .attribution import bind_workflow_visit
             journal = self._journal.get()
@@ -872,7 +873,9 @@ class StatefulWorkflow:
         services_token = self._services.set(dict(selected_services))
         capture_token = self._capture_services.set(selected_services)
         journal_token = self._journal.set(journal if recorded else selected_journal)
-        state_token = self._turn_state.set({'visits': {}, 'open_components': {}})
+        from .inference_history import InferenceHistory
+        history = InferenceHistory()
+        state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history})
         try:
             selected_journal = self._journal.get()
             active_turn = turn_id if turn_id is not None else (selected_journal.turn_id if selected_journal is not None else None)
@@ -885,6 +888,7 @@ class StatefulWorkflow:
                     async with invocation_tools(self.definition, selected_services), self._scope_graph(budget):
                         yield
         finally:
+            history.close()
             self._request.reset(token)
             self._services.reset(services_token)
             self._capture_services.reset(capture_token)
