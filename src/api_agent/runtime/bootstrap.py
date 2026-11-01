@@ -376,7 +376,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             print()
             print(format_unit_summary(execution))
             return execution.exit_code
-        if result.values.get('NO_STD_IN') and mode == 'integration' and automatically_started(result):
+        if result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'} and automatically_started(result):
             from api_agent.testing.diagnostics import CredentialScrubber, format_exception, terminal_exception
             from api_agent.auth.terminal_output import TerminalOutput
             scrubber = CredentialScrubber(result.values)
@@ -404,7 +404,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 from api_agent.testing.launched import run_launched_integration
                 from api_agent.testing.terminal_progress import TerminalTestProgress
                 from api_agent.telemetry.privacy import ContentPolicy
-                tests = collect_tests(context, 'integration', result.positionals, config=result.values)
+                tests = collect_tests(context, mode, result.positionals, config=result.values)
                 from api_agent.testing.requirements import plan_integration_requirements
                 tool_intents = ('ui_session',) if plan_integration_requirements(tests).requires_ui_session else ()
                 selected_tools = compose_operation_tools(context, schema, selection=tests,
@@ -421,7 +421,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                     if result.missing:
                         raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
                 from api_agent.testing.debug_confirmation import debug_warning, confirm_terminal_debug
-                warning = debug_warning('integration', result.values.get('DEBUG'), tests)
+                warning = debug_warning(mode, result.values.get('DEBUG'), tests,
+                                        e2e_debug=result.values.get('E2E_DEBUG'))
                 if not confirm_terminal_debug(warning):
                     print('DEBUG multi-test confirmation declined or unavailable. No tests or resources were started.', file=sys.stderr)
                     return 3
@@ -490,13 +491,6 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return asyncio.run(run_local_terminal(context, lambda: result, argv=argv, schema=schema,
                                                  retain_terminal_cleanup=True))
         if result.values.get('NO_STD_IN'):
-            if mode in {'run-local', 'e2e'}:
-                from api_agent.auth.extensions import validate_operation
-                try:
-                    validate_operation(context, result.values)
-                except ValueError as error:
-                    print(str(error), file=sys.stderr)
-                    return 3
             print('Requested operation is not implemented yet. No tests or services were started.', file=sys.stderr)
             return 3
         if not sys.stdin.isatty() or not sys.stdout.isatty():

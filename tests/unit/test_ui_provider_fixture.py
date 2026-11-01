@@ -58,10 +58,13 @@ def test_setup_failure_capture_precedes_owned_disposal(fixture_owner,monkeypatch
     async def close():order.append(('close',None))
     r.owner.capture.side_effect=capture
     r.owner.aclose.side_effect=close
-    loop=asyncio.new_event_loop()
+    outer=setup.ui_provider_loop.__wrapped__()
+    loop=next(outer)
     fixture=setup.ui_provider_session.__wrapped__(SimpleNamespace(node=SimpleNamespace()),loop,None)
     with pytest.raises(RuntimeError,match='setup failed'):next(fixture)
     assert order==[('capture','failure'),('close',None)]
+    assert not loop.is_closed()
+    outer.close()
     assert loop.is_closed()
 
 
@@ -145,7 +148,8 @@ def test_backend_retirement_precedes_capture_and_keeps_disposal(fixture_owner, m
     r.owner.capture.side_effect = capture
     r.owner.aclose.side_effect = close
     backend = SimpleNamespace(retire_test=retire)
-    loop = asyncio.new_event_loop()
+    outer = setup.ui_provider_loop.__wrapped__()
+    loop = next(outer)
     fixture = setup.ui_provider_session.__wrapped__(SimpleNamespace(node=SimpleNamespace()), loop, backend)
     assert next(fixture) == 'prepared'
     if retire_error is not None:
@@ -153,6 +157,8 @@ def test_backend_retirement_precedes_capture_and_keeps_disposal(fixture_owner, m
     else:
         fixture.close()
     assert order == ['retire', 'capture', 'close']
+    assert not loop.is_closed()
+    outer.close()
     assert loop.is_closed()
 
 
@@ -162,11 +168,14 @@ def test_setup_failure_retires_unused_backend_before_capture(fixture_owner, monk
     r.owner.inspection = None
     r.owner.start.side_effect = RuntimeError('setup failed')
     retire = Mock()
-    loop = asyncio.new_event_loop()
+    outer = setup.ui_provider_loop.__wrapped__()
+    loop = next(outer)
     fixture = setup.ui_provider_session.__wrapped__(SimpleNamespace(node=SimpleNamespace()), loop,
         SimpleNamespace(retire_test=retire))
     with pytest.raises(RuntimeError, match='setup failed'): next(fixture)
     retire.assert_called_once_with()
     r.owner.capture.assert_awaited_once_with('failure')
     r.owner.aclose.assert_awaited_once()
+    assert not loop.is_closed()
+    outer.close()
     assert loop.is_closed()

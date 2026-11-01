@@ -1254,3 +1254,14 @@ def test_integration_executor_uses_collected_labels_for_each_actual_child_cwd(tm
     result = run_integration_tests.__wrapped__(ctx, tests, accepted=True)
     assert result.exit_code == 0
     assert len(result.tests) == 2 and all(row.status == 'passed' for row in result.tests)
+
+
+@pytest.mark.parametrize('mode', [None, 'unit'])
+def test_partial_config_preserves_raw_integration_suite_mode(tmp_path, mode):
+    base = fixture_repo(tmp_path / 'base')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    result = run_integration_tests(ctx, selected, accepted=True, config={'TUI_MODE':mode})
+    assert result.exit_code == 0
+    assert [row.identity.id for row in result.tests] == [test.id for test in selected]
+    assert [row.status for row in result.tests] == ['passed']

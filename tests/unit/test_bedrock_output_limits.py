@@ -101,3 +101,30 @@ def test_http_failure_does_not_invent_output_admission_fact(status, detail):
     {'message': 'a' * 513}, {'message': 'max_tokens: 200000 is greater than the maximum of 8192', 'output': []}])
 def test_unstructured_or_inference_evidence_is_not_a_limit(detail):
     assert rejected_maximum(400, detail) is None
+
+
+EXCLUSIVE_MESSAGE = (
+    'The maximum tokens you requested exceeds the model limit of 128000. '
+    'Try again with a maximum tokens value that is lower than 128000.'
+)
+
+
+@pytest.mark.parametrize('ceiling,expected', [(128000,127999),(2,1),(1048577,1048576),(1,None),(0,None),(1048578,None)])
+def test_explicit_exclusive_ceiling(ceiling, expected):
+    assert rejected_maximum(400, {'Message': EXCLUSIVE_MESSAGE.replace('128000', str(ceiling))}) == expected
+
+
+@pytest.mark.parametrize('message', [
+    EXCLUSIVE_MESSAGE.replace('lower than 128000', 'lower than 64000'),
+    EXCLUSIVE_MESSAGE + ' Generation already started.',
+    EXCLUSIVE_MESSAGE.replace('maximum tokens you requested', 'input tokens you requested'),
+    EXCLUSIVE_MESSAGE.replace('128000', '-1'),
+    EXCLUSIVE_MESSAGE.replace('128000', '8.5'),
+])
+def test_exclusive_ceiling_requires_whole_consistent_output_evidence(message):
+    assert rejected_maximum(400, {'message': message}) is None
+
+
+@pytest.mark.parametrize('key', ['usage', 'output', 'choices', 'response'])
+def test_exclusive_ceiling_with_execution_evidence_is_rejected(key):
+    assert rejected_maximum(400, {'message': EXCLUSIVE_MESSAGE, key: {}}) is None

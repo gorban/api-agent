@@ -51,11 +51,15 @@ class LocalChatApplication:
             result = await llm.complete(value, context=context)
             results.append(result)
             return result
-        observations = self.observations.create(self.definition) if self.observations is not None else None
+        from .capture_authority import resolve_capture_services
+        capture = resolve_capture_services({} if self.observations is None else
+                                           {'observation_factory': self.observations})
+        factory = capture.get('observation_factory')
+        observations = factory.create(self.definition) if factory is not None else None
         graph = Workflow(self.definition, self.registry, config=self.config,
-            services={'llm': selected, 'selection': request.selected_llm,
+            services={**capture, 'llm': selected, 'selection': request.selected_llm,
                       'generation': request.payload.generation, 'request_id': request.request_id,
-                      'journal': observations, 'observation_factory': self.observations})
+                      'journal': observations})
         try:
             values = await graph.arun({'messages': messages})
         finally:

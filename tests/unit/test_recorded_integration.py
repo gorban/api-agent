@@ -102,7 +102,7 @@ def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, 
 
 @pytest.mark.parametrize('updates,kwargs', [({}, {}), ({}, {'no_std_in': True}),
        ({'NO_STD_IN': True}, {}), ({'COLLECT_ONLY': True}, {}), ({'TUI_MODE': 'unit'}, {}),
-       ({'TUI_MODE': 'e2e'}, {}), ({}, {'accepted': 'yes'})])
+       ({}, {'accepted': 'yes'})])
 def test_rejected_modes_and_acceptance_have_no_recording_side_effects(tmp_path, updates, kwargs):
     context, test, config = fixture(tmp_path)
     config.update(updates)

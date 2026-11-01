@@ -168,10 +168,18 @@ def test_cleanup_context_and_deletion(tmp_path):
     asyncio.run(scenario())
 
 
-def test_e2e_picker_acceptance_and_unavailable(tmp_path):
+def test_e2e_picker_acceptance_starts_selected_tests(tmp_path):
     identities = [Identity("base::tests/test_x.py::test_a", "base", "tests/test_x.py", "tests/test_x.py::test_a", frozenset({"mutation"}))]
     async def scenario():
         app = fixture(tmp_path, "e2e", collector=lambda *args: identities)
+        from api_agent.testing.integration import IntegrationRunResult
+        from api_agent.testing.contracts import TestResult
+        calls = []
+        def run(context, tests, config, **options):
+            calls.append((tuple(test.id for test in tests), options['accepted']))
+            return SimpleNamespace(execution=IntegrationRunResult(0,
+                tuple(TestResult(test, 'passed') for test in tests), ''), exit_code=0, persisted=True)
+        app.integration_runner = run
         async with app.run_test(size=(110, 45)) as pilot:
             await pilot.pause(0.4)
             await pilot.pause(0.4)
@@ -186,16 +194,18 @@ def test_e2e_picker_acceptance_and_unavailable(tmp_path):
             await pilot.pause(0.4)
             assert app.screen.kind == "acceptance"
             assert E2E_WARNING in str(app.screen.query_one("#body", Static).render())
+            assert not calls
             await pilot.click("#accept")
             await pilot.pause(0.4)
-            assert app.screen.kind == "unavailable"
-            assert app.operation_status == 3
+            assert app.screen.kind == "test-results"
+            assert app.operation_status == 0
+            assert calls == [(tuple(test.id for test in identities), True)]
             await pilot.press("q")
             await pilot.pause(0.4)
             app.screen.query_one(Input).value = "n"
             await pilot.press("enter")
             await pilot.pause(0.4)
-            assert app.screen.kind == "unavailable"
+            assert app.screen.kind == "test-results"
     asyncio.run(scenario())
 
 

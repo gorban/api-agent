@@ -1830,7 +1830,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 raise ValueError("No selected tests remain after recollection")
             selected = frozenset(test.id for test in self.selection.selected_tests)
             if selected != getattr(self, '_debug_approved_selection', None):
-                if not await self.confirm_debug_selection('integration', self.selection.selected_tests,
+                if not await self.confirm_debug_selection(self.mode, self.selection.selected_tests,
                                                           self.collection_cancel):
                     self.show_selection()
                     return
@@ -2679,25 +2679,28 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 elif self.mode == "unit":
                     self.start_unit_run()
                 else:
-                    if not self.session.result().values.get('DEBUG'):
-                        self._debug_approved_selection = None
-                    index = self.session.result().values.get('UNATTENDED_USER_INDEX')
-                    if index is not None and index not in dict(self.account_options()):
-                        raise ValueError('UNATTENDED_USER_INDEX has no eligible configured account; choose a user or manual login.')
-                    self.integration_unattended = index is not None
-                    self.operation_status = 3
-                    self.test_run = TestRunLifecycle()
-                    self.collection_cancel = self.test_run.cancel_event
-                    self.unit_result = None
-                    self.finished_test_results.clear()
-                    self.clear_allure_snapshots()
-                    self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
-                    self.show_unit_results(self.unit_progress())
-                    self.run_worker(self._run_integrations(), group='integration-run', exclusive=True)
+                    await self.choose('start-selected-suite')
+            elif key == 'start-selected-suite':
+                if not (self.session.result().values.get('DEBUG') or (self.mode == 'e2e'
+                        and self.session.result().values.get('E2E_DEBUG'))):
+                    self._debug_approved_selection = None
+                index = self.session.result().values.get('UNATTENDED_USER_INDEX')
+                if index is not None and index not in dict(self.account_options()):
+                    raise ValueError('UNATTENDED_USER_INDEX has no eligible configured account; choose a user or manual login.')
+                self.integration_unattended = index is not None
+                self.operation_status = 3
+                self.test_run = TestRunLifecycle()
+                self.collection_cancel = self.test_run.cancel_event
+                self.unit_result = None
+                self.finished_test_results.clear()
+                self.clear_allure_snapshots()
+                self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
+                self.show_unit_results(self.unit_progress())
+                self.run_worker(self._run_integrations(), group='integration-run', exclusive=True)
             elif key == "accept":
                 if not self.check_operation_start():
                     return
-                self.unavailable("E2E execution is not implemented yet. Acceptance did not start tests or prerequisites.")
+                await self.choose('start-selected-suite')
             elif key == "decline":
                 self.operation_status = 3
                 self.show_selection()

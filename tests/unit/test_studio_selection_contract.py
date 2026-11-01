@@ -79,7 +79,7 @@ def test_backend_wrapper_preserves_original_calls_and_retained_ownership(monkeyp
     from api_agent.providers.llm import AvailableSelection, LLMResult, Message, TextContent
     from api_agent.testing import provider_setup, studio_retained
     selected=module()
-    shared=sys.modules['test_studio_request']
+    from api_agent.testing import studio_http as shared
     result=LLMResult(Message('assistant',(TextContent('Maybe'),)))
     provider=SimpleNamespace(describe=Mock(return_value=(
             AvailableSelection('gpt-6-sol',family='gpt-sol',version='6',features=('reasoning_effort',),reasoning_efforts=('medium',)),

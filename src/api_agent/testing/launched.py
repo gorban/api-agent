@@ -21,6 +21,14 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     their listeners are independent operations. Injectable hooks remain owned
     by their caller. Inspection handles transfer with the execution result.
     """
+    if config.get('TUI_MODE') == 'e2e':
+        tests = validate_integration_start(tests, config, accepted=accepted, no_std_in=no_std_in)
+        config = dict(config, DEBUG=config.get('DEBUG') is True or config.get('E2E_DEBUG') is True)
+        if config['DEBUG']:
+            from .collection import collect_tests, CollectionError
+            available = collect_tests(context, 'e2e', config=config, cancel_event=options.get('cancel_event'))
+            if len({test.id for test in tests}) >= len(available):
+                raise CollectionError('E2E debug execution requires a strict subset of the entire suite')
     if config.get('SKIP_ALLURE_REPORTING') is True:
         from time import monotonic
         from .integration import run_integration_tests
@@ -39,7 +47,7 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         from api_agent.telemetry.usage import SuiteUsage
         from api_agent.telemetry.usage_output import final_usage_text
         from .inference_usage import capture, validate_event
-        identity = RunIdentity.create(repository_label(context, context.owner_root), 'integration')
+        identity = RunIdentity.create(repository_label(context, context.owner_root), config.get('TUI_MODE', 'integration'))
         usage = SuiteUsage(identity.run_id)
         boundary = CredentialScrubber(config, boundary=options.get('evidence_boundary'),
             secret_values=options.get('secret_values', ())).boundary

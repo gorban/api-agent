@@ -55,13 +55,17 @@ class UsefulDemoApplication:
         if selected_owner is None and self.tools is None:
             raise ContractError('Useful demo requires a selected tool owner')
         tools = self.tools or OwnerTools(self.definition, selected_owner)
+        from .capture_authority import resolve_capture_services
+        capture = resolve_capture_services({} if self.observations is None else
+                                           {'observation_factory': self.observations})
+        factory = capture.get('observation_factory')
         observations = None
         try:
-            observations = self.observations.create(self.definition) if self.observations is not None else None
+            observations = factory.create(self.definition) if factory is not None else None
             result_store = {}
-            services = {'result_store': result_store, 'selection': request.selected_llm, 'generation': request.payload.generation,
+            services = {**capture, 'result_store': result_store, 'selection': request.selected_llm, 'generation': request.payload.generation,
                         'messages': messages, 'journal': observations,
-                        'observation_factory': self.observations, 'tools': tools}
+                        'tools': tools}
 
             async def selected(value):
                 if value.selected_llm != request.selected_llm:

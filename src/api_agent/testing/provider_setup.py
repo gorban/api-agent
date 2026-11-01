@@ -849,6 +849,15 @@ def _test_credential_authority_scope(request):
         else:
             yield
 
+@pytest.fixture(autouse=True)
+def _e2e_prepared_ui(request, _test_credential_authority_scope):
+    """Every admitted E2E body receives a successfully prepared original UI."""
+    if os.environ.get('API_AGENT_INTEGRATION_CONTEXT'):
+        data = _test_snapshot(request)
+        if data['config'].get('TUI_MODE') == 'e2e':
+            request.getfixturevalue('ui_provider_session')
+
+
 @pytest.fixture
 def llm_selection(llm_provider, request):
     from api_agent.providers.selection import ModelSelectionPolicy
@@ -926,13 +935,14 @@ def ui_provider_session(request, ui_provider_loop, ui_provider_backend):
             # The inspection owner retains even an interrupted browser transfer.
             # Its explicit disposal performs transfer, then inspection, then host.
             finish_ui_browser_inspection(loop, owner.inspection, owners=(owner,),
-                                         transfers=(owner.browser_owner,))
+                                         transfers=(owner.browser_owner,), close_loop=False)
 
 
 class UIBrowserInspectionRun:
     """Retain a UI browser's creating loop in the existing inspection protocol."""
-    def __init__(self, loop, inspection, owners=(), transfers=()):
+    def __init__(self, loop, inspection, owners=(), transfers=(), *, close_loop=True):
         self.loop, self.inspection, self.closed = loop, inspection, False
+        self.close_loop = close_loop
         self._owners = list(owners)
         self._transfers = list(transfers)
         self._shutdown = None
@@ -954,6 +964,8 @@ class UIBrowserInspectionRun:
             while self._owners:
                 await self._owners[-1].aclose()
                 self._owners.pop()
+            if not self.close_loop:
+                return
             tasks = {task for task in asyncio.all_tasks(self.loop)
                      if task is not asyncio.current_task() and task is not self._shutdown}
             if tasks:
@@ -972,11 +984,30 @@ class UIBrowserInspectionRun:
             if self.inspection is not None:
                 self.loop.run_until_complete(self.inspection.wait_closed())
             self.loop.run_until_complete(self.dispose_inspection())
-            self.loop.close()
+            if self.close_loop:
+                self.loop.close()
             self.closed = True
 
 
-def finish_ui_browser_inspection(loop, inspection, *, owners=(), transfers=()):
+class _JoinedUIInspection:
+    """Keep distinct original inspectors under one shared-loop disposal owner."""
+    def __init__(self, first, second):
+        self.inspectors = (first, second)
+
+    @property
+    def sessions(self):
+        return tuple(session for inspector in self.inspectors for session in inspector.sessions)
+
+    async def aclose(self):
+        for inspector in self.inspectors:
+            await inspector.aclose()
+
+    async def wait_closed(self):
+        for inspector in self.inspectors:
+            await inspector.wait_closed()
+
+
+def finish_ui_browser_inspection(loop, inspection, *, owners=(), transfers=(), close_loop=True):
     """Transfer allocated DEBUG UI browsers to launch's end_inspection owner.
 
     Empty and non-debug runs close their loop immediately. Without launch's
@@ -985,7 +1016,17 @@ def finish_ui_browser_inspection(loop, inspection, *, owners=(), transfers=()):
     or supply it in transfers; those transfers finish before inspection and
     complete runtime ownership is released.
     """
-    owner = UIBrowserInspectionRun(loop, inspection, owners, transfers)
+    existing = next((owner for owner in _inspection_providers
+                     if isinstance(owner, UIBrowserInspectionRun) and owner.loop is loop and not owner.closed), None)
+    if existing is not None:
+        existing._owners.extend(owners)
+        existing._transfers.extend(transfers)
+        if inspection is not None and inspection is not existing.inspection:
+            existing.inspection = (inspection if existing.inspection is None else
+                                   _JoinedUIInspection(existing.inspection, inspection))
+        return existing
+    retained = bool(inspection is not None and inspection.sessions)
+    owner = UIBrowserInspectionRun(loop, inspection, owners, transfers, close_loop=close_loop or retained)
     if inspection is not None and inspection.sessions and os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
         _inspection_providers.append(owner)
     else:
@@ -993,6 +1034,7 @@ def finish_ui_browser_inspection(loop, inspection, *, owners=(), transfers=()):
             owner.close()
         except BaseException:
             if os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
+                owner.close_loop = True
                 _inspection_providers.append(owner)
             raise
     return owner
@@ -1081,7 +1123,7 @@ def workflow_tools(request, ui_provider_loop):
     try:
         yield owner
     finally:
-        finish_ui_browser_inspection(ui_provider_loop, None, owners=(owner,))
+        finish_ui_browser_inspection(ui_provider_loop, None, owners=(owner,), close_loop=False)
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@
 
 [Testing and reporting](implementation_plan_d.md) · [Test interface](implementation_plan_a.md)
 
-`E2E_RERUNS` exists; the application E2E runner remains planned. The base defaults to two additional confirmation attempts; the shared declaration defaults to zero. Integration and unit tests never use this allowance. Empty values are currently rejected by the integer declarations.
+`E2E_RERUNS` exists; the [first application E2E slice](implementation_plan_a3a.md) accepts explicit zero only; confirmation execution remains planned. The base defaults to two additional confirmation attempts; the shared declaration defaults to zero. Integration and unit tests never use this allowance. Empty values are currently rejected by the integer declarations.
 
 - [ ] Accept empty/None and zero as disabled. Preserve normal precedence and the configured nonnegative number of additional confirmations; do not interpret explicit empty as the default allowance.
 - [ ] Run each selected test once. Initial pass is final. Following initial failure with allowance N > 0, require all N subsequent attempts to pass. Stop immediately on the first unsuccessful confirmation. For N=2: P -> pass; F/P/P -> pass; F/F -> fail after two attempts; F/P/F -> fail after three. Skips, setup errors and interruption cannot count as successful confirmations.

@@ -103,8 +103,8 @@ def test_server_disposal_acknowledges_cancelled_task():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('retained,supplied_listener', [(False,False),(True,True)])
-def test_actual_http_bridge_preserves_request_and_owned_lifetime(retained, supplied_listener):
+@pytest.mark.parametrize('retained,supplied_listener,through_graph', [(False,False,False),(True,True,False),(False,False,True)])
+def test_actual_http_bridge_preserves_request_and_owned_lifetime(retained, supplied_listener, through_graph, monkeypatch):
     import httpx
     import socket
     from uuid import uuid4
@@ -116,6 +116,18 @@ def test_actual_http_bridge_preserves_request_and_owned_lifetime(retained, suppl
         def complete(self, request):
             self.calls.append(request)
             return LLMResult(Message('assistant', (TextContent('Maybe'),)))
+    journals = []
+    application = None
+    if through_graph:
+        from pathlib import Path
+        from api_agent.workflows.definition import load_definition
+        from api_agent.runtime.local_tools import selected_application
+        from api_agent.workflows import evidence
+        root = Path(__file__).resolve().parents[2]
+        definition = load_definition(root / 'flow.md.html', base_root=root, pack_root=root)
+        application = selected_application(definition)
+        monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
+        monkeypatch.setattr(evidence, 'publish', journals.append)
     async def run():
         provider = Provider()
         owner = RetainedStudio(provider, lambda _: None, lambda: False) if retained else provider
@@ -125,7 +137,7 @@ def test_actual_http_bridge_preserves_request_and_owned_lifetime(retained, suppl
             listener.bind(('127.0.0.1',0)); listener.listen(); listener.setblocking(False)
         try:
             async with bridge.agent_endpoint(owner, 'sample', 'http://localhost:9443', 'x'*32,
-                    listener=listener, reasoning_default='medium') as url:
+                    listener=listener, reasoning_default='medium', application=application) as url:
                 async with httpx.AsyncClient() as client:
                     headers={'Origin':'http://localhost:9443','X-API-Agent-Session':'x'*32}
                     models = await client.get(url+'/app/agent/models', headers=headers)
@@ -137,6 +149,11 @@ def test_actual_http_bridge_preserves_request_and_owned_lifetime(retained, suppl
                     assert provider.calls[0].payload.generation.reasoning_effort == 'off'
                     denied = await client.get(url+'/app/agent/models',headers={})
                     assert denied.status_code == 403
+            if through_graph:
+                assert len(journals) == 1
+                assert journals[0]['projection']['graph_id'] == 'simple_chat'
+                assert any(event.get('event') == 'scope_start' and event.get('kind') == 'node'
+                           for event in journals[0]['events'])
             if retained: assert owner.phase == 'closed'
         finally:
             if listener is not None: listener.close()

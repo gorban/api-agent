@@ -261,6 +261,12 @@ def test_start_e2e_explicit_acceptance_skips_only_acceptance_screen(tmp_path):
     async def scenario():
         app = fixture(tmp_path, 'e2e', fields={'START': START, 'COUNT': {'type': 'int', 'default': 8}},
                       collector=lambda *args: TESTS, argv=['--start=E2E', TESTS[1].id])
+        calls = []
+        def run(context, tests, config, **options):
+            calls.append((tuple(test.id for test in tests), config['TUI_MODE'], options['accepted']))
+            return SimpleNamespace(execution=IntegrationRunResult(0,
+                tuple(TestResult(test, 'passed') for test in tests), ''), exit_code=0, persisted=True)
+        app.integration_runner = run
         app.session.environ.pop('UNATTENDED_AUTH')
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -268,12 +274,12 @@ def test_start_e2e_explicit_acceptance_skips_only_acceptance_screen(tmp_path):
             await pilot.press('s')
             assert app.screen.kind == 'defaults'
             await pilot.press('c')
-            await wait_for(pilot, lambda: app.screen.kind == 'unavailable')
-            assert 'E2E execution is not implemented' in app.screen.body
+            await wait_for(pilot, lambda: app.unit_result is not None)
+            assert calls == [((TESTS[1].id,), 'e2e', True)]
+            assert app.screen.kind == 'test-results'
             assert app.selection.selected_ids == {TESTS[1].id}
             assert not app.auto_start_pending and not app.test_run_active()
-            await pilot.press('c')
-            assert app.screen.kind == 'menu'
+
     asyncio.run(scenario())
 
 
@@ -307,29 +313,41 @@ def test_noninteractive_e2e_explicit_acceptance_reaches_operation_boundary():
             patch('api_agent.config.read_dotenv', return_value={}), \
             patch('api_agent.config.dotenv.read_dotenv', return_value={}), \
             patch('api_agent.runtime.worktrees.verify_worktrees') as gate, \
-            patch('api_agent.runtime.dependencies.ensure_environment') as prepare, \
+            patch('api_agent.runtime.dependencies.ensure_environment', return_value=19) as prepare, \
             patch('api_agent.auth.extensions.validate_operation') as validate:
         status = main(['--no-std-in', '--tui-mode=e2e', '--start=E2E',
                        '--ui-source-dir=/tmp/synthetic-ui', '--allure-s3-bucket=synthetic'], base_root=root)
     gate.assert_called_once()
-    validate.assert_called_once()
-    prepare.assert_not_called()
-    assert status == 3, stderr.getvalue()
-    assert 'not implemented yet' in stderr.getvalue()
+    validate.assert_not_called()
+    prepare.assert_called_once()
+    assert status == 19, stderr.getvalue()
+    assert 'not implemented yet' not in stderr.getvalue()
     assert 'incompatible' not in stderr.getvalue() and 'Configuration error' not in stderr.getvalue()
 
 
-def test_noninteractive_e2e_acceptance_preserves_operation_validation():
-    from io import StringIO
+def test_noninteractive_e2e_hands_selected_tests_to_launched_owner():
     from pathlib import Path
     from unittest.mock import patch
     from api_agent.runtime.bootstrap import main
     root = Path(__file__).resolve().parents[2]
+    test = TestIdentity('api-agent::tests/e2e/test_sample.py::test_sample', 'api-agent',
+                        'tests/e2e/test_sample.py', 'tests/e2e/test_sample.py::test_sample',
+                        tags={'requires_ui_session', 'requires_pack_api'})
+    from io import StringIO
     stderr = StringIO()
-    with patch.dict('os.environ', {}, clear=True), patch('sys.stderr', stderr), patch('api_agent.config.read_dotenv', return_value={}), patch('api_agent.config.dotenv.read_dotenv', return_value={}), patch('api_agent.runtime.worktrees.verify_worktrees'), patch('api_agent.auth.extensions.validate_operation', side_effect=ValueError('synthetic operation requirement')):
-        status = main(['--no-std-in', '--tui-mode=e2e', '--start=E2E',
+    with patch.dict('os.environ', {}, clear=True), patch('sys.stderr', stderr), \
+            patch('api_agent.config.read_dotenv', return_value={}), \
+            patch('api_agent.config.dotenv.read_dotenv', return_value={}), \
+            patch('api_agent.runtime.worktrees.verify_worktrees'), \
+            patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+            patch('api_agent.testing.collection.collect_tests', return_value=[test]), \
+            patch('api_agent.config.tool_resolution.compose_operation_tools', return_value=None), \
+            patch('api_agent.testing.launched.run_launched_integration', side_effect=ValueError('synthetic operation requirement')) as execute:
+        status = main(['--no-std-in', '--tui-mode=e2e', '--start=E2E', '--e2e-reruns=0',
                        '--ui-source-dir=/tmp/synthetic-ui', '--allure-s3-bucket=synthetic'], base_root=root)
-    assert status == 3 and stderr.getvalue() == 'synthetic operation requirement\n'
+    assert status == 2 and 'synthetic operation requirement' in stderr.getvalue()
+    assert execute.call_args.kwargs['accepted'] is True
+    assert execute.call_args.args[2]['TUI_MODE'] == 'e2e'
 
 
 def test_start_allure_enters_managed_history_without_automatic_test_execution(tmp_path,monkeypatch):

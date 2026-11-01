@@ -10,6 +10,11 @@ _PATTERNS = (
     rf"(?:1 validation error detected: )?Value '[0-9]+' at '(?:inferenceConfig\.)?{_FIELD}' failed to satisfy constraint: Member must have value less than or equal to ([0-9]+)",
 )
 
+_EXCLUSIVE_PATTERN = (
+    r'The maximum tokens you requested exceeds the model limit of ([0-9]+)\. '
+    r'Try again with a maximum tokens value that is lower than \1\.'
+)
+
 
 def rejected_maximum(status, detail):
     """Return only an explicit positive maximum from a whole validation message.
@@ -25,6 +30,11 @@ def rejected_maximum(status, detail):
     message = detail.get('message', detail.get('Message'))
     if type(message) is not str or len(message) > 512:
         return None
+    matched = re.fullmatch(_EXCLUSIVE_PATTERN, message)
+    if matched:
+        # The service explicitly requires strictly less than the stated limit.
+        ceiling = int(matched.group(1))
+        return ceiling - 1 if 1 < ceiling <= 1048577 else None
     for pattern in _PATTERNS:
         matched = re.fullmatch(pattern, message)
         if matched:

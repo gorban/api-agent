@@ -4,6 +4,8 @@ Follow [provider architecture](../architecture/provider_architecture.md) for own
 
 Shared reporting: [identity and publication-only access](implementation_plan_h2a1.md) · [session lifecycle, persistent storage and management](implementation_plan_h2a2.md).
 
+[Ordered resource-pack composition proposal](implementation_plan_m4.md) specifies the unimplemented multi-pack prerequisite and its acceptance gates.
+
 ## Foundation already present
 
 - [x] Provide explicit `LLM_PROVIDER` Python-file factory loading, integer version-1 validation, optional lifecycle/route hooks and neutral initialization errors in `src/api_agent/providers/loading.py`.
