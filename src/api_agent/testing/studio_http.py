@@ -1,6 +1,7 @@
 """Owned loopback Studio HTTP bridge for integration consumers."""
 import asyncio
 import re
+import secrets
 import socket
 from contextlib import AsyncExitStack, asynccontextmanager
 
@@ -14,7 +15,7 @@ from api_agent.runtime.tasks import offload, settle
 from api_agent.testing.studio_retained import StudioCleanup
 
 @asynccontextmanager
-async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None, timeout=120):
+async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None, timeout=120, application=None):
     """Own the real Agent HTTP bridge for the selected UI runtime."""
     import uvicorn
     async with AsyncExitStack() as cleanup:
@@ -33,9 +34,15 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
             duties.push(provider.aclose)
         async def describe(*, auth):
             return await provider.describe() if retained else await offload(provider.describe)
-        async def complete(request, *, auth, context):
+        async def provider_complete(request, *, context):
             call = provider.complete(request) if retained else offload(provider.complete, request)
             return await context.run(call)
+        async def complete(request, *, auth, context):
+            if application is None:
+                return await provider_complete(request, context=context)
+            from types import SimpleNamespace
+            return await application.complete(request,
+                llm=SimpleNamespace(complete=provider_complete), context=context)
         backend = StudioBackend(owner=LLMSessionOwner(object()), describe=describe, complete=complete,
             policy=ModelSelectionPolicy({'LLM_ALLOWED_MODELS': re.escape(selection),
                                          'LLM_DEFAULT_MODEL': re.escape(selection), **(policy_config or {})}),
@@ -43,8 +50,8 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
             reasoning_default=reasoning_default, timeout=timeout)
         duties.push(backend.aclose)
         runtime = Runtime('demo', services={'studio_backend': backend})
-        application = create_application(runtime)
-        server = uvicorn.Server(uvicorn.Config(application, log_level='error', access_log=False, timeout_graceful_shutdown=1))
+        asgi_application = create_application(runtime)
+        server = uvicorn.Server(uvicorn.Config(asgi_application, log_level='error', access_log=False, timeout_graceful_shutdown=1))
         # A long-lived listener must not inherit completed UI startup budgets.
         # Each admitted HTTP request still creates its own bounded context.
         with independent_timeout_scope():
@@ -99,3 +106,37 @@ async def _close_server(server, task):
             await settle(task)
         except asyncio.CancelledError:
             pass
+
+
+def studio_backend_factory(llm_provider, llm_selection, *, backend_config=None, application=None):
+    """Keep one backend owner, with optional test-local defaults."""
+    retained = []
+    @asynccontextmanager
+    async def backend(values):
+        values = {**values, **(backend_config or {})}
+        nonce = secrets.token_urlsafe(32)
+        provider = llm_provider
+        if values.get('DEBUG') is True:
+            from api_agent.testing.provider_setup import _read_snapshot, _worker_manager_registry
+            from api_agent.testing.studio_retained import RetainedStudio, retained_provider_factory
+            from api_agent.testing.inspection_gate import manual_accounting_ready
+            data = _read_snapshot()
+            provider = RetainedStudio(llm_provider,
+                retained_provider_factory(data, _worker_manager_registry(data)), manual_accounting_ready)
+            retained.append(provider)
+        async with agent_endpoint(provider, llm_selection,
+                                  values['UI_LISTENER_URL'], nonce,
+                                  reasoning_default=values.get('LLM_REASONING_EFFORT') or None,
+                                  policy_config={key: values[key] for key in
+                                    ('LLM_ALLOWED_MODELS', 'LLM_DEFAULT_MODEL') if key in values},
+                                  application=application) as endpoint:
+            try:
+                yield {'agent_url': endpoint, 'access_token': nonce}
+            finally:
+                if provider is not llm_provider:
+                    provider.retire_test()
+    def retire_test():
+        for provider in retained:
+            provider.retire_test()
+    backend.retire_test = retire_test
+    return backend

@@ -44,7 +44,7 @@ Attachment sources: [Playwright MCP configuration](https://github.com/microsoft/
   preserve per-attempt UI isolation and shared account-bound LLM authentication.
   The known parallel UI inspection gap must be repaired before application E2E.
 
-Current owner/selector compatibility follows [the browser policy](implementation_plan_i2a2.md). A complete E2E executor remains unimplemented: normalize/share effective DEBUG across UI, LLM and backend retention before claiming end-to-end E2E inspection. Existing selection consent and authentication exceptions do not waive execution acceptance.
+Current owner/selector compatibility follows [the browser policy](implementation_plan_i2a2.md). The [first bounded executor](implementation_plan_a3a.md) is delivered with separate human acceptance; broader E2E inspection and confirmation requirements remain unchecked. Existing selection consent and authentication exceptions do not waive execution acceptance.
 
 ## Shared headed window sizing
 

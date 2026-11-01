@@ -80,47 +80,7 @@ async def _close_host(process):
         raise CleanupPendingError((process,), lambda: _close_host(process)) from None
 
 
-async def browser_prompt(prepared, *, prompt="Answer with exactly: Ok"):
-    """Consume the selected provider's original prepared page for one request."""
-    from playwright.async_api import expect
-    async with ui_turn(prepared) as turn:
-        page = prepared.session.page
-        errors = []
-        listener = lambda error: errors.append(str(error))
-        page.on('pageerror', listener)
-        try:
-            async with component_timeout('Studio browser request', 150):
-                try:
-                    # Existing config and catalog fetches each allow five seconds.
-                    await expect(page.locator('#model-status')).to_have_attribute('data-catalog-state', 'settled', timeout=15000)
-                except AssertionError as error:
-                    diagnostic = await page.locator('#model-status').inner_text()
-                    raise AssertionError('Studio catalog did not settle: ' + diagnostic) from error
-                try:
-                    await expect(page.locator('#model')).to_have_value(re.compile(r'.+'))
-                except AssertionError as error:
-                    diagnostic = await page.locator('#model-status').inner_text()
-                    raise AssertionError('Studio model choices are unavailable: ' + diagnostic) from error
-                diagnostic = await page.locator('#model-status').inner_text()
-                assert not diagnostic, 'Studio model selection is unavailable: ' + diagnostic
-                await expect(page.locator('#send')).to_be_enabled()
-                await page.locator('#prompt').fill(prompt)
-                async with page.expect_request(lambda request: request.method == 'POST' and
-                        urlsplit(request.url).path in ('/app/agent/chat', '/app/agent/chat/stream')) as submitted:
-                    await page.locator('#send').click()
-                request = await submitted.value
-                payload = request.post_data_json
-                turn.bind(conversation_id=payload['conversation_id'], turn_id=payload['session_id'])
-                status = page.locator('.assistant .metadata-grid dd').last
-                await expect(status).to_have_text(re.compile(r'Complete|Incomplete'), timeout=120000)
-                assert await status.text_content() == 'Complete', await page.locator('#status').inner_text()
-                answer = await page.locator('.assistant .message-body').last.inner_text()
-                assert answer.strip(), 'Agent returned an empty browser response.'
-                assert not errors, errors
-                assert await page.locator('#stop').is_hidden()
-                return answer
-        finally:
-            page.remove_listener('pageerror', listener)
+from api_agent.testing.studio_browser import browser_prompt
 
 
 @pytest.fixture
@@ -142,37 +102,7 @@ def ui_provider_backend(studio_configuration, llm_provider, llm_selection):
     return studio_backend_factory(llm_provider, llm_selection)
 
 
-def studio_backend_factory(llm_provider, llm_selection, *, backend_config=None):
-    """Keep one backend owner, with optional test-local defaults."""
-    retained = []
-    @asynccontextmanager
-    async def backend(values):
-        values = {**values, **(backend_config or {})}
-        nonce = secrets.token_urlsafe(32)
-        provider = llm_provider
-        if values.get('DEBUG') is True:
-            from api_agent.testing.provider_setup import _read_snapshot, _worker_manager_registry
-            from api_agent.testing.studio_retained import RetainedStudio, retained_provider_factory
-            from api_agent.testing.inspection_gate import manual_accounting_ready
-            data = _read_snapshot()
-            provider = RetainedStudio(llm_provider,
-                retained_provider_factory(data, _worker_manager_registry(data)), manual_accounting_ready)
-            retained.append(provider)
-        async with agent_endpoint(provider, llm_selection,
-                                  values['UI_LISTENER_URL'], nonce,
-                                  reasoning_default=values.get('LLM_REASONING_EFFORT') or None,
-                                  policy_config={key: values[key] for key in
-                                    ('LLM_ALLOWED_MODELS', 'LLM_DEFAULT_MODEL') if key in values}) as endpoint:
-            try:
-                yield {'agent_url': endpoint, 'access_token': nonce}
-            finally:
-                if provider is not llm_provider:
-                    provider.retire_test()
-    def retire_test():
-        for provider in retained:
-            provider.retire_test()
-    backend.retire_test = retire_test
-    return backend
+from api_agent.testing.studio_http import studio_backend_factory
 
 
 @pytest.mark.requires_ui_session

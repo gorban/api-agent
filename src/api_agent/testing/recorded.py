@@ -162,6 +162,17 @@ class RecordedIntegrationResult:
 def validate_integration_start(tests, config, *, accepted=False, no_std_in=False):
     """Validate accepted execution independently of reporting selection."""
     from api_agent.runtime.starting import start_requested
+    mode = config.get('TUI_MODE')
+    if mode == 'e2e':
+        if (accepted is not True or config.get('COLLECT_ONLY')
+                or ((no_std_in or config.get('NO_STD_IN')) and config.get('START') != 'E2E')):
+            raise PermissionError('E2E execution requires explicit acceptance')
+        tests = tuple(tests)
+        if not tests or any('requires_ui_session' not in test.tags for test in tests):
+            raise ValueError('E2E selections require UI-session tests')
+        if type(config.get('E2E_RERUNS')) is not int or config['E2E_RERUNS'] != 0:
+            raise ValueError('E2E retry execution is not available; set E2E_RERUNS=0')
+        return tests
     if (accepted is not True or ((no_std_in or config.get('NO_STD_IN'))
             and not config.get('DEBUG') and not start_requested(config))
             or config.get('COLLECT_ONLY') or config.get('TUI_MODE') != 'integration'):
@@ -233,7 +244,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     estimator = estimator_for(context, tests, config, rate_card=config['_COST_RATE_CARD'], test_configs=test_configs)
     if historical_estimator is not None:
         estimator.advance_predictions = deepcopy(historical_estimator.predictions)
-    identity = RunIdentity.create(repository_label(context, context.owner_root), 'integration')
+    identity = RunIdentity.create(repository_label(context, context.owner_root), config.get('TUI_MODE', 'integration'))
     with ExitStack() as resources:
         local_directory = config.get('ALLURE_RESULTS_DIR')
         root = local_directory or resources.enter_context(

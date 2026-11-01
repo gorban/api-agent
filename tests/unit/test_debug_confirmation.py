@@ -174,6 +174,12 @@ def test_e2e_debug_confirmation_precedes_existing_acceptance(tmp_path,flag):
         app = fixture(tmp_path, 'e2e', collector=lambda *args: selected,
                       fields={flag: {'type': 'bool', 'default': True, 'acknowledge_default': False},
                               'START': {'type': 'str', 'default': 'False', 'acknowledge_default': False}})
+        calls = []
+        def run(context, tests, config, **options):
+            calls.append(tuple(test.id for test in tests))
+            return SimpleNamespace(execution=IntegrationRunResult(0,
+                tuple(TestResult(test, 'passed') for test in tests), ''), exit_code=0, persisted=True)
+        app.integration_runner = run
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause(.2)
             await pilot.press('s')
@@ -183,10 +189,11 @@ def test_e2e_debug_confirmation_precedes_existing_acceptance(tmp_path,flag):
             await pilot.click('#quit-submit')
             await pilot.pause(.2)
             assert app.screen.kind == 'acceptance'
+            assert not calls
             await pilot.click('#accept')
             await pilot.pause(.2)
-            assert app.screen.kind == 'unavailable'
-            assert 'not implemented yet' in app.screen.body
+            assert app.screen.kind == 'test-results'
+            assert calls == [tuple(test.id for test in selected)]
     asyncio.run(scenario())
 
 

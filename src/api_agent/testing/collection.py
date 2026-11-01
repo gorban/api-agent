@@ -227,8 +227,9 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
     owner = Path(context.owner_root).resolve()
     suites = {}
     declared = list(context.suite_paths(mode))
-    if mode == 'integration' and (base / 'tests/integration').exists():
-        declared.insert(0, base / 'tests/integration')
+    if ((mode == 'integration' or mode == 'e2e' and base == owner)
+            and (base / f'tests/{mode}').exists()):
+        declared.insert(0, base / f'tests/{mode}')
     for raw_path in declared:
         path = Path(raw_path).resolve()
         if not path.exists():

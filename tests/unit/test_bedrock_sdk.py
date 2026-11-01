@@ -1086,3 +1086,46 @@ async def test_output_rejection_marker_after_event_is_not_preinference(auth, fak
          'http_status': 400, 'maximum_output_tokens': 8192}]
     with pytest.raises(ContractError, match='output limit rejection'):
         await sdk.SDKTransport().call('responses_stream', {}, auth=auth, join=output_limit_join)
+
+
+@pytest.mark.asyncio
+async def test_exclusive_validation_negotiates_once_and_caches(auth, fake_process, output_limit_join):
+    from botocore.exceptions import ClientError
+    from unittest.mock import AsyncMock
+    from api_agent.llm_providers.bedrock import worker
+    from api_agent.providers.llm import LLMResult, Message, TextContent, Usage
+    from api_agent.providers.shared_setup import SharedSetupOwner
+    from test_output_limits import request as generation_request
+    from test_bedrock_runtime_worker import request as worker_request
+    from test_bedrock_output_limits import EXCLUSIVE_MESSAGE
+
+    frames, dispatched = [], []
+    def converse(**kwargs):
+        raise ClientError({'Error': {'Code': 'ValidationException', 'Message': EXCLUSIVE_MESSAGE},
+                           'ResponseMetadata': {'HTTPStatusCode': 400}}, 'Converse')
+    worker.execute(worker_request('converse', {'endpoint': 'runtime', 'prefix': '/converse',
+        'body': {'modelId': 'operator.model-v2:1', 'messages': [], 'inferenceConfig': {'maxTokens': 200000}}}),
+        frames.append, boto_client_factory=lambda *args: SimpleNamespace(converse=converse, close=lambda: None),
+        join=lambda values, arguments: values)
+    assert frames == [{'error': 'invalid_request', 'execution': 'not_started',
+                       'http_status': 400, 'maximum_output_tokens': 127999}]
+    fake_process[0]['frames'] = frames
+    transport = sdk.SDKTransport()
+    async def call(callback):
+        return await callback(auth=auth)
+    async def describe(*, auth):
+        return ()
+    async def complete(effective, *, auth):
+        dispatched.append(effective.payload.generation.max_output_tokens)
+        if len(dispatched) == 1:
+            await transport.call('converse', {}, auth=auth, join=output_limit_join)
+        return LLMResult(Message('assistant', (TextContent('answer'),)), Usage(1, 2))
+    owner = SharedSetupOwner('op', 'identity', lambda credentials: SimpleNamespace(call=call, aclose=AsyncMock()),
+                             describe=describe, complete=complete, supports_output_limit=True)
+    try:
+        await owner.complete(generation_request())
+        await owner.complete(generation_request())
+    finally:
+        await owner.aclose()
+        await transport.aclose()
+    assert dispatched == [200000, 127999, 127999]

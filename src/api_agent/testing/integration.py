@@ -132,6 +132,11 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     from artifacts/events. Pytest
     stdout and traceback remain explicit test evidence in the result/event stream.
     """
+    mode = 'e2e' if (config or {}).get('TUI_MODE') == 'e2e' else 'integration'
+    if mode == 'e2e':
+        from .recorded import validate_integration_start
+        tests = validate_integration_start(tests, config, accepted=accepted, no_std_in=no_std_in)
+        config = dict(config, DEBUG=config.get('DEBUG') is True or config.get('E2E_DEBUG') is True)
     if no_std_in or accepted is not True:
         raise PermissionError('Interactive Continue is required for integration execution')
     if not isinstance(parallel_jobs, int) or isinstance(parallel_jobs, bool) or parallel_jobs < 0:
@@ -253,12 +258,14 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     try:
         stage = 'Integration collection'
         try:
-            available = {test.id: test for test in collect_tests(context, 'integration', cancel_event=cancel_event, **({'config': config} if config is not None else {}))}
+            available = {test.id: test for test in collect_tests(context, mode, cancel_event=cancel_event, **({'config': config} if config is not None else {}))}
         except Exception as error:
             raw('', diagnose(stage, error) + '\n')
             failed = True
             available = None
         if available is not None:
+            if mode == 'e2e' and config.get('DEBUG') and len(tests) >= len(available):
+                raise CollectionError('E2E debug execution requires a strict subset of the entire suite')
             if any(available.get(test.id) != test for test in tests):
                 raise CollectionError('Integration selection contains identities outside the freshly collected integration suites')
             from .requirements import plan_integration_requirements

@@ -167,7 +167,16 @@ Choose `unit`, `integration`, or `e2e` as `<tests_type>`:
 All tests start selected. Add positional selectors to preselect tests, or adjust
 selection in the TUI. Append `--no-std-in` for terminal automation, or export
 `NO_STD_IN=True` for multiple commands. Integration requires `--start=True` or `--debug`;
-E2E requires `--start=E2E` as human acceptance. These tests may spend tokens.
+E2E requires `--start=E2E` as human acceptance. The first executor requires
+`--e2e-reruns 0`; confirmation attempts remain pending. The bundled selection is:
+
+```bash
+./launch.sh --tui-mode e2e --e2e-reruns 0 --no-std-in --start=E2E api-agent::tests/e2e/test_studio_graph.py::test_studio_graph
+```
+
+This selects the launch-admitted `simple_chat` test graph. External packs run their own declared
+E2E suites; arbitrary application and private graph acceptance remain separate. These tests may spend tokens.
+See the [bounded E2E scope](docs/prds/implementation_plan_a3a.md).
 With `DEBUG=True` and more than one distinct integration or E2E test selected,
 execution asks for literal `y` before opening browsers, including with `--no-std-in`.
 Set `DEBUG=False` and omit `--debug` to avoid the prompt.
