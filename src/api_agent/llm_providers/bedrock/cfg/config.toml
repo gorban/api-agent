@@ -51,7 +51,7 @@ help = "Full model-ID regular expression for Bedrock discovery. Filter IDs accor
 [fields.BEDROCK_ENDPOINT]
 type = "str"
 enum = ["mantle", "runtime"]
-default = "mantle"
+default = "runtime"
 cost_affecting = true
 help = "Select the inference and discovery endpoint. Known closed-weight GPT models on Runtime Responses use system inference-profile IDs; select an exact supported model or profile according to AWS documentation. No geographic prefix is selected automatically."
 

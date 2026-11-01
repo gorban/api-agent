@@ -50,6 +50,7 @@ class PrivateInteraction:
 def native_config(method):
     overrides = {
         'LLM_PROVIDER': str(ROOT / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory',
+        'BEDROCK_ENDPOINT': 'mantle',
         'BEDROCK_SESSION_PROVIDER': str(ROOT / f'src/api_agent/llm_providers/bedrock/{"aws_sso" if method == "sso" else "aws_login"}.py') + ':factory',
         'BEDROCK_LOGIN_EXPECTED_ACCOUNT_ID': '123456789012',
         'BEDROCK_LOGIN_EXPECTED_PRINCIPAL': 'arn:aws:iam::123456789012:user/example',

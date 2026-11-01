@@ -254,6 +254,8 @@ case = TestIdentity('api-agent:' + node, 'api-agent', node.split('::')[0], node,
 for provider, expected in [('gpt', 60), ('bedrock', 120)]:
     values = {'LLM_PROVIDER':str(root/'llm_providers'/provider/'factory.py')+':factory',
               'TUI_MODE':'integration','SKIP_ALLURE_REPORTING':'True'}
+    if provider == 'bedrock':
+        values['BEDROCK_ENDPOINT'] = 'mantle'
     schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, values, owner_root=root)
     result = resolve_config(schema, environ={}, dotenv={}, overrides=values,
         anchors={'owner_root':root,'base_root':root,'pack_root':root}).raise_for_errors()

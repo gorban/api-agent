@@ -17,7 +17,7 @@ def raw_result(mode, **metadata):
 
 def quoted(mode, result):
     request = LLMRequest(pricing.MODEL, CompletionRequest((Message('user', (TextContent('hello'),)),)))
-    return factory({'BEDROCK_REGION': 'us-east-1', 'BEDROCK_API_MODE': mode}, {}).quote_cost(request, result)
+    return factory({'BEDROCK_REGION': 'us-east-1', 'BEDROCK_API_MODE': mode, 'BEDROCK_ENDPOINT': 'mantle'}, {}).quote_cost(request, result)
 
 
 @pytest.mark.parametrize('mode', ['responses', 'completions'])

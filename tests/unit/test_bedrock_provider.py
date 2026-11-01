@@ -62,9 +62,9 @@ def test_setup_catalog_completion_stream_and_cleanup(controlled, monkeypatch):
     create = AsyncMock(return_value=session)
     monkeypatch.setattr(module.auth, 'create_session', create)
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
         assert await provider.asetup(interactive=False, user_index=None, credentials=None) is session
-        create.assert_awaited_once_with({'BEDROCK_API_MODE': 'completions'}, interactive=False, user_index=None, credentials=None, services={})
+        create.assert_awaited_once_with({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, interactive=False, user_index=None, credentials=None, services={})
         transport.call.return_value = {'data': []}
         assert await provider.adescribe(auth=session) == ()
         transport.call.assert_awaited_with('models', {}, auth=session, join=ANY)
@@ -88,7 +88,7 @@ def test_unknown_model_fails_before_transport(controlled):
     unknown = LLMRequest('unqualified', request.payload)
     async def run():
         with pytest.raises(ContractError, match='Unsupported'):
-            await module.factory({'BEDROCK_API_MODE': 'completions'}, {}).acomplete(unknown)
+            await module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {}).acomplete(unknown)
         transport.call.assert_not_awaited()
     asyncio.run(run())
 
@@ -108,7 +108,7 @@ def test_catalog_handoff_holds_lease_through_concurrent_registration(controlled,
             await release.wait()
             return await original(value, secrets)
         monkeypatch.setattr(credential_guard, 'async_guard_json', gated_guard)
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
         async def consume():
             result = await provider.adescribe(auth=None)
             assert not registration.done()
@@ -133,7 +133,7 @@ def test_catalog_handoff_rejects_credential_in_generated_metadata(controlled):
     transport.call.return_value = {'data': [{'id': MODEL}]}
     async def run():
         boundary = EmissionBoundary(secrets=('GLM 4.7 Flash',))
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
         with pytest.raises(ContractError, match='safely released'):
             await provider.adescribe(auth=None)
         await provider.aclose()
@@ -153,7 +153,7 @@ def test_catalog_close_waits_for_already_cancelling_owner(controlled):
                 await release.wait()
                 raise
         transport.call.side_effect = blocked
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
         task = asyncio.create_task(provider.adescribe(auth=None))
         await entered.wait()
         task.cancel()
@@ -179,7 +179,7 @@ def test_catalog_cancel_after_child_handoff_releases_lease(controlled, monkeypat
     transport.call.return_value = {'data': [{'id': MODEL}]}
     async def run():
         boundary = EmissionBoundary()
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
         entered = asyncio.Event()
         original = asyncio.shield
         def gated_shield(task):
@@ -205,7 +205,7 @@ def test_catalog_cancel_after_child_handoff_releases_lease(controlled, monkeypat
 def test_partial_stream_and_decoder_failure_release_transport(controlled, monkeypatch):
     request, _, transport, released = controlled
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
         stream = provider.astream(request)
         await anext(stream)
         await stream.aclose()
@@ -234,7 +234,7 @@ def test_setup_closing_during_acquisition_disposes_or_retains_late_session(contr
                 await release.wait()
             return session
         monkeypatch.setattr(module.auth, 'create_session', create)
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
         setup = asyncio.create_task(provider.asetup(interactive=False, user_index=None, credentials=None))
         await entered.wait()
         close = asyncio.create_task(provider.aclose())
@@ -260,7 +260,7 @@ def test_setup_closing_during_acquisition_disposes_or_retains_late_session(contr
 def test_cross_task_stream_boundary(controlled, boundary):
     request, result, _, released = controlled
     async def run():
-        stream = module.factory({'BEDROCK_API_MODE': 'completions'}, {}).astream(request)
+        stream = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {}).astream(request)
         assert (await asyncio.create_task(anext(stream))).kind == 'text'
         if boundary == 'close':
             await asyncio.create_task(stream.aclose())
@@ -348,7 +348,7 @@ def test_stream_deadline_prevents_subsequent_owned_work(controlled, monkeypatch,
     transport.stream = stream
     async def run():
         with pytest.raises(TimeoutError, match='deadline'):
-            _ = [event async for event in module.factory({'BEDROCK_API_MODE': 'completions'}, {}).astream(request)]
+            _ = [event async for event in module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {}).astream(request)]
         assert len(reads) == (0 if stage == 'read' else 2)
     asyncio.run(run())
 
@@ -371,7 +371,7 @@ def test_real_codec_rejects_response_tool_not_in_request(monkeypatch, streaming)
     transport.stream = lambda *args, **kwargs: normalized_fake(stream(*args, **kwargs))
     monkeypatch.setattr(module, 'SDKTransport', lambda **kw: transport)
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
         with pytest.raises(ProviderAccessError):
             if streaming:
                 _ = [event async for event in provider.astream(request)]
@@ -520,7 +520,7 @@ def test_stream_consumer_pause_uses_original_total_budget(controlled, monkeypatc
     clock = [10.0]
     monkeypatch.setattr(progress, '_clock', lambda: clock[0])
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions',
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions',
                                    'BEDROCK_INFERENCE_TIMEOUT_SECONDS': .5}, {})
         stream = provider.astream(request)
         assert (await anext(stream)).kind == 'text'
@@ -535,7 +535,7 @@ def test_stream_consumer_pause_uses_original_total_budget(controlled, monkeypatc
 def test_inference_scopes_use_configured_deadline(controlled, configured):
     from api_agent.providers.progress import progress_sink
     request, _, _, _ = controlled
-    config = {'BEDROCK_API_MODE': 'completions'}
+    config = {'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}
     if configured is not None:
         config['BEDROCK_INFERENCE_TIMEOUT_SECONDS'] = configured
     reports = []
@@ -591,7 +591,7 @@ def test_valid_streamed_tool_is_actionable_only_after_transport_eof(monkeypatch)
     monkeypatch.setattr(module, 'SDKTransport', lambda **kw: transport)
 
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
         actionable = []
         async for event in provider.astream(request):
             if event.kind == 'tool_call':
@@ -617,7 +617,7 @@ def test_stream_evidence_is_labeled_partial_fallback(controlled):
             lease.release()
     transport.stream = stream
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
         with collect_inference(boundary, retain_raw=True) as collector:
             async for _ in provider.astream(request):
                 pass
@@ -670,7 +670,7 @@ async def test_responses_stream_dispatches_with_store_disabled(controlled, monke
         on_dispatch()
         yield {'part': 1}
     transport.stream = stream
-    provider = module.factory({'BEDROCK_API_MODE': 'responses'}, {})
+    provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'responses'}, {})
     monkeypatch.setattr(provider, 'validate_request', lambda request, **kwargs: None)
     monkeypatch.setattr(module.catalog, 'route', lambda model, mode, endpoint='mantle': '/v1')
     try:
@@ -697,7 +697,7 @@ async def test_stream_provider_error_retains_usage_and_releases_transport(contro
         finally:
             closed.append(True)
     transport.stream = stream
-    provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+    provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
     try:
         with pytest.raises(ProviderAccessError) as caught:
             _ = [event async for event in provider.astream(request)]
@@ -711,7 +711,7 @@ async def test_stream_provider_error_retains_usage_and_releases_transport(contro
 @pytest.mark.parametrize('streaming', [False, True])
 async def test_missing_authority_at_handoff_never_falls_back_or_dispatches(controlled, streaming):
     request, _, transport, _ = controlled
-    provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+    provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
     dispatched = []
     async def perform(operation, payload, *, auth, join, on_dispatch):
         assert callable(join) and callable(on_dispatch)
@@ -752,7 +752,7 @@ def test_advertised_output_ceiling_clamps_preflight_and_direct_dispatch(controll
         return {'modelId': effective.selected_llm}
     monkeypatch.setattr(sys.modules['api_agent.llm_providers.bedrock.mantle'], 'encode', encode)
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
         provider.validate_request(request)
         assert await provider.acomplete(request) == result
         assert [event async for event in provider.astream(request)][-1].payload == result
@@ -783,6 +783,6 @@ def test_provider_cap_does_not_reapply_shared_default(controlled, monkeypatch, r
     original_selection = module.catalog.selection
     monkeypatch.setattr(module.catalog, 'selection', lambda *args:
         replace(original_selection(*args), max_output_tokens=400000))
-    provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+    provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {})
     provider.validate_request(request)
     assert provider._effective_request(request).payload.generation.max_output_tokens == expected

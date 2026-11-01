@@ -8,7 +8,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from api_agent.testing.debug_confirmation import confirm_terminal_debug, debug_warning
+from api_agent.testing.debug_confirmation import confirm_terminal_debug, debug_warning, validate_e2e_debug_selection
+from api_agent.testing.collection import CollectionError
 from api_agent.testing.collection import TestIdentity
 from api_agent.testing.contracts import TestResult
 from api_agent.testing.integration import IntegrationRunResult
@@ -17,6 +18,27 @@ from textual.widgets import Input
 from test_tui import fixture
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize('available_ids,selected,explicit', [
+    (('one',), ('one',), ()),
+    (('one',), ('one',), ('one',)),
+    (('one', 'two'), ('one', 'two'), ('one', 'two')),
+    (('one', 'two'), ('one',), ()),
+])
+def test_e2e_debug_admits_single_suite_or_explicit_whole_suite(available_ids, selected, explicit):
+    available = [SimpleNamespace(id=identity) for identity in available_ids]
+    tests = [test for test in available if test.id in selected]
+
+    validate_e2e_debug_selection(tests, available, explicit)
+
+
+@pytest.mark.parametrize('explicit', [(), ('one',), ('one', 'one'), ('one.py',), ('one', 'two', 'extra')])
+def test_e2e_debug_rejects_implicit_or_inexact_whole_multi_suite(explicit):
+    available = [SimpleNamespace(id=identity) for identity in ('one', 'two')]
+
+    with pytest.raises(CollectionError, match='explicit positional test IDs'):
+        validate_e2e_debug_selection(available, available, explicit)
 
 
 @pytest.mark.parametrize('mode, debug, ids', [

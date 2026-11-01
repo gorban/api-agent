@@ -442,6 +442,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 from api_agent.auth.terminal_interaction import TerminalInteraction
                 try:
                     execution = run_launched_integration(context, tests, result.values, accepted=True,
+                        explicit_debug_test_ids=result.positionals,
                         config_fields=result.fields,
                         content_policy=ContentPolicy.from_config(result),
                         **({'tool_plan': result.tool_plan} if result.tool_plan is not None else {}),
@@ -540,7 +541,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
         'START': '--start: start the selected TUI operation after normal startup checks; --start=E2E explicitly accepts E2E execution without its human-review screen.',
         'TUI_MODE': '--tui-mode MODE: select an operation; test modes accept positional selectors.',
         'RUN_UI': '--run-ui: enable the optional Run local frontend; test browsers stay headless unless DEBUG (or E2E_DEBUG for E2E) is enabled.',
-        'E2E_DEBUG': '--e2e-debug: retain headed test browsers; requires a subset of E2E tests.',
+        'E2E_DEBUG': '--e2e-debug: retain headed test browsers; a whole multi-test suite requires every exact test ID as a positional argument.',
         'DEBUG': '--debug: retain headed browser inspection; does not enable the optional Run local frontend.',
         'SKIP_ALLURE_REPORTING': '--skip-allure-reporting: disable Allure for this test run and permit uncommitted workflow inputs.',
         'UNIT_COVERAGE_FULL': '--unit-coverage-full: show every unit coverage row; JSON/HTML reports are retained either way.',

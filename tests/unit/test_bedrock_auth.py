@@ -128,9 +128,10 @@ def test_api_modes_validate_and_default():
     assert validate_config({}) == 'responses'
     assert validate_config({'BEDROCK_API_MODE': 'completions'}) == 'completions'
     assert validate_config({'BEDROCK_API_MODE': 'responses'}) == 'responses'
+    assert validate_config({'BEDROCK_ENDPOINT': 'runtime', 'BEDROCK_AUTH_MODE': 'api_key'}) == 'responses'
 
 
-def test_provider_declarations_define_mantle_defaults():
+def test_provider_declarations_define_runtime_endpoint_default():
     import re
     import tomllib
     from pathlib import Path
@@ -138,7 +139,7 @@ def test_provider_declarations_define_mantle_defaults():
     assert fields['BEDROCK_AUTH_MODE']['enum'] == ['session', 'access_key', 'api_key']
     assert fields['BEDROCK_API_MODE']['enum'] == ['completions', 'responses', 'converse']
     assert fields['BEDROCK_ENDPOINT']['enum'] == ['mantle', 'runtime']
-    assert fields['BEDROCK_ENDPOINT']['default'] == 'mantle'
+    assert fields['BEDROCK_ENDPOINT']['default'] == 'runtime'
     assert fields['BEDROCK_API_MODE']['default'] == 'responses'
     default = fields['LLM_DEFAULT_MODEL']
     assert default['override'] is True and default['override_if_present'] is True

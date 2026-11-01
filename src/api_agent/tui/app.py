@@ -8,6 +8,7 @@ import json
 import sys
 import threading
 from rich.text import Text
+from textual.content import Content
 from api_agent.config.declarations import UNSET
 from api_agent.config.resolve import ConfigError, convert_value
 from api_agent.testing.lifecycle import TestRunLifecycle
@@ -145,6 +146,26 @@ class FocusNavigation:
 class SelectedTextCopy:
     """Shared terminal shortcut and clipboard feedback for read-only selections."""
     COPY_BINDINGS = [Binding('ctrl+c', 'copy_value', 'Copy value', key_display='^c', priority=True)]
+
+    def get_selected_text(self):
+        """Keep adjacent selections usable when a changed widget has a stale endpoint."""
+        if not self.selections:
+            return None
+        pieces = []
+        for widget, selection in self.selections.items():
+            if not widget.is_attached:
+                continue
+            if selection.end is None and selection.start is not None:
+                # Textual's Selection.extract indexes past the last line when a
+                # selection starts at the old end and has no explicit end.
+                visual = widget._render()
+                if (isinstance(visual, (Text, Content))
+                        and selection.start.y >= len(str(visual).splitlines())):
+                    continue
+            selected = widget.get_selection(selection)
+            if selected is not None:
+                pieces.extend(selected)
+        return ''.join(pieces).rstrip('\n') if pieces else None
 
     async def _watch_selections(self, old_selections, selections):
         await super()._watch_selections(old_selections, selections)
@@ -1856,6 +1877,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 try:
                     outcome['recorded'] = runner(self.context, self.selection.selected_tests,
                         active, accepted=True, interaction=interaction, config_fields=resolved.fields,
+                        **({'explicit_debug_test_ids': self.active_test_selectors} if runner is run_launched_integration else {}),
                         **({'tool_plan': resolved.tool_plan} if resolved.tool_plan is not None else {}),
                         content_policy=content_policy,
                         **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.reporting_runner_options(runner)),
