@@ -175,6 +175,97 @@ def test_converse_validates_before_buffered_publication_and_closes(operation, st
 
 
 @pytest.mark.parametrize('operation', ['converse', 'converse_stream'])
+def test_signed_plaintext_reasoning_publishes_only_final_answer(operation):
+    raw = converse_response('final answer')
+    raw['output']['message']['content'].insert(0, {'reasoningContent': {
+        'reasoningText': {'text': 'private reasoning canary', 'signature': 'private signature canary'}}})
+    frames = []
+    worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse',
+        'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
+        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None))
+    assert len(frames) == (1 if operation == 'converse' else 2)
+    if operation == 'converse':
+        assert frames[0]['result'] == raw
+        from api_agent.llm_providers.bedrock.converse import decode
+        from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+        from api_agent.workflows.capture import project_values
+        projection = decode(frames[0]['result'], selected_llm=CONVERSE_MODEL)
+        assert projection.payload.content[0].text == 'final answer'
+        assert 'private reasoning canary' not in str(projection)
+        assert 'private signature canary' not in str(projection)
+        captured = project_values({'provider_response': raw}, {'type': 'object'},
+                                  EmissionBoundary(ContentPolicy(True)), _provider_content=True)
+        assert 'final answer' in str(captured)
+        assert 'private reasoning canary' not in str(captured)
+        assert 'private signature canary' not in str(captured)
+    else:
+        assert frames[0] == {'event': {'kind': 'text', 'text': 'final answer'}}
+        assert frames[1]['event']['result']['text'] == 'final answer'
+        assert 'private reasoning canary' not in str(frames)
+        assert 'private signature canary' not in str(frames)
+
+
+@pytest.mark.parametrize('operation', ['converse', 'converse_stream'])
+@pytest.mark.parametrize('binary_type', [bytes, bytearray])
+def test_binary_redacted_reasoning_rejects_before_json_conversion_and_retains_usage(operation, binary_type):
+    raw = converse_response('answer must stay private')
+    raw['output']['message']['content'].insert(0, {'reasoningContent': {
+        'redactedContent': binary_type(b'private binary canary')}})
+    frames = []
+    worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse',
+        'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
+        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None))
+    assert len(frames) == 1
+    frame = frames[0]
+    assert frame['error'] == 'unknown' and frame['execution'] == 'possibly_executed'
+    assert frame['code'] == 'invalid_response'
+    assert frame['diagnostics']['validation_rule'] == 'reasoning_content'
+    assert frame['diagnostics']['validation_path'] == '$.output.message.content[].reasoningContent'
+    assert frame['usage']['input_tokens'] == 2
+    assert 'result' not in frame and 'event' not in frame and 'provider_response' not in frame
+    assert 'private' not in str(frame)
+
+
+@pytest.mark.parametrize('usage', [None, {'inputTokens': True}, 'malformed'])
+def test_binary_redacted_reasoning_does_not_invent_invalid_usage(usage):
+    raw = converse_response()
+    raw['output']['message']['content'].append({'reasoningContent': {
+        'redactedContent': b'private binary canary'}})
+    raw['usage'] = usage
+    frames = []
+    worker.execute(request('converse', {'endpoint': 'runtime', 'prefix': '/converse',
+        'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
+        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None))
+    assert frames[0]['code'] == 'invalid_response'
+    assert 'usage' not in frames[0]
+    assert 'private' not in str(frames[0])
+
+
+@pytest.mark.parametrize('value', [None, [], {'output': None}, {'output': {'message': None}},
+    {'output': {'message': {'content': None}}},
+    {'output': {'message': {'content': [None, {}, {'reasoningContent': None},
+                                                {'reasoningContent': {'redactedContent': 'not-binary'}}]}}}])
+def test_binary_redacted_guard_ignores_other_shapes(value):
+    assert worker._binary_redacted_converse(value) is False
+
+
+@pytest.mark.parametrize('operation', ['converse', 'converse_stream'])
+def test_signed_reasoning_containing_selected_credential_rejects_before_publication(operation):
+    raw = converse_response('answer must stay private')
+    raw['output']['message']['content'].insert(0, {'reasoningContent': {
+        'reasoningText': {'text': 'synthetic-runtime-key', 'signature': 'opaque'}}})
+    frames = []
+    worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse',
+        'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
+        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None),
+        join=lambda values, arguments: values)
+    assert len(frames) == 1
+    assert frames[0]['code'] == 'response_safety_rejected'
+    assert 'result' not in frames[0] and 'event' not in frames[0]
+    assert 'synthetic-runtime-key' not in str(frames[0])
+
+
+@pytest.mark.parametrize('operation', ['converse', 'converse_stream'])
 def test_converse_joined_credential_in_split_caller_carriers_never_publishes(operation):
     frames, closed = [], []
     raw = converse_response('synthetic-runtime-')

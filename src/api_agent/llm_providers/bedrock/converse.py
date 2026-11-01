@@ -94,58 +94,104 @@ def format_payload(request, body, evidence):
 
 
 def _usage(raw):
-    _require(type(raw) is dict, 'invalid_usage')
+    _require(type(raw) is dict, 'invalid_usage', rule='usage_object', path='$.usage')
     incoming, outgoing, total = (raw.get(key) for key in ('inputTokens', 'outputTokens', 'totalTokens'))
-    _require(all(type(value) is int and 0 <= value <= 2147483647
-                 for value in (incoming, outgoing, total)), 'invalid_usage')
+    for key, value in zip(('inputTokens', 'outputTokens', 'totalTokens'), (incoming, outgoing, total)):
+        _require(type(value) is int and 0 <= value <= 2147483647,
+                 'invalid_usage', rule='usage_count', path='$.usage.' + key)
     cached, writes = (raw.get(key) for key in ('cacheReadInputTokens', 'cacheWriteInputTokens'))
-    _require(all(value is None or type(value) is int and 0 <= value <= 2147483647
-                 for value in (cached, writes)), 'invalid_usage')
+    for key, value in zip(('cacheReadInputTokens', 'cacheWriteInputTokens'), (cached, writes)):
+        _require(value is None or type(value) is int and 0 <= value <= 2147483647,
+                 'invalid_usage', rule='usage_count', path='$.usage.' + key)
     # Converse reports ordinary input separately from cache reads and writes.
     # Our shared Usage includes all three disjoint input categories.
     return Usage(incoming + (cached or 0) + (writes or 0), outgoing,
                  cached_input_tokens=cached, cache_write_tokens=writes)
 
 
+def _text_at(value, path, *, empty=True):
+    try:
+        return _text(value, empty=empty)
+    except ProviderAccessError as error:
+        error.provider_diagnostics = {'version': 1, 'validation_rule': 'text_value',
+                                      'validation_path': path}
+        raise
+
+
 def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
     selection(selected_llm, api_mode, endpoint=endpoint)
     try:
-        _bounded(raw)
+        try:
+            _bounded(raw)
+        except ProviderAccessError as error:
+            error.provider_diagnostics = {'version': 1, 'validation_rule': 'response_object',
+                                          'validation_path': '$'}
+            raise
         _fields(raw, {'output', 'stopReason', 'usage', 'metrics', 'ResponseMetadata',
                       'serviceTier', 'performanceConfig'})
         output = raw.get('output')
-        _require(type(output) is dict and set(output) == {'message'})
+        _require(type(output) is dict and set(output) == {'message'},
+                 rule='output_message', path='$.output')
         message = output['message']
-        _fields(message, {'role', 'content'})
+        _fields(message, {'role', 'content'}, path='$.output.message')
         _require(message.get('role') == 'assistant' and type(message.get('content')) is list
-                 and len(message['content']) <= 64)
+                 and len(message['content']) <= 64, rule='assistant_message', path='$.output.message')
         text, calls, seen = [], [], set()
+        has_reasoning = False
         for block in message['content']:
-            _require(type(block) is dict and len(block) == 1)
+            _require(type(block) is dict and len(block) == 1,
+                     rule='content_block', path='$.output.message.content[]')
             if 'text' in block:
-                text.append(_text(block['text']))
+                text.append(_text_at(block['text'], '$.output.message.content[].text'))
+            elif 'reasoningContent' in block:
+                # AWS permits omitting prior thinking for completed non-tool
+                # replies. Tool continuations must retain signed state instead.
+                path = '$.output.message.content[].reasoningContent'
+                reasoning = block['reasoningContent']
+                _require(type(reasoning) is dict and set(reasoning) == {'reasoningText'},
+                         rule='reasoning_content', path=path)
+                value = reasoning['reasoningText']
+                _require(type(value) is dict and set(value) <= {'text', 'signature'}
+                         and type(value.get('text')) is str
+                         and ('signature' not in value or type(value['signature']) is str),
+                         rule='reasoning_content', path=path + '.reasoningText')
+                has_reasoning = True
             else:
-                _require('toolUse' in block)
+                _require('toolUse' in block, rule='content_block', path='$.output.message.content[]')
                 tool = block['toolUse']
-                _fields(tool, {'toolUseId', 'name', 'input', 'type'})
-                identifier = _text(tool.get('toolUseId'), empty=False)
-                _require(identifier not in seen and type(tool.get('input')) is dict)
+                _fields(tool, {'toolUseId', 'name', 'input', 'type'},
+                        path='$.output.message.content[].toolUse')
+                identifier = _text_at(tool.get('toolUseId'),
+                                      '$.output.message.content[].toolUse.toolUseId', empty=False)
+                _require(identifier not in seen, rule='tool_identity',
+                         path='$.output.message.content[].toolUse.toolUseId')
+                _require(type(tool.get('input')) is dict, rule='tool_input',
+                         path='$.output.message.content[].toolUse.input')
                 seen.add(identifier)
-                _require(tool.get('type') in (None, 'function'))
-                calls.append(ToolCall(identifier, _text(tool.get('name'), empty=False),
-                                      json.dumps(tool['input'], allow_nan=False)))
+                _require(tool.get('type') in (None, 'function'), rule='tool_type',
+                         path='$.output.message.content[].toolUse.type')
+                name = _text_at(tool.get('name'), '$.output.message.content[].toolUse.name', empty=False)
+                arguments = json.dumps(tool['input'], allow_nan=False)
+                calls.append(ToolCall(identifier, name, arguments))
         reason = raw.get('stopReason')
         outcomes = {'end_turn': 'completed', 'stop_sequence': 'completed',
                     'tool_use': 'tool_calls', 'max_tokens': 'length',
                     'model_context_window_exceeded': 'length',
                     'content_filtered': 'refused', 'guardrail_intervened': 'refused'}
-        _require(type(reason) is str and reason in outcomes, 'unsupported_finish_reason')
-        _require((reason == 'tool_use') == bool(calls), 'tool_finish_mismatch')
+        _require(type(reason) is str and reason in outcomes, 'unsupported_finish_reason',
+                 rule='finish_reason', path='$.stopReason')
+        _require((reason == 'tool_use') == bool(calls), 'tool_finish_mismatch',
+                 rule='tool_finish_consistency', path='$.stopReason')
+        _require(not has_reasoning or (reason in ('end_turn', 'stop_sequence')
+                 and not calls and any(part.strip() for part in text)),
+                 rule='unsupported_continuation',
+                 path='$.output.message.content[].reasoningContent')
         tier = raw.get('serviceTier')
         if tier is not None:
-            _require(type(tier) is dict and set(tier) == {'type'})
-            tier = _text(tier['type'], empty=False)
-        return LLMResult(Message('assistant', (TextContent(_text(''.join(text))),), tuple(calls)),
+            _require(type(tier) is dict and set(tier) == {'type'},
+                     rule='service_tier', path='$.serviceTier')
+            tier = _text_at(tier['type'], '$.serviceTier.type', empty=False)
+        return LLMResult(Message('assistant', (TextContent(_text_at(''.join(text), '$.output.message.content[]')),), tuple(calls)),
                          _usage(raw.get('usage')), outcomes[reason], service_tier=tier)
     except ProviderAccessError as error:
         error.execution = 'possibly_executed'

@@ -46,6 +46,19 @@ def json_value(value):
     return value
 
 
+def _binary_redacted_converse(value):
+    """Find the documented binary thinking carrier before JSON conversion."""
+    if type(value) is not dict:
+        return False
+    output = value.get('output')
+    message = output.get('message') if type(output) is dict else None
+    blocks = message.get('content') if type(message) is dict else None
+    return type(blocks) is list and any(
+        type(block) is dict and type(block.get('reasoningContent')) is dict
+        and type(block['reasoningContent'].get('redactedContent')) in (bytes, bytearray)
+        for block in blocks)
+
+
 def selected_auth(auth, session_factory):
     mode = auth['mode']
     region = auth.get('region')
@@ -272,6 +285,21 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 emit({'event': frame})
         else:
             inference_observed = True
+            if native and _binary_redacted_converse(result):
+                from api_agent.providers.contracts import ProviderAccessError
+                from api_agent.llm_providers.bedrock.converse import _usage
+                decode_failure = 'invalid_response'
+                failed_observation = {'version': 1, 'response_validation': 'rejected',
+                                      'validation_rule': 'reasoning_content',
+                                      'validation_path': '$.output.message.content[].reasoningContent'}
+                failure = ProviderAccessError('unknown', 'Invalid Bedrock inference response.',
+                                              code=decode_failure)
+                if type(result.get('usage')) is dict:
+                    try:
+                        failure.usage = _usage(result['usage'])
+                    except ProviderAccessError:
+                        pass
+                raise failure
             value = json_value(result if native else result.model_dump(exclude_unset=True))
             if type(value) is not dict or value.get('error') is not None:
                 if type(value) is dict:

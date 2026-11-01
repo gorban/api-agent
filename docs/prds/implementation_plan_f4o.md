@@ -22,6 +22,11 @@ existing Mantle defaults and authentication ownership. Messages API is out of sc
   only after credential-authority admission; parent tracebacks include those safe
   messages independently of content flags. Withhold unsafe or oversized diagnostics
   explicitly without changing the original error classification or retry semantics.
+  Native Converse validation reports a bounded rule and schema path from a fixed
+  vocabulary for malformed responses. The worker and parent preserve this diagnosis
+  alongside valid usage and execution state, and display it in the safe error message
+  regardless of content logging. Neither rejected values nor unknown field names enter
+  diagnostics or tracebacks; unavailable detail remains unspecified.
 - [x] Validate the implemented API request fields, caching and output-schema combinations
   before dispatch; preserve the shared declared output-mode fallback policy. Generic
   catalog controls describe the encoder, not verified model-side acceptance. Unsupported
@@ -44,6 +49,15 @@ Converse may initially publish a validated buffered completion through the strea
 interface; incremental ConverseStream delivery is separate from correctness of
 the completed result. No unverified native schema capability is advertised. OpenAI-format
 reasoning controls describe supported request encoding; AWS model support may vary.
+
+Converse accepts well-formed plaintext `reasoningContent.reasoningText` alongside
+a completed non-tool final answer. Reasoning is not appended to that answer.
+Signed reasoning on tool or unfinished replies still requires scoped native
+continuation support and must fail explicitly rather than discard replay state.
+Opaque/redacted reasoning remains unsupported. Preserve usage and uncertain
+execution on these failures; never treat them as pre-inference rejections.
+Content-enabled request evidence retains the actual typed `inferenceConfig.maxTokens`
+value, subject to the same credential authority as other provider evidence.
 
 Public contracts: [AWS endpoint comparison](https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html),
 [discovery](https://docs.aws.amazon.com/bedrock/latest/userguide/models-get-info.html),

@@ -7,19 +7,34 @@ _COUNTS = {'output_items', 'message_items', 'reasoning_items', 'tool_items', 'ot
            'max_output_tokens'}
 _ENUMS = {
     'observation': {'sdk_decoded'},
-    'api': {'responses', 'completions', 'normalized'},
+    'api': {'responses', 'completions', 'converse', 'normalized'},
     'response_status': {'completed', 'incomplete', 'failed', 'cancelled', 'in_progress', 'queued'},
     'incomplete_reason': {'max_output_tokens', 'content_filter', 'other'},
     'reasoning_effort': {'none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'auto'},
     'response_validation': {'rejected'},
     'validation_rule': {'response_object', 'selected_model', 'response_choices', 'choice_index',
                         'assistant_role', 'message_annotations', 'allowed_fields',
-                        'response_status', 'response_output', 'finish_reason', 'tool_finish_consistency'},
+                        'response_status', 'response_output', 'finish_reason', 'tool_finish_consistency',
+                        'usage_object', 'usage_count', 'text_value', 'output_message',
+                        'assistant_message', 'content_block', 'tool_identity', 'tool_input',
+                        'tool_type', 'service_tier', 'reasoning_content',
+                        'unsupported_continuation'},
     'validation_path': {'$', '$.model', '$.choices', '$.choices[].index',
                         '$.choices[].message', '$.choices[].message.role',
                         '$.choices[].message.annotations', '$.choices[].message.tool_calls[]',
                         '$.choices[].message.tool_calls[].function', '$.choices[].finish_reason',
-                        '$.status', '$.output', '$.output[]'},
+                        '$.status', '$.output', '$.output[]', '$.stopReason', '$.usage',
+                        '$.usage.inputTokens', '$.usage.outputTokens', '$.usage.totalTokens',
+                        '$.usage.cacheReadInputTokens', '$.usage.cacheWriteInputTokens',
+                        '$.output.message', '$.output.message.content[]',
+                        '$.output.message.content[].text', '$.output.message.content[].toolUse',
+                        '$.output.message.content[].reasoningContent',
+                        '$.output.message.content[].reasoningContent.reasoningText',
+                        '$.output.message.content[].toolUse.toolUseId',
+                        '$.output.message.content[].toolUse.name',
+                        '$.output.message.content[].toolUse.input',
+                        '$.output.message.content[].toolUse.type', '$.serviceTier',
+                        '$.serviceTier.type'},
 }
 _STOPS = {'stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'other'}
 _IDENTIFIERS = {'request_id', 'response_id'}
@@ -97,7 +112,9 @@ def sdk_observation(wire, phase):
         effort = control.get('effort') if type(control) is dict else raw.get('reasoning_effort')
         if type(effort) is str and effort in _ENUMS['reasoning_effort']:
             data['reasoning_effort'] = effort
-        maximum = raw.get('max_output_tokens', raw.get('max_completion_tokens', raw.get('max_tokens')))
+        inference = raw.get('inferenceConfig')
+        native_maximum = inference.get('maxTokens') if type(inference) is dict else None
+        maximum = raw.get('max_output_tokens', raw.get('max_completion_tokens', raw.get('max_tokens', native_maximum)))
         if type(maximum) is int and 0 <= maximum <= (1 << 53) - 1:
             data['max_output_tokens'] = maximum
         return data
@@ -125,6 +142,30 @@ def sdk_observation(wire, phase):
             field = {'message': 'message_items', 'reasoning': 'reasoning_items', 'function_call': 'tool_items'}.get(kind) if type(kind) is str else None
             data[field or 'other_items'] += 1
             _text_counts(item, data, reasoning=kind == 'reasoning')
+    elif type(output) is dict and type(output.get('message')) is dict:
+        data['api'] = 'converse'
+        blocks = output['message'].get('content')
+        if type(blocks) is list:
+            data.update(output_items=len(blocks), message_items=0, reasoning_items=0,
+                        tool_items=0, other_items=0)
+            for block in blocks:
+                if type(block) is not dict or len(block) != 1:
+                    data['other_items'] += 1
+                elif 'text' in block:
+                    data['message_items'] += 1
+                    if type(block['text']) is str:
+                        data['visible_text_characters'] += len(block['text'])
+                elif 'toolUse' in block:
+                    data['tool_items'] += 1
+                elif 'reasoningContent' in block:
+                    data['reasoning_items'] += 1
+                    reasoning = block['reasoningContent']
+                    if type(reasoning) is dict and type(reasoning.get('reasoningText')) is dict:
+                        value = reasoning['reasoningText'].get('text')
+                        if type(value) is str:
+                            data['reasoning_text_characters'] += len(value)
+                else:
+                    data['other_items'] += 1
     choices = raw.get('choices')
     if type(choices) is list:
         data['api'] = 'completions'
