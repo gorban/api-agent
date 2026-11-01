@@ -24,6 +24,24 @@ before terminal callbacks. Optional billing uses the exact bounded
 Authoritative terminal text replaces accumulated stream text. Provider-reported
 `actual_model`, `service_tier` and `serving_revision` remain separate observations.
 
+Optional `reasoning_summary` is bounded displayable provider summary text, separate
+from the final answer. It is not an opaque continuation or raw thinking carrier.
+The named application SSE stream emits `thinking` with `{}` and may emit
+`reasoning_token` with `{content: string}` for progressive summaries. Existing
+`token`, `response_complete`, `result` and `done` events retain their roles. A
+terminal result's summary is authoritative; progressive previews are transient
+and cannot become persisted final details after a missing/failed terminal.
+
+Studio renders summaries as plain text, shows a pending animated indicator,
+replaces the preview with the final answer, and keeps the completed summary in
+collapsed response details. Reduced-motion preferences disable animation. Browser
+test helpers wait for terminal completion, final DOM content and removal of the
+pending indicator before assertions and per-turn screenshot capture.
+
+Incremental summary delivery depends on the selected provider/operation. Buffered
+workflow calls can publish an available summary after each node call; this does
+not imply native per-token streaming or fabricate summaries when none are supplied.
+
 The following POST-SSE envelope is a **browser adapter contract**, independently
 specified for controlled tests and the opt-in completion bridge:
 

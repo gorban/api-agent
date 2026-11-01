@@ -12,6 +12,18 @@ from api_agent.telemetry.privacy import EmissionBoundary
 from test_gpt_inference import BASE, TOKEN, request
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_displayable_summary_cannot_split_authentication_content(reverse):
+    from api_agent.providers.llm import LLMResult, Message, TextContent
+    from api_agent.providers.inference import result_to_wire
+    authority = EmissionBoundary()
+    authority.register_secret('synthetic-summary-credential')
+    text, summary = ('credential', 'synthetic-summary-') if reverse else ('synthetic-summary-', 'credential')
+    result = LLMResult(Message('assistant', (TextContent(text),)), reasoning_summary=summary)
+    with pytest.raises(ProviderAccessError, match='protected authentication content'):
+        asyncio.run(inference._guard_content(result_to_wire(result), TOKEN, authority, decoded=result))
+
+
 @pytest.mark.parametrize('mode,stream', [('responses', False), ('completions', False), ('responses', True)])
 @pytest.mark.parametrize('escaped', [False, True])
 @pytest.mark.parametrize('reverse', [False, True])
@@ -125,6 +137,12 @@ def test_observable_carriers_exclude_keys_and_independent_values():
     arguments = [{'ignored-key': [None, 1, True, {'other-key': 'value'}], 'second': 'other'}]
     assert list(observable_response_carriers('text', arguments)) == [
         'textvalue', 'valuetext', 'textother', 'othertext']
+
+
+def test_summary_pairs_do_not_invent_repeated_or_combined_tool_values():
+    from api_agent.providers.response_carriers import observable_response_carriers
+    assert list(observable_response_carriers('answer', [{'tool': 'value'}], summary='summary')) == [
+        'answersummary', 'summaryanswer', 'answervalue', 'valueanswer', 'summaryvalue', 'valuesummary']
 
 
 def test_observable_carrier_work_limit_rejects_next_pair_before_release():

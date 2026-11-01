@@ -216,6 +216,9 @@ class SDKTransport:
                             raise ContractError('Invalid Bedrock worker response code')
                         message = ('Bedrock inference response could not be safely released.' if code == 'response_safety_rejected'
                                    else 'Bedrock inference response failed contract validation.')
+                        if code == 'reasoning_format_ambiguous':
+                            message = ('Ambiguous tagged Bedrock answer. Set BEDROCK_COMPLETIONS_REASONING_FORMAT=tagged '
+                                       'for a reasoning envelope, or literal to preserve the text.')
                     validation_code = code
                     request_id = None
                     if 'aws_error_rejected' in frame and frame['aws_error_rejected'] is not True:

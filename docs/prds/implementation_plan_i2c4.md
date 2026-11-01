@@ -8,6 +8,7 @@
 - [x] Bind response disposal to the captured admitted turn and its backend owner, including after terminal eviction and session identifier reuse. Retry receipts must retain that exact identity and never cancel a replacement.
 - [x] Serialize overlapping disposal attempts. Retain retryable cleanup receipts and block admission while unsafe work remains. Publish no completed or cancelled terminal state until cleanup settles.
 - [x] Prove caller isolation, heartbeat expiry, immutable deadlines, bounded state, resistant work, overlapping cancellation and cleanup retries with controlled tasks. Complete focused coverage and independent review before acceptance.
+- [x] For a selected local or test Studio workflow with a declared GRAPH timeout, give an otherwise unspecified request deadline that whole-graph budget. Preserve explicitly supplied bridge deadlines exactly, including shorter caller budgets; reject invalid explicit deadlines and retain caller cancellation and nested component and LLM limits. Provider-only or undeclared graphs retain the ordinary bridge default. A graph may run beyond that default when its declared budget allows it.
 
 This bounded request lifecycle does not provide post-test retained interactive ownership. [Retained Studio requirements](implementation_plan_i2c2.md) remain separate.
 

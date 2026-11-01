@@ -4,6 +4,28 @@ This optional provider supports regional bedrock-mantle and bedrock-runtime endp
 Controlled tests qualify the initial matrix below; live account access remains
 a separate acceptance step.
 
+## Reasoning and the final answer
+
+Displayable provider summaries travel separately as `reasoning_summary`; Studio
+can preview them while Thinking and retain them collapsed after the final answer.
+Raw thinking text, signatures and encrypted continuation state are not summaries.
+Providers without displayable summaries still show the pending Thinking state.
+The final `response_text` alone is used by answer assertions.
+
+Native reasoning fields take precedence over guessing from text. On Completions,
+`BEDROCK_COMPLETIONS_REASONING_FORMAT=auto` preserves ordinary answers and rejects
+ambiguous leading `<reasoning>` or `<think>` envelopes with configuration guidance.
+If the upstream contract uses those envelopes, explicitly select `tagged` to
+return only the answer following the leading envelope. Select `literal` when the
+entire text is the intended answer. This works across model families without
+changing the selected endpoint, API or model. Fragmented envelopes are held until
+validated; envelope contents are never presented as displayable summaries.
+
+The AWS model-parameters page describes tagged output for InvokeModel; that does
+not establish a blanket Chat Completions contract. An explicit format choice
+records the operator's upstream interpretation instead of inferring it from a
+successful HTTP status or a model name.
+
 ## Install and select
 
 For a source checkout, follow [Getting started](../../../../README.md#get-started)
@@ -31,10 +53,11 @@ api_agent.llm_providers.bedrock.__file__.
 ## Modes, models and defaults
 
 BEDROCK_AUTH_MODE selects session, access_key or api_key.
-BEDROCK_ENDPOINT selects runtime (the default) or explicitly mantle; discovery follows the same endpoint. BEDROCK_API_MODE independently selects completions (Chat Completions), responses, or Runtime-only converse. The default API is responses. The original Mantle modes use the literal model-ID
-regex `openai\.gpt-oss-20b` when no default model is configured. Explicit dotenv, environment, CLI and interactive
+BEDROCK_ENDPOINT selects runtime (the default) or explicitly mantle; discovery follows the same endpoint. BEDROCK_API_MODE independently selects completions (Chat Completions), responses, or Runtime-only converse. The default API is responses. The bundled full model-ID regex
+`openai\.gpt-oss-20b(?:-1:0)?` selects `openai.gpt-oss-20b` on Mantle or
+`openai.gpt-oss-20b-1:0` on Runtime when that ID appears in discovery. Explicit dotenv, environment, CLI and interactive
 values always retain precedence; switching endpoints or APIs never rewrites a saved model.
-The retained default-model regex is independent of the endpoint: for Runtime,
+The default-model regex is independent of the endpoint: for another Runtime model,
 configure it to match an exact available model or inference profile. If it matches
 no allowed catalog entry, selection fails with a configuration error.
 Known closed-weight GPT models on Runtime Responses use system inference-profile IDs, for example

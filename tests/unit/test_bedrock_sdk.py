@@ -12,6 +12,19 @@ from api_agent.providers.contracts import ContractError, ProviderAccessError, Se
 from api_agent.providers.progress import component_timeout
 
 
+@pytest.mark.asyncio
+async def test_ambiguous_reasoning_error_has_format_guidance(auth, fake_process):
+    fake_process[0]['frames'] = [{'error': 'unknown', 'execution': 'possibly_executed',
+                                  'code': 'reasoning_format_ambiguous'}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ProviderAccessError, match='BEDROCK_COMPLETIONS_REASONING_FORMAT') as error:
+            await transport.call('completions', {}, auth=auth)
+        assert error.value.execution == 'possibly_executed'
+    finally:
+        await transport.aclose()
+
+
 @pytest.fixture
 def auth():
     return BedrockAuthSession({'mode': 'access_key', 'access_key': 'synthetic-key', 'secret_key': 'synthetic-secret'})

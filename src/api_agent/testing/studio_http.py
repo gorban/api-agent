@@ -14,10 +14,15 @@ from api_agent.providers.sessions import LLMSessionOwner
 from api_agent.runtime.tasks import offload, settle
 from api_agent.testing.studio_retained import StudioCleanup
 
+_DEFAULT_TIMEOUT = object()
+
 @asynccontextmanager
-async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None, timeout=120, application=None):
+async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None, timeout=_DEFAULT_TIMEOUT, application=None):
     """Own the real Agent HTTP bridge for the selected UI runtime."""
     import uvicorn
+    graph_timeout = getattr(application, 'timeouts', {}).get('GRAPH')
+    if timeout is _DEFAULT_TIMEOUT:
+        timeout = graph_timeout if graph_timeout is not None else 120
     async with AsyncExitStack() as cleanup:
         duties = StudioCleanup()
         cleanup.push_async_callback(_cleanup, duties.aclose)

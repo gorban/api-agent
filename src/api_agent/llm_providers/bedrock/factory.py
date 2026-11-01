@@ -233,6 +233,8 @@ class BedrockProvider:
                            'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint), evidence)}
                 if self.endpoint == 'runtime':
                     payload['endpoint'] = 'runtime'
+                if self.api_mode == 'completions' and self.config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto') != 'auto':
+                    payload['reasoning_format'] = self.config['BEDROCK_COMPLETIONS_REASONING_FORMAT']
                 if budget.remaining == 0:
                     raise TimeoutError('Bedrock deadline expired before dispatch.')
                 def dispatch():
@@ -248,7 +250,9 @@ class BedrockProvider:
                         auth=native_scope.wrap_auth(auth) if self.api_mode == 'responses' else auth,
                         join=self._join_credentials, on_dispatch=dispatch)
                     from api_agent.workflows.inference_capture import capture_inference
-                    result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm, endpoint=self.endpoint), response=evidence)
+                    codec_options = ({'reasoning_format': self.config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto')}
+                                     if self.api_mode == 'completions' else {})
+                    result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm, endpoint=self.endpoint, **codec_options), response=evidence)
                     result = native_scope.seal(result)
                     capture_inference('output', {'provider_response': response}, request.request_id, auth=auth,
                                       decoded_visible_text_characters=sum(len(part.text) for part in result.payload.content))
@@ -306,6 +310,8 @@ class BedrockProvider:
                            'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint), evidence)}
                 if self.endpoint == 'runtime':
                     payload['endpoint'] = 'runtime'
+                if self.api_mode == 'completions' and self.config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto') != 'auto':
+                    payload['reasoning_format'] = self.config['BEDROCK_COMPLETIONS_REASONING_FORMAT']
                 def dispatch():
                     nonlocal dispatched
                     final_body = dict(payload['body'])

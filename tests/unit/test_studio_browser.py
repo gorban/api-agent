@@ -71,6 +71,7 @@ class Page:
         self.predicate = None
         self.request = SimpleNamespace(method='POST', url='https://example.test/app/agent/chat',
             post_data_json={'conversation_id': CONVERSATION, 'session_id': TURN})
+        self.wait_for_function = AsyncMock()
 
     def locator(self, selector):
         return self.nodes[selector]
@@ -267,3 +268,39 @@ async def test_completion_readiness_blocks_answer_and_capture(studio, monkeypatc
         await asyncio.wait_for(task, 1)
     studio.page.nodes['.assistant .message-body'].inner_text.assert_awaited_once_with()
     studio.capture.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_final_dom_readiness_blocks_answer_and_success_capture(studio):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait(predicate, *, timeout):
+        assert '.thinking-indicator' in predicate
+        assert '.message-body' in predicate
+        assert "getAnimations({subtree:true})" in predicate
+        assert "playState === 'finished'" in predicate
+        assert '#stop' in predicate
+        assert timeout == 120000
+        entered.set()
+        await release.wait()
+
+    studio.page.wait_for_function.side_effect = wait
+    task = asyncio.create_task(browser_prompt(studio.session))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        studio.page.nodes['.assistant .message-body'].inner_text.assert_not_awaited()
+        studio.capture.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 1)
+    studio.capture.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_final_dom_readiness_failure_never_captures_success(studio):
+    studio.page.wait_for_function.side_effect = TimeoutError('Final DOM did not settle')
+    with pytest.raises(TimeoutError, match='Final DOM did not settle'):
+        await browser_prompt(studio.session)
+    studio.page.nodes['.assistant .message-body'].inner_text.assert_not_awaited()
+    studio.capture.assert_awaited_once_with('failure', owner={
+        'kind': 'turn', 'conversation_id': CONVERSATION, 'turn_id': TURN})

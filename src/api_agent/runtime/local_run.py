@@ -209,6 +209,8 @@ class LocalRunOwner:
             policy=ModelSelectionPolicy(config.values),
             origin=config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/'),
             nonce=nonce, scrub=lambda message: 'Selected provider rejected the request.',
+            **({'timeout': self._graph.timeouts['GRAPH']}
+               if getattr(self._graph, 'timeouts', {}).get('GRAPH') is not None else {}),
             on_error=self._execution_error,
             reasoning_default=config.values.get('LLM_REASONING_EFFORT') or None,
             max_output_tokens=config.values.get('LLM_MAX_OUTPUT_TOKENS', 200000))

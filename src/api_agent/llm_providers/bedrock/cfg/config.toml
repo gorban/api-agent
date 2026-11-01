@@ -62,13 +62,22 @@ default = "responses"
 cost_affecting = true
 help = "Inference API format. Converse requires Runtime. Use the model filter and AWS documentation to select models supported by the endpoint and API."
 
+[fields.BEDROCK_COMPLETIONS_REASONING_FORMAT]
+type = "str"
+enum = ["auto", "tagged", "literal"]
+default = "auto"
+applies_when = {BEDROCK_API_MODE = "completions"}
+acknowledge_default = false
+review_optional = true
+help = "Interpret text reasoning envelopes for any selected model family. auto preserves normal answer text and rejects ambiguous leading <reasoning> or <think> envelopes. tagged explicitly declares those leading envelopes to be reasoning and returns only the following answer. literal preserves all text. Native reasoning fields remain separate; raw or encrypted reasoning is never a displayable summary. This is local response interpretation, not an API or model fallback."
+
 [fields.LLM_DEFAULT_MODEL]
 type = "str"
 validation = "regex"
 override = true
 override_if_present = true
-default = 'openai\.gpt-oss-20b'
-help = "Full model-ID regular expression for the default model. Mantle defaults to openai.gpt-oss-20b. For Runtime select an exact supported model or profile; known closed-weight GPT Responses models use system profile IDs such as us.openai.gpt-5.6-luna (escape dots in the regular expression). Explicit configuration replaces the default and is preserved when API mode changes."
+default = 'openai\.gpt-oss-20b(?:-1:0)?'
+help = "Full model-ID regular expression for the default model. The bundled pattern selects openai.gpt-oss-20b on Mantle or openai.gpt-oss-20b-1:0 on Runtime when available. For other Runtime models select an exact supported model or profile; known closed-weight GPT Responses models use system profile IDs such as us.openai.gpt-5.6-luna (escape dots in the regular expression). Explicit configuration replaces the default and is preserved when API mode changes."
 
 [fields.BEDROCK_LOGIN_EXPECTED_ACCOUNT_ID]
 type = "str"

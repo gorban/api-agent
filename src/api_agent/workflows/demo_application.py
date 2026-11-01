@@ -37,7 +37,7 @@ class UsefulDemoApplication:
             row = rows[step.id]
             catalog = load_native_catalog(definition, step.source)
             self.registry[row['Registry']] = NodeFunction(catalog[row['Registry']], row['Kind'])
-        Workflow(definition, self.registry, config=self.config)
+        self.timeouts = Workflow(definition, self.registry, config=self.config).timeouts
 
     async def complete(self, request, *, llm, context, tool_owner=None):
         await async_request_to_wire(request)
@@ -70,7 +70,10 @@ class UsefulDemoApplication:
             async def selected(value):
                 if value.selected_llm != request.selected_llm:
                     raise WorkflowError('Useful demo changed selected model')
-                return await llm.complete(value, context=context)
+                result = await llm.complete(value, context=context)
+                from api_agent.providers.presentation import present_summary
+                await present_summary(result)
+                return result
 
             services['llm'] = selected
             workflow = Workflow(self.definition, self.registry, config=self.config, services=services)

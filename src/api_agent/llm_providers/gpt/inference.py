@@ -416,7 +416,8 @@ async def _guard_content(value, access_token, authority=None, *, commit=None, de
             try:
                 for carrier in observable_response_carriers(
                         ''.join(part.text for part in decoded.payload.content),
-                        (json.loads(call.arguments) for call in decoded.payload.calls)):
+                        (json.loads(call.arguments) for call in decoded.payload.calls),
+                        summary=decoded.reasoning_summary):
                     await async_guard_json(carrier, secrets)
             except ContractError:
                 raise CredentialProtectionError('Content cannot be safely released.') from None

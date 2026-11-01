@@ -12,12 +12,13 @@ from api_agent.providers.llm import LLMRequest, LLMResult, Message, StreamEvent,
 from api_agent.providers.rich_inference import object_json, request_to_wire, schema, continuation
 from api_agent.providers.response_metadata import _logprobs
 from .catalog import selection
+from .reasoning_carrier import may_be_envelope, final_answer
 
 _LIMIT = 524288
 _REASONS = {'stop': 'completed', 'tool_calls': 'tool_calls', 'length': 'length', 'content_filter': 'refused'}
 RESPONSE_CODES = frozenset({'invalid_response', 'unsupported_response_field', 'invalid_tool_arguments',
                             'invalid_usage', 'unsupported_finish_reason', 'tool_finish_mismatch',
-                            'response_safety_rejected'})
+                            'response_safety_rejected', 'reasoning_format_ambiguous'})
 
 
 def _require(condition, code='invalid_response', *, rule=None, path=None):
@@ -299,14 +300,14 @@ def _reported_error(error, raw, response):
     return error
 
 
-def decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
+def decode(raw, api_mode, *, selected_llm, endpoint="mantle", reasoning_format='auto'):
     try:
-        return _decode(raw, api_mode, selected_llm=selected_llm, endpoint=endpoint)
+        return _decode(raw, api_mode, selected_llm=selected_llm, endpoint=endpoint, reasoning_format=reasoning_format)
     except ProviderAccessError as error:
         raise _reported_error(error, raw, api_mode == 'responses')
 
 
-def _decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
+def _decode(raw, api_mode, *, selected_llm, endpoint="mantle", reasoning_format='auto'):
     selection(selected_llm, api_mode, endpoint=endpoint)
     _bounded(raw)
     _require(type(raw) is dict and raw.get('error') is None, rule='response_object', path='$')
@@ -316,11 +317,12 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
         _require(raw.get('status') in ('completed', 'incomplete'), rule='response_status', path='$.status')
         _require(type(raw.get('output')) is list and len(raw['output']) <= 64,
                  rule='response_output', path='$.output')
-        text, tools = [], []
+        text, tools, summaries = [], [], []
         for item in raw['output']:
             _require(type(item) is dict)
             if item.get('type') == 'reasoning':
                 _reasoning(item, incomplete=raw['status'] == 'incomplete')
+                summaries.extend(part['text'] for part in item['summary'])
             elif item.get('type') == 'function_call':
                 _call_metadata(item)
                 _require(item.get('status', 'completed') == 'completed')
@@ -340,6 +342,7 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
         else:
             _require(raw.get('incomplete_details') is None)
     else:
+        summaries = []
         choices = raw.get('choices')
         _require(type(choices) is list and len(choices) == 1 and type(choices[0]) is dict,
                  rule='response_choices', path='$.choices')
@@ -355,6 +358,7 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
         for field in ('reasoning_content', 'reasoning'):
             if message.get(field) is not None:
                 _text(message[field])
+        native_reasoning = any(message.get(field) is not None for field in ('reasoning_content', 'reasoning'))
         content = message.get('content')
         text = [] if content is None else [_text(content)]
         calls = _calls(message.get('tool_calls', []), False)
@@ -365,7 +369,12 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
                  rule='tool_finish_consistency', path='$.choices[].finish_reason')
         reason = _REASONS[finish]
     content = _text(''.join(text))
+    if not response and not native_reasoning:
+        content = final_answer(content, reasoning_format, incomplete=reason == 'length')
     metadata = _metadata(raw)
+    summary = ''.join(summaries)
+    _require(len(summary.encode('utf-8')) <= 65536,
+             rule='summary_size', path='$.output[].summary')
     state = None
     if response and calls and any(item.get('type') == 'reasoning' and item.get('encrypted_content') is not None
             or item.get('type') == 'message' and (item.get('phase') is not None
@@ -377,14 +386,19 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle"):
         except ContractError:
             _require(False)
     return LLMResult(Message('assistant', (TextContent(content),), calls, continuation=state), _usage(raw.get('usage'), response),
-                     reason, metadata['model'], metadata['service_tier'], metadata['serving_revision'])
+                     reason, metadata['model'], metadata['service_tier'], metadata['serving_revision'],
+                     reasoning_summary=summary or None)
 
 
 class StreamDecoder:
     """Ordered SDK dictionaries; terminal snapshots are withheld until EOF."""
-    def __init__(self, api_mode, *, selected_llm, endpoint="mantle"):
+    def __init__(self, api_mode, *, selected_llm, endpoint="mantle", reasoning_format='auto'):
         selection(selected_llm, api_mode, endpoint=endpoint)
         self.endpoint = endpoint
+        self.reasoning_format = reasoning_format
+        self.released = 0
+        self.held_envelope = False
+        self.native_reasoning = False
         self.mode, self.model = api_mode, selected_llm
         self.finished = False
         self.terminal = None
@@ -420,6 +434,14 @@ class StreamDecoder:
 
     def _emit(self, fragment):
         self.text = _text(self.text + _text(fragment))
+        if self.mode == 'completions' and not self.native_reasoning and self.reasoning_format != 'literal' and may_be_envelope(self.text):
+            # Hold the complete carrier until final validation. A fragmented
+            # opening marker must never escape as visible answer text.
+            self.held_envelope = True
+            return ()
+        fragment = self.text[self.released:]
+        self.released = len(self.text)
+        self.held_envelope = False
         return (StreamEvent(TextContent(fragment)),)
 
     def _remember_metadata(self, raw):
@@ -439,22 +461,25 @@ class StreamDecoder:
         if not choices:
             _require(self.reason is not None)
             self.terminal = {**self.metadata, 'usage': event.get('usage'), 'choices': [{'index': 0,
-                'message': {'role': 'assistant', 'content': self.text, 'tool_calls': list(self.tools.values())},
+                'message': {'role': 'assistant', 'content': self.text, 'tool_calls': list(self.tools.values()),
+                            **({'reasoning_content': ''} if self.native_reasoning else {})},
                 'finish_reason': self.reason}]}
-            decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint)
+            decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint, reasoning_format=self.reasoning_format)
             return ()
         _require(self.reason is None and len(choices) == 1 and type(choices[0]) is dict and choices[0].get('index') == 0
                  and event.get('usage') is None)
         choice = choices[0]
         delta = choice.get('delta')
-        _fields(delta, {'role', 'content', 'tool_calls', 'reasoning_content'})
+        _fields(delta, {'role', 'content', 'tool_calls', 'reasoning_content', 'reasoning'})
         if delta.get('role') is not None:
             _require(not self.started and delta['role'] == 'assistant')
             self.started = True
         _require(self.started)
         events = ()
-        if delta.get('reasoning_content') is not None:
-            _text(delta['reasoning_content'])
+        for field in ('reasoning_content', 'reasoning'):
+            if delta.get(field) is not None:
+                _text(delta[field])
+                self.native_reasoning = True
         if delta.get('content') is not None:
             events = self._emit(delta['content'])
         rows = delta.get('tool_calls')
@@ -633,6 +658,6 @@ class StreamDecoder:
 
     def finish(self):
         _require(not self.finished and self.terminal is not None)
-        result = decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint)
+        result = decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint, reasoning_format=self.reasoning_format)
         self.finished = True
         return result

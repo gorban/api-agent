@@ -283,8 +283,10 @@ class LLMResult:
 
     applied_cache_boundaries: tuple[int, ...] = ()
     response: ResponseEvidence | None = None
+    reasoning_summary: str | None = field(default=None, repr=False)
 
     def __post_init__(self):
+        _require(self.reasoning_summary is None or (type(self.reasoning_summary) is str and len(self.reasoning_summary.encode('utf-8')) <= 65536))
         _require(self.response is None or isinstance(self.response, ResponseEvidence))
         _require(type(self.applied_cache_boundaries) is tuple and len(self.applied_cache_boundaries) <= 4 and len(set(self.applied_cache_boundaries)) == len(self.applied_cache_boundaries) and all(type(value) is int and 0 <= value < 64 for value in self.applied_cache_boundaries))
         if self.billing is not None:
@@ -298,10 +300,10 @@ class LLMResult:
 @dataclass(frozen=True)
 class StreamEvent:
     payload: TextContent | ToolCall | LLMResult = field(repr=False)
-    kind: Literal["text", "tool_call", "completed"] = "text"
+    kind: Literal["text", "reasoning_summary", "tool_call", "completed"] = "text"
 
     def __post_init__(self):
-        expected = {"text": TextContent, "tool_call": ToolCall, "completed": LLMResult}
+        expected = {"text": TextContent, "reasoning_summary": TextContent, "tool_call": ToolCall, "completed": LLMResult}
         _require(type(self.kind) is str and self.kind in expected and isinstance(self.payload, expected[self.kind]))
 
     @property

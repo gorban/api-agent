@@ -75,7 +75,7 @@ def test_sse_names_and_single_chunk_completion():
         response = await bridge.handle(request(body), 'chat_stream')
         assert response.streaming and response.status_code == 200
         chunks = [part.decode() async for part in response.streaming_content]
-        assert [part.splitlines()[0] for part in chunks] == ['event: session', 'event: token', 'event: response_complete', 'event: result', 'event: done']
+        assert [part.splitlines()[0] for part in chunks] == ['event: session', 'event: thinking', 'event: token', 'event: response_complete', 'event: result', 'event: done']
         result = json.loads(chunks[-2].splitlines()[1][6:])
         assert result['response_text'] == 'answer' and result['session_id'] == body['session_id']
         status = await bridge.handle(request({'session_id': body['session_id']}), 'chat_cancel')
@@ -282,7 +282,7 @@ def test_stream_cancel_reports_terminal_and_does_not_return_result():
         cancelled = await bridge.handle(request({'session_id':body['session_id']}), 'chat_cancel')
         assert json.loads(cancelled.content)['status'] == 'cancelled'
         frames = [part async for part in iterator]
-        assert frames == [frame('cancelled', {'session_id':body['session_id']})]
+        assert frames == [frame('thinking', {}), frame('cancelled', {'session_id':body['session_id']})]
         await bridge.aclose()
     asyncio.run(run())
 

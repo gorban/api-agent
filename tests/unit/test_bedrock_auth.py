@@ -143,7 +143,7 @@ def test_provider_declarations_define_runtime_endpoint_default():
     assert fields['BEDROCK_API_MODE']['default'] == 'responses'
     default = fields['LLM_DEFAULT_MODEL']
     assert default['override'] is True and default['override_if_present'] is True
-    assert default['default'] == r'openai\.gpt-oss-20b'
+    assert default['default'] == r'openai\.gpt-oss-20b(?:-1:0)?'
     assert 'conditional_defaults' not in default
     assert re.fullmatch(default['default'], 'openai.gpt-oss-20b')
     assert not re.fullmatch(default['default'], 'openai.gpt-oss-120b')
@@ -189,8 +189,9 @@ def test_both_api_modes_default_to_oss20b_inertly(inert_bedrock_schema, mode):
     resolved = resolve_config(inert_bedrock_schema, environ={'BEDROCK_API_MODE': mode})
     assert not resolved.errors
     pattern = resolved.values['LLM_DEFAULT_MODEL']
-    assert pattern == r'openai\.gpt-oss-20b'
+    assert pattern == r'openai\.gpt-oss-20b(?:-1:0)?'
     assert re.fullmatch(pattern, 'openai.gpt-oss-20b')
+    assert re.fullmatch(pattern, 'openai.gpt-oss-20b-1:0')
     assert re.fullmatch(resolved.values['LLM_ALLOWED_MODELS'], 'openai.gpt-oss-20b')
     assert not re.fullmatch(pattern, 'openaiXgpt-oss-20b')
     from api_agent.providers.selection import ModelSelectionPolicy
@@ -235,8 +236,8 @@ def test_omitted_api_mode_defaults_to_responses_and_oss20b(inert_bedrock_schema)
 
 
 @pytest.mark.parametrize('saved,mode,model', [
-    ('', 'responses', r'openai\.gpt-oss-20b'),
-    ('BEDROCK_API_MODE=completions\n', 'completions', r'openai\.gpt-oss-20b'),
+    ('', 'responses', r'openai\.gpt-oss-20b(?:-1:0)?'),
+    ('BEDROCK_API_MODE=completions\n', 'completions', r'openai\.gpt-oss-20b(?:-1:0)?'),
     ('BEDROCK_API_MODE=completions\nLLM_DEFAULT_MODEL=chosen-model\n', 'completions', 'chosen-model'),
     ('BEDROCK_API_MODE=responses\nLLM_DEFAULT_MODEL=chosen-model\n', 'responses', 'chosen-model'),
 ])

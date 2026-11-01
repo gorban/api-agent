@@ -1,5 +1,6 @@
 // Bounded application HTTP DTOs; provider wire contracts stay behind the API.
 const codepoints = value => [...value].length;
+const utf8Bytes = value => new TextEncoder().encode(value).byteLength;
 const wireBytes = value => JSON.stringify(value).replace(/[\u007f-\uffff]/g, character => '\\u' + character.charCodeAt(0).toString(16).padStart(4,'0')).length;
 const LIMIT = 131072;
 const printable = value => !/[\p{C}\p{Z}]/u.test(value.replaceAll(' ',''));
@@ -59,12 +60,12 @@ export async function readJSONResponse(response, options) {
   return bounded(JSON.parse(text));
 }
 export async function readResponse(response, callbacks = {}) {
-  const {onText = () => {}, onMetadata = () => {}, onClarification = () => {}, onApproval = () => {}, onActivity = () => {}, signal} = callbacks;
+  const {onText = () => {}, onReasoningSummary = () => {}, onMetadata = () => {}, onClarification = () => {}, onApproval = () => {}, onActivity = () => {}, signal} = callbacks;
   let terminal = false, session = null, phase = 'initial';
   const binding = value => { if (!value || value.session_id !== session) throw Error('Invalid stream session'); };
   const adaptResult = value => {
     if (!value || typeof value !== 'object') throw Error('Invalid inference result');
-    if (Object.keys(value).some(key => !['session_id','response_text','outcome','usage','actual_model','service_tier','serving_revision','billing'].includes(key))) throw Error('Unsupported inference result fields');
+    if (Object.keys(value).some(key => !['session_id','response_text','reasoning_summary','outcome','usage','actual_model','service_tier','serving_revision','billing'].includes(key))) throw Error('Unsupported inference result fields');
     const {session_id, response_text, ...rest} = value;
     if (typeof session_id !== 'string' || !session_id || (callbacks.sessionId && callbacks.sessionId !== session_id)) throw Error('Invalid stream session');
     return {...rest,text:response_text};
@@ -72,6 +73,7 @@ export async function readResponse(response, callbacks = {}) {
   function result(value) {
     bounded(value);
     if (!value || typeof value.text !== 'string' || codepoints(value.text) > 65536 || !['completed','length','refused'].includes(value.outcome) || !value.usage || typeof value.usage !== 'object') throw Error('Invalid inference result');
+    if (value.reasoning_summary !== undefined && (typeof value.reasoning_summary !== 'string' || utf8Bytes(value.reasoning_summary) > 65536)) throw Error('Invalid reasoning summary');
     if (value.billing !== undefined && value.billing !== null) {
       const billing = value.billing;
       if (typeof billing !== 'object' || Array.isArray(billing) || Object.keys(billing).sort().join(',') !== 'generation_id,request_id,usd' || (billing.usd !== null && (typeof billing.usd !== 'number' || !Number.isFinite(billing.usd) || billing.usd < 0 || billing.usd > 1e12)) || [billing.request_id,billing.generation_id].some(id => id !== null && (typeof id !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(id)))) throw Error('Invalid reported billing evidence');
@@ -86,6 +88,7 @@ export async function readResponse(response, callbacks = {}) {
       metadata[key] = value[key];
     }
     if (metadata.actual_model) metadata.model = metadata.actual_model;
+    if (value.reasoning_summary !== undefined) onReasoningSummary(value.reasoning_summary, true);
     onText(value.text, true);
     onMetadata(metadata); terminal = true;
   }
@@ -100,6 +103,14 @@ export async function readResponse(response, callbacks = {}) {
     if (name === 'token') {
       if (phase !== 'stream' || typeof value.content !== 'string' || Object.keys(value).join(',') !== 'content') throw Error('Invalid token event');
       onText(value.content, false); return;
+    }
+    if (name === 'reasoning_token') {
+      if (phase !== 'stream' || typeof value.content !== 'string' || (value.section !== undefined && (typeof value.section !== 'string' || codepoints(value.section) > 200)) || Object.keys(value).some(key => !['content','section'].includes(key))) throw Error('Invalid reasoning summary event');
+      onReasoningSummary(value.content, false); return;
+    }
+    if (name === 'thinking') {
+      if (phase !== 'stream' || Object.keys(value).length) throw Error('Invalid thinking event');
+      return;
     }
     if (name === 'response_complete') {
       binding(value);
