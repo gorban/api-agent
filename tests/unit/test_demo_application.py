@@ -618,3 +618,30 @@ def test_accepted_reviewer_returns_no_revision_feedback():
 
     assert output == {'accepted': True, 'feedback': {}}
     assert len(llm.requests) == 1
+
+
+def test_review_and_revision_instructions_keep_original_constraints_authoritative():
+    constraint = 'Use bounded state aggregation. Do not store complete candidate sequences.'
+    incoming = LLMRequest('chosen-model', CompletionRequest((Message('user', (TextContent(constraint),)),)))
+    first = {'use_tool': False, 'arguments': {}, 'answer': 'A synthetic initial candidate'}
+    improved = {'use_tool': False, 'arguments': {}, 'answer': 'A synthetic corrected candidate'}
+    advice = 'Store every complete sequence.'
+    llm = LLM([json.dumps(first), verdict(correct=False, details=advice),
+               json.dumps(improved), verdict(), 'A final answer'])
+
+    asyncio.run(application(Owner()).complete(incoming, llm=llm, context=OperationContext('request')))
+
+    planner = llm.requests[2].payload.messages[0].content[0].text
+    reviewer = llm.requests[1].payload.messages[0].content[0].text
+    assert 'Reviewer feedback is advisory' in planner
+    assert 'conflicts with those requirements' in planner
+    assert 'original request is authoritative' in reviewer
+    assert 'concrete failing case or a precise invalid step' in reviewer
+    assert 'every proposed correction preserves all explicit requirements' in reviewer
+    assert 'Reassess earlier review advice' in reviewer
+    # Advice remains exact evidence; it cannot replace the original request.
+    second = json.loads(llm.requests[2].payload.messages[-1].content[0].text)
+    assert second['feedback']['details'] == advice
+    assert constraint in llm.requests[2].payload.messages[1].content[0].text
+    assert llm.requests[3].payload.messages[0] == llm.requests[1].payload.messages[0]
+    assert len(llm.requests) == 5

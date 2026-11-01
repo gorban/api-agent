@@ -1522,3 +1522,20 @@ def test_diagnostic_withholds_after_repeated_concurrent_registrations(local, mon
         result = local.owner.diagnostic(RuntimeError('untrusted content'))
     assert len(calls) == 3
     assert result == '[diagnostic withheld]'
+
+
+@pytest.mark.parametrize('full', [False, True])
+def test_process_log_full_setting_preserves_scrubbing_and_controls_tail_limit(local, full):
+    local.config.values['RUN_LOG_FULL_CONTENT'] = full
+    async def run():
+        await local.owner.start()
+        local.owner._session.runtime.emissions.register_secret('private-log-credential')
+        text = 'record start\n' + 'x' * 20000 + ' private-log-credential\n'
+        local.owner._log('agent', text)
+        emitted = local.events[-1].text
+        assert 'private-log-credential' not in emitted
+        assert ('record start' in emitted) is full
+        assert (len(emitted) > 16384) is full
+        assert emitted == local.owner._logs['agent']
+        await local.owner.aclose()
+    asyncio.run(run())

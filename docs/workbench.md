@@ -133,7 +133,12 @@ injected boundaries cannot elevate the resolved trace setting. The owned manual
 runtime does not install global automatic instrumentors.
 
 `RUN_LOG_FULL_CONTENT=True` asks local diagnostics to show the complete admitted
-log projection instead of a preview; it still requires `LOG_CONTENT=True`.
+log projection instead of a preview, including removal of the interactive
+16,384-character record cutoff; payload content still requires `LOG_CONTENT=True`.
+The setting defaults to False. Scrollback remains bounded: older records can
+expire, while the latest whole admitted record is retained in full mode.
+Container log polling still admits a 100-line/16-KiB tail; full presentation does
+not recover older container output.
 Classified scalar capture is limited to 65,536 characters, while recorded workflow
 previews remain capped at 512 characters. Unsupported or unclassified values stay
 withheld. These settings change capture only, not inference inputs or outputs.

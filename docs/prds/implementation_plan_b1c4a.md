@@ -77,3 +77,26 @@ also retains safe status on stderr. The TUI's display retention remains separate
 - [x] The `*` shortcut must select All logs both from a viewed source and from the dedicated log-source menu; keep keyboard focus and button behavior consistent. Clarify that current UI logs expose child-process activity, while Settings/send requests produce agent catalog/request diagnostics; raw UI-process content remains behind its separate gate.
 
 - [x] If available sources change while All logs is focused in the source menu, rebuilding the menu must preserve that semantic choice; Enter must still open All logs. Verify source additions/removals, including an empty source list, while preserving ordinary source and browser focus behavior.
+
+## Complete local records
+
+- [x] Extend the existing default-false `RUN_LOG_FULL_CONTENT` setting to both
+  process-log presentation and the interactive Run local display. False retains
+  previews and the 16,384-character per-record presentation limit; True removes those presentation cuts
+  without bypassing credential scrubbing, `LOG_CONTENT` or source admission.
+  Container polling retains its 100-line/16-KiB source bound.
+- [x] Keep scrollback bounded by 1,000 events and the usual 1 MiB target. In full
+  mode retain the most recent whole admitted record even if it exceeds the byte
+  target; later events may evict older records. Do not retain diagnostic objects
+  or promise lossless terminal delivery. Document the stdout/tee alternative.
+- [x] Test full records, Unicode byte accounting, old-record eviction, default
+  limits and credential scrubbing. Complete applicable coverage and review.
+- [ ] Human acceptance: copy a large admitted Run local record with the setting
+  enabled and confirm the TUI no longer inserts its truncation marker.
+
+Verification: 22,887 unit tests pass with exact 100% line/branch coverage across
+336 measured files. The normal recorded runner passes four controlled demo
+cases and publishes Allure successfully without inference spending. Existing
+native/fallback schemas, hard review gates and retry budgets remain unchanged.
+Public boundary, packaged resources and independent review remain required for
+publication; model judgment and full-record human inspection remain open.
