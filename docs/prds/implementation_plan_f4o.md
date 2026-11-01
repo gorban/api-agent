@@ -100,3 +100,6 @@ and the Studio acceptance above remain separate checks.
 - [x] Complete [Claude/GPT display parsing and Studio target labels](implementation_plan_f4o2.md), preserving full IDs and explicit inference routing.
 
 [Runtime Completions reasoning carriers](implementation_plan_f4o3.md) tracks qualification of in-band reasoning and final-answer extraction. A successful request does not by itself close that application-output gate.
+
+- [ ] Deliver [Claude reasoning controls and budget-backed effort](implementation_plan_f4o4.md), using provider-owned version/API qualification and meaningful Studio choices.
+- [ ] Repair [SDK worker-group cleanup after early rejection](implementation_plan_f4o5.md), retaining typed errors and retryable helper ownership.

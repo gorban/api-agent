@@ -282,12 +282,14 @@ class SharedSetupOwner(_Owner):
                                     from .inference import error_usage
                                     if error_usage(error) is None and error_usage(conflict) is not None:
                                         error.usage = conflict.usage
-                            learned = rejected_limit(error, request) if conflict is None else None
+                            from .control import CleanupPendingError
+                            cleanup_pending = isinstance(getattr(error, 'cleanup_error', None), CleanupPendingError)
+                            learned = rejected_limit(error, request) if conflict is None and not cleanup_pending else None
                             if learned is not None:
                                 self._output_limits.remember(request.selected_llm, learned)
                             negotiate = learned is not None and not negotiated
                             delay = (0 if negotiate else retry_delay(transport_index, getattr(error, 'retry_after', None))
-                                     if (conflict is None and transport_index < self._max_attempts and retryable(error)
+                                     if (conflict is None and not cleanup_pending and transport_index < self._max_attempts and retryable(error)
                                          and retry_hint_supported(getattr(error, 'retry_after', None))) else None)
                             remaining = budget.remaining
                             if delay is not None and remaining is not None and remaining <= delay:

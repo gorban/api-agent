@@ -807,13 +807,16 @@ async def test_reap_retry_never_resends_completed_or_absent_group_signals(monkey
 
 
 @pytest.mark.asyncio
-async def test_signal_failure_retains_only_unfinished_phase_for_retry(monkeypatch):
+async def test_signal_failure_after_leader_reap_probes_without_resignaling(monkeypatch):
     transport = sdk.SDKTransport()
     signals = []
+    present = True
     def kill(pid, sig):
         signals.append(sig)
         if len(signals) == 2:
             raise PermissionError('synthetic-secret')
+        if sig == 0 and not present:
+            raise ProcessLookupError()
     monkeypatch.setattr(sdk.os, 'killpg', kill)
     async def wait(): return 0
     process = Process(pid=999999, wait=wait)
@@ -821,9 +824,114 @@ async def test_signal_failure_retains_only_unfinished_phase_for_retry(monkeypatc
     with pytest.raises(PermissionError):
         await transport._stop(process)
     assert process in transport._processes
+    assert transport._stops[process]['phase'] == 1
+    with pytest.raises(PermissionError, match='cleanup remains pending'):
+        await transport._stop(process)
+    assert signals == [sdk.signal.SIGTERM, sdk.signal.SIGKILL, 0, 0]
+    present = False
     await transport._stop(process)
-    assert signals == [sdk.signal.SIGTERM, sdk.signal.SIGKILL, sdk.signal.SIGKILL]
+    assert signals == [sdk.signal.SIGTERM, sdk.signal.SIGKILL, 0, 0, 0]
     assert not transport._processes and not transport._stops
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('denied_signal', [sdk.signal.SIGTERM, sdk.signal.SIGKILL])
+@pytest.mark.parametrize('probe_error', [None, PermissionError('unverifiable group')])
+async def test_permission_denied_retains_live_or_unverifiable_group(
+        monkeypatch, denied_signal, probe_error):
+    transport = sdk.SDKTransport()
+    signals = []
+    def kill(pid, sig):
+        signals.append(sig)
+        if sig == denied_signal:
+            raise PermissionError('signal denied')
+        if sig == 0 and probe_error is not None:
+            raise probe_error
+    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    async def wait(): return 0
+    process = Process(pid=999999, wait=wait)
+    transport._processes.add(process)
+    with pytest.raises(PermissionError):
+        await transport._stop(process)
+    assert process in transport._processes
+    assert transport._cleanup_pending()
+    assert transport._stops[process]['phase'] == (0 if denied_signal == sdk.signal.SIGTERM else 1)
+    with pytest.raises(PermissionError):
+        await transport._stop(process)
+    assert signals.count(denied_signal) == 1
+    assert signals[-1] == 0
+
+
+@pytest.mark.asyncio
+async def test_new_worker_is_blocked_during_first_denied_reap(auth, fake_process, monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    entered = asyncio.Event()
+    def kill(pid, sig):
+        if sig == sdk.signal.SIGTERM:
+            raise PermissionError('denied')
+    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    async def wait():
+        entered.set()
+        await asyncio.Event().wait()
+    process = Process(pid=999999, wait=wait)
+    transport = sdk.SDKTransport()
+    transport._processes.add(process)
+    stopping = asyncio.create_task(transport._stop(process))
+    await entered.wait()
+    with pytest.raises(CleanupPendingError):
+        await transport.call('models', {}, auth=auth)
+    assert not fake_process[1]
+    with pytest.raises(PermissionError):
+        await stopping
+
+
+@pytest.mark.asyncio
+async def test_new_worker_is_blocked_if_cleanup_fails_during_auth(
+        auth, fake_process, monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    absent = False
+    def kill(pid, sig):
+        if absent:
+            raise ProcessLookupError()
+        if sig == sdk.signal.SIGTERM:
+            raise PermissionError('denied')
+    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    async def wait(): return 0
+    process = Process(pid=999999, wait=wait)
+    transport = sdk.SDKTransport()
+    transport._processes.add(process)
+    async def acquire():
+        with pytest.raises(PermissionError):
+            await transport._stop(process)
+        return await auth()
+    with pytest.raises(CleanupPendingError):
+        await transport.call('models', {}, auth=acquire)
+    assert not fake_process[1]
+    absent = True
+    await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_denied_signal_then_absent_group_bounds_unreaped_leader(monkeypatch):
+    transport = sdk.SDKTransport()
+    signals, waits = [], []
+    def kill(pid, sig):
+        signals.append(sig)
+        if sig == sdk.signal.SIGTERM:
+            raise PermissionError('denied')
+        raise ProcessLookupError()
+    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    async def wait():
+        waits.append(True)
+        if len(waits) == 1:
+            raise asyncio.TimeoutError()
+        return 0
+    process = Process(pid=999999, wait=wait)
+    transport._processes.add(process)
+    await transport._stop(process)
+    assert signals == [sdk.signal.SIGTERM, 0]
+    assert len(waits) == 2
+    assert not transport._processes
 
 
 @pytest.mark.asyncio
@@ -845,6 +953,7 @@ async def test_interrupted_disposal_owner_retries_reap_without_resignaling(monke
     with pytest.raises(asyncio.CancelledError):
         await waiter
     assert process in transport._processes
+    assert transport._cleanup_pending()
     release.set()
     await transport._stop(process)
     assert signals == [sdk.signal.SIGTERM, sdk.signal.SIGKILL]
@@ -1113,6 +1222,150 @@ async def test_explicit_output_rejection_becomes_typed_safe_fact(auth, fake_proc
         assert caught.value.usage is None
     finally:
         await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_output_rejection_retains_pending_cleanup_and_authority_lease(
+        auth, fake_process, output_limit_join, monkeypatch):
+    from unittest.mock import Mock
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.providers.output_limits import OutputLimitRejected
+    fake_process[0]['frames'] = [{'error': 'invalid_request', 'execution': 'not_started',
+                                  'http_status': 400, 'maximum_output_tokens': 8192}]
+    lease = SimpleNamespace(release=Mock())
+    async def join(values):
+        await output_limit_join(values)
+        return values, lease
+    absent = False
+    signals = []
+    def kill(pid, sig):
+        signals.append(sig)
+        if absent:
+            raise ProcessLookupError()
+        if sig == sdk.signal.SIGTERM:
+            raise PermissionError('synthetic permission denied')
+    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    transport = sdk.SDKTransport()
+    with pytest.raises(OutputLimitRejected) as caught:
+        await transport.call('responses', {}, auth=auth, join=join)
+    process = fake_process[1][0]
+    assert caught.value.maximum_tokens == 8192
+    assert caught.value.retained_owners == (transport,)
+    assert isinstance(caught.value.cleanup_error, CleanupPendingError)
+    assert process in transport._processes
+    lease.release.assert_not_called()
+    with pytest.raises(CleanupPendingError):
+        await transport.call('responses', {}, auth=auth, join=join)
+    assert len(fake_process[1]) == 1
+    absent = True
+    await transport.aclose()
+    lease.release.assert_called_once()
+    assert not transport._processes and not transport._leases
+    assert signals == [sdk.signal.SIGTERM, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_late_authority_lease_after_concurrent_disposal_is_retained_on_release_failure(
+        auth, fake_process, monkeypatch):
+    import os
+    import socket
+    from unittest.mock import Mock
+    from api_agent.providers.control import CleanupPendingError
+    transport = sdk.SDKTransport()
+    lease = SimpleNamespace(release=Mock(side_effect=[PermissionError('lease denied'), None]))
+    original_spawn = sdk.asyncio.create_subprocess_exec
+    tasks = []
+    async def spawn(*args, **kwargs):
+        channel = socket.socket(fileno=os.dup(kwargs['pass_fds'][0]))
+        channel.setblocking(False)
+        async def send():
+            try:
+                await asyncio.get_running_loop().sock_sendall(channel, b'["synthetic-key"]\n')
+            finally:
+                channel.close()
+        tasks.append(asyncio.create_task(send()))
+        return await original_spawn(*args, **kwargs)
+    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    async def join(values):
+        await transport._stop(fake_process[1][0])
+        return values, lease
+    with pytest.raises(SessionClosedError) as caught:
+        await transport.call('completions', {}, auth=auth, join=join)
+    assert isinstance(caught.value.cleanup_error, CleanupPendingError)
+    assert not transport._processes and transport._leases
+    await transport.aclose()
+    assert not transport._leases
+    assert lease.release.call_count == 2
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+async def test_join_may_return_no_authority_lease(auth, fake_process, output_limit_join):
+    async def join(values):
+        return values, None
+    transport = sdk.SDKTransport()
+    assert await transport.call('completions', {}, auth=auth, join=join) == {'ok': True}
+    assert not transport._leases
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('primary_error', [False, True])
+async def test_cancellation_after_completed_stop_is_not_reported_as_pending(
+        auth, fake_process, monkeypatch, primary_error):
+    if primary_error:
+        fake_process[0]['frames'] = [{'error': 'unavailable', 'execution': 'not_started'}]
+    original_finish = sdk.finish_cleanup
+    calls = 0
+    async def cancel_after_stop(awaitable):
+        nonlocal calls
+        calls += 1
+        result = await original_finish(awaitable)
+        if calls == 2:
+            raise asyncio.CancelledError()
+        return result
+    monkeypatch.setattr(sdk, 'finish_cleanup', cancel_after_stop)
+    transport = sdk.SDKTransport()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await transport.call('completions', {}, auth=auth)
+    assert not hasattr(caught.value, 'cleanup_error')
+    assert not transport._processes and not transport._leases
+
+
+@pytest.mark.asyncio
+async def test_successful_result_with_denied_cleanup_reports_pending(auth, fake_process, monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    absent = False
+    def kill(pid, sig):
+        if absent:
+            raise ProcessLookupError()
+        if sig == sdk.signal.SIGTERM:
+            raise PermissionError('denied')
+    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    transport = sdk.SDKTransport()
+    with pytest.raises(CleanupPendingError) as caught:
+        await transport.call('completions', {}, auth=auth)
+    assert caught.value.owners == (transport,)
+    assert fake_process[1][0] in transport._processes
+    absent = True
+    await transport.aclose()
+    assert not transport._processes
+
+
+@pytest.mark.asyncio
+async def test_cancellation_with_retained_worker_keeps_pending_receipt(auth, fake_process, monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    transport = sdk.SDKTransport()
+    original_stop = transport._stop
+    async def cancelled_stop(process):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(transport, '_stop', cancelled_stop)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await transport.call('completions', {}, auth=auth)
+    assert caught.value.retained_owners == (transport,)
+    assert isinstance(caught.value.cleanup_error, CleanupPendingError)
+    assert fake_process[1][0] in transport._processes
+    monkeypatch.setattr(transport, '_stop', original_stop)
+    await transport.aclose()
 
 
 @pytest.mark.asyncio
