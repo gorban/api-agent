@@ -262,8 +262,9 @@ for(const conversation of [null,0,true,{},[], '', 'legacy-session', id.toUpperCa
 test('Studio preserves branded Claude routes without changing full identities or family handles',()=>{
  const row=(scope,version)=>({...model,value:(scope ? scope+'.' : '')+'anthropic.claude-haiku-'+version.replace('.','-'),label:'Claude Haiku '+version,family:'claude-haiku-'+(scope || 'direct'),version});
  const direct=row('', '5.5'),usOld=row('us','4.5'),us=row('us','5.5'),global=row('global','5.5');
+ const usLegacy={...row('us','3'),value:'us.anthropic.claude-3-haiku-20240307-v1:0'};
  for(const [rows,names] of [
-  [[usOld,us],['claude-haiku']], [[global],['claude-haiku']], [[direct],['claude-haiku']],
+  [[usLegacy,usOld,us],['claude-haiku']], [[global],['claude-haiku']], [[direct],['claude-haiku']],
   [[us,global],['claude-haiku-us','claude-haiku-global']],
   [[direct,us,global],['claude-haiku','claude-haiku-us','claude-haiku-global']],
   [[direct,global],['claude-haiku','claude-haiku-global']],

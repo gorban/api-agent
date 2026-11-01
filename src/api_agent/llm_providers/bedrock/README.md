@@ -309,6 +309,14 @@ implement. Automatic API/endpoint fallback is separate future work; a discovered
 ID does not establish that it supports the explicitly configured API.
 
 The generic catalog retains full IDs and display family/version metadata.
+Claude 3 uses version-first IDs such as
+`us.anthropic.claude-3-haiku-20240307-v1:0`, while newer versions use IDs such as
+`us.anthropic.claude-haiku-4-5-20251001-v1:0`. A family-first-only
+`LLM_ALLOWED_MODELS` filter excludes Claude 3 before it reaches the picker. For
+US Haiku, Sonnet and Opus discovery across both ID forms, use
+`us[.]anthropic[.]claude-(?:(?:haiku|sonnet|opus)-.+|[0-9]+(?:-[0-9]+)*-(?:haiku|sonnet|opus)-.+)`.
+Filtering an ID into the catalog does not grant account access or API support.
+
 The included Studio keeps `claude-` family names and distinguishes visible routing
 targets only when needed. Another UI may present that metadata differently.
 Display parsing never enables model capabilities or changes inference routing.

@@ -1125,9 +1125,6 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if result.values.get("COLLECT_ONLY"):
             self.show_menu()
             return
-        if self.mode is not None:
-            await self.start_configuration()
-            return
         incomplete = self.auth_setup_needed()
         if incomplete and not result.values.get("SKIP_UNATTENDED_SETUP", False):
             self.show("suggest", "Unattended authentication", "Credential profiles are absent or incomplete. Configure account sources, or skip to continue with attended authentication.", (("setup", "Setup authentication"), ("skip", "Skip (s)")))

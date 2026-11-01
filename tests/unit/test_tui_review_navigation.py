@@ -380,6 +380,45 @@ def test_auth_wizard_has_explicit_return_context_and_one_time_review(tmp_path, e
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('mode', [None, 'run-local', 'unit', 'integration', 'e2e'])
+@pytest.mark.parametrize('action', ['skip', 'setup'])
+def test_explicit_modes_prepare_authentication_before_review_and_keep_destination(tmp_path, monkeypatch, mode, action):
+    from unittest.mock import AsyncMock
+    from api_agent.tui.auth_setup import AuthSetupScreen
+    argv = ['--tui-mode', mode] if mode else []
+    app = fixture(tmp_path, argv=argv, fields={'COUNT': {'type': 'int', 'default': 8}})
+    app.session.set_value('UNATTENDED_AUTH', '{}')
+    assert app.auth_setup_needed()
+    enter = AsyncMock()
+    monkeypatch.setattr(app, 'enter_mode', enter)
+
+    async def scenario():
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'suggest'
+            enter.assert_not_awaited()
+            await app.choose(action)
+            await pilot.pause()
+            if action == 'setup':
+                assert isinstance(app.screen, AuthSetupScreen)
+                assert app.screen.startup
+                await pilot.press('c')
+                await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            assert app.review_destination == mode
+            enter.assert_not_awaited()
+            await pilot.press('c')
+            await pilot.pause()
+            if mode is None:
+                assert app.screen.kind == 'menu'
+                enter.assert_not_awaited()
+            else:
+                enter.assert_awaited_once()
+            assert app.mode == mode
+
+    asyncio.run(scenario())
+
+
 def test_remembered_skip_still_visits_startup_review(tmp_path):
     from textual.widgets import Checkbox
     app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 8},

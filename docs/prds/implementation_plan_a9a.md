@@ -4,6 +4,14 @@
 
 ## Requirements
 
+- [x] Apply the same interactive startup preparation to explicit modes and the
+  main menu: offer incomplete unattended authentication first unless remembered
+  Skip applies, then review visible unacknowledged configuration, then resume the
+  requested destination. Both Skip and Setup/Close retain that destination.
+  Preserve explicit authentication-wizard startup, help, collect-only,
+  noninteractive and automatic-execution exceptions. Verify actual mounted screen
+  order for Run local and all test modes without starting their operations early.
+
 - [x] Track startup navigation independently of automatic execution. Explicit
   startup mode Review uses `c Close`, revalidates active requirements, and resumes
   the requested mode. Missing requirements keep Review with its current red
@@ -70,3 +78,19 @@ Final validation: 5,789 applicable units pass; all 17,802 statements and 6,692
 branches are covered. The manual-context correction also passes 122 focused
 checks, renewed independent review and all 20 START compatibility checks. Public
 index/metadata audit and scoped delivery follow; human acceptance remains open.
+
+## Explicit-mode authentication-order verification
+
+Ten mounted cases cover Skip and Setup/Close for the main menu, Run local,
+unit, integration and E2E destinations. Authentication precedes pending Review,
+and no operation starts before continuation. Five existing configuration and
+account-selection cases now explicitly traverse that suggestion while retaining
+their downstream assertions. A process-local mutation restores the bypass and
+fails the explicit-mode regression while both main-menu controls pass.
+
+The final runtime revision passes 22,807 unit tests with exact 100% line and
+branch coverage. The frontend passes 276 tests and five coverage checks at exact
+authored coverage, including Claude 3, 4.5 and 5.5 grouping and exact-ID selection.
+Source, installed, relocated and no-Git resources pass; independent external
+source review finds no production issue. No live authentication or inference
+was needed. Human startup-navigation acceptance remains open above.

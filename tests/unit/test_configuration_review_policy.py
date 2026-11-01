@@ -139,6 +139,9 @@ def test_real_remote_langfuse_required_keys_are_reviewable_with_help(tmp_path):
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            assert app.screen.kind == 'suggest'
+            await app.choose('skip')
+            await pilot.pause()
             assert app.screen.kind == 'defaults'
             for name in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
                 table = app.screen.query_one(DataTable)
@@ -170,6 +173,9 @@ def test_hidden_required_auth_uses_dedicated_setup_error(tmp_path):
         app.session.environ.pop('UNATTENDED_AUTH')
         async with app.run_test() as pilot:
             await pilot.pause()
+            assert app.screen.kind == 'suggest'
+            await app.choose('skip')
+            await pilot.pause()
             assert app.screen.kind == 'error'
             assert app.screen.heading == 'Unattended authentication required'
             assert app.operation_status == 3
@@ -199,6 +205,9 @@ def test_remote_langfuse_secret_stays_masked_when_saved_and_reopened(tmp_path):
         app.session.context.anchors.update({key: tmp_path for key in ('owner_root', 'base_root', 'pack_root')})
         name, secret = 'LANGFUSE_SECRET_KEY', 'synthetic-review-secret'
         async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'suggest'
+            await app.choose('skip')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
             table.move_cursor(row=[row.key.value for row in table.ordered_rows].index(name))
