@@ -38,7 +38,7 @@ def project_values(values, schema, boundary, *, limit=None, report=None, max_byt
     overflow = [False]
     def original(value, seen, depth):
         admission_budget[1] -= 1
-        if depth > 8 or admission_budget[1] < 0:
+        if depth > (20 if _provider_content else 8) or admission_budget[1] < 0:
             overflow[0] = True
             return _OMIT
         if type(value) is str:

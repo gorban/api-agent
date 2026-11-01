@@ -12,6 +12,8 @@ Orange
 
 ## Content and immutable recording
 
+- [ ] Keep [provider-owned nested JSON capture admission](implementation_plan_b1c1c.md) bounded while retaining selectable final-answer evidence from native SDK responses.
+
 - [ ] Capture plain validated data only at declared safe boundaries. `LOG_CONTENT=False` permits bounded safe metadata only; `True` permits scrubbed captured inputs/outputs and value differences, never credentials, opaque authentication/continuation state or hidden chain-of-thought. Scrub before event queues, in-memory storage, IPC, artifacts and browser delivery. Do not inspect arbitrary object properties, exception locals, environment or filesystem state.
 - [ ] Preserve field/declaration structure while annotating observed values separately. Mark not captured, redacted, truncated, missing and actual null distinctly. Compute bounded differences on sanitized data; unsafe field names and raw hashes can disclose content too. Render captured text literally, with no HTML/script or executable Markdown. Captured instructions are data, never agent instructions.
 - [ ] Finalized E2E evidence includes the exact resolved graph projection and sanitized execution events in a versioned manifest-hashed artifact, under existing publication settlement and privacy. Preserve immutable originals. Index metadata/attribution without downloading screenshots/videos/diagnostics merely for overlays; retrieve bounded value details on demand. Legacy artifacts lacking exact graph/transition identity remain partially inspectable and cannot prove an exact route.

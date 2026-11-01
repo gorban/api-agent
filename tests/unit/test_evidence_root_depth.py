@@ -11,6 +11,97 @@ from api_agent.workflows.inference_capture import _snapshot_raw
 
 
 @pytest.mark.asyncio
+async def test_nested_provider_response_keeps_final_answer_through_local_journal():
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from api_agent.workflows.journal import validate_journal
+    from test_workflow_observations import config, definition
+
+    credential = 'synthetic-selected-credential'
+    raw = {'output': {'message': {'content': [
+        {'reasoningContent': {'reasoningText': {
+            'text': 'private reasoning ' + credential,
+            'signature': 'opaque-signature-sentinel'}}},
+        {'text': '{"answer":"safe final ' + credential + '"}'}]}}}
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=(credential,))
+    snapshot, _ = _snapshot_raw({'provider_response': raw}, 4 * 1024 * 1024)
+    frames = await SetupServer._prepare_isolated(
+        [{'phase': 'response', 'content': snapshot, 'reason': 'captured'}], boundary)
+    frame = json.loads(frames[0][2])
+    assert frame['reason'] == 'captured'
+    assert json.loads(frame['content']['provider_response']['output']['message']['content'][-1]['text']) == {
+        'answer': 'safe final [REDACTED]'}
+
+    rows = []
+    adapter = WorkflowObservationFactory(config(True), boundary=boundary,
+                                         sink=rows.append).create(definition())
+    graph, visit, cause = str(uuid4()), str(uuid4()), str(uuid4())
+    adapter.observe(dict(event='scope_start', scope_id=graph, owner='GRAPH', kind='graph'))
+    adapter.observe(dict(event='scope_start', scope_id=visit, parent_id=graph,
+                         owner='Make', kind='node'))
+    adapter.capture_json(visit_id=visit, direction='output', cause_id=cause,
+                         capture_source='provider', values={'llm_response': frame['content']},
+                         schema={'type': 'object'})
+    adapter.observe(dict(event='scope_end', scope_id=visit, owner='Make', kind='node', outcome='passed'))
+    adapter.observe(dict(event='scope_end', scope_id=graph, owner='GRAPH', kind='graph', outcome='passed'))
+    journal = adapter.finalize()
+    validate_journal(journal)
+    captured = [row for row in rows if row.get('event') == 'capture']
+    assert len(captured) == 1
+    output = captured[0]['values']['llm_response']['provider_response']['output']['message']['content']
+    assert json.loads(output[-1]['text']) == {'answer': 'safe final [REDACTED]'}
+    from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
+    displayed = json.loads(LocalDiagnosticProjection(full_content=True).format(captured[0]))
+    shown = displayed['values']['llm_response']['provider_response']['output']['message']['content']
+    assert json.loads(shown[-1]['text']) == {'answer': 'safe final [REDACTED]'}
+    assert displayed['source_reason'] == 'captured'
+    assert all(marker not in json.dumps(journal) + repr(rows)
+               for marker in (credential, 'private reasoning', 'opaque-signature-sentinel'))
+    assert all(marker not in json.dumps(displayed)
+               for marker in (credential, 'private reasoning', 'opaque-signature-sentinel'))
+
+
+@pytest.mark.asyncio
+async def test_nested_provider_answer_is_captured_even_when_original_schema_rejects():
+    from api_agent.providers.contracts import ProviderAccessError
+    from api_agent.providers.rich_inference import async_validate_result
+    from test_response_policy_contract import request, result
+
+    final_text = '{"answer":7}'
+    raw = {'output': {'message': {'content': [
+        {'reasoningContent': {'reasoningText': {'text': 'synthetic reasoning',
+                                                'signature': 'opaque-signature'}}},
+        {'text': final_text}]}}}
+    boundary = EmissionBoundary(ContentPolicy(True))
+    report = set()
+    captured = project_values({'llm_response': {'provider_response': raw}},
+                              {'type': 'object'}, boundary, report=report,
+                              _provider_content=True)
+    assert captured['llm_response']['provider_response']['output']['message']['content'][-1]['text'] == final_text
+    assert 'synthetic reasoning' not in json.dumps(captured)
+    assert report == set()
+    original = request()
+    with pytest.raises(ProviderAccessError, match='original schema'):
+        await async_validate_result(original, result(original, final_text))
+
+
+@pytest.mark.parametrize('case', ['deep', 'bytes', 'items'])
+def test_provider_original_admission_retains_existing_bounds(case):
+    value = {'text': 'visible'}
+    if case == 'deep':
+        for _ in range(21):
+            value = {'nested': value}
+    elif case == 'bytes':
+        value = {'text': 'x' * 65537}
+    else:
+        value = {'items': [0] * 2049}
+    report = set()
+    assert project_values({'provider_response': value}, {'type': 'object'},
+                          EmissionBoundary(ContentPolicy(True)), report=report,
+                          _provider_content=True) == {}
+    assert report == {'truncated'}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('depth,reason', [(7, 'captured'), (8, 'captured'), (9, 'truncated')])
 async def test_isolated_projection_uses_logical_content_depth(depth, reason):
     secret = 'synthetic-projection-sensitive-value'
@@ -45,7 +136,7 @@ async def test_isolated_projection_uses_logical_content_depth(depth, reason):
         assert json.loads(recorder.files[reference['source']]) == frame['content']
         assert secret.encode() not in recorder.files[reference['source']]
     else:
-        assert frame['content'] == {}
+        assert 'visible' not in json.dumps(frame['content'])
 
 
 def test_normal_projection_keeps_its_original_depth_limit():
@@ -162,7 +253,7 @@ async def test_real_setup_channel_to_payload_recording_retains_depth_and_redacti
                     selected = selected['nested']
                 assert selected == 'visible [REDACTED]'
         else:
-            assert row['content'] == {}
+            assert 'visible' not in json.dumps(row['content'])
         recorder = make_recorder(tmp_path)
         store = PayloadStore(recorder, 'test')
         ref = store.put_wire(str(uuid4()), 'request', row['content'], reason=row['reason'],
@@ -172,6 +263,10 @@ async def test_real_setup_channel_to_payload_recording_retains_depth_and_redacti
             assert ref is not None
             assert json.loads((tmp_path / ref['source']).read_bytes()) == row['content']
             assert secret.encode() not in (tmp_path / ref['source']).read_bytes()
+        elif depth == 9:
+            assert ref is not None
+            assert json.loads((tmp_path / ref['source']).read_bytes()) == row['content']
+            assert 'visible' not in (tmp_path / ref['source']).read_text()
         else:
             assert ref is None and store.index()['entries'][0]['reason'] == 'truncated'
         recorder.record_test(make_result())
