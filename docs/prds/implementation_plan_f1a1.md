@@ -178,3 +178,5 @@ not establish access or feature support for an unverified deployment.
 ## Qualified Runtime combinations
 
 - [x] Complete [scoped Runtime schema admission and visible response mechanisms](implementation_plan_f1a4.md), preserving original application schemas and explicitly allowed fallback.
+
+- [x] Complete [useful demo revision feedback](implementation_plan_f1a1b.md), retaining schema and review gates while supplying the rejected candidate to the next attempt.

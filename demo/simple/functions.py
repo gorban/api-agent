@@ -87,8 +87,15 @@ async def plan(inputs, context):
     return {key: candidate[key] for key in ('use_tool', 'arguments', 'answer')}
 
 
+def _revision_feedback(candidate, verdict, reason):
+    return {'reason': reason, 'previous_candidate': candidate,
+            'failed_checks': [key for key in ('correct', 'grounded', 'relevant', 'preference')
+                              if verdict.get(key) is False]}
+
+
 async def review(inputs, context):
     candidate = inputs['candidate']
+    previous_candidate = json.loads(json.dumps(candidate))
     gate = context.tools['primary']
     verdict = {}
 
@@ -114,14 +121,16 @@ async def review(inputs, context):
             prepared = await gate.prepare(candidate['arguments'])
             grant = await gate.verify(prepared, relevance=relevance)
         except (ToolGateError, ValueError):
-            return {'accepted': False, 'feedback': {'reason': 'Invalid or ungrounded tool candidate'}}
+            return {'accepted': False, 'feedback': _revision_feedback(previous_candidate, verdict,
+                'Invalid or ungrounded tool candidate')}
     else:
         verdict = await relevance(None)
     accepted = (verdict['correct'] and verdict['grounded'] and verdict['relevant']
                 and (verdict['preference'] or context.attempt == context.max_passes))
     if accepted:
         context.services['verified_call'] = grant
-    return {'accepted': accepted, 'feedback': {'reason': 'Revise candidate against the request'}}
+    return {'accepted': accepted, 'feedback': {} if accepted else
+            _revision_feedback(previous_candidate, verdict, 'Revise candidate against the request')}
 
 
 async def execute_tool(inputs, context):

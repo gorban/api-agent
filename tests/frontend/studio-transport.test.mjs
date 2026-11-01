@@ -259,14 +259,14 @@ for(const conversation of [null,0,true,{},[], '', 'legacy-session', id.toUpperCa
 }
 
 
-test('Studio shortens visible Claude routes without changing full identities or family handles',()=>{
+test('Studio preserves branded Claude routes without changing full identities or family handles',()=>{
  const row=(scope,version)=>({...model,value:(scope ? scope+'.' : '')+'anthropic.claude-haiku-'+version.replace('.','-'),label:'Claude Haiku '+version,family:'claude-haiku-'+(scope || 'direct'),version});
  const direct=row('', '5.5'),usOld=row('us','4.5'),us=row('us','5.5'),global=row('global','5.5');
  for(const [rows,names] of [
-  [[usOld,us],['haiku']], [[global],['haiku']], [[direct],['haiku']],
-  [[us,global],['haiku-us','haiku-global']],
-  [[direct,us,global],['haiku','haiku-us','haiku-global']],
-  [[direct,global],['haiku','haiku-global']],
+  [[usOld,us],['claude-haiku']], [[global],['claude-haiku']], [[direct],['claude-haiku']],
+  [[us,global],['claude-haiku-us','claude-haiku-global']],
+  [[direct,us,global],['claude-haiku','claude-haiku-us','claude-haiku-global']],
+  [[direct,global],['claude-haiku','claude-haiku-global']],
  ]){
   const catalogRows=normalizeCatalog(catalog(rows,{default:rows[0].value}));
   const groups=modelGroups(catalogRows);

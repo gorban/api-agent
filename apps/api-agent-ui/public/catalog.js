@@ -78,7 +78,7 @@ export function modelGroups(catalog) {
     const [, family, scope] = alias;
     if (!family.startsWith('claude-') && !scope) return;
     const peers = aliases.filter(other => other && other[1] === family);
-    group.name = family.replace(/^claude-/, '') + (scope && scope !== 'direct' && peers.length > 1 ? '-' + scope : '');
+    group.name = family + (scope && scope !== 'direct' && peers.length > 1 ? '-' + scope : '');
   });
   const names = groups.map(group => group.name);
   groups.forEach(group => {
