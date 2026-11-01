@@ -558,6 +558,11 @@ class WorkflowJournal:
             if value is not None and (type(value) is not str or len(value) > 64):
                 raise ValueError('Invalid workflow observation identity')
         clean = self._boundary.content_export({key: row[key] for key in allowed if key in row})
+        if 'response' in clean and clean['response'] != row['response']:
+            # A redacted enum or schema digest no longer satisfies the evidence
+            # contract. Omit only that optional metadata, never the call itself.
+            clean.pop('response')
+            clean['reason'] = 'response_metadata_withheld'
         if clean.get('condition') != row.get('condition'):
             raise ValueError('Workflow condition label changed during export')
         clean.update(sequence=len(self._events) + 1, event_id=str(uuid4()),

@@ -169,14 +169,14 @@ def test_runtime_native_schema_carrier_and_stream_policy(mode):
     definition = body['text']['format'] if mode == 'responses' else body['response_format']['json_schema']
     assert definition['schema'] == json.loads(SCHEMA) and definition['strict'] is True
     prepared_stream, stream_evidence = prepare_response(req, mode, endpoint='runtime', stream=True)
-    assert prepared_stream.payload.structured is None
-    assert stream_evidence.actual_mode == 'prompted_json'
-    assert stream_evidence.fallback_reason == 'unsupported_combination'
+    assert (prepared_stream.payload.structured is not None) == (mode == 'responses')
+    assert stream_evidence.actual_mode == ('structured' if mode == 'responses' else 'prompted_json')
+    assert stream_evidence.fallback_reason == (None if mode == 'responses' else 'unsupported_combination')
 
 
 def test_runtime_native_stream_reject_policy_fails_before_dispatch():
     req = replace(request(response=ResponsePolicy('structured', 'reject', StructuredOutput('answer', SCHEMA))),
-                  selected_llm='us.openai.gpt-5.6-luna')
+                  selected_llm='global.openai.gpt-5.6-luna')
     with pytest.raises(OperationalError, match='unsupported'):
         prepare_response(req, 'responses', endpoint='runtime', stream=True)
 

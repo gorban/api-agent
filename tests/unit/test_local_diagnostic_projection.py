@@ -83,3 +83,58 @@ def test_schema_capture_omits_unsupported_presenter_values():
                          values=MappingProxyType({'runtime': object(), 'text': 'visible'})))
     assert result['values'] == {'text': 'visible'}
     assert result['omitted_fields'] == ['runtime']
+
+
+@pytest.mark.parametrize('full', [False, True])
+@pytest.mark.parametrize('actual,reason,mechanism', [
+    ('structured', None, 'native_json_schema'),
+    ('json', 'unsupported_schema', 'json_mode'),
+    ('prompted_json', 'unsupported_schema', 'prompted_json'),
+    ('text', None, 'text'),
+])
+def test_call_response_mechanism_is_visible_without_captured_content(full, actual, reason, mechanism):
+    from api_agent.providers.llm import ResponseEvidence
+    from api_agent.providers.rich_inference import response_evidence_to_wire
+    requested = 'text' if actual == 'text' else 'structured'
+    evidence = ResponseEvidence(requested, 'allow', actual, None if actual == 'text' else '0' * 64,
+                                None if actual == 'text' else True, reason)
+    response = response_evidence_to_wire(evidence)
+    row = dict(event='call', call_id='call-one', response=MappingProxyType(response),
+               prompt='not admitted', credential='not admitted')
+
+    rendered = render(row, full)
+
+    assert rendered['response'] == response
+    assert rendered['output_mechanism'] == mechanism
+    assert 'prompt' not in rendered and 'credential' not in rendered
+    assert 'values' not in rendered
+
+
+def test_diagnostic_response_metadata_requires_the_canonical_contract():
+    result = render(dict(event='call', call_id='retained', response={'actual_mode': 'structured', 'unexpected': 'not admitted'}))
+    assert result == {'event': 'call', 'call_id': 'retained',
+                      'output_mechanism': 'unavailable', 'response_notice': 'withheld_or_invalid'}
+    assert render(dict(event='call', response=None)) == {'event': 'call'}
+
+
+@pytest.mark.parametrize('log', [False, True])
+@pytest.mark.parametrize('secret', ['allow', 'structured'])
+def test_redacted_response_metadata_retains_the_call_in_the_actual_sink(log, secret):
+    from api_agent.providers.llm import ResponseEvidence
+    from api_agent.providers.rich_inference import response_evidence_to_wire
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.observations import WorkflowObservations
+    from unittest.mock import Mock
+    boundary = EmissionBoundary(ContentPolicy(log), secrets=(secret,))
+    journal = Mock()
+    journal.admit_policy.return_value = (ContentPolicy(log), boundary)
+    lines = []
+    adapter = WorkflowObservations(journal, boundary=boundary, log_policy=ContentPolicy(log),
+        sink=lambda row: lines.append(LocalDiagnosticProjection().format(row)))
+    response = response_evidence_to_wire(ResponseEvidence('structured', 'allow', 'structured', '0' * 64, True, None))
+
+    adapter._emit({'event': 'call', 'call_id': 'retained', 'response': response})
+
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == {'event': 'call', 'call_id': 'retained',
+        'output_mechanism': 'unavailable', 'response_notice': 'withheld_or_invalid'}

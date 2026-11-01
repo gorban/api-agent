@@ -267,3 +267,31 @@ See the [qualification guide](QUALIFICATION.md) for evidence and acceptance scop
 Structured-output fallback follows the declared workflow policy and the known
 schema capability catalog. Configurable capability caching and optional probes
 remain in the [capability-discovery plan](../../../../docs/prds/implementation_plan_f1a2.md).
+
+
+## Qualified response mechanisms
+
+Runtime Responses admits native schema output with omitted, low or high
+reasoning for exact `us.openai.gpt-5.6-luna` and `us.openai.gpt-6-luna`
+selections, streamed or nonstreamed. These additional combinations also admit
+non-strict application tools; strict tools combined with a response schema
+remain separately unqualified. Existing strict tool-argument validation is
+preserved. Other routes retain their existing rules; family/version display
+metadata does not grant these combinations.
+
+Native response schemas must fit the existing strict subset, including closed
+nested objects. The bundled reviewer qualifies. The planner's open `arguments`
+object retains its declared JSON fallback and original-schema validation; the
+adapter never closes it to gain native support. Invalid results retain usage
+and fail local validation.
+
+Run local call logs expose the existing `response` metadata (requested and
+actual mode, fallback policy and reason) and `output_mechanism`, such as
+`native_json_schema` or `prompted_json`. These fields contain no prompts or
+responses and remain available when content capture is disabled. They reuse
+the recorded call rather than adding another payload or accounting receipt.
+
+See [qualified admission requirements](../../../../docs/prds/implementation_plan_f1a4.md).
+Automatic conversion to synthetic strict-function results, capability discovery,
+expiring observations and newer-version candidate inheritance remain in the
+separate capability plan.

@@ -174,3 +174,7 @@ not establish access or feature support for an unverified deployment.
 ## Future capability discovery
 
 - [ ] Complete [provider capability discovery and fallback](implementation_plan_f1a2.md), including configurable caching, optional preflight probes and safe fallback after a confirmed pre-inference rejection.
+
+## Qualified Runtime combinations
+
+- [x] Complete [scoped Runtime schema admission and visible response mechanisms](implementation_plan_f1a4.md), preserving original application schemas and explicitly allowed fallback.

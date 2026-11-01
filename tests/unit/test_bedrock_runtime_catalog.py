@@ -238,7 +238,7 @@ async def test_runtime_converse_factory_dispatch_and_policy_capture(monkeypatch,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fallback', ['allow', 'reject'])
-async def test_runtime_openai_stream_native_schema_policy_before_dispatch(monkeypatch, fallback):
+async def test_unqualified_runtime_openai_stream_schema_policy_before_dispatch(monkeypatch, fallback):
     from api_agent.llm_providers.bedrock import factory as factory_module
     from api_agent.llm_providers import response_policy as policy_module
     from api_agent.providers.control import OperationalError
@@ -246,7 +246,7 @@ async def test_runtime_openai_stream_native_schema_policy_before_dispatch(monkey
     from api_agent.providers.llm import (CompletionRequest, LLMRequest, LLMResult, Message,
                                          TextContent, ResponsePolicy, StructuredOutput)
 
-    profile = 'us.openai.gpt-5.6-luna'
+    profile = 'global.openai.gpt-5.6-luna'
     definition = StructuredOutput('answer', '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}')
     request = LLMRequest(profile, CompletionRequest((Message('user', (TextContent('hello'),)),),
                          response=ResponsePolicy('structured', fallback, definition)))
@@ -348,7 +348,7 @@ async def test_legacy_structured_runtime_stream_rejects_before_authentication(mo
         async def aclose(self): pass
     monkeypatch.setattr(module, 'SDKTransport', lambda **kwargs: Transport())
     provider = module.BedrockProvider({'BEDROCK_ENDPOINT':'runtime', 'BEDROCK_API_MODE':mode})
-    req = LLMRequest('us.openai.gpt-5.6-luna', CompletionRequest((Message('user', (TextContent('question'),)),),
+    req = LLMRequest('global.openai.gpt-5.6-luna', CompletionRequest((Message('user', (TextContent('question'),)),),
         structured=StructuredOutput('answer', '{"type":"object","properties":{},"required":[],"additionalProperties":false}')))
     try:
         with pytest.raises(OperationalError, match='unsupported'):
