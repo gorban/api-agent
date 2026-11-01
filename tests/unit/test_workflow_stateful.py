@@ -111,6 +111,45 @@ def test_admitted_state_continues_at_entry_with_message_id_replacement(fixture_g
     assert (first['visits'], second['visits']) == (1, 2)
 
 
+def test_stateful_cycle_keeps_node_history_but_a_new_turn_starts_fresh(fixture_graph):
+    from api_agent.providers.llm import LLMResult, Message, TextContent
+    root, entry = fixture_graph
+    native = root / 'native.py'
+    native.write_text(native.read_text().replace('def intake(state, context):', '''async def intake(state, context):
+    from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent
+    from uuid import uuid4
+    request = LLMRequest('selected-model', CompletionRequest((
+        Message('system', (TextContent('Keep prior context'),)),
+        Message('user', (TextContent('Visit ' + str(state['visits'])),)))), str(uuid4()))
+    await context.services['complete'](request)
+''').replace("return 'finish' if not state['pending'] else 'END'",
+             "return 'intake' if state['visits'] < 2 else 'END'"))
+    entry.write_text(entry.read_text().replace('2.  [node finish](finish.md.html)\n', '').replace(
+        '| intake | finish | choose |', '| intake | intake | choose |').replace(
+        '| finish | END | - | - |\n', ''))
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    requests = []
+    async def complete(value):
+        requests.append(value)
+        return LLMResult(Message('assistant', (TextContent('Prior response'),)))
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        reducers={'messages':add_messages}, services={'complete':complete})
+
+    async def turns():
+        for _ in range(2):
+            final = await workflow.arun({'messages':[], 'pending':False, 'visits':0}, thread_id='same-conversation')
+            assert final['visits'] == 2
+    asyncio.run(turns())
+
+    assert len(requests) == 4
+    assert requests[1].payload.messages[:2] == requests[0].payload.messages
+    assert requests[1].payload.messages[2] == Message('assistant', (TextContent('Prior response'),))
+    assert requests[1].payload.messages[3].content[0].text == 'Visit 1'
+    assert len(requests[2].payload.messages) == 2
+    assert requests[2].payload.messages == requests[0].payload.messages
+    assert requests[3].payload.messages[:2] == requests[2].payload.messages
+
+
 def test_source_change_is_rejected_before_catalog_execution(fixture_graph):
     root, entry = fixture_graph
     definition = load_stateful_definition(entry, base_root=root, pack_root=root)
@@ -2415,3 +2454,42 @@ def test_stateful_nodes_transfer_declared_grant_and_new_turn_is_fresh(fixture_gr
             await workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='conversation')
     asyncio.run(turns())
     assert owner.calls == ['describe', 'validate', 'invoke', 'describe', 'validate', 'invoke']
+
+
+def test_stateful_parent_lends_provider_without_checkpoint_or_history_to_child_graphs(fixture_graph):
+    import json
+    from api_agent.providers.llm import LLMResult, Message, TextContent
+    from api_agent.workflows.contrived import build
+    from test_workflow_trial_decisions import trial_uuid
+    root, entry = fixture_graph
+    source = root / 'native.py'
+    source.write_text(source.read_text().replace('def intake(state, context):', '''async def intake(state, context):
+    for text in ('First child', 'Second child'):
+        child = context.services['build_child'](context.services['complete'])
+        await child.arun({'user_input': text})
+'''))
+    requests = []
+    async def complete(request):
+        requests.append(request)
+        tail = json.loads(request.payload.messages[-1].content[0].text)
+        original = request.payload.messages[1].content[0].text
+        return LLMResult(Message('assistant', (TextContent(json.dumps(dict(
+            original_input=original, route='skip', ready=tail['decisions']['ready'],
+            final_output=original))),)))
+    base = Path(__file__).resolve().parents[2]
+    def build_child(borrowed):
+        return build(base, llm=borrowed, selection='example',
+                     trial=trial_uuid('skip', first_ready=False))
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        reducers={'messages': add_messages}, services={'complete': complete, 'build_child': build_child})
+
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='parent'))
+
+    assert result['visits'] == 1
+    assert len(requests) == 4
+    assert len(requests[0].payload.messages) == len(requests[2].payload.messages) == 3
+    assert requests[2].payload.messages[1].content[0].text == 'Second child'
+    for initial, retry in ((requests[0], requests[1]), (requests[2], requests[3])):
+        assert retry.payload.messages[:len(initial.payload.messages)] == initial.payload.messages
+        assert retry.payload.messages[len(initial.payload.messages)].role == 'assistant'

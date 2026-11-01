@@ -20,12 +20,45 @@ Omitting the path instead opens the selected application's flow. See
 [diagram maintenance and inspection](workflow_viewer.md) for markup-based
 freshness, explicit generation and pre-commit checks.
 
-Native nodes share an invocation-local service dictionary. Assigning a service
+Native nodes share an invocation-local mutable service view. Assigning a service
 key affects later nodes in that invocation, but does not mutate the caller's
 constructor dictionary or another invocation. To return additional runtime data
 to the caller, use an explicitly owned mutable result carrier, as the bundled
 application does with `result_store`. Give concurrent operations separate result
 carriers; nested service objects are borrowed, not deep-copied.
+
+## Ordered LLM retry histories
+
+Both parsed-flow executors retain ordered history for `LLMRequest` calls through
+`context.services['llm']` or `context.services['complete']`. These services accept
+`LLMRequest` and return `LLMResult`; keep borrowed authority/context objects stable
+within a dialogue, because distinct service arguments isolate their histories.
+Each node and logical
+dialogue keeps its earlier requests and assistant responses; later component
+passes append their changed inputs and rejection feedback. Already accumulated
+tool conversations keep their original calls, real results and opaque provider
+continuations without duplication. The useful demo returns the reviewer's exact
+`details` string in feedback, alongside the failed checks and prior candidate.
+
+Use `inference_dialogue` from `api_agent.workflows.inference_history` when a node
+has multiple independent roles, such as a conversation and separate tool
+verifiers. Nested scopes can distinguish individual named tools. The included
+[tool conversation](../src/api_agent/workflows/tool_conversation.py) illustrates
+these scopes; the [useful demo](../demo/simple/functions.py) separates stable
+conversation/tool definitions from changing candidate and feedback messages.
+
+Histories are private, in-memory and local to one graph invocation, including
+when content reporting is disabled. They do not carry across independent user
+turns or provider owners. The caller's supplied conversation remains the starting
+context. Provider/network clients outside the runtime service interfaces own
+their own histories. Services remain borrowed and use their existing cleanup.
+
+Retention is bounded to 128 dialogues and 32 MiB of serialized configuration and
+message history per invocation. Existing 64-message and 2 MiB request bounds
+still apply; further calls fail explicitly rather than trimming context. History
+does not add inference attempts, relax guards, change cache policy or promise
+cache hits. Provider serialization and credential controls remain authoritative;
+see [history requirements](prds/implementation_plan_f1a1c.md) for acceptance gates.
 
 ## Named tools and optional dependencies
 

@@ -316,7 +316,9 @@ class Workflow:
                                 visit_id=state.get('visit_id'), attempt_id=state.get('attempt_id'))
                     return chosen['To']
                 graph.add_conditional_edges(step.id, route, {row['To']: END if row['To'] == 'END' else row['To'] for row in edges})
-        return graph.compile()
+        # This executor owns invocation-local state, never a checkpoint store.
+        # Do not inherit a stateful caller's saver for an independently run graph.
+        return graph.compile(checkpointer=False)
 
     def _component(self, step):
         graph = self._compile(step.id)
@@ -374,8 +376,10 @@ class Workflow:
         async def execute(state, budget):
             inputs = {}
             values = state['values']
+            invocation = _CURRENT_SERVICES.get()
+            services = invocation[3].services(self._run_services(), step.id)
             context = NodeContext(step.id, state['ancestry'], tuple(state['prompts'][item['File']] for item in prompts
-                if item['When'] == 'always' or self._condition(item['When'], values)), self._run_services(),
+                if item['When'] == 'always' or self._condition(item['When'], values)), services,
                 budget.id, state.get('attempt_id'), row)
             for binding in bindings:
                 source = binding['From']
@@ -448,12 +452,15 @@ class Workflow:
         if turn_id is not None:
             canonical_uuid(turn_id)
         selected = resolve_capture_services(self.services)
-        token = _CURRENT_SERVICES.set((self, dict(selected), selected))
+        from .inference_history import InferenceHistory
+        history = InferenceHistory()
+        token = _CURRENT_SERVICES.set((self, dict(selected), selected, history))
         try:
             from api_agent.tooling.runtime import invocation_tools
             async with invocation_tools(self.definition, selected):
                 return await self._arun(inputs, turn_id=turn_id, turn_kind=turn_kind)
         finally:
+            history.close()
             _CURRENT_SERVICES.reset(token)
 
     async def _arun(self, inputs, *, turn_id=None, turn_kind='initial'):

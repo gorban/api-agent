@@ -64,11 +64,11 @@ def format_payload(request, body, evidence):
     if evidence is None or evidence.actual_mode not in ('json', 'prompted_json'):
         return body
     from api_agent.providers.rich_inference import _bounded
+    from api_agent.providers.response_format import json_instruction
     container = 'input' if 'input' in body else 'messages'
+    instruction = json_instruction(request.payload.response.schema.schema)
     body = {**body, container: [*body[container], {'role': 'user', 'content':
-        'Return a complete final answer containing only JSON satisfying this response schema. '
-        'Include the final JSON answer even when reasoning is enabled; reasoning is not the answer.\n'
-        + request.payload.response.schema.schema}]}
+        instruction.content[0].text}]}
     _bounded(body)
     return body
 
@@ -79,7 +79,10 @@ def capture_payload(request, body, evidence, *, auth):
     added = []
     if evidence is not None and evidence.actual_mode in ('json', 'prompted_json'):
         container = 'input' if 'input' in body else 'messages'
-        added = [{'role': 'user', 'path': f'/{container}/{len(body[container]) - 1}',
+        path = f'/{container}/{len(body[container]) - 1}'
+        if type(body[container][-1]['content']) is list:
+            path += f"/content/{len(body[container][-1]['content']) - 1}"
+        added = [{'role': 'user', 'path': path,
                   'purpose': 'response_policy'}]
     capture_inference('input', {'provider_payload': body, 'adapter_instructions': added},
                       request.request_id, auth=auth)

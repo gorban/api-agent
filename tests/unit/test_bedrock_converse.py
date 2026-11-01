@@ -74,7 +74,9 @@ def test_converse_output_fallback_preserves_instruction_in_native_content():
     body = c.encode(prepared)
     formatted = c.format_payload(req, body, evidence)
     assert len(body['messages']) == 1
-    assert formatted['messages'][-1]['content'][0]['text'].endswith(schema_text)
+    assert formatted['messages'][-1]['content'][:-1] == body['messages'][-1]['content']
+    assert formatted['messages'][-1]['content'][-1]['text'].endswith(schema_text)
+    assert len(formatted['messages']) == len(body['messages'])
     assert evidence.actual_mode == 'prompted_json'
     assert c.format_payload(request(), body, None) is body
 

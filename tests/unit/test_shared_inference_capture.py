@@ -100,7 +100,8 @@ def test_parsed_useful_demo_captures_nodes_and_actual_llm_messages_without_custo
             assert (text in artifact_text) is log
         assert all('registered-sensitive-value' not in text for text in (wire_text, log_text, artifact_text))
         assert len(requests) == 3
-        assert 'registered-sensitive-value' in requests[0].payload.messages[-1].content[0].text
+        assert 'registered-sensitive-value' in requests[0].payload.messages[1].content[0].text
+        assert json.loads(requests[0].payload.messages[-1].content[0].text) == {'feedback': {}}
         captures = [row for row in rows if row['event'] == 'capture']
         tool_phases = [row for row in captures if row.get('tool_invocation_id')]
         assert len(captures) == 16  # Four node pairs, three provider pairs, one actual tool pair.

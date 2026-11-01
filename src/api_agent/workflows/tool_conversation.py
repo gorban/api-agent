@@ -1,5 +1,6 @@
 """Bounded model conversations using caller-owned, invocation-local tool gates."""
 from uuid import uuid4
+from contextlib import nullcontext
 
 from api_agent.providers.contracts import ProviderAccessError
 from api_agent.providers.inference import usage_to_wire
@@ -44,14 +45,16 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
     results, seen, completed_inputs = {}, set(), set()
     correcting = False
 
-    async def infer(payload, kind):
+    async def infer(payload, kind, *, dialogue=None):
         request = LLMRequest(selection, payload, request_id=str(uuid4()))
         entry = {'request_id': request.request_id, 'kind': kind,
                  'selection': selection, 'requested_effort': payload.generation.reasoning_effort,
                  'usage': None, 'outcome': 'started'}
         inference.append(entry)
         try:
-            result = await complete(request)
+            from .inference_history import inference_dialogue
+            with inference_dialogue(kind), (inference_dialogue(dialogue) if dialogue is not None else nullcontext()):
+                result = await complete(request)
         except BaseException as error:
             usage = getattr(error, 'usage', None)
             entry.update(outcome='failed', usage=None if usage is None else usage_to_wire(usage))
@@ -160,7 +163,7 @@ async def run_tool_conversation(*, prompt, gates, complete, selection,
                     verdict = await infer(CompletionRequest(
                         (Message('user', (TextContent(review),)),), generation=generation,
                         structured=StructuredOutput('tool_relevance', canonical(_VERDICT, MAX_SCHEMA_BYTES))),
-                        'relevance')
+                        'relevance', dialogue=call.name)
                     if verdict.outcome != 'completed' or verdict.payload.calls:
                         raise ValueError('Tool relevance response did not complete')
                     decision = object_json(''.join(part.text for part in verdict.payload.content))

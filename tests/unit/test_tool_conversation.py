@@ -731,3 +731,21 @@ async def test_declared_capability_repeated_alias_retains_distinct_prior_calls()
     review_text = second_review.payload.messages[0].content[0].text
     assert '"invocation":"first"' in review_text
     assert '"hello":"actual"' in review_text
+
+
+def test_runtime_history_preserves_tool_dialogue_and_isolates_each_relevance_review(scenario):
+    from api_agent.workflows.inference_history import InferenceHistory
+    script = success_script()
+    history = InferenceHistory()
+    complete = history.services({'complete': script}, 'conversation')['complete']
+
+    run(scenario, complete, required_tools=ALIASES, verify_final=check_final)
+
+    first, first_review, resumed, second_review, final = script.requests
+    assert resumed.payload.messages[:len(first.payload.messages)] == first.payload.messages
+    assert final.payload.messages[:len(resumed.payload.messages)] == resumed.payload.messages
+    assert resumed.payload.messages[1].continuation == CONTINUATION
+    assert len([row for row in final.payload.messages if row.role == 'tool']) == 2
+    assert len(first_review.payload.messages) == len(second_review.payload.messages)
+    assert all(row.role != 'assistant' for row in second_review.payload.messages)
+    assert [owner.invocations for owner in scenario[0].values()] == [['call-1'], ['call-2']]

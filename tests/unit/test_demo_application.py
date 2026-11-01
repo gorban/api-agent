@@ -66,8 +66,10 @@ def request():
     return LLMRequest('chosen-model', CompletionRequest((Message('user', (TextContent('Who?'),)),)))
 
 
-def verdict(*, correct=True, grounded=True, relevant=True, preference=True):
-    return json.dumps(dict(correct=correct, grounded=grounded, relevant=relevant, preference=preference))
+def verdict(*, correct=True, grounded=True, relevant=True, preference=True, details=None):
+    if details is None:
+        details = '' if all((correct, grounded, relevant, preference)) else 'A synthetic review check failed.'
+    return json.dumps(dict(correct=correct, grounded=grounded, relevant=relevant, preference=preference, details=details))
 
 
 def test_verified_query_executes_after_review_and_renderer_gets_partial_result():
@@ -129,7 +131,7 @@ def test_same_declared_consumer_uses_synthetic_rest_owner_unchanged():
     result = asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert ''.join(part.text for part in result.payload.content) == 'Ada'
     assert owner.events == ['describe', 'validate', 'invoke']
-    assert '"path"' in ''.join(part.text for part in llm.requests[0].payload.messages[-1].content)
+    assert '"path"' in ''.join(part.text for part in llm.requests[0].payload.messages[1].content)
 
 
 def test_expected_remote_failure_reaches_final_renderer_as_bounded_status():
@@ -177,8 +179,8 @@ def test_each_turn_uses_fresh_schema_view_and_closes_only_that_view():
         await app.complete(request(), llm=llm, context=OperationContext('first'))
         await app.complete(request(), llm=llm, context=OperationContext('second'))
     asyncio.run(run())
-    first = ''.join(part.text for part in llm.requests[0].payload.messages[-1].content)
-    second = ''.join(part.text for part in llm.requests[3].payload.messages[-1].content)
+    first = ''.join(part.text for part in llm.requests[0].payload.messages[1].content)
+    second = ''.join(part.text for part in llm.requests[3].payload.messages[1].content)
     assert 'oldField' in first and 'newField' not in first
     assert 'newField' in second and 'oldField' not in second
     assert [view.closed for view in owner.views] == [True, True]
@@ -213,13 +215,15 @@ def test_wire_valid_request_identity_completes_no_tool_turn(length):
 def test_grounding_failure_blocks_both_passes_and_execution():
     owner = Owner()
     plan = json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''})
-    llm = LLM([plan, verdict(grounded=False), plan, verdict(grounded=False)])
+    details = 'The proposed query invents a field.\nUse a field from the supplied schema.'
+    llm = LLM([plan, verdict(grounded=False, details=details), plan, verdict(grounded=False, details=details)])
     with pytest.raises(WorkflowError, match='exhausted'):
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert owner.events == ['describe', 'validate', 'validate']
-    retry = json.loads(llm.requests[2].payload.messages[1].content[0].text)
+    retry = json.loads(llm.requests[2].payload.messages[-1].content[0].text)
     assert retry['feedback']['previous_candidate'] == json.loads(plan)
     assert retry['feedback']['failed_checks'] == ['grounded']
+    assert retry['feedback']['details'] == details
 
 
 def test_preference_relaxes_only_final_pass():
@@ -240,7 +244,7 @@ def test_invalid_query_retries_without_calling_relevance_or_execution():
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert owner.events == ['describe', 'validate', 'validate']
     assert len(llm.requests) == 2
-    retry = json.loads(llm.requests[1].payload.messages[1].content[0].text)
+    retry = json.loads(llm.requests[1].payload.messages[-1].content[0].text)
     assert retry['feedback']['previous_candidate'] == json.loads(bad)
     assert retry['feedback']['failed_checks'] == []
 
@@ -259,7 +263,7 @@ def test_rejected_tool_cannot_rewrite_the_previous_planner_candidate():
 
     result = asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
 
-    retry = json.loads(llm.requests[1].payload.messages[1].content[0].text)
+    retry = json.loads(llm.requests[1].payload.messages[-1].content[0].text)
     assert retry['feedback']['previous_candidate'] == original
     assert retry['feedback']['failed_checks'] == []
     assert result.payload.content[0].text == 'Hello'
@@ -288,6 +292,43 @@ def test_invalid_reviewer_output_stops_before_tool(bad):
     with pytest.raises(WorkflowError, match='Reviewer returned invalid'):
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert owner.events == ['describe']
+
+
+@pytest.mark.parametrize('details', [None, 0, False, [], {}, '', ' \n\t', 'x' * 4097])
+def test_rejected_verdict_requires_bounded_specific_details(details):
+    owner = Owner()
+    invalid = json.loads(verdict(correct=False))
+    invalid['details'] = details
+    llm = LLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Candidate'}), json.dumps(invalid)])
+
+    with pytest.raises(WorkflowError, match='invalid verdict details'):
+        asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
+
+    assert len(llm.requests) == 2
+    assert owner.events == ['describe']
+
+
+def test_missing_review_details_reject_even_with_valid_boolean_controls():
+    invalid = json.loads(verdict(correct=False))
+    del invalid['details']
+    llm = LLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Candidate'}), json.dumps(invalid)])
+
+    with pytest.raises(WorkflowError, match='invalid verdict details'):
+        asyncio.run(application(Owner()).complete(request(), llm=llm, context=OperationContext('request')))
+
+    assert len(llm.requests) == 2
+
+
+def test_maximum_review_details_reach_retry_without_truncation():
+    details = 'λ' * 4096
+    plan = json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Candidate'})
+    llm = LLM([plan, verdict(correct=False, details=details), plan, verdict(), 'Answer'])
+
+    result = asyncio.run(application(Owner()).complete(request(), llm=llm, context=OperationContext('request')))
+
+    assert result.payload.content[0].text == 'Answer'
+    assert json.loads(llm.requests[2].payload.messages[-1].content[0].text)['feedback']['details'] == details
+    assert len(llm.requests) == 5
 
 
 def test_correctness_failure_stays_blocking_on_final_pass():
@@ -543,16 +584,21 @@ def test_rejected_candidate_and_failed_checks_reach_the_next_planner_request():
     owner = Owner()
     rejected = {'use_tool': False, 'arguments': {}, 'answer': 'First synthetic candidate'}
     corrected = {'use_tool': False, 'arguments': {}, 'answer': 'Corrected synthetic candidate'}
-    llm = LLM([json.dumps(rejected), verdict(correct=False, preference=False),
+    details = 'The accumulated count is lost.\nPropagate current_count unchanged; preserve Σ.'
+    llm = LLM([json.dumps(rejected), verdict(correct=False, preference=False, details=details),
                json.dumps(corrected), verdict(), 'Corrected answer'])
 
     result = asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
 
-    second_payload = json.loads(llm.requests[2].payload.messages[1].content[0].text)
+    second_payload = json.loads(llm.requests[2].payload.messages[-1].content[0].text)
     first_payload = json.loads(llm.requests[0].payload.messages[1].content[0].text)
-    assert second_payload['messages'] == first_payload['messages']
+    assert json.loads(llm.requests[2].payload.messages[1].content[0].text)['messages'] == first_payload['messages']
+    assert llm.requests[2].payload.messages[:len(llm.requests[0].payload.messages)] == llm.requests[0].payload.messages
+    assert llm.requests[2].payload.messages[len(llm.requests[0].payload.messages)].content[0].text == json.dumps(rejected)
+    assert llm.requests[3].payload.messages[:len(llm.requests[1].payload.messages)] == llm.requests[1].payload.messages
     assert second_payload['feedback']['previous_candidate'] == rejected
     assert second_payload['feedback']['failed_checks'] == ['correct', 'preference']
+    assert second_payload['feedback']['details'] == details
     assert ''.join(part.text for part in result.payload.content) == 'Corrected answer'
     assert len(llm.requests) == 5
     assert owner.events == ['describe']
