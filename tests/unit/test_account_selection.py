@@ -153,6 +153,9 @@ def test_stale_index_with_no_eligible_accounts_can_switch_to_manual(tmp_path):
         (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=2\n')
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
+            assert app.screen.kind == 'suggest'
+            await app.choose('skip')
+            await pilot.pause()
             assert app.screen.check_action('next_account', ())
             assert 'unavailable' in str(app.screen.query_one('#account-selection', Static).content)
             assert app.screen.query_one('#account-selection', Static).content.style == 'red'

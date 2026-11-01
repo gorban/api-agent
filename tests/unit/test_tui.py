@@ -1534,6 +1534,9 @@ def test_explicit_unit_mode_reviews_defaults_and_renders_parameter_ids(tmp_path)
         app.session.environ.pop('UNATTENDED_AUTH')
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause(.3)
+            assert app.screen.kind == 'suggest'
+            await app.choose('skip')
+            await pilot.pause()
             assert app.screen.kind == 'defaults'
             await pilot.press('c')
             await pilot.pause()
