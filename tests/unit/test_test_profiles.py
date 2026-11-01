@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def configuration(**overrides):
     values = {'LLM_PROVIDER': str(ROOT / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory',
-              'TUI_MODE': 'integration', 'SKIP_ALLURE_REPORTING': True, **overrides}
+              'TUI_MODE': 'integration', 'SKIP_ALLURE_REPORTING': True,
+              'BEDROCK_ENDPOINT': 'mantle', **overrides}
     values = {key: str(value) for key, value in values.items()}
     schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, values, owner_root=ROOT)
     return resolve_config(schema, environ={}, dotenv={}, overrides=values,
@@ -583,12 +584,12 @@ def test_runtime_endpoint_keeps_selected_models_api_and_test_overrides():
     assert result.values == original
 
 
-def test_missing_endpoint_uses_mantle_declaration_default():
+def test_missing_endpoint_uses_runtime_declaration_default():
     result = configuration()
     values = dict(result.values)
     values.pop('BEDROCK_ENDPOINT')
     _, _, profiles = declaration(values, owner_root=ROOT)
-    assert 'ordinary' in profiles
+    assert profiles == {}
 
 
 @pytest.mark.parametrize('condition', [None, 'invalid', {'MISSING': 'x'},

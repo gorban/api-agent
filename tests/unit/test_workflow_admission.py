@@ -85,7 +85,8 @@ def profiled_workflow_admission():
     cases = [TestIdentity('api-agent::' + node, 'api-agent', node.split('::')[0], node, root=root)
              for node in nodes]
     application = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory',
-                   'BEDROCK_REGION': 'us-east-1', 'WORKFLOW_MAX_PASSES': 2}
+                   'BEDROCK_REGION': 'us-east-1', 'BEDROCK_ENDPOINT': 'mantle',
+                   'WORKFLOW_MAX_PASSES': 2}
     profiles = resolve_test_profiles(cases, application, owner_root=root)
     plan = SimpleNamespace(definitions=(definition,),
         case_definitions={case.id: (definition.definition_id,) for case in cases})

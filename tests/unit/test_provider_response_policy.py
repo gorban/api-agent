@@ -261,7 +261,7 @@ def test_bedrock_prompted_envelope_uses_shared_decoder_without_changing_capture(
         lambda *args, **kw: captures.append(args))
 
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         return await provider.acomplete(request('prompted_json', model='zai.glm-5'))
     result = asyncio.run(run())
 
@@ -389,7 +389,7 @@ def test_bedrock_real_preflight_dispatch_and_terminal_evidence(monkeypatch, stre
     captures = []
     monkeypatch.setattr('api_agent.workflows.inference_capture.capture_inference', lambda *args, **kw: captures.append(args))
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         if stream:
             terminal = [item async for item in provider.astream(req)][-1]
             return terminal.payload
@@ -419,7 +419,7 @@ def test_bedrock_transport_error_retains_mode_without_replay(monkeypatch, stream
     transport = SimpleNamespace(call=AsyncMock(side_effect=fail), stream=events)
     monkeypatch.setattr(module, 'SDKTransport', lambda **kwargs: transport)
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         if stream:
             return [event async for event in provider.astream(req)]
         return await provider.acomplete(req)
@@ -696,7 +696,7 @@ def test_bedrock_postdispatch_control_failures_keep_choice_usage_and_cleanup(mon
     monkeypatch.setattr(module, 'SDKTransport', lambda **kwargs: transport)
     monkeypatch.setattr(inference_capture, 'capture_inference', lambda *args, **kwargs: captured.append(args[1]))
     async def run():
-        provider = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = module.factory({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         task = asyncio.create_task(provider.acomplete(request('json', model='zai.glm-5')))
         await entered.wait()
         if kind == 'cancelled':
@@ -817,7 +817,7 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
             else:
                 from api_agent.llm_providers.bedrock import factory as module
                 monkeypatch.setattr(module, 'SDKTransport', lambda **kw: SimpleNamespace(call=stall, stream=stream))
-                implementation = module.factory({'BEDROCK_API_MODE': 'completions'}, {})
+                implementation = module.factory({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
                 implementation.inference_timeout = 0.02
                 with pytest.raises(TimeoutError) as caught:
                     req = request('json', model='zai.glm-5')

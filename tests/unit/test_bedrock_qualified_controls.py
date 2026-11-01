@@ -248,7 +248,7 @@ def test_ordinary_provider_view_admits_qualified_controls(monkeypatch, kind, str
             yield frame
     transport = SimpleNamespace(call=call, stream=chunks)
     monkeypatch.setattr(factory, 'SDKTransport', lambda **kwargs: transport)
-    provider = factory.factory({'BEDROCK_API_MODE':'completions'}, {})
+    provider = factory.factory({'BEDROCK_API_MODE':'completions', 'BEDROCK_ENDPOINT':'mantle'}, {})
     validate_provider_request(provider, req)
     view = _StreamView(provider)
     async def run():

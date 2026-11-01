@@ -2,8 +2,23 @@
 
 [Bedrock provider](implementation_plan_f4.md)
 
-Support independently selected endpoint surfaces and inference formats. Preserve
-existing Mantle defaults and authentication ownership. Messages API is out of scope.
+Support independently selected endpoint surfaces and inference formats. Default
+to Runtime; preserve explicit Mantle selection and authentication ownership.
+Messages API is out of scope.
+
+The Runtime default applies consistently to provider declarations, direct provider
+construction, configuration validation and regional-price applicability. Preserve explicit
+endpoint, API, model, account and region settings; do not rewrite dotenv files.
+Historical Mantle test profiles apply only when Mantle is selected. Runtime tests
+retain the operator's effective application and test-specific settings.
+
+Reject intrinsically invalid combinations before authentication or dispatch,
+including Mantle with Converse. Session, access-key and API-key authentication
+are supported with either endpoint; attended versus indexed credential selection
+does not alter endpoint support. Do not probe permissions, balances or account
+access to admit a configuration. AWS remains authoritative: propagate bounded,
+credential-scrubbed upstream messages, error codes, HTTP status and request IDs
+when available, preserving execution and usage without changing identity or route.
 
 - [x] Add `BEDROCK_ENDPOINT=mantle|runtime`; retain `BEDROCK_API_MODE=responses|completions`
   and add `converse` for Runtime only. Validate combinations without authentication.

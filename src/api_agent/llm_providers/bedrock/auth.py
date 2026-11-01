@@ -110,12 +110,13 @@ def validate_config(config):
     api_mode = config.get('BEDROCK_API_MODE', 'responses')
     if type(mode) is not str or mode not in {'session', 'access_key', 'api_key'}:
         raise ContractError('Unsupported Bedrock authentication mode')
-    endpoint = config.get('BEDROCK_ENDPOINT', 'mantle')
+    endpoint = config.get('BEDROCK_ENDPOINT', 'runtime')
     if type(endpoint) is not str or endpoint not in {'mantle', 'runtime'}:
         raise ContractError('Unsupported Bedrock endpoint')
-    if (type(api_mode) is not str or api_mode not in {'completions', 'responses', 'converse'}
-            or endpoint == 'mantle' and api_mode == 'converse'):
+    if type(api_mode) is not str or api_mode not in {'completions', 'responses', 'converse'}:
         raise ContractError('Unsupported Bedrock API mode')
+    if endpoint == 'mantle' and api_mode == 'converse':
+        raise ContractError('BEDROCK_API_MODE=converse requires BEDROCK_ENDPOINT=runtime')
     return api_mode
 
 

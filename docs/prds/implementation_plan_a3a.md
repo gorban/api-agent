@@ -17,7 +17,8 @@ position. Unit selection does not offer authentication controls.
   grant E2E acceptance. Discovery and declined acceptance start no prerequisites.
 - [x] Require every admitted E2E test to consume the prepared UI session. Always
   launch its frontend; DEBUG or E2E_DEBUG shares headed/retained ownership across
-  UI and LLM setup. Debug selections must be a strict subset of the whole suite.
+  UI and LLM setup. Debug admits a subset, a one-test suite, or a whole multi-test
+  suite enumerated by exact CLI positional test IDs; multi-test confirmation remains required.
 - [x] Execute the included Studio graph test through browser submission, actual
   Agent HTTP routing, the launch-admitted selected application graph and selected
   LLM, then await the displayed answer and bounded turn capture attempt before completion.

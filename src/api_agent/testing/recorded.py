@@ -200,7 +200,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                              on_event=None, output=None, cancel_event=None,
                              runner=run_integration_tests, evidence_boundary=None, secret_values=(), cost_estimator=None,
                              unattended_index_source=None, interaction=None, content_policy=None, historical_estimator=None,
-                             workflow_admissions=None, tool_plan=None, config_fields=None, resolved_test_profiles=None):
+                             workflow_admissions=None, tool_plan=None, config_fields=None, resolved_test_profiles=None,
+                             explicit_debug_test_ids=()):
     """Prepare once, record every outcome, and persist only after child cleanup.
 
     ``prepare(usage)`` may attach this suite tracker to owned provider callbacks.
@@ -211,6 +212,11 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     accounting remain independent. Register credentials before emitting evidence.
     """
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
+    if config.get('TUI_MODE') == 'e2e' and (config.get('DEBUG') is True or config.get('E2E_DEBUG') is True):
+        from .collection import collect_tests
+        from .debug_confirmation import validate_e2e_debug_selection
+        available = collect_tests(context, 'e2e', config=config, cancel_event=cancel_event)
+        validate_e2e_debug_selection(tests, available, explicit_debug_test_ids)
     from .workflow_admission import capture_workflow_admissions
     started_at = monotonic()
     from api_agent.providers.rates import freeze_pricing
@@ -692,6 +698,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                            before_run=before, on_result=record, after_run=after,
                            on_event=event, output=output, cancel_event=cancel_event,
                            unattended_index_source=unattended_index_source,
+                           **({'explicit_debug_test_ids': explicit_debug_test_ids} if runner is run_integration_tests else {}),
                            **({'quota_observer': observe_quota} if runner is run_integration_tests and quota_fetcher is None else {}),
                            **({'evidence_boundary': evidence_boundary} if runner is run_integration_tests else {}),
                            **({'interaction': interaction} if interaction is not None else {}),

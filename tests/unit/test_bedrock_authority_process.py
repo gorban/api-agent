@@ -150,7 +150,7 @@ def test_catalog_joins_authority_before_dispatch_and_rejects_echo(synthetic_sdk,
     monkeypatch.setenv('SYNTHETIC_CATALOG_EXTRA', 'synthetic-caller-only')
     async def run():
         boundary = EmissionBoundary(ContentPolicy(log), secrets=('synthetic-caller-only',))
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': boundary})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         try:
             with pytest.raises(ProviderAccessError) as failure:
@@ -168,7 +168,7 @@ def test_catalog_registration_is_causal_for_caller_credential(synthetic_sdk, mon
     monkeypatch.setenv('SYNTHETIC_CATALOG_EXTRA', 'synthetic-caller-only')
     async def run():
         boundary = EmissionBoundary(secrets=('synthetic-caller-only',))
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': boundary})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         async def disabled_registration(values):
             return values, None
@@ -192,7 +192,7 @@ def test_catalog_generated_metadata_uses_complete_call_authority(synthetic_sdk, 
         secret = 'GLM 4.7 Flash'
         coordinator = EmissionBoundary(secrets=(secret,) if secret_source == 'coordinator' else ())
         caller = (secret,) if secret_source == 'caller' else ()
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {'emissions': EmissionBoundary()})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': EmissionBoundary()})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         try:
             with bind_call_authority(coordinator, caller):
@@ -210,7 +210,7 @@ def test_catalog_close_drains_validation_and_releases_coordinator(synthetic_sdk,
 
     async def run():
         coordinator = EmissionBoundary()
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {'emissions': EmissionBoundary()})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': EmissionBoundary()})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         entered = asyncio.Event()
         original = credential_guard.async_guard_json
@@ -239,7 +239,7 @@ def test_catalog_late_matching_registration_waits_for_caller_handoff(synthetic_s
 
     async def run():
         boundary = EmissionBoundary()
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': boundary})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         entered, release = asyncio.Event(), asyncio.Event()
         original = credential_guard.async_guard_json
@@ -273,7 +273,7 @@ def test_catalog_registration_failure_or_cancellation_prevents_dispatch(syntheti
     marker = tmp_path / 'catalog-dispatch'
     monkeypatch.setenv('SYNTHETIC_CATALOG_MARKER', str(marker))
     async def run():
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         entered = asyncio.Event()
         async def reject(values):
@@ -373,7 +373,7 @@ def test_factory_records_real_worker_error_response(synthetic_sdk, monkeypatch):
     monkeypatch.setenv('SYNTHETIC_ERROR', 'observed failure')
     async def run():
         boundary = EmissionBoundary(ContentPolicy(True))
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         provider.bind_credential_authority(boundary)
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         request = LLMRequest('zai.glm-4.7-flash', CompletionRequest((Message('user', (TextContent('hello'),)),)))
@@ -398,7 +398,7 @@ def test_factory_keeps_rejected_response_diagnostics_without_releasing_payload(m
     from api_agent.workflows.inference_capture import collect_inference, capture_transport_diagnostics
     async def run():
         boundary = EmissionBoundary(ContentPolicy(log))
-        provider = BedrockProvider({'BEDROCK_API_MODE':'completions'}, {})
+        provider = BedrockProvider({'BEDROCK_API_MODE':'completions', 'BEDROCK_ENDPOINT':'mantle'}, {})
         provider.bind_credential_authority(boundary)
         diagnostics = {'version':1, 'response_validation':'rejected', 'finish_reasons':['stop']}
         error = ProviderAccessError('unknown', 'Safe contract failure', status=200,
@@ -486,7 +486,7 @@ def test_graph(llm_provider, integration_config):
     config = {'TUI_MODE':'integration', 'ALLURE_S3_BUCKET':'synthetic', 'ALLURE_RESULTS_DIR':tmp_path / 'results',
         'TEST_PARALLEL_JOBS':0, 'LLM_PROVIDER':str(root / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory',
         'LLM_DEFAULT_MODEL':'zai.glm-4.7-flash', 'LLM_ALLOWED_MODELS':'zai.*', 'LLM_MAX_ATTEMPTS':2 if retry else 1,
-        'BEDROCK_AUTH_MODE':'session', 'BEDROCK_API_MODE':'completions', 'BEDROCK_REGION':'us-east-1',
+        'BEDROCK_AUTH_MODE':'session', 'BEDROCK_API_MODE':'completions', 'BEDROCK_ENDPOINT':'mantle', 'BEDROCK_REGION':'us-east-1',
         'BEDROCK_SESSION_PROVIDER':str(pack / 'acquirer.py') + ':factory',
         'LOG_CONTENT':log, 'TRACELOOP_TRACE_CONTENT':trace, 'SYNTHETIC_WORKER_PID':str(tmp_path / 'worker-pid')}
     result = run_recorded_integration(context, [identity], config, accepted=True,
@@ -547,7 +547,7 @@ def test_direct_provider_joins_active_collector_before_capture(synthetic_sdk):
 
     async def run():
         boundary = EmissionBoundary(ContentPolicy(True))
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         request = LLMRequest('zai.glm-4.7-flash', CompletionRequest((Message('user', (TextContent('synthetic-secret'),)),)))
         try:
@@ -569,7 +569,7 @@ def test_worker_protects_existing_operation_authority(synthetic_sdk, monkeypatch
 
     async def run():
         boundary = EmissionBoundary(ContentPolicy(True), secrets=('synthetic-caller-secret',))
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         provider.bind_credential_authority(boundary)
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         def request(text):
@@ -600,7 +600,7 @@ def test_direct_provider_without_boundary_joins_worker_before_dispatch(synthetic
     from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent
     monkeypatch.setenv('SYNTHETIC_GRAPH', '1')
     async def run():
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         request = LLMRequest('zai.glm-4.7-flash', CompletionRequest((Message('user', (TextContent('hello'),)),)))
         from api_agent.llm_providers import response_policy
@@ -642,7 +642,7 @@ def test_real_worker_refresh_upgrades_overlapping_caller_authority(synthetic_sdk
         scope = TestAuthorityScope(('workflow',))
         scope.join('workflow', boundary)
         lease = scope.freeze()
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         provider.bind_credential_authority(boundary)
         session = BedrockAuthSession({'mode':'session', 'region':'us-east-1', 'profile':None})
         request = LLMRequest('zai.glm-4.7-flash', CompletionRequest((Message('user', (TextContent('hello'),)),)))
@@ -665,7 +665,7 @@ def test_cancelled_real_worker_releases_authority_and_process(synthetic_sdk, tmp
     marker = tmp_path / 'wire.json'
     monkeypatch.setenv('SYNTHETIC_REQUEST_FILE', str(marker))
     async def run():
-        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions'}, {})
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
         session = BedrockAuthSession({'mode':'session', 'region':'us-east-1', 'profile':None})
         request = LLMRequest('zai.glm-4.7-flash', CompletionRequest((Message('user', (TextContent('hello'),)),)))
         task = asyncio.create_task(provider.acomplete(request, auth=session))

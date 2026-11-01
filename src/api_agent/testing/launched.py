@@ -13,7 +13,8 @@ from .requirements import plan_integration_requirements
 
 @suite_locked
 def run_launched_integration(context, tests, config, *, accepted=False,
-                             no_std_in=False, prerequisites=None, reporting_session=None, tool_plan=None, config_fields=None, **options):
+                             no_std_in=False, prerequisites=None, reporting_session=None, tool_plan=None, config_fields=None,
+                             explicit_debug_test_ids=(), **options):
     """Acquire storage lazily; retain its cleanup handle through every outcome.
 
     Test recording finishes before the prerequisite lease is released. Only
@@ -25,10 +26,10 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         tests = validate_integration_start(tests, config, accepted=accepted, no_std_in=no_std_in)
         config = dict(config, DEBUG=config.get('DEBUG') is True or config.get('E2E_DEBUG') is True)
         if config['DEBUG']:
-            from .collection import collect_tests, CollectionError
+            from .collection import collect_tests
+            from .debug_confirmation import validate_e2e_debug_selection
             available = collect_tests(context, 'e2e', config=config, cancel_event=options.get('cancel_event'))
-            if len({test.id for test in tests}) >= len(available):
-                raise CollectionError('E2E debug execution requires a strict subset of the entire suite')
+            validate_e2e_debug_selection(tests, available, explicit_debug_test_ids)
     if config.get('SKIP_ALLURE_REPORTING') is True:
         from time import monotonic
         from .integration import run_integration_tests
@@ -66,6 +67,7 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         # publication exists on this explicitly unrecorded path.
         execution = run_integration_tests(context, tests, accepted=accepted,
             no_std_in=False, config=config,
+            explicit_debug_test_ids=explicit_debug_test_ids,
             parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
             on_event=observe, output=options.get('output'),
             cancel_event=options.get('cancel_event'),
@@ -108,6 +110,7 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     try:
         execution = run_recorded_integration(context, tests, config, accepted=accepted,
             no_std_in=no_std_in, prepare=before,
+            explicit_debug_test_ids=explicit_debug_test_ids,
             **({'config_fields': config_fields} if config_fields is not None else {}),
             **({'tool_plan': tool_plan} if tool_plan is not None else {}),
             **options)

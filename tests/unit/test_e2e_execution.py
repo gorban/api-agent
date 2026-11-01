@@ -67,6 +67,22 @@ def test_e2e_legacy_debug_uses_shared_headed_lifecycle(tmp_path, monkeypatch):
     assert result.exit_code == 0 and observed == [True]
     assert config['DEBUG'] is False
 
+
+@pytest.mark.parametrize('available_count,explicit_ids', [
+    (1, ()), (1, ('first',)), (2, ('first', 'second')),
+])
+def test_e2e_debug_admits_solo_or_enumerated_whole_suite(tmp_path, monkeypatch, available_count, explicit_ids):
+    context, first, config = selected(tmp_path)
+    first = replace(first, id='first')
+    available = [first, replace(first, id='second')][:available_count]
+    config.update(E2E_DEBUG=True)
+    monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *args, **kwargs: available)
+
+    result = launched.run_launched_integration(context, available, config, accepted=True,
+        explicit_debug_test_ids=explicit_ids, prerequisites=owner([]), storage=Storage(), runner=fake_runner())
+
+    assert result.exit_code == 0
+
 @pytest.mark.parametrize('allowance', [None, False, True, -1, 2, '0'])
 def test_e2e_requires_effective_integer_zero(tmp_path, allowance):
     context, test, config = selected(tmp_path)
@@ -75,15 +91,26 @@ def test_e2e_requires_effective_integer_zero(tmp_path, allowance):
         recorded.validate_integration_start([test], config, accepted=True)
 
 
-def test_e2e_all_test_debug_rejects_before_prerequisite_creation(tmp_path, monkeypatch):
+def test_e2e_implicit_multi_test_debug_rejects_before_prerequisite_creation(tmp_path, monkeypatch):
     context, test, config = selected(tmp_path)
     config.update(E2E_DEBUG=True)
-    monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *args, **kwargs: [test])
+    monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *args, **kwargs: [test, replace(test, id='second')])
     create = Mock()
     monkeypatch.setattr(launched, 'local_recording_prerequisites', create)
-    with pytest.raises(ValueError, match='strict subset'):
-        launched.run_launched_integration(context, [test], config, accepted=True)
+    with pytest.raises(ValueError, match='explicit positional test IDs'):
+        launched.run_launched_integration(context, [test, replace(test, id='second')], config, accepted=True)
     create.assert_not_called()
+    assert not config['ALLURE_RESULTS_DIR'].exists()
+
+
+def test_direct_recorded_e2e_debug_rejects_implicit_whole_suite_before_storage(tmp_path, monkeypatch):
+    context, first, config = selected(tmp_path)
+    tests = [first, replace(first, id='second')]
+    config.update(DEBUG=True)
+    monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *args, **kwargs: tests)
+    with pytest.raises(ValueError, match='explicit positional test IDs'):
+        recorded.run_recorded_integration(context, tests, config, accepted=True)
+
     assert not config['ALLURE_RESULTS_DIR'].exists()
 
 
@@ -192,17 +219,17 @@ def test_body():
     assert (tmp_path / 'ui-disposed').read_text() == 'closed'
 
 
-def test_raw_e2e_debug_all_test_selection_rejects_before_execution(tmp_path):
+def test_raw_e2e_debug_implicit_all_test_selection_rejects_before_execution(tmp_path):
     from types import SimpleNamespace
     from api_agent.testing.collection import collect_tests, CollectionError
     from api_agent.testing.integration import run_integration_tests
     suite = tmp_path / 'tests/e2e'
     suite.mkdir(parents=True)
-    (suite / 'test_body.py').write_text('import pytest\n@pytest.mark.requires_ui_session\ndef test_body():\n    raise AssertionError("body must not run")\n')
+    (suite / 'test_body.py').write_text('import pytest\n@pytest.mark.requires_ui_session\ndef test_body():\n    raise AssertionError("body must not run")\n@pytest.mark.requires_ui_session\ndef test_other():\n    raise AssertionError("body must not run")\n')
     context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, suite_paths=lambda mode:[suite])
     config = {'TUI_MODE':'e2e', 'E2E_RERUNS':0, 'E2E_DEBUG':True}
     tests = collect_tests(context, 'e2e', config=config)
-    with pytest.raises(CollectionError, match='strict subset'):
+    with pytest.raises(CollectionError, match='explicit positional test IDs'):
         run_integration_tests(context, tests, config=config, accepted=True)
 
 
@@ -222,3 +249,20 @@ def test_later_inspection_joins_existing_pending_loop_owner(monkeypatch, first_i
     existing.close()
     assert loop.is_closed()
     second.aclose.assert_awaited_once()
+
+
+@pytest.mark.parametrize('entrypoint', ['launched', 'recorded'])
+def test_stale_debug_identity_rejects_before_owned_resources(tmp_path, monkeypatch, entrypoint):
+    context, test, config = selected(tmp_path)
+    config.update(DEBUG=True)
+    fresh = replace(test, tags=test.tags | {'new-feature'})
+    monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *args, **kwargs: [fresh])
+    create = Mock()
+    monkeypatch.setattr(launched, 'local_recording_prerequisites', create)
+    run = launched.run_launched_integration if entrypoint == 'launched' else recorded.run_recorded_integration
+
+    with pytest.raises(ValueError, match='identities outside the freshly collected suite'):
+        run(context, [test], config, accepted=True)
+
+    create.assert_not_called()
+    assert not config['ALLURE_RESULTS_DIR'].exists()

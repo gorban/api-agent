@@ -166,7 +166,8 @@ def test_bedrock_reasoning_review_reports_profile_or_explicit_dotenv_override(sa
     from api_agent.testing.reasoning_contrast import scope
     from api_agent.testing.test_profiles import resolve_test_profiles
     location = ROOT / 'src/api_agent/llm_providers/bedrock/factory.py'
-    overrides = {'TUI_MODE': 'integration', 'LLM_PROVIDER': str(location) + ':factory'}
+    overrides = {'TUI_MODE': 'integration', 'LLM_PROVIDER': str(location) + ':factory',
+                 'BEDROCK_ENDPOINT': 'mantle'}
     schema = bootstrap_schema(load_shared_schema(), ['--help'], {}, {}, overrides, owner_root=ROOT)
     dotenv = {'LLM_REASONING_TEST_TOKEN_REPORTING': 'False'} if saved_false else {}
     result = resolve_config(schema, environ={}, dotenv=dotenv, overrides=overrides)

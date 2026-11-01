@@ -26,7 +26,7 @@ def no_real_sdk(monkeypatch):
 def configuration(mode='completions', auth='session'):
     return {'LLM_PROVIDER': str(ROOT / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory',
         'LLM_ALLOWED_MODELS': re.escape(MODELS[mode]), 'LLM_DEFAULT_MODEL': re.escape(MODELS[mode]),
-        'BEDROCK_AUTH_MODE': auth, 'BEDROCK_API_MODE': mode, 'BEDROCK_REGION': 'us-east-1', 'NO_STD_IN': True}
+        'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_AUTH_MODE': auth, 'BEDROCK_API_MODE': mode, 'BEDROCK_REGION': 'us-east-1', 'NO_STD_IN': True}
 
 
 def raw(mode, *, text='Ok', calls=(), usage=True):
@@ -249,7 +249,7 @@ def test_stream_invalid_usage_has_no_completed_or_cost_event(mode):
 def test_bootstrapped_provider_default_selects_oss20b_from_real_local_catalog(mode):
     from api_agent.config import load_shared_schema, resolve_config
     from api_agent.providers.loading import bootstrap_schema
-    overrides={'LLM_PROVIDER':configuration()['LLM_PROVIDER'], 'BEDROCK_API_MODE':mode, 'NO_STD_IN':'True', 'TUI_MODE':'run-local'}
+    overrides={'BEDROCK_ENDPOINT':'mantle', 'LLM_PROVIDER':configuration()['LLM_PROVIDER'], 'BEDROCK_API_MODE':mode, 'NO_STD_IN':'True', 'TUI_MODE':'run-local'}
     schema=bootstrap_schema(load_shared_schema(),['--help'],{},{},overrides,owner_root=ROOT)
     config=resolve_config(schema,argv=[],environ={},dotenv={},overrides=overrides)
     assert not config.errors

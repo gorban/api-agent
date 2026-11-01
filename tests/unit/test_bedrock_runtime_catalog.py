@@ -129,17 +129,59 @@ def test_runtime_oss_can_be_selected_and_has_no_mantle_prices():
 
 def test_endpoint_defaults_and_mode_rejection_are_lazy():
     assert auth.validate_config({}) == 'responses'
+    assert auth.validate_config({'BEDROCK_API_MODE': 'converse'}) == 'converse'
     assert auth.validate_config({'BEDROCK_ENDPOINT': 'runtime', 'BEDROCK_API_MODE': 'converse'}) == 'converse'
-    for config in ({'BEDROCK_ENDPOINT': 'other'}, {'BEDROCK_API_MODE': 'converse'},
+    for config in ({'BEDROCK_ENDPOINT': 'other'},
                    {'BEDROCK_ENDPOINT': 'runtime', 'BEDROCK_API_MODE': 'messages'}):
         with pytest.raises(ContractError):
             auth.validate_config(config)
 
 
+def test_mantle_converse_rejected_before_credential_acquisition():
+    with pytest.raises(ContractError, match='BEDROCK_API_MODE=converse requires BEDROCK_ENDPOINT=runtime'):
+        auth.validate_config({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'converse'})
+
+
+@pytest.mark.asyncio
+async def test_invalid_endpoint_api_never_loads_acquirer_or_reads_credentials(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    loader = Mock(side_effect=AssertionError('Acquisition must remain inert'))
+    credentials = AsyncMock()
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.session_providers.load_acquirer', loader)
+
+    with pytest.raises(ContractError, match='BEDROCK_API_MODE=converse requires BEDROCK_ENDPOINT=runtime'):
+        await auth.create_session({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'converse'},
+            interactive=True, user_index=None, credentials=credentials)
+
+    loader.assert_not_called()
+    credentials.assert_not_awaited()
+
+
+def test_missing_endpoint_selects_runtime_discovery_and_cost_scope():
+    from api_agent.llm_providers.bedrock.factory import BedrockProvider
+    provider = BedrockProvider({})
+    assert provider.endpoint == 'runtime'
+    assert provider.api_mode == 'responses'
+    assert provider.rate_card is None
+    assert catalog.route('us.openai.gpt-5.6-luna', provider.api_mode, provider.endpoint) == '/openai/v1'
+
+
+@pytest.mark.asyncio
+async def test_missing_endpoint_dispatches_runtime_catalog(monkeypatch):
+    from unittest.mock import AsyncMock
+    from api_agent.llm_providers.bedrock import factory as factory_module
+    call = AsyncMock(return_value={'data': []})
+    monkeypatch.setattr(factory_module.SDKTransport, 'call', call)
+    provider = factory_module.BedrockProvider({})
+
+    assert await provider.adescribe() == ()
+    assert call.await_args.args == ('runtime_models', {})
+
+
 def test_default_allowed_pattern_includes_profile_without_changing_default_model():
     path = Path(__file__).resolve().parents[2] / 'src/api_agent/llm_providers/bedrock/cfg/config.toml'
     fields = tomllib.loads(path.read_text())['fields']
-    assert fields['BEDROCK_ENDPOINT']['default'] == 'mantle'
+    assert fields['BEDROCK_ENDPOINT']['default'] == 'runtime'
     assert fields['LLM_DEFAULT_MODEL']['default'] == r'openai\.gpt-oss-20b'
     assert re.fullmatch(fields['LLM_ALLOWED_MODELS']['default'], 'us.openai.gpt-5.6-luna')
     assert re.fullmatch(fields['LLM_ALLOWED_MODELS']['default'], 'global.anthropic.claude-sonnet-4-6')

@@ -25,7 +25,7 @@ class BedrockProvider:
         self.config = dict(config)
         self.services = dict(services or {})
         self.api_mode = auth.validate_config(self.config)
-        self.endpoint = self.config.get('BEDROCK_ENDPOINT', 'mantle')
+        self.endpoint = self.config.get('BEDROCK_ENDPOINT', 'runtime')
         self.cost_compatibility = compatibility(config)
         self.rate_card = pricing.bundled_rate_card(self.config)
         try:

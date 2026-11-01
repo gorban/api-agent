@@ -181,7 +181,8 @@ async def test_custom_acquirer_joins_parsed_flow_and_actual_local_llm(tmp_path, 
     adapter.write_text(ADAPTER.replace("self.services['requests']", "self.services.get('requests', [])")
                        .replace("self.services['closes']", "self.services.get('closes', [])"))
     config = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory',
-              'BEDROCK_SESSION_PROVIDER': str(adapter) + ':factory', 'BEDROCK_API_MODE': 'completions', 'NO_STD_IN': True,
+              'BEDROCK_SESSION_PROVIDER': str(adapter) + ':factory', 'BEDROCK_API_MODE': 'completions',
+              'BEDROCK_ENDPOINT': 'mantle', 'NO_STD_IN': True,
               'LLM_ALLOWED_MODELS': re.escape(model), 'LLM_DEFAULT_MODEL': re.escape(model)}
     async def forbidden(*args, **kwargs):
         raise AssertionError('Offline acquisition join cannot launch an AWS worker')

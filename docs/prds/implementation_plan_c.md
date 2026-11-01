@@ -21,7 +21,7 @@
 
 - [ ] Document per-row saved-source paths and immediate one-setting deletion with confirmation from both applicable .env files. Unattended configuration stays in its own editor: delete a selected account or shared manager, with no duplicate bulk Clear action.
 
-- [ ] Document Playwright E2E evidence, configurable `E2E_BROWSER_RESOLUTION=1440x900`, and headless default. Explain the `d` subset-only Debug start and optional `E2E_DEBUG`, its silent default, retained headed browsers, and explicit debug-session cleanup.
+- [ ] Document Playwright E2E evidence, configurable `E2E_BROWSER_RESOLUTION=1440x900`, and headless default. Explain the `d` focused Debug start (a sole test is allowed; a whole multi-test suite requires exact positional IDs) and optional `E2E_DEBUG`, its silent default, retained headed browsers, and explicit debug-session cleanup.
 
 - [ ] Document lazy provider-owned unattended login, provider/pack-owned observed login branches, optional browser preparation and all-tab credential-safe error evidence. Core uses synthetic public fixtures; operational protocol details stay in the owning adapter documentation.
 

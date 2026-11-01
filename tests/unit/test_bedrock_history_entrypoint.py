@@ -30,7 +30,7 @@ def history_context(tmp_path):
     provider = str(Path(factory.__file__).resolve()) + ':factory'
     schema = bootstrap_schema(load_shared_schema(base), (), {}, {}, {'LLM_PROVIDER': provider}, owner_root=pack)
     config = resolve_config(schema, environ={}, dotenv={}, overrides=dict(
-        LLM_PROVIDER=provider, TUI_MODE='integration', E2E_RERUNS='0',
+        LLM_PROVIDER=provider, BEDROCK_ENDPOINT='mantle', TUI_MODE='integration', E2E_RERUNS='0',
         LLM_DEFAULT_MODEL=pricing.MODEL, LLM_CACHE_POLICY='', SKIP_ALLURE_REPORTING='True'),
         anchors={'base_root': base, 'owner_root': pack, 'pack_root': pack}).raise_for_errors().values
     test = TestIdentity('test', repository_label(context, pack), 'test_case.py', 'test_case.py::test_case', root=pack)

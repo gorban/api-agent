@@ -31,9 +31,12 @@ api_agent.llm_providers.bedrock.__file__.
 ## Modes, models and defaults
 
 BEDROCK_AUTH_MODE selects session, access_key or api_key.
-BEDROCK_ENDPOINT selects mantle (the default) or runtime; discovery follows the same endpoint. BEDROCK_API_MODE independently selects completions (Chat Completions), responses, or Runtime-only converse. The default API is responses. The original Mantle modes use the literal model-ID
+BEDROCK_ENDPOINT selects runtime (the default) or explicitly mantle; discovery follows the same endpoint. BEDROCK_API_MODE independently selects completions (Chat Completions), responses, or Runtime-only converse. The default API is responses. The original Mantle modes use the literal model-ID
 regex `openai\.gpt-oss-20b` when no default model is configured. Explicit dotenv, environment, CLI and interactive
-values always retain precedence; switching APIs never rewrites a saved model.
+values always retain precedence; switching endpoints or APIs never rewrites a saved model.
+The retained default-model regex is independent of the endpoint: for Runtime,
+configure it to match an exact available model or inference profile. If it matches
+no allowed catalog entry, selection fails with a configuration error.
 Known closed-weight GPT models on Runtime Responses use system inference-profile IDs, for example
 `LLM_DEFAULT_MODEL=us\.openai\.gpt-5\.6-luna`; the provider never chooses a
 geographic profile on the user's behalf. Studio lists routing scopes as separate
@@ -46,9 +49,17 @@ the list against AWS documentation and account access. Incompatible requests may
 be rejected by AWS. Runtime prices are unavailable until independently qualified.
 Native structured output is limited to documented strict schemas; the existing
 fallback policy handles unqualified models and unsupported streaming combinations.
-GPT-5.4 is documented as Mantle-only. Some Claude models emit signed reasoning
-content that the current Converse codec cannot retain for continuation; such a
-response fails safely.
+GPT-5.4 is documented as Mantle-only. Converse accepts completed non-tool replies
+containing plaintext reasoning and returns only the visible final answer. Signed
+tool continuations, unfinished reasoning and opaque/redacted reasoning still fail
+explicitly because their replay state is not supported.
+
+Both endpoints support session, access-key and API-key authentication, including
+API keys read from the selected unattended user. Mantle with Converse is an
+invalid configuration and fails before authentication. Permission, model access,
+regional availability and quota decisions remain AWS's responsibility: the provider
+reports the credential-scrubbed upstream error with its code, status and request ID
+when supplied, without trying another endpoint, account or model.
 
 
 | Mantle model ID | Qualified API formats |
@@ -181,8 +192,9 @@ unknown spend as zero.
 
 [test-profiles.toml](test-profiles.toml) supplies Mantle-only exact-case defaults. Runtime retains
 the operator's application and test-specific selections. The launcher
-resolves API/model/controls/deadlines before backend creation; select ordinary
-cases together without manual API switching.
+resolves API/model/controls/deadlines before backend creation. The table below
+describes explicitly selected Mantle profiles; it does not switch Runtime tests
+to Mantle or require different authentication for Runtime.
 Application configuration, saved dotenv values and authentication identity stay
 unchanged. Explicit `LLM_*_TEST` selections retain authority, including an
 explicit empty value; invalid or unsupported selections fail visibly.

@@ -120,7 +120,7 @@ def _complete_report(rows):
 def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
-                          after_run=None, config=None, config_fields=None, resolved_test_profiles=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None, evidence_boundary=None):
+                          after_run=None, config=None, config_fields=None, resolved_test_profiles=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None, evidence_boundary=None, explicit_debug_test_ids=()):
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
@@ -264,8 +264,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             failed = True
             available = None
         if available is not None:
-            if mode == 'e2e' and config.get('DEBUG') and len(tests) >= len(available):
-                raise CollectionError('E2E debug execution requires a strict subset of the entire suite')
+            if mode == 'e2e' and config.get('DEBUG'):
+                from .debug_confirmation import validate_e2e_debug_selection
+                validate_e2e_debug_selection(tests, available.values(), explicit_debug_test_ids)
             if any(available.get(test.id) != test for test in tests):
                 raise CollectionError('Integration selection contains identities outside the freshly collected integration suites')
             from .requirements import plan_integration_requirements

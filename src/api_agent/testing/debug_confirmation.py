@@ -2,6 +2,20 @@
 
 import sys
 
+from .collection import CollectionError
+
+
+def validate_e2e_debug_selection(tests, available, explicit_ids=()):
+    """Admit a subset, a sole test, or an explicitly enumerated whole suite."""
+    available = {test.id: test for test in available}
+    if any(available.get(test.id) != test for test in tests):
+        raise CollectionError('E2E selection contains identities outside the freshly collected suite')
+    selected = {test.id for test in tests}
+    entire = set(available)
+    if len(entire) > 1 and selected == entire and (
+            len(explicit_ids) != len(entire) or set(explicit_ids) != entire):
+        raise CollectionError('E2E debug execution of the entire multi-test suite requires explicit positional test IDs for every test')
+
 
 def debug_warning(mode, debug, tests, *, e2e_debug=False):
     """Describe the risk for distinct selected integration or E2E tests."""

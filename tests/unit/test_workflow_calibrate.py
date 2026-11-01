@@ -692,9 +692,11 @@ def test_calibration_ceiling_uses_provider_profile_and_typed_explicit_override(m
     monkeypatch.setattr(calibrate.os, 'environ', {})
     monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', lambda *args, **kwargs: None)
     factory = str(ROOT / f'src/api_agent/llm_providers/{provider}/factory.py') + ':factory'
-    _, result = calibrate.configuration(ROOT, ['--llm-provider=' + factory])
+    endpoint = ['--bedrock-endpoint=mantle'] if provider == 'bedrock' else []
+    _, result = calibrate.configuration(ROOT, ['--llm-provider=' + factory, *endpoint])
     assert result.values['LLM_WORKFLOW_TEST_MAX_GRAPHS'] == expected
-    _, explicit = calibrate.configuration(ROOT, ['--llm-provider=' + factory, '--llm-workflow-test-max-graphs=60'])
+    _, explicit = calibrate.configuration(ROOT, ['--llm-provider=' + factory, *endpoint,
+        '--llm-workflow-test-max-graphs=60'])
     assert explicit.values['LLM_WORKFLOW_TEST_MAX_GRAPHS'] == 60
     assert explicit.fields['LLM_WORKFLOW_TEST_MAX_GRAPHS'].explicit
 
