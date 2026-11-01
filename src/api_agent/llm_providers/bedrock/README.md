@@ -12,19 +12,23 @@ Raw thinking text, signatures and encrypted continuation state are not summaries
 Providers without displayable summaries still show the pending Thinking state.
 The final `response_text` alone is used by answer assertions.
 
-Native reasoning fields take precedence over guessing from text. On Completions,
-`BEDROCK_COMPLETIONS_REASONING_FORMAT=auto` preserves ordinary answers and rejects
-ambiguous leading `<reasoning>` or `<think>` envelopes with configuration guidance.
-If the upstream contract uses those envelopes, explicitly select `tagged` to
-return only the answer following the leading envelope. Select `literal` when the
-entire text is the intended answer. This works across model families without
-changing the selected endpoint, API or model. Fragmented envelopes are held until
+Native reasoning fields take precedence over text interpretation. The declared
+`BEDROCK_COMPLETIONS_REASONING_FORMAT` default remains `auto`. For the exact
+selected Runtime Completions ID `openai.gpt-oss-20b-1:0`, the provider qualifies
+the leading `<reasoning>` or `<think>` response carrier as tagged, so saving only
+Runtime and Completions yields the following answer. Other model IDs and routes
+remain `auto`: ordinary answers pass through and ambiguous leading envelopes
+fail with configuration guidance. Explicit `tagged` or `literal` overrides this
+qualification; `literal` preserves the entire text, including leading tags.
+This works without changing the selected endpoint, API or model. Fragmented envelopes are held until
 validated; envelope contents are never presented as displayable summaries.
 
-The AWS model-parameters page describes tagged output for InvokeModel; that does
-not establish a blanket Chat Completions contract. An explicit format choice
-records the operator's upstream interpretation instead of inferring it from a
-successful HTTP status or a model name.
+The exact carrier qualification is the provider's response-interpretation policy,
+not a claim that discovery proves an AWS-wide Chat Completions contract. The AWS
+model-parameters page describes tagged output for InvokeModel; its applicability
+to other routes remains subject to qualification. On unqualified routes, `auto`
+rejects ambiguous leading envelopes; `literal` preserves them as answer text. No
+format choice is inferred from a successful HTTP status or discovery/display metadata.
 
 ## Install and select
 

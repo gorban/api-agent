@@ -997,14 +997,14 @@ test('actual HTTP heartbeat survives hidden state, Stop and persisted pagehide c
     await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));await page.getByRole('button',{name:'Retry response'}).waitFor();await page.waitForTimeout(100);
     assert.equal(calls.filter(x=>x.path.endsWith('/cancel')).length,2);assert.notEqual(calls.filter(x=>x.path.endsWith('/stream'))[1].session_id,first);
     const heartbeatCount=calls.filter(x=>x.path.endsWith('/heartbeat')).length;await page.clock.fastForward(30001);await page.waitForTimeout(100);assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,heartbeatCount);
-    completedHeartbeat=true;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.waitForTimeout(100);assert.equal(await page.locator('#stop').isVisible(),true);const completing=streams.at(-1);const completingId=calls.filter(x=>x.path.endsWith('/stream')).at(-1).session_id;completing.end(finishFrames(completingId,result('Completed after heartbeat')));await page.getByText('Completed after heartbeat',{exact:true}).waitFor();completedHeartbeat=false;
+    completedHeartbeat=true;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(160001);await page.waitForTimeout(100);assert.equal(await page.locator('#stop').isVisible(),true);const completing=streams.at(-1);const completingId=calls.filter(x=>x.path.endsWith('/stream')).at(-1).session_id;completing.end(finishFrames(completingId,result('Completed after heartbeat')));await page.getByText('Completed after heartbeat',{exact:true}).waitFor();completedHeartbeat=false;
     await page.locator('#prompt').fill('Another operation');await page.locator('#send').click();await page.getByText('Still running',{exact:true}).waitFor();await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     for(const malformed of ['null','session','status','extra']){
       malformedHeartbeat=malformed;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/Invalid agent lifecycle response/);
     }
     malformedHeartbeat='';
     rejectHeartbeat=true;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(10001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/no longer running/);
-    rejectHeartbeat=false;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(150001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/too long/);
+    rejectHeartbeat=false;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.clock.fastForward(150001);assert.equal(await page.locator('#stop').isVisible(),true);await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/stopped/);
     await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:false})));
     failCancel=true;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Still running',{exact:true}).waitFor();await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/stopped/);for(let attempt=0;attempt<100&&cancelFailures===0;attempt++)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(cancelFailures,1);failCancel=false;
     const exitPage=await browser.newPage();await startCoverage(exitPage);await exitPage.goto(uiOrigin);await exitPage.waitForFunction(()=>document.querySelector('#model').value==='sample');await exitPage.locator('#prompt').fill('Navigate away');await exitPage.locator('#send').click();await exitPage.getByText('Still running',{exact:true}).waitFor();const beforeExit=calls.filter(x=>x.path.endsWith('/cancel')).length;const navigating=streams.at(-1);await exitPage.goto('about:blank');
@@ -1103,13 +1103,14 @@ test('actual HTTP follows changing backend defaults until explicit choice and re
   }finally{await studio.close();}
 });
 
-test('actual HTTP schedules advertised heartbeat timing and preserves absolute deadline and Stop cleanup',async()=>{
-  const calls=[],streams=[];let invalid=false;
+test('actual HTTP uses advertised heartbeats after startup and retains the session-start deadline and Stop cleanup',async()=>{
+  const calls=[],streams=[];let invalid=false, omitSession=false;
   const studio=await controlledHTTPStudio((request,response,body)=>{
     if(request.url.endsWith('/models')){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null}));return;}
     const {session_id}=JSON.parse(body);calls.push({path:request.url,session_id});
     if(request.url.endsWith('/stream')){
       response.setHeader('Content-Type','text/event-stream');
+      if(omitSession){response.write(': waiting for session\n\n');streams.push(response);return;}
       response.write(frame('session',{session_id,heartbeat_interval_ms:invalid?0:5000,heartbeat_timeout_ms:15000}));
       if(!invalid)response.write(frame('token',{content:'Advertised timing draft'}));
       streams.push(response);return;
@@ -1128,9 +1129,10 @@ test('actual HTTP schedules advertised heartbeat timing and preserves absolute d
     await page.locator('#stop').click();await page.getByRole('button',{name:'Retry response'}).waitFor();await page.waitForTimeout(50);
     const stoppedHeartbeats=calls.filter(x=>x.path.endsWith('/heartbeat')).length;
     await page.clock.fastForward(15001);await page.waitForTimeout(50);assert.equal(calls.filter(x=>x.path.endsWith('/heartbeat')).length,stoppedHeartbeats);
-    await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByText('Advertised timing draft',{exact:true}).waitFor();
+    omitSession=true;await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();
+    await page.waitForFunction(()=>!document.querySelector('#stop').hidden);await page.waitForTimeout(100);
     await page.clock.fastForward(150001);await page.getByRole('button',{name:'Retry response'}).waitFor();assert.match(await page.locator('.error-note').textContent(),/too long/);
-    invalid=true;const before=calls.filter(x=>x.path.endsWith('/cancel')).length;
+    omitSession=false;invalid=true;const before=calls.filter(x=>x.path.endsWith('/cancel')).length;
     await dismissFailure(page);await page.getByRole('button',{name:'Retry response'}).click();await page.getByRole('button',{name:'Retry response'}).waitFor();
     assert.match(await page.locator('.error-note').textContent(),/Invalid stream session/);
     for(let attempt=0;attempt<100&&calls.filter(x=>x.path.endsWith('/cancel')).length===before;attempt++)await new Promise(resolve=>setTimeout(resolve,10));

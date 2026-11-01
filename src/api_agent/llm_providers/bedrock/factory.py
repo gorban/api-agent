@@ -225,6 +225,9 @@ class BedrockProvider:
         prepared, evidence = prepare_response(request, self.api_mode, endpoint=self.endpoint)
         from .continuation_scope import NativeScope
         native_scope = NativeScope(self._continuation_key, prepared, self.endpoint, self.api_mode)
+        reasoning_format = catalog.completions_reasoning_format(
+            self.config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto'),
+            self.endpoint, self.api_mode, request.selected_llm)
         failure_usage = None
         dispatched = False
         try:
@@ -233,8 +236,8 @@ class BedrockProvider:
                            'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint), evidence)}
                 if self.endpoint == 'runtime':
                     payload['endpoint'] = 'runtime'
-                if self.api_mode == 'completions' and self.config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto') != 'auto':
-                    payload['reasoning_format'] = self.config['BEDROCK_COMPLETIONS_REASONING_FORMAT']
+                if self.api_mode == 'completions' and reasoning_format != 'auto':
+                    payload['reasoning_format'] = reasoning_format
                 if budget.remaining == 0:
                     raise TimeoutError('Bedrock deadline expired before dispatch.')
                 def dispatch():
@@ -250,7 +253,7 @@ class BedrockProvider:
                         auth=native_scope.wrap_auth(auth) if self.api_mode == 'responses' else auth,
                         join=self._join_credentials, on_dispatch=dispatch)
                     from api_agent.workflows.inference_capture import capture_inference
-                    codec_options = ({'reasoning_format': self.config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto')}
+                    codec_options = ({'reasoning_format': reasoning_format}
                                      if self.api_mode == 'completions' else {})
                     result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm, endpoint=self.endpoint, **codec_options), response=evidence)
                     result = native_scope.seal(result)
@@ -301,6 +304,9 @@ class BedrockProvider:
         prepared, evidence = prepare_response(request, self.api_mode, endpoint=self.endpoint, stream=True)
         from .continuation_scope import NativeScope
         native_scope = NativeScope(self._continuation_key, prepared, self.endpoint, self.api_mode)
+        reasoning_format = catalog.completions_reasoning_format(
+            self.config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto'),
+            self.endpoint, self.api_mode, request.selected_llm)
         failure_usage = None
         dispatched = False
         try:
@@ -310,8 +316,8 @@ class BedrockProvider:
                            'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint), evidence)}
                 if self.endpoint == 'runtime':
                     payload['endpoint'] = 'runtime'
-                if self.api_mode == 'completions' and self.config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto') != 'auto':
-                    payload['reasoning_format'] = self.config['BEDROCK_COMPLETIONS_REASONING_FORMAT']
+                if self.api_mode == 'completions' and reasoning_format != 'auto':
+                    payload['reasoning_format'] = reasoning_format
                 def dispatch():
                     nonlocal dispatched
                     final_body = dict(payload['body'])

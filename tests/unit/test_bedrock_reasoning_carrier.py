@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from api_agent.llm_providers.bedrock import mantle
+from api_agent.llm_providers.bedrock import catalog, mantle
 from api_agent.llm_providers.bedrock.auth import validate_config
 from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream, ParentStream, guard_result
 from api_agent.llm_providers.bedrock.reasoning_carrier import final_answer
@@ -11,6 +11,39 @@ from api_agent.providers.contracts import ContractError, ProviderAccessError
 from api_agent.providers.inference import result_to_wire
 from api_agent.providers.llm import LLMResult, Message, TextContent, ToolCall
 from test_bedrock_mantle import completion, response, message, reasoning, chunk, usage, MODEL
+
+
+@pytest.mark.parametrize('endpoint,mode,model,expected', [
+    ('runtime', 'completions', 'openai.gpt-oss-20b-1:0', 'tagged'),
+    ('runtime', 'completions', 'openai.gpt-oss-120b-1:0', 'auto'),
+    ('runtime', 'completions', 'openai.gpt-oss-20b-2:0', 'auto'),
+    ('runtime', 'completions', 'us.openai.gpt-oss-20b-1:0', 'auto'),
+    ('mantle', 'completions', 'openai.gpt-oss-20b', 'auto'),
+    ('runtime', 'responses', 'openai.gpt-oss-20b-1:0', 'auto'),
+])
+def test_auto_response_carrier_qualification_is_exact(endpoint, mode, model, expected):
+    assert catalog.completions_reasoning_format('auto', endpoint, mode, model) == expected
+    assert catalog.completions_reasoning_format('literal', endpoint, mode, model) == 'literal'
+    assert catalog.completions_reasoning_format('tagged', endpoint, mode, model) == 'tagged'
+
+
+def test_qualified_auto_decodes_tagged_answer_but_unqualified_auto_preserves_rejection_and_explicit_literal():
+    raw = completion()
+    raw['model'] = 'openai.gpt-oss-20b-1:0'
+    text = '<reasoning>Internal material.</reasoning>Ok'
+    raw['choices'][0]['message']['content'] = text
+    qualified = catalog.completions_reasoning_format('auto', 'runtime', 'completions', raw['model'])
+    value = mantle.decode(raw, 'completions', selected_llm=raw['model'], endpoint='runtime', reasoning_format=qualified)
+    assert value.payload.content[0].text == 'Ok'
+    raw['model'] = 'openai.gpt-oss-120b-1:0'
+    unqualified = catalog.completions_reasoning_format('auto', 'runtime', 'completions', raw['model'])
+    with pytest.raises(ProviderAccessError, match='BEDROCK_COMPLETIONS_REASONING_FORMAT'):
+        mantle.decode(raw, 'completions', selected_llm=raw['model'], endpoint='runtime', reasoning_format=unqualified)
+    literal = catalog.completions_reasoning_format('literal', 'runtime', 'completions', raw['model'])
+    assert mantle.decode(raw, 'completions', selected_llm=raw['model'], endpoint='runtime', reasoning_format=literal).payload.content[0].text == text
+    raw['model'] = 'openai.gpt-oss-20b-1:0'
+    raw['choices'][0]['message']['reasoning'] = 'native reasoning'
+    assert mantle.decode(raw, 'completions', selected_llm=raw['model'], endpoint='runtime', reasoning_format=qualified).payload.content[0].text == text
 
 
 @pytest.mark.parametrize('text,summary,calls', [

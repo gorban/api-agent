@@ -62,6 +62,18 @@ for base, (prefixes, title, context, output) in _RUNTIME_ANTHROPIC.items():
 for suffix in ('20b', '120b'):
     _RUNTIME[f'openai.gpt-oss-{suffix}-1:0'] = (f'GPT OSS {suffix.upper()}', 'oss', 128000, 16000)
 
+# Exact response-carrier qualifications are independent of display metadata.
+_COMPLETIONS_REASONING_CARRIERS = {
+    ('runtime', 'completions', 'openai.gpt-oss-20b-1:0'): 'tagged',
+}
+
+
+def completions_reasoning_format(configured, endpoint, api_mode, selected_llm):
+    """Resolve auto against the selected route's qualified response carrier."""
+    if configured != 'auto':
+        return configured
+    return _COMPLETIONS_REASONING_CARRIERS.get((endpoint, api_mode, selected_llm), 'auto')
+
 
 def _discovered_display(identifier):
     """Parse display identity only; this grants no model capabilities."""

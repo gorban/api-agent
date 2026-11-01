@@ -10,9 +10,10 @@ from api_agent.config.dotenv import read_dotenv
 from api_agent.tui.app import ApiAgentApp
 
 
+@pytest.mark.parametrize('endpoint', ['runtime', 'mantle'])
 @pytest.mark.parametrize('mode', ['completions', 'responses', 'converse'])
 @pytest.mark.parametrize('saved', [False, True])
-def test_bedrock_reasoning_format_review_and_clear_membership(tmp_path, mode, saved):
+def test_bedrock_reasoning_format_review_and_clear_membership(tmp_path, mode, endpoint, saved):
     from pathlib import Path
 
     name = 'BEDROCK_COMPLETIONS_REASONING_FORMAT'
@@ -23,7 +24,7 @@ def test_bedrock_reasoning_format_review_and_clear_membership(tmp_path, mode, sa
         pack_id='fixture', external_pack=False, dotenv_path=tmp_path / '.env',
         anchors={'base_root': tmp_path, 'pack_root': tmp_path, 'owner_root': root})
     app = ApiAgentApp(context, load_shared_schema(),
-        environ={'LLM_PROVIDER': selector, 'BEDROCK_API_MODE': mode},
+        environ={'LLM_PROVIDER': selector, 'BEDROCK_API_MODE': mode, 'BEDROCK_ENDPOINT': endpoint},
         container_runtime=SimpleNamespace(inventory=lambda: ()))
 
     async def scenario():

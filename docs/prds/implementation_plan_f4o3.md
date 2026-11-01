@@ -10,12 +10,21 @@ or an HTTP success alone does not establish final-answer compatibility.
   API, model identity and response shape before interpreting in-band markers.
   Preserve explicit operator selections; do not change API or endpoint implicitly.
 - [x] Prefer native reasoning fields across model families. Text-only common
-  `<reasoning>` and `<think>` prefixes are ambiguous with literal output: default
-  `BEDROCK_COMPLETIONS_REASONING_FORMAT=auto` must reject them with actionable
+  `<reasoning>` and `<think>` prefixes are ambiguous with literal output: when
+  `BEDROCK_COMPLETIONS_REASONING_FORMAT=auto` has no qualified carrier, reject them with actionable
   configuration guidance. Explicit `tagged` interprets the leading envelope;
   `literal` preserves the entire answer. No model-family whitelist or implicit
   endpoint change establishes this interpretation. Never promote raw text from
   either envelope to a displayable reasoning summary.
+- [x] Keep the declaration default `auto`. For the selected Bedrock provider,
+  resolve `auto` to `tagged` only for the exact qualified Runtime Completions
+  response carrier `openai.gpt-oss-20b-1:0`; all other selected IDs and routes
+  remain `auto` and reject ambiguous leading envelopes. Saving only Runtime
+  and Completions must select the bundled OSS 20B default and interpret its
+  tagged answer without an extra setting. Explicit `tagged` or `literal`
+  values from dotenv, environment, CLI or Review remain authoritative;
+  explicit `auto` follows the same qualified carrier resolution. No endpoint,
+  API, model ID, wire parser or UI handling changes.
 - [x] Expose the reasoning-format default and help in Review configuration for
   Completions only. Clear .env lists saved entries, including inactive settings,
   and retains deleted entries unchecked until the operator leaves that screen.

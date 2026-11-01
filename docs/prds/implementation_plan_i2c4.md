@@ -2,6 +2,11 @@
 
 [Prepared sessions](implementation_plan_i2c.md)
 
+- [x] Bound browser request/session establishment, then let an established
+  heartbeat-owned stream use its server-enforced graph deadline. A healthy turn
+  must survive beyond 150 seconds; Stop, failed heartbeats, server deadline errors
+  and page departure still cancel or finalize through the existing owners.
+
 - [x] Isolate operation identities by authenticated backend owner and request session. Bound active operations and retained terminal statuses; reject duplicate identifiers while retained.
 - [x] Advertise ten-second heartbeats and expire a request thirty seconds after its last heartbeat. Heartbeats never extend the operation's real deadline. Inject short intervals for controlled verification.
 - [x] Make cancel, disconnect, expiry and shutdown drain the actual operation task and its OperationContext. Preserve one terminal result, including usage supplied by the backend. Ordinary cancellation must leave persistent authentication ownership intact.
