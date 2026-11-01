@@ -116,7 +116,7 @@ help = "Default False withholds trace payload content. Explicit True permits scr
 [fields.RUN_LOG_FULL_CONTENT]
 type = "bool"
 default = false
-help = "Show full permitted local diagnostic input/output within admitted payload limits instead of truncated previews. Default False. Requires LOG_CONTENT=True; credentials, encrypted reasoning and internal state remain excluded. Does not change trace content or the TUI display retention."
+help = "Default False keeps local content previews and downstream 16,384-character owner/TUI presentation cuts. True shows complete admitted local records, including in the interactive TUI. Payload content still requires LOG_CONTENT=True; credential scrubbing and source admission limits remain. Old scrollback may expire; the latest full record is retained. Container polling still admits only its 100-line/16-KiB source tail. Does not enable trace content or guarantee lossless terminal delivery."
 
 [fields.LANGFUSE_ADMIN_EMAIL]
 type = "str"

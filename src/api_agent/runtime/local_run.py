@@ -505,7 +505,8 @@ class LocalRunOwner:
         fingerprint = sha256(text.encode(errors='surrogatepass')).hexdigest()
         event = []
         def commit(safe):
-            safe = safe[-16384:]
+            if self._config is None or self._config.values.get('RUN_LOG_FULL_CONTENT') is not True:
+                safe = safe[-16384:]
             self._log_fingerprints[source] = fingerprint
             self._logs[source] = safe
             self._sequence += 1

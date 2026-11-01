@@ -39,9 +39,13 @@ logging is enabled; arbitrary streaming output has a separate privacy gate.
 OTEL and LangFuse spans. Credentials stay excluded with either opt-in enabled.
 Run local emits shared workflow and safe provider lifecycle events.
 `RUN_LOG_FULL_CONTENT=True` removes the default 512-character preview limit from
-permitted, supported payload fields; it does not enable content capture or remove
-source admission bounds. Use `./launch.sh --tui-mode run-local --no-std-in | tee run.log`
-to retain stdout; the TUI keeps its own smaller display buffer. Slow terminal
+permitted, supported payload fields and the downstream 16,384-character owner/TUI presentation cutoff.
+It does not enable content capture or remove source admission bounds. Use `./launch.sh --tui-mode run-local --no-std-in | tee run.log`
+to retain stdout. The TUI keeps 1,000 events and a 1 MiB scrollback target; full
+mode retains its latest whole admitted record even above that target, while
+later events can evict older records. Managed container log polling still
+admits only its last 100 lines within 16 KiB; this option cannot recover earlier
+container output. Slow terminal
 consumers can cause dropped diagnostic events, explicitly marked when output
 resumes. Stopping the application does not wait indefinitely for a blocked pipe.
 

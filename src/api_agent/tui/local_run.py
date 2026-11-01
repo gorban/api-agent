@@ -233,15 +233,17 @@ class LocalRunScreen(Screen):
 
     def receive(self, event):
         if event.kind in {'log', 'diagnostic'}:
-            # Display retention is independent of the full terminal stream.
+            # Full presentation keeps whole records; old scrollback can still
+            # expire. Never evict the sole full record merely for its size.
+            full = self.configuration_snapshot.get('RUN_LOG_FULL_CONTENT') is True
             text = event.text
-            if len(text) > 16384:
+            if not full and len(text) > 16384:
                 text = text[:16384] + '\n[TUI display truncated]\n'
             displayed = replace(event, text=text, diagnostic=None)
             size = len(text.encode('utf-8'))
             self.events.append(displayed)
             self._event_bytes += size
-            while len(self.events) > 1000 or self._event_bytes > 1048576:
+            while len(self.events) > 1000 or (self._event_bytes > 1048576 and (not full or len(self.events) > 1)):
                 removed = self.events.popleft()
                 self._event_bytes -= len(removed.text.encode('utf-8'))
         elif event.kind == 'configuration-required':

@@ -69,7 +69,9 @@ async def plan(inputs, context):
     spec = await context.tools['primary'].describe()
     result, _ = await _demo_llm(context,
         'Plan a read-only response. Return JSON with use_tool:boolean, arguments:object, answer:string. '
-        'Do not execute the tool. Use empty arguments when no tool is needed.',
+        'Do not execute the tool. Use empty arguments when no tool is needed. '
+        'Preserve every explicit requirement in the original request when revising a candidate. '
+        'Reviewer feedback is advisory: do not follow a suggested correction that conflicts with those requirements.',
         {'messages': inputs['messages'], 'feedback': inputs.get('feedback') or {},
          'tool': {'name': spec.name, 'description': spec.description,
                   'input_schema': spec.input_schema}}, stable_fields=('messages', 'tool'))
@@ -107,6 +109,13 @@ async def review(inputs, context):
         nonlocal verdict
         result, _ = await _demo_llm(context,
             'Assess correctness, grounding, relevance and presentation preference. '
+            'The original request is authoritative, including its functional, algorithmic, complexity and output constraints. '
+            'Evaluate the actual candidate against those requirements, not against a preferred alternative implementation. '
+            'Before rejecting correctness, identify a concrete failing case or a precise invalid step; '
+            'do not invent defects or reject a valid operation solely because another approach is possible. '
+            'Check that every proposed correction preserves all explicit requirements and already-correct properties. '
+            'Do not recommend a correction that contradicts the original request. '
+            'Reassess earlier review advice against the original requirements; correct mistaken advice rather than defending it. '
             'Return JSON with correct, grounded, relevant, preference booleans and details:string. '
             'For every failed check, give the concrete defect, evidence and correction needed in details, '
             'using at most 4096 characters. Use empty details when all checks pass. '

@@ -2209,3 +2209,30 @@ def test_local_cdp_status_button_render_open_copy_and_stopped_retention(monkeypa
             assert 'localhost:8080' in frame
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('kind', ['log', 'diagnostic'])
+def test_full_log_setting_keeps_complete_records_and_evicts_only_old_scrollback(kind):
+    screen = LocalRunScreen(None, lambda: NS(values={
+        'RUN_LOG_SOURCE': 'agent', 'RUN_LOG_FULL_CONTENT': True}))
+    text = '{"content":"' + '😀' * 280000 + '"}\n'
+    screen.receive(LocalEvent(kind, source='agent', text='old record\n'))
+    screen.receive(LocalEvent(kind, source='agent', text=text,
+                              diagnostic={'transient': 'not retained'}))
+
+    assert len(screen.events) == 1
+    assert screen.events[0].text == text
+    assert screen.events[0].diagnostic is None
+    assert screen._event_bytes == len(text.encode())
+    screen.receive(LocalEvent(kind, source='agent', text='next record\n'))
+    assert [event.text for event in screen.events] == ['next record\n']
+    assert screen._event_bytes == len('next record\n')
+
+
+def test_full_log_setting_keeps_the_existing_event_count_bound():
+    screen = LocalRunScreen(None, lambda: NS(values={
+        'RUN_LOG_SOURCE': 'agent', 'RUN_LOG_FULL_CONTENT': True}))
+    for index in range(1001):
+        screen.receive(LocalEvent('log', source='agent', text=f'{index}\n'))
+    assert len(screen.events) == 1000
+    assert screen.events[0].text == '1\n'

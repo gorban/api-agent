@@ -50,3 +50,27 @@ accepted feedback empty. Both direct-answer and tool-rejection paths are
 covered, with native and permitted fallback schema validation unchanged.
 Shared-history qualification and remaining human acceptance are recorded in
 [ordered inference history](implementation_plan_f1a1c.md).
+
+## Constraint-preserving review
+
+- [x] Make the original request authoritative for every reviewer verdict and
+  proposed correction, including functional, algorithmic, complexity and output
+  constraints. Require a concrete failing case or precise invalid step for a
+  correctness rejection; a different valid implementation is not itself a bug.
+- [x] Require repairs to preserve explicit requirements and already-correct
+  properties. Reassess earlier mistaken reviewer advice. The planner treats
+  feedback as advisory and retains original constraints while receiving exact
+  explanations unchanged. Keep this generic, without puzzle-specific repairs,
+  new model calls, weaker gates or larger pass budgets.
+- [x] Verify actual planner/reviewer requests and retry histories, applicable
+  exact coverage, regenerated views, package/provenance and independent review.
+  Prompt guidance does not establish that every model verdict is correct.
+- [ ] Human acceptance: inspect a retried answer and reviewer feedback against
+  the original request on the selected model.
+
+Verification: 22,887 unit tests pass with exact 100% line/branch coverage across
+336 measured files. The normal recorded runner passes four controlled demo
+cases and publishes Allure successfully without inference spending. Existing
+native/fallback schemas, hard review gates and retry budgets remain unchanged.
+Public boundary, packaged resources and independent review remain required for
+publication; model judgment and full-record human inspection remain open.
