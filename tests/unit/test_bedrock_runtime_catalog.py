@@ -28,7 +28,7 @@ def test_discovered_gpt_display_metadata_does_not_grant_capabilities(identifier,
 
 
 @pytest.mark.parametrize('identifier', ['other.future-model-v1', 'openai.gpt-oss-20b',
-                                        'openai.gpt-5.6', 'vendor.gpt-5.6-luna',
+                                        'openai.gpt-', 'vendor.gpt-5.6-luna',
                                         'openai.gpt-6-luna-us', 'openai.gpt-8-nova-moon',
                                         'direct.openai.gpt-8-oss'])
 def test_unrecognized_display_identity_stays_exact(identifier):
@@ -361,3 +361,57 @@ async def test_legacy_structured_runtime_stream_rejects_before_authentication(mo
 def test_runtime_discovery_rejects_malformed_identity_without_model_availability_rules(identifier):
     with pytest.raises(ContractError):
         catalog.selection(identifier, 'responses', 'runtime')
+
+
+@pytest.mark.parametrize('identifier,family,version,title', [
+    ('anthropic.claude-haiku-5-5', 'claude-haiku-direct', '5.5', 'Claude Haiku 5.5'),
+    ('us.anthropic.claude-haiku-5-5', 'claude-haiku-us', '5.5', 'Claude Haiku 5.5 [US]'),
+    ('global.anthropic.claude-haiku-5-5', 'claude-haiku-global', '5.5', 'Claude Haiku 5.5 [GLOBAL]'),
+    ('anthropic.claude-haiku-4-5-20251001-v1:0', 'claude-haiku-direct', '4.5', 'Claude Haiku 4.5'),
+    ('us.anthropic.claude-3-haiku-20240307-v1:0', 'claude-haiku-us', '3', 'Claude Haiku 3 [US]'),
+    ('us.anthropic.claude-3-5-sonnet-20241022-v2:0', 'claude-sonnet-us', '3.5', 'Claude Sonnet 3.5 [US]'),
+    ('anthropic.claude-fable-5-1', 'claude-fable-direct', '5.1', 'Claude Fable 5.1'),
+    ('anthropic.claude-opus-5', 'claude-opus-direct', '5', 'Claude Opus 5'),
+    ('openai.gpt-5.4', 'gpt', '5.4', 'GPT 5.4'),
+    ('us.openai.gpt-5.5', 'gpt--us', '5.5', 'GPT 5.5 [US]'),
+])
+@pytest.mark.parametrize('mode', ['responses', 'completions', 'converse'])
+def test_discovered_claude_and_numeric_gpt_display_never_grants_support(identifier, family, version, title, mode):
+    row = catalog.selection(identifier, mode, 'runtime')
+    assert row.selected_llm == identifier
+    assert (row.family, row.version, row.display_name) == (family, version, title)
+    assert row.max_output_tokens is row.context_length is None
+    assert 'structured' not in row.features
+    assert catalog.route(identifier, mode, 'runtime') == ('/converse' if mode == 'converse' else '/openai/v1')
+
+
+@pytest.mark.parametrize('identifier', ['direct.anthropic.claude-haiku-5-5',
+    'anthropic.claude-haiku-5-5-us', 'anthropic.claude-haiku', 'anthropic.claude-5-5',
+    'anthropic.claude-haiku-5-5-vx', 'vendor.claude-haiku-5-5'])
+def test_unrecognized_claude_display_remains_opaque(identifier):
+    row = catalog.selection(identifier, 'converse', 'runtime')
+    assert (row.display_name, row.family, row.version) == (identifier, identifier, None)
+
+
+def test_claude_family_defaults_choose_numeric_versions_without_merging_routes():
+    from api_agent.api.chat_contract import catalog as application_catalog
+    old = 'us.anthropic.claude-haiku-4-5-20251001-v1:0'
+    new = 'us.anthropic.claude-haiku-5-5'
+    global_id = 'global.anthropic.claude-haiku-5-5'
+    rows = tuple(catalog.selection(identifier, 'converse', 'runtime') for identifier in (old, new, global_id))
+    result = application_catalog(rows, global_id, None)
+    assert result['family_defaults'] == {'claude-haiku-us': new, 'claude-haiku-global': global_id}
+    assert [row['value'] for row in result['models']] == [old, new, global_id]
+    assert [row['version'] for row in result['models']] == ['4.5', '5.5', '5.5']
+
+
+@pytest.mark.parametrize('scope', ['us', 'eu', 'au', 'jp', 'in', 'apac', 'global', 'direct'])
+def test_numeric_gpt_route_cannot_merge_with_a_named_variant(scope):
+    from api_agent.api.chat_contract import catalog as application_catalog
+    named = 'openai.gpt-5-' + scope
+    scoped = scope + '.openai.gpt-6'
+    rows = tuple(catalog.selection(identifier, 'responses', 'runtime') for identifier in (named, scoped))
+    assert rows[0].family != rows[1].family
+    result = application_catalog(rows, named, None)
+    assert set(result['family_defaults'].values()) == {named, scoped}
+    assert [row['value'] for row in result['models']] == [named, scoped]

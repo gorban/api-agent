@@ -66,6 +66,24 @@ export function modelGroups(catalog) {
     }));
     group.name = labels.size === 1 ? [...labels][0] : group.family;
   }
+  // This UI owns concise labels; full IDs and family handles remain unchanged.
+  const aliases = groups.map(group => {
+    const numeric = /^gpt--([a-z][a-z0-9-]*)$/.exec(group.family || '');
+    if (numeric) return [numeric[0], 'gpt', numeric[1]];
+    return /^(claude-[a-z][a-z0-9]*|gpt(?:-[a-z][a-z0-9]*)?)(?:-(us|us-gov|eu|au|jp|in|apac|global|direct))?$/.exec(group.family || '');
+  });
+  groups.forEach((group, index) => {
+    const alias = aliases[index];
+    if (!alias) return;
+    const [, family, scope] = alias;
+    if (!family.startsWith('claude-') && !scope) return;
+    const peers = aliases.filter(other => other && other[1] === family);
+    group.name = family.replace(/^claude-/, '') + (scope && scope !== 'direct' && peers.length > 1 ? '-' + scope : '');
+  });
+  const names = groups.map(group => group.name);
+  groups.forEach(group => {
+    if (names.filter(name => name === group.name).length > 1) group.name += ' — ' + group.rows[0].selected_llm;
+  });
   return groups;
 }
 export function resolveSelection(catalog, {model, family = '', version = '', reasoning = ''}) {

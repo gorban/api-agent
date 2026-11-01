@@ -295,3 +295,24 @@ See [qualified admission requirements](../../../../docs/prds/implementation_plan
 Automatic conversion to synthetic strict-function results, capability discovery,
 expiring observations and newer-version candidate inheritance remain in the
 separate capability plan.
+
+### Claude Haiku routing
+
+Claude Haiku 4.5 and 5.5 support Runtime Converse, not Responses or Chat
+Completions. Use `BEDROCK_ENDPOINT=runtime` and `BEDROCK_API_MODE=converse`,
+then select a model/profile ID returned by your account's discovery. For example,
+`LLM_ALLOWED_MODELS=(?:us|global)[.]anthropic[.]claude-haiku-.+` and
+`LLM_DEFAULT_MODEL=us[.]anthropic[.]claude-haiku-4-5-20251001-v1:0` select
+Haiku profiles with a specific 4.5 default; choose an actually available ID.
+Mantle exposes these models through Messages, which this adapter does not yet
+implement. Automatic API/endpoint fallback is separate future work; a discovered
+ID does not establish that it supports the explicitly configured API.
+
+The generic catalog retains full IDs and display family/version metadata.
+The included Studio shortens Claude names and distinguishes visible routing
+targets only when needed. Another UI may present that metadata differently.
+Display parsing never enables model capabilities or changes inference routing.
+
+See AWS's [Haiku 4.5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html)
+and [Haiku 5.5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-5-5.html)
+API matrices, and the [API selection follow-up](../../../../docs/prds/implementation_plan_f1a2.md).
