@@ -13,6 +13,25 @@ from api_agent.workflows.observations import WorkflowObservationFactory
 from test_workflow_observations import config, definition
 
 
+@pytest.mark.parametrize('value', [None, 0, 127999, 200000])
+def test_converse_output_ceiling_survives_nested_provider_capture(value):
+    payload = {'provider_payload': {'inferenceConfig': {'maxTokens': value}}}
+    assert project_values(payload, {'type': 'object'}, EmissionBoundary(ContentPolicy(True)), _provider_content=True) == payload
+
+
+@pytest.mark.parametrize('value', [True, 'synthetic-secret', -1, 3.5])
+def test_converse_output_ceiling_does_not_relax_typed_metadata(value):
+    payload = {'provider_payload': {'inferenceConfig': {'maxTokens': value}}}
+    assert project_values(payload, {'type': 'object'}, EmissionBoundary(ContentPolicy(True)), _provider_content=True) == {
+        'provider_payload': {'inferenceConfig': {}}}
+
+
+def test_converse_output_ceiling_still_observes_credential_authority():
+    payload = {'provider_payload': {'inferenceConfig': {'maxTokens': 127999}}}
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=('127999',))
+    assert '127999' not in json.dumps(project_values(payload, {'type': 'object'}, boundary, _provider_content=True))
+
+
 @pytest.mark.parametrize('key', ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
 @pytest.mark.parametrize('value', [None, 0, 128, (1 << 53) - 1])
 def test_native_generation_limit_survives_authorized_capture_projection(key, value):

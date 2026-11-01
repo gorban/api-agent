@@ -107,7 +107,7 @@ def _schema_field(key):
 
 def _provider_field(key):
     """Plaintext SDK content fields, never workflow declaration permission."""
-    return _schema_field(key) or key in ('reasoning', 'reasoning_content', 'analysis',
+    return _schema_field(key) or key in ('maxTokens', 'reasoning', 'reasoning_content', 'analysis',
                                         'thinking', 'thinking_content', 'chain_of_thought')
 
 

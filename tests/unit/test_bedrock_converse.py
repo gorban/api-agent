@@ -24,6 +24,58 @@ def response():
             'stopReason': 'end_turn', 'usage': {'inputTokens': 2, 'outputTokens': 3, 'totalTokens': 5}}
 
 
+@pytest.mark.parametrize('reason', ['end_turn', 'stop_sequence'])
+@pytest.mark.parametrize('signature', [None, 'synthetic-signature'])
+def test_completed_non_tool_reasoning_preserves_only_final_answer(reason, signature):
+    raw = response()
+    thinking = {'text': 'synthetic private thinking'}
+    if signature is not None:
+        thinking['signature'] = signature
+    raw['output']['message']['content'].insert(0, {'reasoningContent': {'reasoningText': thinking}})
+    raw['stopReason'] = reason
+
+    result = c.decode(raw, selected_llm=MODEL)
+
+    assert result.payload.content == (TextContent('hello'),)
+    assert result.outcome == 'completed'
+    assert result.usage.output_tokens == 3
+    assert result.payload.continuation is None
+
+
+@pytest.mark.parametrize('thinking', [None, {}, {'redactedContent': 'opaque'},
+    {'reasoningText': None}, {'reasoningText': {}}, {'reasoningText': {'text': 3}},
+    {'reasoningText': {'text': 'private', 'signature': None}},
+    {'reasoningText': {'text': 'private', 'extra': 'private'}}])
+def test_malformed_reasoning_rejects_with_static_diagnosis(thinking):
+    raw = response()
+    raw['output']['message']['content'].insert(0, {'reasoningContent': thinking})
+
+    with pytest.raises(ProviderAccessError) as caught:
+        c.decode(raw, selected_llm=MODEL)
+
+    assert caught.value.provider_diagnostics['validation_rule'] == 'reasoning_content'
+    assert caught.value.usage.output_tokens == 3
+    assert caught.value.execution == 'possibly_executed'
+    assert 'private' not in str(caught.value)
+
+
+@pytest.mark.parametrize('reason,blocks', [
+    ('tool_use', [{'toolUse': {'toolUseId': 'c', 'name': 'lookup', 'input': {}}}]),
+    ('max_tokens', [{'text': 'partial'}]),
+    ('end_turn', []), ('end_turn', [{'text': '  '}])])
+def test_reasoning_never_discards_state_needed_for_unfinished_or_tool_turn(reason, blocks):
+    raw = response()
+    raw['output']['message']['content'] = [
+        {'reasoningContent': {'reasoningText': {'text': 'private', 'signature': 'signed'}}}, *blocks]
+    raw['stopReason'] = reason
+
+    with pytest.raises(ProviderAccessError) as caught:
+        c.decode(raw, selected_llm=MODEL)
+
+    assert caught.value.provider_diagnostics['validation_rule'] == 'unsupported_continuation'
+    assert caught.value.usage.input_tokens == 2
+
+
 def test_encode_system_tools_results_and_role_merging():
     req = LLMRequest(MODEL, CompletionRequest((Message('system', (TextContent('rules'),)),
         Message('user', (TextContent('question'),)), Message('user', (TextContent('details'),)),
@@ -130,6 +182,91 @@ def test_decode_malformed_response_retains_valid_usage(change):
         c.decode(raw, selected_llm=MODEL)
     assert caught.value.execution == 'possibly_executed'
     assert 'hello' not in str(caught.value)
+
+
+@pytest.mark.parametrize(('change', 'rule', 'path'), [
+    (lambda r: r.update(output={}), 'output_message', '$.output'),
+    (lambda r: r['output']['message'].update(role='user'), 'assistant_message', '$.output.message'),
+    (lambda r: r['output']['message'].update(content=[{'reasoningContent': {'secret':'canary'}}]),
+     'reasoning_content', '$.output.message.content[].reasoningContent'),
+    (lambda r: r.update(stopReason='private-canary'), 'finish_reason', '$.stopReason'),
+    (lambda r: r['usage'].update(inputTokens=True), 'usage_count', '$.usage.inputTokens'),
+    (lambda r: r.update(serviceTier={'unknown-private-canary': 'value'}), 'service_tier', '$.serviceTier'),
+])
+def test_converse_rejection_reports_only_fixed_shape_diagnosis(change, rule, path):
+    raw = response()
+    change(raw)
+    with pytest.raises(ProviderAccessError) as caught:
+        c.decode(raw, selected_llm=MODEL)
+    assert caught.value.provider_diagnostics == {
+        'version': 1, 'validation_rule': rule, 'validation_path': path}
+    assert caught.value.execution == 'possibly_executed'
+    assert caught.value.usage is None if rule == 'usage_count' else caught.value.usage.input_tokens == 2
+    assert 'private-canary' not in str(caught.value.provider_diagnostics)
+
+
+def test_native_observation_counts_block_kinds_without_values():
+    from api_agent.telemetry.inference_diagnostics import sdk_observation, valid_diagnostics
+    raw = response()
+    raw['output']['message']['content'] = [
+        {'text': 'visible-canary'},
+        {'reasoningContent': {'reasoningText': {'text': 'reasoning-canary', 'signature': 'opaque'}}},
+        {'toolUse': {'toolUseId': 'opaque', 'name': 'lookup', 'input': {}}},
+        {'unknown-private-canary': 'value'},
+    ]
+    observation = sdk_observation({'provider_response': raw}, 'response')
+    assert observation['api'] == 'converse'
+    assert (observation['message_items'], observation['reasoning_items'],
+            observation['tool_items'], observation['other_items']) == (1, 1, 1, 1)
+    assert observation['visible_text_characters'] == len('visible-canary')
+    assert observation['reasoning_text_characters'] == len('reasoning-canary')
+    assert valid_diagnostics(observation)
+    assert 'canary' not in str(observation)
+
+
+@pytest.mark.parametrize(('inference', 'expected'), [
+    ({'maxTokens': 4096}, 4096),
+    ({'maxTokens': True}, None),
+    ({'maxTokens': -1}, None),
+    ({'maxTokens': 'private-canary'}, None),
+    ('malformed', None),
+])
+def test_native_request_observation_admits_only_bounded_max_tokens(inference, expected):
+    from api_agent.telemetry.inference_diagnostics import sdk_observation, valid_diagnostics
+    observation = sdk_observation({'provider_payload': {'inferenceConfig': inference}}, 'request')
+    assert observation.get('max_output_tokens') == expected
+    assert valid_diagnostics(observation)
+    assert 'private-canary' not in str(observation)
+
+
+@pytest.mark.parametrize('content', [None, [None], [{'text': 7}],
+    [{'reasoningContent': {}}],
+    [{'reasoningContent': {'reasoningText': {'text': 7}}}]])
+def test_native_observation_ignores_malformed_block_values(content):
+    from api_agent.telemetry.inference_diagnostics import sdk_observation, valid_diagnostics
+    raw = response()
+    raw['output']['message']['content'] = content
+    observation = sdk_observation({'provider_response': raw}, 'response')
+    assert observation['api'] == 'converse'
+    assert observation['visible_text_characters'] == 0
+    assert observation['reasoning_text_characters'] == 0
+    assert valid_diagnostics(observation)
+
+
+@pytest.mark.parametrize(('change', 'rule', 'path'), [
+    (lambda r: r['output']['message'].update(content=[{'text': 42}]),
+     'text_value', '$.output.message.content[].text'),
+    (lambda r: r['output']['message'].update(content=[{'text': 'x' * 600000}]),
+     'response_object', '$'),
+])
+def test_native_text_and_size_rejections_have_fixed_diagnosis(change, rule, path):
+    raw = response()
+    change(raw)
+    with pytest.raises(ProviderAccessError) as caught:
+        c.decode(raw, selected_llm=MODEL)
+    assert caught.value.provider_diagnostics == {
+        'version': 1, 'validation_rule': rule, 'validation_path': path}
+    assert caught.value.execution == 'possibly_executed'
 
 
 @pytest.mark.parametrize('tool', [

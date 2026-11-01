@@ -246,6 +246,11 @@ class SDKTransport:
                         if validation_code is None or not valid_diagnostics(frame['diagnostics']):
                             raise ContractError('Invalid Bedrock worker diagnostics')
                         error.provider_diagnostics = frame['diagnostics']
+                        rule = frame['diagnostics'].get('validation_rule')
+                        path = frame['diagnostics'].get('validation_path')
+                        if rule is not None and path is not None:
+                            error.message = f'{message} Validation: {rule} at {path}.'
+                            error.args = (error.message,)
                         from api_agent.workflows.inference_capture import capture_transport_diagnostics
                         capture_transport_diagnostics(frame['diagnostics'])
                     if 'usage' in frame:

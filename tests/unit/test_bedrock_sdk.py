@@ -102,7 +102,55 @@ async def test_http_success_contract_rejection_retains_code_usage_and_shape(auth
         assert caught.value.code == 'tool_finish_mismatch' and caught.value.status == 200
         assert caught.value.usage.input_tokens == 375 and caught.value.usage.output_tokens == 25
         assert caught.value.provider_diagnostics == diagnostics
+        assert 'Validation: tool_finish_consistency at $.choices[].finish_reason.' in str(caught.value)
         assert capture['rows'] == [dict(phase='response', content={}, reason='unavailable', diagnostics=diagnostics)]
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_native_converse_shape_diagnosis_survives_worker_and_sdk_with_content_disabled(
+        auth, fake_process, monkeypatch):
+    from api_agent.llm_providers.bedrock import worker
+    from test_bedrock_runtime_worker import request as worker_request
+    from test_bedrock_converse import response
+
+    monkeypatch.setenv('LOG_CONTENT', 'False')
+    raw = response()
+    raw['output']['message']['content'] = [{'reasoningContent': {'private-canary': 'secret'}}]
+    frames = []
+    worker.execute(worker_request('converse', {'endpoint': 'runtime', 'prefix': '/converse',
+        'body': {'modelId': 'operator.model-v2:1', 'messages': []}}), frames.append,
+        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None))
+    assert frames[0]['diagnostics']['validation_rule'] == 'reasoning_content'
+    assert frames[0]['diagnostics']['validation_path'] == '$.output.message.content[].reasoningContent'
+    assert frames[0]['execution'] == 'possibly_executed'
+    assert frames[0]['usage']['input_tokens'] == 2
+    assert 'private-canary' not in str(frames)
+
+    fake_process[0]['frames'] = frames
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ProviderAccessError) as caught:
+            await transport.call('converse', {}, auth=auth)
+        assert caught.value.execution == 'possibly_executed'
+        assert caught.value.usage.input_tokens == 2
+        assert 'Validation: reasoning_content at $.output.message.content[].reasoningContent.' in str(caught.value)
+        assert 'private-canary' not in str(caught.value)
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_keeps_generic_message_when_shape_path_is_unavailable(auth, fake_process):
+    fake_process[0]['frames'] = [{'error': 'unknown', 'execution': 'possibly_executed',
+        'code': 'invalid_response', 'diagnostics': {'version': 1, 'response_validation': 'rejected'}}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ProviderAccessError) as caught:
+            await transport.call('converse', {}, auth=auth)
+        assert 'Validation:' not in str(caught.value)
+        assert caught.value.provider_diagnostics == {'version': 1, 'response_validation': 'rejected'}
     finally:
         await transport.aclose()
 
