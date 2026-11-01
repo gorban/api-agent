@@ -65,15 +65,29 @@ for suffix in ('20b', '120b'):
 
 def _discovered_display(identifier):
     """Parse display identity only; this grants no model capabilities."""
-    match = re.fullmatch(
-        r'(?:(?P<scope>[a-z][a-z0-9-]*)\.)?openai\.gpt-'
-        r'(?P<version>\d+(?:\.\d+)*)-(?P<family>[a-z][a-z0-9]*)'
+    prefix = r'(?:(?P<scope>[a-z][a-z0-9-]*)\.)?'
+    match = re.fullmatch(prefix + r'openai\.gpt-'
+        r'(?P<version>\d+(?:\.\d+)*)(?:-(?P<family>[a-z][a-z0-9]*))?'
         r'(?:-\d{4}-\d{2}-\d{2})?', identifier)
+    if match is not None and match.group('scope') != 'direct':
+        scope, version, flavor = match.group('scope', 'version', 'family')
+        # Numeric-only families use a disjoint scope delimiter: a named
+        # variant such as `us` must not merge with the US routing target.
+        family = ('gpt-' + flavor + ('-' + scope if scope else '') if flavor
+                  else 'gpt' + ('--' + scope if scope else ''))
+        title = f'GPT {version}' + (' ' + flavor.title() if flavor else '') + (' [' + scope.upper() + ']' if scope else '')
+        return title, family, version
+    revision = r'(?:-\d{8})?(?:-v\d+(?::\d+)?)?'
+    match = (re.fullmatch(prefix + r'anthropic\.claude-(?P<family>[a-z][a-z0-9]*)-'
+                         r'(?P<version>\d+(?:-\d{1,3})*)' + revision, identifier)
+             or re.fullmatch(prefix + r'anthropic\.claude-(?P<version>\d+(?:-\d{1,3})*)-'
+                             r'(?P<family>[a-z][a-z0-9]*)' + revision, identifier))
     if match is None or match.group('scope') == 'direct':
         return identifier, identifier, None
     scope, version, flavor = match.group('scope', 'version', 'family')
-    family = 'gpt-' + flavor + ('-' + scope if scope else '')
-    title = f'GPT {version} {flavor.title()}' + (' [' + scope.upper() + ']' if scope else '')
+    version = version.replace('-', '.')
+    family = 'claude-' + flavor + '-' + (scope or 'direct')
+    title = f'Claude {flavor.title()} {version}' + (' [' + scope.upper() + ']' if scope else '')
     return title, family, version
 
 

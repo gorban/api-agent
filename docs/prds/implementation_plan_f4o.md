@@ -63,3 +63,5 @@ Offline qualification passed 22,464 unit tests with exact 100% line and branch
 coverage. Source distributions, installed and relocated packages, workflow
 resources and independent/external source reviews passed. Real Runtime access
 and the Studio acceptance above remain separate checks.
+
+- [x] Complete [Claude/GPT display parsing and Studio target labels](implementation_plan_f4o2.md), preserving full IDs and explicit inference routing.

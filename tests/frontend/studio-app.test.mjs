@@ -1686,3 +1686,34 @@ for (const location of ['current','previous']) test('legacy '+location+' identit
     assert.deepEqual(requests[0].messages.map(row=>row.content),['Prior message','Saved draft']);
   } finally { await closeBrowser(browser); }
 });
+
+
+test('Claude picker shows numeric versions and scoped labels while sending full IDs',async()=>{
+ const family=JSON.stringify(['family','claude-haiku-us']);
+ const row=(scope,version,id)=>({...model,selected_llm:id,display_name:'Claude Haiku '+version,
+  family:'claude-haiku-'+scope,version,features:[],reasoning_efforts:null});
+ const older=row('us','4.5','us.anthropic.claude-haiku-4-5-20251001-v1:0');
+ const newer=row('us','5.5','us.anthropic.claude-haiku-5-5');
+ const global=row('global','5.5','global.anthropic.claude-haiku-5-5');
+ let rows=[older,newer];const posts=[];
+ const studio=await controlledHTTPStudio((request,response,body)=>{
+  response.setHeader('Content-Type','application/json');
+  if(request.url.endsWith('/models')){response.end(JSON.stringify({models:rows.map(wireModel),default:newer.selected_llm,reasoning_default:null}));return;}
+  const input=JSON.parse(body);posts.push(input);
+  response.end(JSON.stringify(wireResult(result('Claude selected'),input.session_id)));
+ },family);
+ try{
+  const {page}=studio;
+  await page.locator('#settings-nav').click();
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['haiku']);
+  assert.deepEqual(await page.locator('#version option').allTextContents(),['Provider default','4.5','5.5']);
+  await page.locator('#version').selectOption(older.selected_llm);await page.locator('#close-settings').click();
+  await page.locator('#prompt').fill('Exact version');await page.locator('#send').click();
+  await page.getByText('Claude selected',{exact:true}).waitFor();assert.equal(posts[0].model,older.selected_llm);
+  rows=[older,newer,global];await reloadPage(page);
+  await page.waitForFunction(()=>document.querySelectorAll('#model option').length===2);
+  await page.locator('#settings-nav').click();
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['haiku-us','haiku-global']);
+  assert.equal(await page.locator('#version').inputValue(),older.selected_llm);
+ }finally{await studio.close();}
+});

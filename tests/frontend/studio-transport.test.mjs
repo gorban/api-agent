@@ -257,3 +257,46 @@ for(const conversation of [null,0,true,{},[], '', 'legacy-session', id.toUpperCa
   assert.throws(()=>requestPayload(input),/Invalid conversation identifier/);
  });
 }
+
+
+test('Studio shortens visible Claude routes without changing full identities or family handles',()=>{
+ const row=(scope,version)=>({...model,value:(scope ? scope+'.' : '')+'anthropic.claude-haiku-'+version.replace('.','-'),label:'Claude Haiku '+version,family:'claude-haiku-'+(scope || 'direct'),version});
+ const direct=row('', '5.5'),usOld=row('us','4.5'),us=row('us','5.5'),global=row('global','5.5');
+ for(const [rows,names] of [
+  [[usOld,us],['haiku']], [[global],['haiku']], [[direct],['haiku']],
+  [[us,global],['haiku-us','haiku-global']],
+  [[direct,us,global],['haiku','haiku-us','haiku-global']],
+  [[direct,global],['haiku','haiku-global']],
+ ]){
+  const catalogRows=normalizeCatalog(catalog(rows,{default:rows[0].value}));
+  const groups=modelGroups(catalogRows);
+  assert.deepEqual(groups.map(group=>group.name),names);
+  assert.deepEqual(groups.flatMap(group=>group.rows).map(row=>row.selected_llm),rows.map(row=>row.value));
+  for(const group of groups) for(const entry of group.rows){
+   const selected=resolveSelection(catalogRows,{model:entry.selected_llm,version:entry.version});
+   assert.equal(selected.valid,true);assert.equal(selected.selection.selected_llm,entry.selected_llm);
+  }
+ }
+});
+
+test('Studio keeps generic GPT labels and distinct visible regional targets',()=>{
+ const row=(scope)=>({...model,value:scope+'.openai.gpt-6-luna',label:'GPT 6 Luna ['+scope.toUpperCase()+']',family:'gpt-luna-'+scope,version:'6'});
+ const us=row('us'),global=row('global');
+ assert.equal(modelGroups(normalizeCatalog(catalog([us],{default:us.value})))[0].name,'gpt-luna');
+ assert.deepEqual(modelGroups(normalizeCatalog(catalog([us,global],{default:us.value}))).map(group=>group.name),['gpt-luna-us','gpt-luna-global']);
+});
+
+
+test('numeric GPT route families remain distinct from flavor names matching route labels',()=>{
+ const rows=[
+  {...model,value:'openai.gpt-5-us',family:'gpt-us',label:'GPT 5 Us',version:'5'},
+  {...model,value:'us.openai.gpt-6',family:'gpt--us',label:'GPT 6 [US]',version:'6'},
+  {...model,value:'global.openai.gpt-6',family:'gpt--global',label:'GPT 6 [GLOBAL]',version:'6'},
+ ];
+ const catalogRows=normalizeCatalog(catalog(rows,{default:rows[0].value}));
+ const groups=modelGroups(catalogRows);
+ assert.equal(groups.length,3);
+ assert.equal(new Set(groups.map(group=>group.name)).size,3);
+ assert.deepEqual(groups.map(group=>group.rows.map(row=>row.selected_llm)),rows.map(row=>[row.value]));
+ for(const group of groups)assert.equal(resolveSelection(catalogRows,{family:group.family,model:'',version:group.rows[0].version}).selection.selected_llm,group.rows[0].selected_llm);
+});
