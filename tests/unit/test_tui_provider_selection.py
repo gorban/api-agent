@@ -2,11 +2,60 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from textual.widgets import DataTable, Input
 
 from api_agent.config import load_shared_schema
 from api_agent.config.dotenv import read_dotenv
 from api_agent.tui.app import ApiAgentApp
+
+
+@pytest.mark.parametrize('mode', ['completions', 'responses', 'converse'])
+@pytest.mark.parametrize('saved', [False, True])
+def test_bedrock_reasoning_format_review_and_clear_membership(tmp_path, mode, saved):
+    from pathlib import Path
+
+    name = 'BEDROCK_COMPLETIONS_REASONING_FORMAT'
+    root = Path(__file__).parents[2]
+    selector = str(root / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory'
+    (tmp_path / '.env').write_text(f'{name}=tagged\n' if saved else '')
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=root,
+        pack_id='fixture', external_pack=False, dotenv_path=tmp_path / '.env',
+        anchors={'base_root': tmp_path, 'pack_root': tmp_path, 'owner_root': root})
+    app = ApiAgentApp(context, load_shared_schema(),
+        environ={'LLM_PROVIDER': selector, 'BEDROCK_API_MODE': mode},
+        container_runtime=SimpleNamespace(inventory=lambda: ()))
+
+    async def scenario():
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.pause()
+            assert (name in app.configuration_pending()) == (mode == 'completions' and not saved)
+            app.review_names.update(app.session.schema.fields)
+            app.show_configuration()
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            review = {row.key.value: table.get_row(row.key) for row in table.ordered_rows}
+            assert (name in review) == (mode == 'completions')
+            if mode == 'completions':
+                assert str(review[name][1]) == ('tagged' if saved else 'auto')
+                assert 'tagged' in app.schema.fields[name].help
+            app.show_cleanup()
+            await pilot.pause()
+            assert (name in app.cleanup_names) == saved
+            if saved:
+                app.session.delete_keys([name])
+                app.refresh_rows()
+                await pilot.pause()
+                table = app.screen.query_one(DataTable)
+                cleared = {table.get_row_at(i)[1]: table.get_row_at(i)
+                           for i in range(table.row_count)}
+                assert cleared[name][0] == ''
+                app.show_configuration()
+                app.show_cleanup()
+                await pilot.pause()
+                assert name not in app.cleanup_names
+
+    asyncio.run(scenario())
 
 
 def test_bundled_provider_is_reviewable_and_switching_refreshes_tables(tmp_path):

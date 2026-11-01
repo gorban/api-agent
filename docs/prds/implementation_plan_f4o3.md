@@ -16,6 +16,9 @@ or an HTTP success alone does not establish final-answer compatibility.
   `literal` preserves the entire answer. No model-family whitelist or implicit
   endpoint change establishes this interpretation. Never promote raw text from
   either envelope to a displayable reasoning summary.
+- [x] Expose the reasoning-format default and help in Review configuration for
+  Completions only. Clear .env lists saved entries, including inactive settings,
+  and retains deleted entries unchecked until the operator leaves that screen.
 - [x] Separate protocol-defined reasoning from the visible final answer without
   treating arbitrary user-authored markup as a reasoning carrier. Preserve literal
   answer text, structured output, tool calls and their continuation semantics.

@@ -67,7 +67,6 @@ type = "str"
 enum = ["auto", "tagged", "literal"]
 default = "auto"
 applies_when = {BEDROCK_API_MODE = "completions"}
-acknowledge_default = false
 review_optional = true
 help = "Interpret text reasoning envelopes for any selected model family. auto preserves normal answer text and rejects ambiguous leading <reasoning> or <think> envelopes. tagged explicitly declares those leading envelopes to be reasoning and returns only the following answer. literal preserves all text. Native reasoning fields remain separate; raw or encrypted reasoning is never a displayable summary. This is local response interpretation, not an API or model fallback."
 
