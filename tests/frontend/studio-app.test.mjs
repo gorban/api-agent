@@ -1705,7 +1705,7 @@ test('Claude picker shows numeric versions and scoped labels while sending full 
  try{
   const {page}=studio;
   await page.locator('#settings-nav').click();
-  assert.deepEqual(await page.locator('#model option').allTextContents(),['haiku']);
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['claude-haiku']);
   assert.deepEqual(await page.locator('#version option').allTextContents(),['Provider default','4.5','5.5']);
   await page.locator('#version').selectOption(older.selected_llm);await page.locator('#close-settings').click();
   await page.locator('#prompt').fill('Exact version');await page.locator('#send').click();
@@ -1713,7 +1713,7 @@ test('Claude picker shows numeric versions and scoped labels while sending full 
   rows=[older,newer,global];await reloadPage(page);
   await page.waitForFunction(()=>document.querySelectorAll('#model option').length===2);
   await page.locator('#settings-nav').click();
-  assert.deepEqual(await page.locator('#model option').allTextContents(),['haiku-us','haiku-global']);
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['claude-haiku-us','claude-haiku-global']);
   assert.equal(await page.locator('#version').inputValue(),older.selected_llm);
  }finally{await studio.close();}
 });

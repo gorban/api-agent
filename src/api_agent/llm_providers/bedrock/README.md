@@ -309,7 +309,7 @@ implement. Automatic API/endpoint fallback is separate future work; a discovered
 ID does not establish that it supports the explicitly configured API.
 
 The generic catalog retains full IDs and display family/version metadata.
-The included Studio shortens Claude names and distinguishes visible routing
+The included Studio keeps `claude-` family names and distinguishes visible routing
 targets only when needed. Another UI may present that metadata differently.
 Display parsing never enables model capabilities or changes inference routing.
 

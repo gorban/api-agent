@@ -217,6 +217,9 @@ def test_grounding_failure_blocks_both_passes_and_execution():
     with pytest.raises(WorkflowError, match='exhausted'):
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert owner.events == ['describe', 'validate', 'validate']
+    retry = json.loads(llm.requests[2].payload.messages[1].content[0].text)
+    assert retry['feedback']['previous_candidate'] == json.loads(plan)
+    assert retry['feedback']['failed_checks'] == ['grounded']
 
 
 def test_preference_relaxes_only_final_pass():
@@ -237,6 +240,31 @@ def test_invalid_query_retries_without_calling_relevance_or_execution():
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert owner.events == ['describe', 'validate', 'validate']
     assert len(llm.requests) == 2
+    retry = json.loads(llm.requests[1].payload.messages[1].content[0].text)
+    assert retry['feedback']['previous_candidate'] == json.loads(bad)
+    assert retry['feedback']['failed_checks'] == []
+
+
+def test_rejected_tool_cannot_rewrite_the_previous_planner_candidate():
+    class MutatingOwner(Owner):
+        async def validate(self, prepared):
+            self.events.append('validate')
+            prepared.arguments['query'] = 'owner-mutated'
+            raise ValueError('reject changed arguments')
+
+    owner = MutatingOwner()
+    original = {'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}
+    corrected = {'use_tool': False, 'arguments': {}, 'answer': 'Hello'}
+    llm = LLM([json.dumps(original), json.dumps(corrected), verdict(), 'Hello'])
+
+    result = asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
+
+    retry = json.loads(llm.requests[1].payload.messages[1].content[0].text)
+    assert retry['feedback']['previous_candidate'] == original
+    assert retry['feedback']['failed_checks'] == []
+    assert result.payload.content[0].text == 'Hello'
+    assert owner.events == ['describe', 'validate']
+    assert len(llm.requests) == 4
 
 
 @pytest.mark.parametrize('bad', [
@@ -509,3 +537,38 @@ def test_bedrock_reasoning_native_reviewer_preserves_schema_validation(model, ef
     assert llm.requests[1].payload.response.fallback == 'allow'
     assert json.loads(llm.requests[1].payload.response.schema.schema)['additionalProperties'] is False
     assert owner.events == ['describe']
+
+
+def test_rejected_candidate_and_failed_checks_reach_the_next_planner_request():
+    owner = Owner()
+    rejected = {'use_tool': False, 'arguments': {}, 'answer': 'First synthetic candidate'}
+    corrected = {'use_tool': False, 'arguments': {}, 'answer': 'Corrected synthetic candidate'}
+    llm = LLM([json.dumps(rejected), verdict(correct=False, preference=False),
+               json.dumps(corrected), verdict(), 'Corrected answer'])
+
+    result = asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
+
+    second_payload = json.loads(llm.requests[2].payload.messages[1].content[0].text)
+    first_payload = json.loads(llm.requests[0].payload.messages[1].content[0].text)
+    assert second_payload['messages'] == first_payload['messages']
+    assert second_payload['feedback']['previous_candidate'] == rejected
+    assert second_payload['feedback']['failed_checks'] == ['correct', 'preference']
+    assert ''.join(part.text for part in result.payload.content) == 'Corrected answer'
+    assert len(llm.requests) == 5
+    assert owner.events == ['describe']
+
+
+def test_accepted_reviewer_returns_no_revision_feedback():
+    app = application(Owner())
+    llm = LLM([verdict()])
+    async def complete(value):
+        return await llm.complete(value, context=OperationContext('request'))
+    context = SimpleNamespace(tools={'primary': object()}, attempt=1, max_passes=2,
+        services={'selection': 'chosen-model', 'generation': GenerationOptions(),
+                  'messages': [{'role': 'user', 'content': 'Who?'}], 'llm': complete})
+
+    output = asyncio.run(app.registry['review'].invoke(
+        {'candidate': {'use_tool': False, 'arguments': {}, 'answer': 'Hello'}}, context))
+
+    assert output == {'accepted': True, 'feedback': {}}
+    assert len(llm.requests) == 1
