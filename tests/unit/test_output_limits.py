@@ -9,6 +9,7 @@ from api_agent.providers.contracts import ContractError, ProviderAccessError
 from api_agent.providers.generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger
 from api_agent.providers.llm import AvailableSelection, CompletionRequest, GenerationOptions, LLMRequest, LLMResult, Message, TextContent, Usage
 from api_agent.providers.output_limits import OutputLimitCache, OutputLimitRejected, clamp_request
+from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.shared_setup import SharedSetupOwner
 
 
@@ -94,6 +95,17 @@ def test_one_negotiation_is_extra_and_cached_for_same_owner():
     assert failed['usage'] is None
     assert success['usage']['output_tokens'] == 2
     assert len(ledgers[1]['attempts']) == 1
+
+
+@pytest.mark.parametrize('error', [OutputLimitRejected(64000),
+    ProviderAccessError('unavailable', 'Worker unavailable.', status=503)])
+def test_pending_cleanup_never_replays_provider_failure(error):
+    error.cleanup_error = CleanupPendingError((object(),), AsyncMock())
+    if error.status == 503:
+        error.http_status = 503
+    with pytest.raises(type(error)) as caught:
+        asyncio.run(exercise([error], attempts=2))
+    assert caught.value is error
 
 
 @pytest.mark.parametrize('errors', [[OutputLimitRejected(150000)], [OutputLimitRejected(160000)],

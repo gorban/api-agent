@@ -9,7 +9,7 @@ from pathlib import Path
 
 from api_agent.providers.contracts import ContractError, ProviderAccessError, SessionClosedError, SetupPrerequisiteError
 from api_agent.providers.progress import component_timeout
-from api_agent.providers.control import finish_cleanup
+from api_agent.providers.control import CleanupPendingError, finish_cleanup
 from .worker import MAX_FRAME, ALL_OPERATIONS, json_value, DEFAULT_INFERENCE_TIMEOUT, inference_timeout
 
 
@@ -20,28 +20,77 @@ class SDKTransport:
         self._processes = set()
         self._launches = set()
         self._stops = {}
+        self._leases = {}
         self._closing = None
+
+    def _cleanup_pending(self):
+        return any(process not in self._processes for process in self._leases) or any(
+                   state.get('failed') or state.get('denied') or state['task'] is not None
+                   and state['task'].done() and (state['task'].cancelled()
+                   or state['task'].exception() is not None) for state in self._stops.values())
 
     async def _stop(self, process):
         # Active ownership is the admission receipt; a completed owner is inert.
         if process not in self._processes:
+            lease = self._leases.get(process)
+            if lease is not None:
+                lease.release()
+                self._leases.pop(process)
             return
-        state = self._stops.setdefault(process, {'phase': 0, 'task': None})
+        state = self._stops.setdefault(process, {'phase': 0, 'task': None, 'leader_reaped': False,
+                                                  'denied': False})
         task = state['task']
         if (task is None or task.cancelled()
                 or task.done() and task.exception() is not None):
+            if task is not None and task.done() and (task.cancelled() or task.exception() is not None):
+                state['failed'] = True
             async def dispose():
                 # Parent exit does not mean its credential-helper group exited.
                 signals = (signal.SIGTERM, signal.SIGKILL)
                 while state['phase'] < len(signals):
+                    if state['leader_reaped']:
+                        # After reaping the leader, its numeric PGID can be reused.
+                        # Probe only; never send another terminating signal to it.
+                        try:
+                            os.killpg(process.pid, 0)
+                        except ProcessLookupError:
+                            state['phase'] = len(signals)
+                            continue
+                        raise PermissionError('Bedrock SDK worker-group cleanup remains pending')
                     try:
                         os.killpg(process.pid, signals[state['phase']])
                     except ProcessLookupError:
                         # Never target this numeric group again after absence.
                         state['phase'] = len(signals)
+                    except PermissionError:
+                        state['denied'] = True
+                        # A denied group signal does not prove that helpers exited.
+                        # Give the leader a bounded chance to reap, then only an
+                        # absent group confirms that no further signal is needed.
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=0.1)
+                        except asyncio.TimeoutError:
+                            pass
+                        else:
+                            state['leader_reaped'] = True
+                        try:
+                            os.killpg(process.pid, 0)
+                        except ProcessLookupError:
+                            state['phase'] = len(signals)
+                        else:
+                            raise
                     else:
                         state['phase'] += 1
-                await process.wait()
+                if not state['leader_reaped']:
+                    if state['denied']:
+                        await asyncio.wait_for(process.wait(), timeout=0.1)
+                    else:
+                        await process.wait()
+                    state['leader_reaped'] = True
+                lease = self._leases.get(process)
+                if lease is not None:
+                    lease.release()
+                    self._leases.pop(process)
                 self._processes.discard(process)
                 self._stops.pop(process)
             task = state['task'] = asyncio.create_task(dispose())
@@ -60,6 +109,8 @@ class SDKTransport:
             raise SetupPrerequisiteError('Bedrock SDK process isolation currently requires POSIX.')
         if self._closed:
             raise SessionClosedError('Bedrock transport is closed')
+        if self._cleanup_pending():
+            raise CleanupPendingError((self,), self.aclose)
         if operation not in ALL_OPERATIONS or not isinstance(payload, dict):
             raise ContractError('Unsupported Bedrock SDK request')
         try:
@@ -99,6 +150,8 @@ class SDKTransport:
             async def launch():
                 if self._closed:
                     raise SessionClosedError('Bedrock transport is closed')
+                if self._cleanup_pending():
+                    raise CleanupPendingError((self,), self.aclose)
                 try:
                     process = await asyncio.create_subprocess_exec(
                         sys.executable, str(Path(__file__).with_name('worker.py')),
@@ -161,6 +214,10 @@ class SDKTransport:
                         union = values
                     else:
                         union, authority_lease = joined
+                        if authority_lease is not None:
+                            self._leases[process] = authority_lease
+                            if process not in self._processes:
+                                raise SessionClosedError('Bedrock worker exited during authority handoff')
                     try:
                         if (type(union) is not list or len(union) > 64 or
                             any(type(value) is not str or not value for value in union) or
@@ -288,12 +345,30 @@ class SDKTransport:
             if await self._timed(process.wait, budget):
                 raise ContractError('Bedrock worker failed')
         finally:
+            primary = sys.exception()
             for channel in channels:
                 channel.close()
             for process in owned:
-                await finish_cleanup(self._stop(process))
-            if authority_lease is not None:
-                authority_lease.release()
+                try:
+                    await finish_cleanup(self._stop(process))
+                except BaseException as cleanup:
+                    if process not in self._processes and process not in self._leases:
+                        raise
+                    pending = CleanupPendingError((self,), self.aclose)
+                    pending.__cause__ = cleanup
+                    if isinstance(cleanup, asyncio.CancelledError):
+                        retained = tuple(getattr(cleanup, 'retained_owners', ()))
+                        cleanup.retained_owners = (retained if any(owner is self for owner in retained)
+                                                   else (*retained, self))
+                        cleanup.cleanup_error = pending
+                        raise
+                    if primary is None:
+                        raise pending from cleanup
+                    retained = tuple(getattr(primary, 'retained_owners', ()))
+                    primary.retained_owners = (retained if any(owner is self for owner in retained)
+                                               else (*retained, self))
+                    primary.cleanup_error = pending
+                    primary.add_note('Bedrock SDK worker cleanup remains pending; retry disposal before new work.')
 
     async def call(self, operation, payload, *, auth, join=None, on_dispatch=None):
         results = [value async for value in self.stream(operation, payload, auth=auth, join=join, on_dispatch=on_dispatch)]
@@ -304,12 +379,13 @@ class SDKTransport:
     async def aclose(self):
         self._closed = True
         if (self._closing is None or self._closing.cancelled()
-                or self._closing.done() and self._closing.exception() is not None):
+                or self._closing.done() and (self._closing.exception() is not None
+                                             or self._processes or self._leases)):
             async def drain():
                 # No new launches can pass admission after the closed gate.
                 await asyncio.gather(*tuple(self._launches), return_exceptions=True)
                 results = await asyncio.gather(
-                    *(self._stop(process) for process in tuple(self._processes)),
+                    *(self._stop(process) for process in tuple(self._processes | self._leases.keys())),
                     return_exceptions=True)
                 if any(isinstance(result, BaseException) for result in results):
                     raise ContractError('Bedrock SDK cleanup failed; retry disposal.') from None
