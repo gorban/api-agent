@@ -43,9 +43,10 @@ def make_app(tmp_path, *, argv=(), mode='integration'):
     return app
 
 
-def test_bracket_cycle_wraps_and_persists_without_changing_test_selection(tmp_path):
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
+def test_bracket_cycle_wraps_and_persists_without_changing_test_selection(tmp_path, mode):
     async def scenario():
-        app = make_app(tmp_path)
+        app = make_app(tmp_path, mode=mode)
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
             table = app.screen.query_one(DataTable)
@@ -69,14 +70,15 @@ def test_bracket_cycle_wraps_and_persists_without_changing_test_selection(tmp_pa
             await pilot.press('right_square_bracket')
             assert app.session.result().values['UNATTENDED_USER_INDEX'] is None
     asyncio.run(scenario())
-    restarted = make_app(tmp_path)
+    restarted = make_app(tmp_path, mode=mode)
     assert restarted.session.result().values['UNATTENDED_USER_INDEX'] is None
     assert restarted.session.result().fields['UNATTENDED_USER_INDEX'].explicit
 
 
-def test_cycle_saves_to_displayed_target_and_moves_assignment(tmp_path):
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
+def test_cycle_saves_to_displayed_target_and_moves_assignment(tmp_path, mode):
     async def scenario():
-        app = make_app(tmp_path)
+        app = make_app(tmp_path, mode=mode)
         pack = tmp_path / 'pack'
         pack.mkdir()
         app.context.pack_root = pack
@@ -94,9 +96,10 @@ def test_cycle_saves_to_displayed_target_and_moves_assignment(tmp_path):
     asyncio.run(scenario())
 
 
-def test_higher_cli_selection_remains_effective_with_clear_warning(tmp_path):
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
+def test_higher_cli_selection_remains_effective_with_clear_warning(tmp_path, mode):
     async def scenario():
-        app = make_app(tmp_path, argv=['--unattended-user-index=0'])
+        app = make_app(tmp_path, mode=mode, argv=['--unattended-user-index=0'])
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
             await pilot.press('right_square_bracket')
@@ -107,9 +110,10 @@ def test_higher_cli_selection_remains_effective_with_clear_warning(tmp_path):
     asyncio.run(scenario())
 
 
-def test_invalid_account_can_cycle_back_to_valid_and_save_errors_are_visible(tmp_path):
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
+def test_invalid_account_can_cycle_back_to_valid_and_save_errors_are_visible(tmp_path, mode):
     async def scenario():
-        app = make_app(tmp_path)
+        app = make_app(tmp_path, mode=mode)
         (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=9\n')
         async with app.run_test(size=(110, 40)) as pilot:
             await pilot.pause()
@@ -124,10 +128,9 @@ def test_invalid_account_can_cycle_back_to_valid_and_save_errors_are_visible(tmp
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('mode', ['unit', 'e2e'])
-def test_account_shortcuts_are_not_yet_enabled_for_other_runners(tmp_path, mode):
+def test_unit_picker_does_not_offer_account_shortcuts(tmp_path):
     async def scenario():
-        app = make_app(tmp_path, mode=mode)
+        app = make_app(tmp_path, mode='unit')
         async with app.run_test() as pilot:
             await pilot.pause()
             assert not app.screen.check_action('previous_account', ())
@@ -146,9 +149,10 @@ def test_no_declaration_or_invalid_credentials_do_not_offer_accounts(tmp_path):
     assert app.account_options() == ((0, 'first / partner'),)
 
 
-def test_stale_index_with_no_eligible_accounts_can_switch_to_manual(tmp_path):
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
+def test_stale_index_with_no_eligible_accounts_can_switch_to_manual(tmp_path, mode):
     async def scenario():
-        app = make_app(tmp_path)
+        app = make_app(tmp_path, mode=mode)
         app.session.environ['UNATTENDED_AUTH'] = '{}'
         (tmp_path / '.env').write_text('UNATTENDED_USER_INDEX=2\n')
         async with app.run_test(size=(110, 40)) as pilot:
