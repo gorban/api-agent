@@ -8,11 +8,13 @@ const KEY = 'api-agent-studio-v2';
 const defaults = () => ({model: '', version: '', reasoning: ''});
 const fresh = () => ({session: crypto.randomUUID(), messages: [], draft: '', reply: null, settings: defaults()});
 let state = fresh(), active = null, catalog = [], catalogStatus = '', apiOrigin, apiHeaders = Object.freeze({}), settingsOpener;
+const reasoningPreviews = new Map();
 const field = value => typeof value === 'string' && value.length < 1000;
+const summaryFits = value => typeof value === 'string' && new TextEncoder().encode(value).byteLength <= 65536;
 const questionValid = q => !q || (field(q.id) && typeof q.question === 'string' && ['clarification', 'approval'].includes(q.kind) && Array.isArray(q.options) && q.options.every(x => q.kind === 'clarification' ? typeof x === 'string' : x && field(x.id) && typeof x.label === 'string'));
 const settingsValid = x => x && ['model', 'version', 'reasoning'].every(k => field(x[k])) && (x.family === undefined || (field(x.family) && [...x.family].length <= 200 && !/[\p{C}\p{Z}]/u.test(x.family.replaceAll(' ','')) && !(x.family && x.model)));
 const snapshotValid = x => settingsValid(x) && !!x.model;
-const valid = x => x && field(x.session) && typeof x.draft === 'string' && settingsValid(x.settings) && Array.isArray(x.messages) && x.messages.every(m => m && field(m.id) && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string' && settingsValid(m.requested) && (!m.selectionSnapshot || snapshotValid(m.selectionSnapshot)) && (!m.requested.family || !!m.selectionSnapshot) && questionValid(m.question));
+const valid = x => x && field(x.session) && typeof x.draft === 'string' && settingsValid(x.settings) && Array.isArray(x.messages) && x.messages.every(m => m && field(m.id) && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string' && (m.reasoningSummary === undefined || summaryFits(m.reasoningSummary)) && settingsValid(m.requested) && (!m.selectionSnapshot || snapshotValid(m.selectionSnapshot)) && (!m.requested.family || !!m.selectionSnapshot) && questionValid(m.question));
 const canonicalSession = value => value.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 let sessionMigrated = false;
 function migrateSession(chat) {
@@ -61,7 +63,9 @@ function responseDetails(m) {
     ['Reported service tier', m.actual?.service_tier],
     ['Status', m.pending ? 'Waiting for response' : m.error ? 'Incomplete' : 'Complete']
   ].filter(([, value]) => value)) { const row = el('div'); row.append(el('dt', '', key), el('dd', '', value)); grid.append(row); }
-  details.append(grid); return details;
+  details.append(grid);
+  if (m.reasoningSummary) details.append(el('p', 'reasoning-summary', m.reasoningSummary));
+  return details;
 }
 function questionControls(m) {
   const box = el('fieldset', 'response-question');
@@ -111,7 +115,7 @@ function render() {
   $('main').classList.toggle('has-messages', !!state.messages.length);
   $('follow-controls').hidden = !state.messages.length;
   const nodes = state.messages.map(m => {
-    const signature = JSON.stringify(m), previous = old.get(m.id);
+    const signature = JSON.stringify(m) + (reasoningPreviews.get(m.id) || ''), previous = old.get(m.id);
     if (previous?.dataset.signature === signature) return previous;
     const article = el('article', `message ${m.role}${m.pending ? ' draft' : ''}`);
     article.dataset.messageId = m.id; article.dataset.signature = signature;
@@ -121,7 +125,12 @@ function render() {
     const body = el('div', 'message-body');
     if (m.role === 'assistant') renderMarkdown(body, m.text);
     else body.textContent = m.text;
-    article.append(head, body);
+    article.append(head);
+    if (m.role === 'assistant' && m.pending && !m.text) {
+      article.append(el('span', 'thinking-indicator', 'Thinking'));
+      if (reasoningPreviews.get(m.id)) article.append(el('p', 'reasoning-preview', reasoningPreviews.get(m.id)));
+    }
+    article.append(body);
     if (m.error) {
       article.append(el('p', 'error-note', m.error));
       const retry = el('button', 'suggestion', 'Retry response'); retry.type = 'button';
@@ -165,13 +174,13 @@ async function run(text, requested, retryMessage, reply) {
     m.requestReply = reply ? structuredClone(reply) : null;
     m.selectionSnapshot = {...snapshot};
   }
-  Object.assign(m, {text: '', actual: {}, reportedCatalog: null, error: '', pending: true});
+  Object.assign(m, {text: '', reasoningSummary: '', actual: {}, reportedCatalog: null, error: '', pending: true});
   if (!retryMessage) state.messages.push(m);
   render(); follow(); save();
-  const messageBody = [...$('conversation').children].find(node => node.dataset.messageId === m.id).querySelector('.message-body');
   announce('Waiting for api-agent. You can stop at any time.');
 
   const timer = setTimeout(() => { request.failure = 'The agent took too long to respond. Please try again.'; stopRequest(request); }, REQUEST_TIMEOUT_MS);
+  let completedSummary;
   try {
     await loadConfiguration();
     if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -189,8 +198,20 @@ async function run(text, requested, retryMessage, reply) {
       },
       onText(text, replace) {
         m.text = replace ? text : m.text + text;
-        renderMarkdown(messageBody, m.text);
+        render();
         follow(); save();
+      },
+      onReasoningSummary(text, replace) {
+        if (replace) {
+          completedSummary = text;
+          reasoningPreviews.delete(m.id);
+          render(); follow();
+        } else {
+          const preview = (reasoningPreviews.get(m.id) || '') + text;
+          if (!summaryFits(preview)) throw Error('Reasoning summary exceeds its byte limit');
+          reasoningPreviews.set(m.id, preview);
+          render(); follow();
+        }
       },
       onMetadata(metadata) {
         for (const key of ['model', 'version', 'reasoning', 'actual_model', 'service_tier', 'serving_revision']) if (field(metadata[key]) && !Object.hasOwn(m.actual, key)) m.actual[key] = metadata[key];
@@ -202,14 +223,17 @@ async function run(text, requested, retryMessage, reply) {
       onApproval(question) { m.question = {...question, kind: 'approval'}; },
       signal: controller.signal
     });
+    if (completedSummary !== undefined) m.reasoningSummary = completedSummary;
+    render(); follow(); save();
     announce('Response complete.');
   } catch (error) {
+    m.reasoningSummary = '';
     m.error = request.failure ? request.failure : request.stopped ? 'Response stopped. You can retry when you’re ready.' : error instanceof SyntaxError ? 'The agent returned an unreadable response. Please try again.' : error instanceof TypeError ? 'Couldn’t connect to api-agent. Please try again when the agent is available.' : error.name === 'AbortError' ? 'The connection was interrupted. Please try again.' : error.message;
     if (!request.stopped && request.dispatched) void controlRequest('cancel', request).catch(() => {});
     announce(m.error);
     if (!request.stopped || request.failure) showFailure('The response could not be completed. Check the connection and provider, then try again. See the response record for details.', $('prompt'));
   } finally {
-    clearTimeout(timer); clearInterval(request.heartbeat); m.pending = false; active = null;
+    clearTimeout(timer); clearInterval(request.heartbeat); reasoningPreviews.delete(m.id); m.pending = false; active = null;
     if (beginReply(state, m)) $('prompt').value = state.draft;
     render(); follow(); save();
   }

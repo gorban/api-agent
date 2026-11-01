@@ -755,7 +755,7 @@ test('progressive HTTP responses preserve metadata focus, finish Stop focus, and
   await new Promise(resolve=>ui.listen(0,'127.0.0.1',resolve));uiOrigin='http://127.0.0.1:'+ui.address().port;
   const browser=await chromium.launch({headless:true,executablePath:process.env.STUDIO_BROWSER||undefined});
   try{
-    const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
+    const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);await page.addStyleTag({content:'.message:not(.draft){animation-duration:2s!important}'});await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
     await page.locator('#prompt').fill('First');await page.locator('#send').click();const first=await ready.promise;await page.getByText('Initial draft',{exact:true}).waitFor();
     await page.locator('.assistant summary').press('Enter');assert.equal(await page.locator('.assistant details').getAttribute('open'),'');
     first.end(finishFrames(first.sessionId,result('First final')));await page.getByText('First final',{exact:true}).waitFor();
@@ -767,6 +767,52 @@ test('progressive HTTP responses preserve metadata focus, finish Stop focus, and
     const closed=new Promise(resolve=>third.once('close',resolve));await page.locator('#stop').click();await closed;
     third.end(finishFrames(third.sessionId,result('Late forbidden final')));
     await page.getByRole('button',{name:'Retry response'}).waitFor();assert.equal(await page.getByText('Late forbidden final',{exact:true}).count(),0);assert.match(await page.locator('.error-note').textContent(),/stopped/);
+  }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
+});
+test('Thinking and displayable summary yield to final answer and remain collapsed in details',async()=>{
+  const {createServer}=await import('node:http');let uiOrigin, pending=Promise.withResolvers();
+  const api=createServer((request,response)=>{
+    response.setHeader('Access-Control-Allow-Origin',uiOrigin);
+    if(request.method==='OPTIONS'){response.setHeader('Access-Control-Allow-Methods','POST');response.setHeader('Access-Control-Allow-Headers','content-type');response.writeHead(204);response.end();return;}
+    if(request.url==='/app/agent/models'){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({models:[wireModel(model)],default:'sample',reasoning_default:null}));return;}
+    let body='';request.on('data',chunk=>body+=chunk);request.on('end',()=>{const payload=JSON.parse(body),id=payload.session_id;if(!request.url.endsWith('/stream')){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({session_id:id,status:'running'}));return;}response.setHeader('Content-Type','text/event-stream');if(payload.messages.at(-1).content==='Oversize'){response.end(sessionFrame(id)+frame('reasoning_token',{content:'€'.repeat(10923)})+frame('reasoning_token',{content:'€'.repeat(10923)}));return;}response.write(sessionFrame(id)+frame('reasoning_token',{content:'Safe <img src=x> interim'}));if(payload.messages.at(-1).content==='Fail'){response.end(frame('response_complete',{session_id:id})+frame('result',wireResult({...result('Unfinished answer'),reasoning_summary:'Unfinished summary'},id)));return;}pending.resolve({response,id});});
+  });
+  await new Promise(resolve=>api.listen(0,'127.0.0.1',resolve));
+  const {server:ui}=createStudioServer({UI_LISTENER_URL:'http://127.0.0.1:9443',AGENT_DJANGO_URL:'http://127.0.0.1:'+api.address().port,API_AGENT_UI_LAUNCH_TOKEN:'synthetic-browser-test-token'});
+  await new Promise(resolve=>ui.listen(0,'127.0.0.1',resolve));uiOrigin='http://127.0.0.1:'+ui.address().port;
+  const browser=await chromium.launch({headless:true,executablePath:process.env.STUDIO_BROWSER||undefined});
+  try{
+    const page=await browser.newPage();await startCoverage(page);await page.goto(uiOrigin);await page.waitForFunction(()=>document.querySelector('#model option[value="sample"]'));
+    await page.locator('#prompt').fill('Hello');await page.locator('#send').click();const {response,id}=await pending.promise;
+    await page.getByText('Safe <img src=x> interim',{exact:true}).first().waitFor();assert.equal(await page.locator('.assistant .thinking-indicator').count(),1);
+    assert.equal(await page.locator('.assistant.draft').evaluate(row=>getComputedStyle(row).animationName),'none');
+    assert.equal(await page.locator('.assistant .reasoning-preview img').count(),0);
+    assert.equal((await page.evaluate(()=>localStorage.getItem('api-agent-studio-v2'))).includes('Safe <img src=x> interim'),false);
+    assert.equal(await page.locator('.assistant .message-body').textContent(),'');
+    response.write(frame('response_complete',{session_id:id})+frame('result',wireResult({...result('Final answer'),reasoning_summary:'Safe final summary'},id)));
+    await page.getByText('Final answer',{exact:true}).waitFor();
+    assert.equal((await page.evaluate(()=>localStorage.getItem('api-agent-studio-v2'))).includes('Safe final summary'),false);
+    response.end(frame('done',{session_id:id}));
+    await page.getByText('Final answer',{exact:true}).waitFor();await page.locator('.assistant .thinking-indicator').waitFor({state:'detached'});
+    await page.locator('.assistant .reasoning-summary').waitFor({state:'attached'});
+    assert.equal(await page.locator('.assistant').first().evaluate(row=>row.getAnimations({subtree:true}).some(animation=>animation.playState==='running')),true);
+    await page.waitForFunction(()=>[...document.querySelectorAll('.assistant')].at(-1).getAnimations({subtree:true}).every(animation=>animation.playState==='finished'||animation.playState==='idle'));
+    assert.equal(await page.locator('.assistant .reasoning-preview').count(),0);
+    assert.equal(await page.locator('.assistant .reasoning-summary').textContent(),'Safe final summary');
+    assert.equal((await page.evaluate(()=>localStorage.getItem('api-agent-studio-v2'))).includes('Safe final summary'),true);
+    assert.equal(await page.locator('.assistant .response-metadata').getAttribute('open'),null);
+    await page.locator('#prompt').fill('Fail');await page.locator('#send').click();
+    await page.getByRole('button',{name:'Retry response'}).waitFor();
+    assert.equal(await page.locator('.assistant .thinking-indicator').count(),0);
+    assert.equal(await page.locator('.assistant .reasoning-preview').count(),0);
+    assert.equal(await page.locator('.assistant').last().locator('.reasoning-summary').count(),0);
+    assert.equal((await page.evaluate(()=>localStorage.getItem('api-agent-studio-v2'))).includes('Safe <img src=x> interim'),false);
+    assert.equal((await page.evaluate(()=>localStorage.getItem('api-agent-studio-v2'))).includes('Unfinished summary'),false);
+    await dismissFailure(page);await page.locator('#prompt').fill('Oversize');await page.locator('#send').click();
+    await page.locator('.assistant').last().locator('.error-note').waitFor();
+    assert.match(await page.locator('.assistant').last().locator('.error-note').textContent(),/byte limit/);
+    assert.equal(await page.locator('.assistant').last().locator('.reasoning-preview').count(),0);
+    assert.equal((await page.evaluate(()=>localStorage.getItem('api-agent-studio-v2'))).includes('€'),false);
   }finally{await closeBrowser(browser);ui.closeAllConnections();api.closeAllConnections();await Promise.all([new Promise(resolve=>ui.close(resolve)),new Promise(resolve=>api.close(resolve))]);}
 });
 test('slow real HTTP model catalog remains pending, then enables selection and chat', {timeout:20000}, async()=>{

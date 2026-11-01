@@ -103,6 +103,78 @@ def test_server_disposal_acknowledges_cancelled_task():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('entry,pack,key,timeout,expected', [
+    ('flow.md.html', '.', 'WORKFLOW_GRAPH_TIMEOUT_SECONDS', 480, 480),
+    ('demo/simple/flow.md.html', 'demo', 'WORKFLOW_GRAPH_TIMEOUT_SECONDS', 610, 610),
+    ('flow.md.html', '.', 'WORKFLOW_COMPONENT_TIMEOUT_SECONDS', 451, 451),
+    ('flow.md.html', '.', None, None, 120),
+])
+def test_normal_studio_factory_uses_selected_graph_deadline(monkeypatch, entry, pack, key, timeout, expected):
+    from dataclasses import replace
+    from pathlib import Path
+    from api_agent.runtime.local_tools import selected_application
+    from api_agent.workflows.definition import load_definition
+
+    root = Path(__file__).resolve().parents[2]
+    definition = load_definition(root / entry, base_root=root, pack_root=root / pack,
+                                 **({'entry_root': 'base'} if pack != '.' else {}))
+    if key != 'WORKFLOW_GRAPH_TIMEOUT_SECONDS':
+        rows = (() if key is None else ({**definition.layout.tables['Timeouts'][0], 'Key': key},))
+        definition = replace(definition, layout=replace(definition.layout,
+            tables={**definition.layout.tables, 'Timeouts': rows}))
+    application = selected_application(definition, config={} if key is None else {key: timeout})
+    observed = []
+    original = bridge.StudioBackend
+
+    def capture(**options):
+        backend = original(**options)
+        observed.append(backend.timeout)
+        return backend
+
+    monkeypatch.setattr(bridge, 'StudioBackend', capture)
+    factory = bridge.studio_backend_factory(object(), 'sample', application=application)
+
+    async def run():
+        async with factory({'UI_LISTENER_URL': 'http://localhost:9443'}):
+            assert observed == [expected]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('requested,graph,expected', [
+    (2, 600, 2), (900, 600, 900), (None, None, None),
+])
+def test_explicit_studio_endpoint_deadline_overrides_graph(monkeypatch, requested, graph, expected):
+    observed = []
+    original = bridge.StudioBackend
+
+    def capture(**options):
+        backend = original(**options)
+        observed.append(backend.timeout)
+        return backend
+
+    monkeypatch.setattr(bridge, 'StudioBackend', capture)
+
+    async def run():
+        options = ({'timeout': requested} if requested is not None else {})
+        application = SimpleNamespace(timeouts={'GRAPH': graph}) if graph is not None else None
+        async with bridge.agent_endpoint(object(), 'sample', 'http://localhost:9443', 'x' * 32,
+                                         application=application, **options):
+            assert observed == [120 if expected is None else expected]
+
+    asyncio.run(run())
+
+
+def test_explicit_invalid_studio_endpoint_deadline_is_rejected():
+    async def run():
+        with pytest.raises(ValueError, match='Studio bridge configuration'):
+            async with bridge.agent_endpoint(object(), 'sample', 'http://localhost:9443', 'x' * 32,
+                                             timeout=None, application=SimpleNamespace(timeouts={'GRAPH': 600})):
+                pass
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('retained,supplied_listener,through_graph', [(False,False,False),(True,True,False),(False,False,True)])
 def test_actual_http_bridge_preserves_request_and_owned_lifetime(retained, supplied_listener, through_graph, monkeypatch):
     import httpx

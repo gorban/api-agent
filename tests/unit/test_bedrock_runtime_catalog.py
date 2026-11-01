@@ -178,11 +178,28 @@ async def test_missing_endpoint_dispatches_runtime_catalog(monkeypatch):
     assert call.await_args.args == ('runtime_models', {})
 
 
-def test_default_allowed_pattern_includes_profile_without_changing_default_model():
+def test_bundled_default_selects_exact_oss_20b_id_from_either_catalog():
+    from api_agent.providers.selection import ModelSelectionPolicy
+    from api_agent.providers.contracts import ProviderAccessError
     path = Path(__file__).resolve().parents[2] / 'src/api_agent/llm_providers/bedrock/cfg/config.toml'
     fields = tomllib.loads(path.read_text())['fields']
     assert fields['BEDROCK_ENDPOINT']['default'] == 'runtime'
-    assert fields['LLM_DEFAULT_MODEL']['default'] == r'openai\.gpt-oss-20b'
+    pattern = fields['LLM_DEFAULT_MODEL']['default']
+    assert pattern == r'openai\.gpt-oss-20b(?:-1:0)?'
+    for endpoint, mode, identifier in (
+        ('mantle', 'responses', 'openai.gpt-oss-20b'),
+        ('runtime', 'responses', 'openai.gpt-oss-20b-1:0'),
+        ('runtime', 'completions', 'openai.gpt-oss-20b-1:0'),
+    ):
+        other_ids = (('openai.gpt-oss-120b',) if endpoint == 'mantle' else
+                     ('openai.gpt-oss-120b', 'openai.gpt-oss-20b-1:0-extra',
+                      'us.openai.gpt-oss-20b-1:0'))
+        rows = tuple(catalog.selection(value, mode, endpoint) for value in (identifier, *other_ids))
+        assert ModelSelectionPolicy({'LLM_ALLOWED_MODELS': fields['LLM_ALLOWED_MODELS']['default'],
+                                     'LLM_DEFAULT_MODEL': pattern}).select_default(rows) == identifier
+        with pytest.raises(ProviderAccessError, match='matches no allowed model'):
+            ModelSelectionPolicy({'LLM_DEFAULT_MODEL': pattern}).select_default(rows[1:])
+        assert ModelSelectionPolicy({'LLM_DEFAULT_MODEL': r'openai\.gpt-oss-120b'}).select_default(rows) == 'openai.gpt-oss-120b'
     assert re.fullmatch(fields['LLM_ALLOWED_MODELS']['default'], 'us.openai.gpt-5.6-luna')
     assert re.fullmatch(fields['LLM_ALLOWED_MODELS']['default'], 'global.anthropic.claude-sonnet-4-6')
 

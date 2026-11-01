@@ -115,6 +115,8 @@ def validate_config(config):
         raise ContractError('Unsupported Bedrock endpoint')
     if type(api_mode) is not str or api_mode not in {'completions', 'responses', 'converse'}:
         raise ContractError('Unsupported Bedrock API mode')
+    if config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto') not in ('auto', 'tagged', 'literal'):
+        raise ContractError('Unsupported Bedrock Completions reasoning format')
     if endpoint == 'mantle' and api_mode == 'converse':
         raise ContractError('BEDROCK_API_MODE=converse requires BEDROCK_ENDPOINT=runtime')
     return api_mode

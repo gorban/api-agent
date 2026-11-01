@@ -487,12 +487,14 @@ def result_to_wire(result):
         row.update(version=3, response=response_evidence_to_wire(result.response))
     if result.applied_cache_boundaries:
         row['applied_cache_boundaries'] = list(result.applied_cache_boundaries)
+    if result.reasoning_summary is not None:
+        row['reasoning_summary'] = result.reasoning_summary
     result_from_wire(row)
     return row
 
 
 def result_from_wire(row):
-    _exact(row, ('version','message','outcome','usage','actual_model','service_tier','serving_revision','billing', *(() if 'applied_cache_boundaries' not in row else ('applied_cache_boundaries',)), *(() if 'response' not in row else ('response',))))
+    _exact(row, ('version','message','outcome','usage','actual_model','service_tier','serving_revision','billing', *(() if 'applied_cache_boundaries' not in row else ('applied_cache_boundaries',)), *(() if 'response' not in row else ('response',)), *(() if 'reasoning_summary' not in row else ('reasoning_summary',))))
     _bounded(row)
     try:
         if type(row['version']) is not int or row['version'] not in (2, 3):
@@ -507,8 +509,8 @@ def result_from_wire(row):
             raise ValueError()
         from .inference import result_from_wire as text_result, _cache_boundaries
         checked = text_result(dict(text='', outcome='completed', usage=row['usage'], actual_model=row['actual_model'],
-                                   service_tier=row['service_tier'], serving_revision=row['serving_revision'],billing=row['billing']))
-        return LLMResult(message, checked.usage, row['outcome'], checked.actual_model, checked.service_tier,checked.serving_revision,checked.billing, _cache_boundaries(row), response)
+                                   service_tier=row['service_tier'], serving_revision=row['serving_revision'],billing=row['billing'], reasoning_summary=row.get('reasoning_summary')))
+        return LLMResult(message, checked.usage, row['outcome'], checked.actual_model, checked.service_tier,checked.serving_revision,checked.billing, _cache_boundaries(row), response, checked.reasoning_summary)
     except (TypeError, ValueError):
         raise ContractError('Invalid rich inference result') from None
 

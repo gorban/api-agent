@@ -39,7 +39,7 @@ def guard_result(decoded, secrets):
         from api_agent.providers.response_carriers import observable_response_carriers
         text = ''.join(part.text for part in decoded.payload.content)
         arguments = (json.loads(call.arguments) for call in decoded.payload.calls)
-        for carrier in observable_response_carriers(text, arguments):
+        for carrier in observable_response_carriers(text, arguments, summary=decoded.reasoning_summary):
             guard_semantic(carrier, secrets)
     except ContractError as error:
         error.usage = result_from_wire(result).usage
@@ -99,8 +99,8 @@ def safe_boundary(text, maximum):
 
 
 class WorkerStream:
-    def __init__(self, mode, model, secrets, *, endpoint="mantle"):
-        self.decoder = StreamDecoder(mode, selected_llm=model, endpoint=endpoint)
+    def __init__(self, mode, model, secrets, *, endpoint="mantle", reasoning_format='auto'):
+        self.decoder = StreamDecoder(mode, selected_llm=model, endpoint=endpoint, reasoning_format=reasoning_format)
         self.secrets = registered_values(secrets)
         self.lookbehind = max((len(s) for s in self.secrets), default=1) - 1
         if self.lookbehind > _LIMIT:
@@ -140,8 +140,12 @@ class WorkerStream:
         decoded = self.decoder.finish()
         result = guard_result(decoded, self.secrets)
         frames = []
+        if self.decoder.held_envelope:
+            self.pending = ''.join(part.text for part in decoded.payload.content)
         if self.pending:
             frames.append({'kind': 'text', 'text': self.pending})
+        if decoded.reasoning_summary:
+            frames.append({'kind': 'reasoning_summary', 'text': decoded.reasoning_summary})
         frames.append({'kind': 'completed', 'result': result})
         return frames
 
@@ -150,11 +154,17 @@ class ParentStream:
     def __init__(self, mode, *, selected_llm):
         self.finished = False
         self.text = ''
+        self.summary = None
         self.result = None
 
     def feed(self, frame):
         if self.finished or type(frame) is not dict:
             raise ContractError('Invalid normalized Bedrock stream')
+        if set(frame) == {'kind', 'text'} and frame['kind'] == 'reasoning_summary' and type(frame['text']) is str:
+            if self.summary is not None or len(frame['text'].encode('utf-8')) > 65536:
+                raise ContractError('Invalid normalized Bedrock summary')
+            self.summary = frame['text']
+            return (StreamEvent(TextContent(frame['text']), kind='reasoning_summary'),)
         if set(frame) == {'kind', 'text'} and frame['kind'] == 'text' and type(frame['text']) is str:
             self.text += frame['text']
             if len(self.text.encode('utf-8')) > _LIMIT:
@@ -164,6 +174,8 @@ class ParentStream:
             result = result_from_wire(frame['result'])
             if ''.join(part.text for part in result.payload.content) != self.text:
                 raise ContractError('Invalid normalized Bedrock stream')
+            if result.reasoning_summary != self.summary:
+                raise ContractError('Invalid normalized Bedrock summary')
             self.result = result
             self.finished = True
             return ()

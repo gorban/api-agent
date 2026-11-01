@@ -40,6 +40,15 @@ async def browser_prompt(prepared, *, prompt="Answer with exactly: Ok"):
                 status = page.locator('.assistant .metadata-grid dd').last
                 await expect(status).to_have_text(re.compile(r'Complete|Incomplete'), timeout=120000)
                 assert await status.text_content() == 'Complete', await page.locator('#status').inner_text()
+                await page.wait_for_function("""() => {
+                    const row = [...document.querySelectorAll('.assistant')].at(-1);
+                    return row && !row.classList.contains('draft') &&
+                        !row.querySelector('.thinking-indicator') &&
+                        row.querySelector('.message-body') &&
+                        row.getAnimations({subtree:true}).every(animation =>
+                            animation.playState === 'finished' || animation.playState === 'idle') &&
+                        document.querySelector('#stop')?.hidden;
+                }""", timeout=120000)
                 answer = await page.locator('.assistant .message-body').last.inner_text()
                 assert answer.strip(), 'Agent returned an empty browser response.'
                 assert not errors, errors

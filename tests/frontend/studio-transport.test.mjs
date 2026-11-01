@@ -43,6 +43,19 @@ test('valid JSON result preserves nullable evidence and reported billing',async(
  let metadata;await readResponse(response(JSON.stringify({...result,billing:{usd:null,request_id:null,generation_id:null}}),'application/json'),{sessionId:id,onMetadata:value=>metadata=value});assert.deepEqual(metadata,{});
  assert.deepEqual(await readJSONResponse(response('{}','application/json')),{});
 });
+test('displayable reasoning summary remains separate from final answer',async()=>{
+ const summaries=[],answers=[];
+ await readResponse(response(start+frame('thinking',{})+frame('reasoning_token',{content:'Considering ',section:'summary'})+frame('reasoning_token',{content:'options'})+finish({...result,reasoning_summary:'Concise summary'})),{sessionId:id,onReasoningSummary:(...x)=>summaries.push(x),onText:(...x)=>answers.push(x)});
+ assert.deepEqual(summaries,[['Considering ',false],['options',false],['Concise summary',true]]);
+ assert.deepEqual(answers,[['final',true]]);
+ const json=[];
+ await readResponse(response(JSON.stringify({...result,reasoning_summary:'Safe summary'}),'application/json'),{sessionId:id,onReasoningSummary:(...x)=>json.push(x)});
+ assert.deepEqual(json,[['Safe summary',true]]);
+ await readResponse(response(start+frame('reasoning_token',{content:'Optional summary'})+finish(result)),{sessionId:id});
+ for(const bad of [start+frame('thinking',{extra:1}),start+frame('reasoning_token',{content:2}),start+frame('reasoning_token',{content:'ok',extra:1}),start+finish({...result,reasoning_summary:2}),start+finish({...result,reasoning_summary:'x'.repeat(65537)})])await assert.rejects(readResponse(response(bad),{sessionId:id}));
+ let accumulated='';
+ await assert.rejects(readResponse(response(start+frame('reasoning_token',{content:'€'.repeat(10923)})+frame('reasoning_token',{content:'€'.repeat(10923)})+finish(result)),{sessionId:id,onReasoningSummary(text){accumulated+=text;if(new TextEncoder().encode(accumulated).byteLength > 65536)throw Error('Reasoning summary exceeds its byte limit');}}),/byte limit/);
+});
 test('invalid sequence, missing done and foreign sessions never become successful',async()=>{
  for(const text of ['',frame('token',{content:'early'}),start+frame('token',{content:'partial'}),start+frame('result',result),start+frame('done',{session_id:id}),start+frame('response_complete',{session_id:'foreign'}),start+finish(result)+frame('token',{content:'late'}),start+start,start+frame('unknown',{}),start+frame('token',{content:2}),start+frame('response_complete',{session_id:id,extra:1}),start+finish({...result,session_id:'foreign'}),start+finish(result).replace('event: done','event: done\nevent: done')])await assert.rejects(readResponse(response(text),{sessionId:id}));
  await assert.rejects(readResponse(response(start+finish(result)),{sessionId:'foreign'}),/session/);

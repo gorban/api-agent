@@ -28,7 +28,7 @@ class LocalChatApplication:
         catalog = load_native_catalog(definition, nodes[0].source)
         self.registry = {functions[0]['Registry']: NodeFunction(catalog[functions[0]['Registry']], 'llm')}
         # Compile now, before local services or provider resources are acquired.
-        Workflow(definition, self.registry, config=self.config)
+        self.timeouts = Workflow(definition, self.registry, config=self.config).timeouts
 
     async def complete(self, request, *, llm, context):
         from api_agent.providers.inference import async_request_to_wire
@@ -49,6 +49,8 @@ class LocalChatApplication:
                 raise WorkflowError('Local chat changed the selected provider call.')
             called = True
             result = await llm.complete(value, context=context)
+            from api_agent.providers.presentation import present_summary
+            await present_summary(result)
             results.append(result)
             return result
         from .capture_authority import resolve_capture_services

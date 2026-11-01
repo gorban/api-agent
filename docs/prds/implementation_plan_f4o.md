@@ -9,6 +9,9 @@ Messages API is out of scope.
 The Runtime default applies consistently to provider declarations, direct provider
 construction, configuration validation and regional-price applicability. Preserve explicit
 endpoint, API, model, account and region settings; do not rewrite dotenv files.
+The bundled full-ID default-model regex selects the OSS 20B Mantle ID or its
+Runtime `-1:0` ID when present in the selected catalog. It must not admit other
+OSS sizes, profile aliases or extra suffixes. Explicit model overrides remain authoritative.
 Historical Mantle test profiles apply only when Mantle is selected. Runtime tests
 retain the operator's effective application and test-specific settings.
 
@@ -27,6 +30,7 @@ when available, preserving execution and usage without changing identity or rout
   Preserve exact model/profile identifiers; discovery never proves inference access.
 - [x] Project every valid Runtime model and profile identifier returned by discovery, including future IDs, without a model-based endpoint or API availability blacklist. The operator's model filter selects which IDs to use; AWS remains the authority on endpoint and feature availability. Keep exact identity and never retry on another route. Generic metadata must not invent limits or native structured support.
 - [x] Apply bundled Mantle test-profile defaults only when the selected endpoint is Mantle. A Runtime selection retains the user’s exact API, model and test-specific settings; an inactive profile must still pass declaration validation.
+- [x] Match the bundled OSS 20B default in either endpoint catalog, including Runtime Completions, using one full-ID regex; preserve explicit overrides and fail when neither exact ID is available.
 - [x] Preserve selected credential/session-token identity for discovery and
   inference, lazy optional dependencies, bounded worker ownership, cancellation,
   parent deadlines and shared transport retries. Disable SDK inference retries.
@@ -94,3 +98,5 @@ resources and independent/external source reviews passed. Real Runtime access
 and the Studio acceptance above remain separate checks.
 
 - [x] Complete [Claude/GPT display parsing and Studio target labels](implementation_plan_f4o2.md), preserving full IDs and explicit inference routing.
+
+[Runtime Completions reasoning carriers](implementation_plan_f4o3.md) tracks qualification of in-band reasoning and final-answer extraction. A successful request does not by itself close that application-output gate.

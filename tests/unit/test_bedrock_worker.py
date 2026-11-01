@@ -14,6 +14,42 @@ from test_bedrock_mantle import MODEL, completion_stream, response_stream, compl
 AUTH = {'mode': 'api_key', 'api_key': 'synthetic-selected', 'region': 'us-east-1'}
 
 
+@pytest.mark.parametrize('policy,expected', [('tagged', 'Ok'), ('literal', '<think>internal</think>Ok'), ('auto', None)])
+def test_selected_reasoning_format_is_applied_inside_worker(monkeypatch, policy, expected):
+    from api_agent.llm_providers.bedrock import normalized_stream
+    observed = []
+    original = normalized_stream.guard_result
+    def guard(decoded, secrets):
+        observed.append(decoded.payload.content[0].text)
+        return original(decoded, secrets)
+    monkeypatch.setattr(normalized_stream, 'guard_result', guard)
+    value = completion()
+    value['choices'][0]['message']['content'] = '<think>internal</think>Ok'
+    def http_factory(*, timeout):
+        return httpx2.Client(transport=httpx2.MockTransport(lambda _: httpx2.Response(200, json=value)))
+    command = request('completions')
+    if policy != 'auto':
+        command['payload']['reasoning_format'] = policy
+    frames = []
+    worker.execute(command, frames.append, http_factory=http_factory)
+    if expected is None:
+        assert frames[-1]['code'] == 'reasoning_format_ambiguous'
+        assert not observed
+    else:
+        assert observed == [expected]
+        assert 'result' in frames[-1]
+        assert frames[-1]['result']['choices'][0]['message']['content'] == value['choices'][0]['message']['content']
+
+
+@pytest.mark.parametrize('operation,policy', [('completions', 'invalid'), ('responses', 'tagged')])
+def test_invalid_reasoning_format_is_rejected_before_sdk(operation, policy):
+    command = request(operation)
+    command['payload']['reasoning_format'] = policy
+    frames = []
+    worker.execute(command, frames.append, http_factory=lambda **options: pytest.fail('SDK must not start'))
+    assert frames[-1]['execution'] == 'not_started'
+
+
 def request(operation='models', auth=None, prefix='/v1'):
     return {'timeout': 240, 'operation': operation, 'auth': AUTH if auth is None else auth,
             'payload': {} if operation == 'models' else {'prefix': prefix, 'body': {

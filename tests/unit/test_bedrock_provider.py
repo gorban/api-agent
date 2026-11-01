@@ -12,6 +12,29 @@ from api_agent.providers.llm import AvailableSelection, CompletionRequest, LLMRe
 MODEL = 'zai.glm-4.7-flash'
 
 
+@pytest.mark.parametrize('policy', ['tagged', 'literal'])
+def test_reasoning_format_reaches_complete_and_stream_worker(controlled, policy):
+    request, _, transport, _ = controlled
+    async def run():
+        provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions',
+                                   'BEDROCK_COMPLETIONS_REASONING_FORMAT': policy}, {})
+        observed = []
+        original = transport.stream
+        async def stream(operation, payload, **options):
+            observed.append(payload['reasoning_format'])
+            async for event in original(operation, payload, **options):
+                yield event
+        transport.stream = stream
+        try:
+            await provider.acomplete(request)
+            assert transport.call.await_args.args[1]['reasoning_format'] == policy
+            assert [event async for event in provider.astream(request)][-1].kind == 'completed'
+            assert observed == [policy]
+        finally:
+            await provider.aclose()
+    asyncio.run(run())
+
+
 async def normalized_fake(source):
     from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
     decoder = WorkerStream('completions', MODEL, set())

@@ -21,7 +21,7 @@ def local(tmp_path):
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
     definition = SimpleNamespace(definition_id='selected-definition')
     prepared = (definition, object(), False, object(), {})
-    application_factory = Mock()
+    application_factory = Mock(return_value=Mock(timeouts={}))
     runtime = SimpleNamespace(emissions=EmissionBoundary(ContentPolicy()), services={}, tracing=None)
     session = SimpleNamespace(callback=SimpleNamespace(origin='https://localhost:8443'), runtime=runtime,
                               infrastructure=None, listener=None)
@@ -458,13 +458,15 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
     llm = SimpleNamespace(describe=AsyncMock(return_value=()), complete=AsyncMock(),
                           ensure_ready=AsyncMock(), aclose=AsyncMock())
     local.owner.llm_factory = Mock(return_value=llm)
-    local.owner._graph = SimpleNamespace(complete=AsyncMock(return_value='graph-result'))
+    local.owner._graph = SimpleNamespace(complete=AsyncMock(return_value='graph-result'),
+                                         timeouts={'GRAPH': 600})
     async def run():
         result = local.owner._runtime(config, origin, material)
         compose.assert_called_once_with(local.owner.context, config, callback_origin=origin,
                                          tls_material=material, required_kinds=())
         assert local.owner.llm_factory.call_args.kwargs['trace'] is runtime.tracing
         assert result.services['studio_backend'].lifecycle.on_error == local.owner._execution_error
+        assert result.services['studio_backend'].timeout == 600
         if requires_api:
             assert runtime.factory_plan[0][:2] == ('api', 'adapter.py:create')
             assert local.owner._graph.tool_owner.runtime is runtime
@@ -478,6 +480,50 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
         llm.ensure_ready.assert_not_called()
         await result.services['studio_backend'].aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('entry,root,key,timeout,expected', [
+    ('flow.md.html', '.', 'WORKFLOW_GRAPH_TIMEOUT_SECONDS', 480, 480),
+    ('demo/simple/flow.md.html', 'demo', 'WORKFLOW_GRAPH_TIMEOUT_SECONDS', 610, 610),
+    ('flow.md.html', '.', 'WORKFLOW_COMPONENT_TIMEOUT_SECONDS', 451, 451),
+    ('flow.md.html', '.', None, None, 120),
+])
+def test_runtime_uses_selected_application_graph_deadline(local, monkeypatch, entry, root, key, timeout, expected):
+    from dataclasses import replace
+    from api_agent.runtime import local_run
+    from api_agent.runtime import client_tls
+    from api_agent.runtime.local_tools import selected_application
+    from api_agent.workflows.definition import load_definition
+    from api_agent.ui import process
+
+    base = Path(__file__).resolve().parents[2]
+    definition = load_definition(base / entry, base_root=base, pack_root=base / root,
+                                 **({'entry_root': 'base'} if root != '.' else {}))
+    if key != 'WORKFLOW_GRAPH_TIMEOUT_SECONDS':
+        rows = (() if key is None else ({**definition.layout.tables['Timeouts'][0], 'Key': key},))
+        definition = replace(definition, layout=replace(definition.layout,
+            tables={**definition.layout.tables, 'Timeouts': rows}))
+    if key is not None:
+        local.config.values[key] = timeout
+    local.config.values['API_PROVIDER'] = 'synthetic.py:create'
+    local.owner._graph = selected_application(definition, config=local.config.values)
+    runtime = SimpleNamespace(services={}, emissions=EmissionBoundary(ContentPolicy()),
+                              tracing=None, factory_plan=())
+    monkeypatch.setattr(local_run, 'compose_runtime', Mock(return_value=runtime))
+    monkeypatch.setattr(client_tls, 'verified_client_context', lambda _: 'verified')
+    monkeypatch.setattr(process, 'StudioProcesses', Mock(return_value='process-owner'))
+    local.owner.llm_factory = Mock(return_value=SimpleNamespace(
+        describe=AsyncMock(return_value=()), complete=AsyncMock(), ensure_ready=AsyncMock(),
+        aclose=AsyncMock()))
+
+    result = local.owner._runtime(local.config, 'https://localhost:8443',
+                                  SimpleNamespace(ca_file=Path('/synthetic-ca')))
+
+    if key is None:
+        assert 'GRAPH' not in local.owner._graph.timeouts
+    else:
+        assert local.owner._graph.timeouts['GRAPH'] == timeout
+    assert result.services['studio_backend'].timeout == expected
 
 
 def test_optional_ui_uses_one_prepared_owner_and_then_llm(local, monkeypatch):

@@ -53,10 +53,34 @@ def test_catalog_and_completion_share_owner():
         stream = await backend.handle(request('POST', payload()), 'chat_stream')
         assert json.loads(catalog.content)['default'] == 'example'
         assert json.loads(answer.content)['response_text'] == 'hello'
-        assert [part.decode().splitlines()[0] async for part in stream.streaming_content] == ['event: session', 'event: token', 'event: response_complete', 'event: result', 'event: done']
+        assert [part.decode().splitlines()[0] async for part in stream.streaming_content] == ['event: session', 'event: thinking', 'event: token', 'event: response_complete', 'event: result', 'event: done']
         assert [item for item in calls if isinstance(item, str)] == ['catalog'] * 3
         await backend.aclose()
         assert (await backend.handle(request(), 'models')).status_code == 503
+    asyncio.run(run())
+
+
+def test_workflow_sized_request_keeps_nested_call_deadline():
+    from api_agent.providers.progress import component_timeout
+    observed = []
+
+    async def complete(request, *, auth, context):
+        observed.append(context.remaining())
+        with pytest.raises(TimeoutError):
+            async with component_timeout('Synthetic LLM call', .001):
+                await asyncio.sleep(.02)
+        return LLMResult(Message('assistant', (TextContent('hello'),)))
+
+    async def run():
+        backend, _ = setup_bridge(complete=complete, timeout=600)
+        try:
+            response = await backend.handle(request('POST', payload()), 'chat')
+            assert response.status_code == 200
+            assert json.loads(response.content)['response_text'] == 'hello'
+            assert len(observed) == 1 and observed[0] > 120
+        finally:
+            await backend.aclose()
+
     asyncio.run(run())
 
 

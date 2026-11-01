@@ -271,11 +271,21 @@ class StudioBackend:
                 value = clamp_request(value, selection, self.max_output_tokens)
                 selection.validate(value)
                 queue = asyncio.Queue(maxsize=16)
+                summaries = []
+                summary_bytes = 0
+                async def summary(text):
+                    nonlocal summary_bytes
+                    summary_bytes += len(text.encode('utf-8'))
+                    if summary_bytes > 65536 or len(summaries) >= 4096:
+                        raise ContractError('Application summary exceeds byte limit')
+                    summaries.append(text)
+                    await queue.put(('reasoning_token', {'content': text}))
                 async def invoke(context):
                     from contextlib import nullcontext
+                    from ..providers.presentation import summary_delivery
                     from ..workflows.run_context import conversation, turn
                     grouping = conversation(row['conversation_id']) if 'conversation_id' in row else nullcontext()
-                    with grouping, turn(session_id):
+                    with grouping, turn(session_id), summary_delivery(summary if capability == 'chat_stream' else None):
                         async with report_timeout('Studio completion', self.timeout):
                             if capability == 'chat_stream' and self.stream is not None:
                                 async def operation(*, auth):
@@ -290,17 +300,24 @@ class StudioBackend:
                                             chunk_bytes += len(event.payload.text.encode())
                                             if chunk_bytes > 131072 or len(chunks) > 4096:
                                                 raise ContractError('Application stream exceeds byte limit')
-                                            await queue.put(event.payload.text)
+                                            await queue.put(('token', {'content': event.payload.text}))
+                                        elif event.kind == 'reasoning_summary':
+                                            await summary(event.payload.text)
                                         elif event.kind == 'completed':
                                             final = chat_contract.result(session_id, event.payload)
                                         else:
                                             raise ContractError('Unsupported application stream event')
                                 if final is None or ''.join(chunks) != final['response_text']:
                                     raise ContractError('Invalid stream completion')
+                                if summaries:
+                                    final.setdefault('reasoning_summary', ''.join(summaries))
                                 return final
                             async def operation(*, auth):
                                 return await self.complete(value, auth=auth, context=context)
-                            return chat_contract.result(session_id, await self.owner.call(operation, context=context))
+                            final = chat_contract.result(session_id, await self.owner.call(operation, context=context))
+                            if summaries:
+                                final['reasoning_summary'] = ''.join(summaries)
+                            return final
                 response_owner = ResponseCleanup(self, session_id) if capability == 'chat_stream' else None
                 if session_id in self._responses or len(self._responses) >= self.lifecycle.max_active + self.lifecycle.max_terminal:
                     return self._response({'code': 'session_unavailable'}, 409)
@@ -363,19 +380,25 @@ class StudioBackend:
 
     async def _raw_events(self, session_id, turn, queue, hints):
         settled = False
+        summary_emitted = False
         waiter = None
         try:
             waiter = _spawn(self.lifecycle.wait_turn(self._owner_id, turn))
             yield chat_contract.frame('session', {'session_id': session_id, **hints})
+            yield chat_contract.frame('thinking', {})
             while not waiter.done() or not queue.empty():
                 if not queue.empty():
-                    yield chat_contract.frame('token', {'content': queue.get_nowait()})
+                    name, payload = queue.get_nowait()
+                    summary_emitted = summary_emitted or name == 'reasoning_token'
+                    yield chat_contract.frame(name, payload)
                     continue
                 read = _spawn(queue.get())
                 try:
                     done, _ = await asyncio.wait((read, waiter), return_when=asyncio.FIRST_COMPLETED)
                     if read in done:
-                        yield chat_contract.frame('token', {'content': read.result()})
+                        name, payload = read.result()
+                        summary_emitted = summary_emitted or name == 'reasoning_token'
+                        yield chat_contract.frame(name, payload)
                 finally:
                     if not read.done():
                         read.cancel()
@@ -388,6 +411,8 @@ class StudioBackend:
             if terminal.state != 'completed':
                 raise terminal.error
             if self.stream is None:
+                if terminal.result.get('reasoning_summary') and not summary_emitted:
+                    yield chat_contract.frame('reasoning_token', {'content': terminal.result['reasoning_summary']})
                 yield chat_contract.frame('token', {'content': terminal.result['response_text']})
             yield chat_contract.frame('response_complete', {'session_id': session_id})
             yield chat_contract.frame('result', terminal.result)

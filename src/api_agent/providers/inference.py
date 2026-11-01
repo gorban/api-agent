@@ -89,7 +89,7 @@ def result_from_wire(row):
     if type(row) is dict and 'version' in row:
         from .rich_inference import result_from_wire as rich
         return rich(row)
-    if type(row) is not dict or not {'text', 'outcome', 'usage'} <= set(row) or set(row) - {'text', 'outcome', 'usage', 'actual_model', 'service_tier', 'serving_revision', 'billing', 'applied_cache_boundaries'}:
+    if type(row) is not dict or not {'text', 'outcome', 'usage'} <= set(row) or set(row) - {'text', 'outcome', 'usage', 'actual_model', 'service_tier', 'serving_revision', 'billing', 'applied_cache_boundaries', 'reasoning_summary'}:
         _fail()
     text = _text(row['text'], 524288)
     if type(row['outcome']) is not str or row['outcome'] not in ('completed', 'length', 'refused'):
@@ -102,7 +102,7 @@ def result_from_wire(row):
     if any(value is not None and (type(value) is not int or not 0 <= value <= 2147483647) for value in usage.values()):
         _fail()
     try:
-        result = LLMResult(Message('assistant', (TextContent(text),)), Usage(**usage), row['outcome'], row.get('actual_model'), row.get('service_tier'), row.get('serving_revision'), row.get('billing'), _cache_boundaries(row))
+        result = LLMResult(Message('assistant', (TextContent(text),)), Usage(**usage), row['outcome'], row.get('actual_model'), row.get('service_tier'), row.get('serving_revision'), row.get('billing'), _cache_boundaries(row), reasoning_summary=row.get('reasoning_summary'))
     except (ValueError, TypeError):
         _fail()
     _size(row)
@@ -136,7 +136,7 @@ def result_to_wire(result):
         _fail()
     row = dict(text=result.payload.content[0].text, outcome=result.outcome,
         usage=usage_to_wire(result.usage))
-    for name in ('actual_model', 'service_tier', 'serving_revision', 'billing'):
+    for name in ('actual_model', 'service_tier', 'serving_revision', 'billing', 'reasoning_summary'):
         if getattr(result, name) is not None:
             row[name] = getattr(result, name)
     if result.applied_cache_boundaries:

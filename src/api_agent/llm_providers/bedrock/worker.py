@@ -155,6 +155,9 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
         timeout = inference_timeout(request['timeout'])
         deadline = started + timeout
         operation, payload = request['operation'], request['payload']
+        reasoning_format = payload.get('reasoning_format', 'auto') if type(payload) is dict else 'auto'
+        if reasoning_format not in ('auto', 'tagged', 'literal'):
+            raise ValueError()
         endpoint = payload.get('endpoint', 'mantle') if type(payload) is dict else None
         if endpoint not in ('mantle', 'runtime'):
             raise ValueError()
@@ -166,11 +169,13 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 raise ValueError()
             prefix, arguments = '/v1', {}
         else:
-            if (set(payload) not in ({'prefix', 'body'}, {'prefix', 'body', 'endpoint'})
+            if (set(payload) - {'reasoning_format'} not in ({'prefix', 'body'}, {'prefix', 'body', 'endpoint'})
                     or payload['prefix'] not in {'/v1', '/openai/v1', '/converse'}
                     or type(payload['body']) is not dict):
                 raise ValueError()
             prefix, arguments = payload['prefix'], dict(payload['body'])
+            if 'reasoning_format' in payload and not operation.startswith('completions'):
+                raise ValueError()
             if (endpoint == 'runtime' and prefix != ('/converse' if native else '/openai/v1')
                     or endpoint == 'mantle' and (native or prefix == '/converse')):
                 raise ValueError()
@@ -266,7 +271,8 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
         if operation.endswith('_stream') and not native:
             body = result
             from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
-            decoder = WorkerStream('responses' if response else 'completions', arguments['model'], secrets, **({'endpoint': endpoint} if endpoint != 'mantle' else {}))
+            decoder = WorkerStream('responses' if response else 'completions', arguments['model'], secrets,
+                reasoning_format=reasoning_format, **({'endpoint': endpoint} if endpoint != 'mantle' else {}))
             for event in body:
                 inference_observed = True
                 value = json_value(event.model_dump(exclude_unset=True))
@@ -324,6 +330,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 try:
                     decoded = decode(value, 'converse' if native else ('responses' if response else 'completions'),
                                      selected_llm=arguments['modelId'] if native else arguments['model'],
+                                     **({'reasoning_format': reasoning_format} if not native else {}),
                                      **({'endpoint': endpoint} if endpoint != 'mantle' else {}))
                 except Exception as error:
                     from api_agent.providers.contracts import ProviderAccessError
