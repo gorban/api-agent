@@ -35,6 +35,54 @@ def test_reasoning_format_reaches_complete_and_stream_worker(controlled, policy)
     asyncio.run(run())
 
 
+def test_auto_reasoning_format_is_resolved_for_each_selected_model_in_complete_and_stream(controlled, monkeypatch):
+    from api_agent.llm_providers.bedrock import normalized_stream
+    request, result, transport, _ = controlled
+    qualified = 'openai.gpt-oss-20b-1:0'
+    other = 'openai.gpt-oss-120b-1:0'
+    observed = []
+    codec = sys.modules['api_agent.llm_providers.bedrock.mantle']
+    codec.decode = lambda response, mode, **kwargs: observed.append((kwargs['selected_llm'], kwargs['reasoning_format'])) or result
+
+    class Decoder:
+        def __init__(self, mode, *, selected_llm):
+            self.selected_llm = selected_llm
+
+        def feed(self, event):
+            return (StreamEvent(TextContent('answer')),)
+
+        def finish(self):
+            return result
+
+    monkeypatch.setattr(normalized_stream, 'ParentStream', Decoder)
+    stream_payloads = []
+    original_stream = transport.stream
+
+    async def stream(operation, payload, **options):
+        stream_payloads.append((payload['body']['modelId'], payload.get('reasoning_format')))
+        async for event in original_stream(operation, payload, **options):
+            yield event
+
+    transport.stream = stream
+
+    async def run():
+        provider = module.factory({'BEDROCK_ENDPOINT': 'runtime', 'BEDROCK_API_MODE': 'completions'}, {})
+        try:
+            for model, expected in ((qualified, 'tagged'), (other, 'auto'), (qualified, 'tagged')):
+                selected = LLMRequest(model, request.payload)
+                await provider.acomplete(selected)
+                payload = transport.call.await_args.args[1]
+                assert payload['body']['modelId'] == model
+                assert payload.get('reasoning_format') == (expected if expected != 'auto' else None)
+                assert [event async for event in provider.astream(selected)][-1].kind == 'completed'
+            assert observed == [(qualified, 'tagged'), (other, 'auto'), (qualified, 'tagged')]
+            assert stream_payloads == [(qualified, 'tagged'), (other, None), (qualified, 'tagged')]
+        finally:
+            await provider.aclose()
+
+    asyncio.run(run())
+
+
 async def normalized_fake(source):
     from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
     decoder = WorkerStream('completions', MODEL, set())

@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from api_agent.llm_providers.bedrock.auth import create_session
 from api_agent.providers.contracts import ContractError, InteractionRequiredError, SessionClosedError
 
@@ -257,6 +258,71 @@ def test_config_session_retains_saved_mode_and_model(tmp_path, saved, mode, mode
     assert not resolved.errors
     assert resolved.values['BEDROCK_API_MODE'] == mode
     assert resolved.values['LLM_DEFAULT_MODEL'] == model
+    assert (tmp_path / '.env').read_text() == saved
+
+
+@pytest.mark.parametrize('endpoint,mode,expected', [
+    ('runtime', 'completions', 'auto'),
+    ('mantle', 'completions', 'auto'),
+    ('runtime', 'responses', None),
+])
+def test_bedrock_reasoning_format_conditional_default_uses_actual_config_session(tmp_path, endpoint, mode, expected):
+    from types import SimpleNamespace
+    from api_agent.config import load_shared_schema
+    from api_agent.config.session import ConfigSession
+    root = Path(__file__).parents[2]
+    saved = f'BEDROCK_ENDPOINT={endpoint}\nBEDROCK_API_MODE={mode}\n'
+    (tmp_path / '.env').write_text(saved)
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path,
+        dotenv_path=tmp_path / '.env', external_pack=False, owner_root=root,
+        anchors={'base_root': tmp_path, 'pack_root': tmp_path, 'owner_root': root})
+    selector = str(root / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory'
+    session = ConfigSession(context, load_shared_schema(), environ={'LLM_PROVIDER': selector})
+    result = session.result()
+    assert not result.errors
+    assert result.values.get('BEDROCK_COMPLETIONS_REASONING_FORMAT') == expected
+    if endpoint == 'runtime' and mode == 'completions':
+        from api_agent.llm_providers.bedrock import catalog
+        from api_agent.providers.selection import ModelSelectionPolicy
+        rows = (catalog.selection('openai.gpt-oss-20b-1:0', mode, endpoint),)
+        assert ModelSelectionPolicy(result.values).select_default(rows) == 'openai.gpt-oss-20b-1:0'
+    assert (tmp_path / '.env').read_text() == saved
+
+
+@pytest.mark.parametrize('dotenv_value,environ_value,cli_value,override_value,expected,source', [
+    ('auto', None, None, None, 'auto', 'dotenv'),
+    ('literal', None, None, None, 'literal', 'dotenv'),
+    ('literal', 'tagged', None, None, 'tagged', 'environment'),
+    ('tagged', 'literal', 'auto', None, 'auto', 'cli'),
+    ('auto', 'tagged', 'literal', 'auto', 'auto', 'interactive'),
+])
+def test_explicit_bedrock_reasoning_format_overrides_conditional_default(
+        tmp_path, dotenv_value, environ_value, cli_value, override_value, expected, source):
+    from types import SimpleNamespace
+    from api_agent.config import load_shared_schema
+    from api_agent.config.session import ConfigSession
+    root = Path(__file__).parents[2]
+    name = 'BEDROCK_COMPLETIONS_REASONING_FORMAT'
+    saved = f'BEDROCK_ENDPOINT=runtime\nBEDROCK_API_MODE=completions\n{name}={dotenv_value}\n'
+    (tmp_path / '.env').write_text(saved)
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path,
+        dotenv_path=tmp_path / '.env', external_pack=False, owner_root=root,
+        anchors={'base_root': tmp_path, 'pack_root': tmp_path, 'owner_root': root})
+    selector = str(root / 'src/api_agent/llm_providers/bedrock/factory.py') + ':factory'
+    environ = {'LLM_PROVIDER': selector}
+    if environ_value is not None:
+        environ[name] = environ_value
+    argv = [f'--bedrock-completions-reasoning-format={cli_value}'] if cli_value is not None else []
+    session = ConfigSession(context, load_shared_schema(), argv=argv, environ=environ)
+    if override_value is not None:
+        session.set_value(name, override_value)
+    result = session.result()
+    assert not result.errors
+    assert result.values[name] == expected
+    if source == 'dotenv':
+        assert result.fields[name].source.endswith('/.env')
+    else:
+        assert result.fields[name].source == source
     assert (tmp_path / '.env').read_text() == saved
 
 

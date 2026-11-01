@@ -3,7 +3,7 @@ import {requestPayload, readResponse, readJSONResponse, supportsContinuation, su
 import {normalizeCatalog, resolveSelection, modelGroups, reasoningEfforts} from './catalog.js';
 import {beginReply, takeReply, customAnswer} from './reply.js';
 const $ = id => document.getElementById(id);
-const REQUEST_TIMEOUT_MS = 150000;
+const SESSION_START_TIMEOUT_MS = 150000;
 const KEY = 'api-agent-studio-v2';
 const defaults = () => ({model: '', version: '', reasoning: ''});
 const fresh = () => ({session: crypto.randomUUID(), messages: [], draft: '', reply: null, settings: defaults()});
@@ -179,7 +179,7 @@ async function run(text, requested, retryMessage, reply) {
   render(); follow(); save();
   announce('Waiting for api-agent. You can stop at any time.');
 
-  const timer = setTimeout(() => { request.failure = 'The agent took too long to respond. Please try again.'; stopRequest(request); }, REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => { request.failure = 'The agent took too long to respond. Please try again.'; stopRequest(request); }, SESSION_START_TIMEOUT_MS);
   let completedSummary;
   try {
     await loadConfiguration();
@@ -192,6 +192,7 @@ async function run(text, requested, retryMessage, reply) {
     await readResponse(response, {
       sessionId: request.sessionId,
       onSession(session) {
+        clearTimeout(timer);
         request.heartbeat = setInterval(() => {
           void controlRequest('heartbeat', request).catch(error => { request.failure = error.message; controller.abort(); });
         }, session.heartbeat_interval_ms);
