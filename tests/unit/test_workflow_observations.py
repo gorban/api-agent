@@ -901,3 +901,34 @@ def test_withheld_trace_failure_preserves_durable_node_capture(missing_span):
     assert any(row.get('values', {}).get('text') == 'visible' for row in adapter.finalize()['events'])
     if not missing_span:
         runtime.begin.return_value.event.assert_called_once_with({'values': {}})
+
+
+@pytest.mark.parametrize('log', [False, True])
+@pytest.mark.parametrize('secret', ['allow', 'structured'])
+def test_redacted_response_policy_keeps_a_valid_journal_and_local_call(log, secret):
+    from api_agent.providers.llm import ResponseEvidence
+    from api_agent.providers.rich_inference import response_evidence_to_wire
+    from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
+    from api_agent.workflows.journal import validate_journal
+    lines = []
+    boundary = EmissionBoundary(ContentPolicy(log), secrets=(secret,))
+    adapter = WorkflowObservationFactory(config(log=log), boundary=boundary,
+        sink=lambda row: lines.append(LocalDiagnosticProjection().format(row))).create(definition())
+    graph, visit = str(uuid4()), str(uuid4())
+    adapter.observe(dict(event='scope_start', scope_id=graph, owner='GRAPH', kind='graph'))
+    adapter.observe(dict(event='scope_start', scope_id=visit, parent_id=graph, owner='Make', kind='node'))
+    response = response_evidence_to_wire(ResponseEvidence('structured', 'allow', 'structured', '0' * 64, True, None))
+
+    adapter.record_call(visit_id=visit, call_id=str(uuid4()), elapsed=.01, response=response)
+    adapter.observe(dict(event='scope_end', scope_id=visit, owner='Make', kind='node', outcome='passed'))
+    adapter.observe(dict(event='scope_end', scope_id=graph, owner='GRAPH', kind='graph', outcome='passed'))
+    adapter.close()
+    journal = adapter.finalize()
+
+    validate_journal(journal, expected_definition=definition())
+    call, = (row for row in journal['events'] if row['event'] == 'call')
+    assert 'response' not in call
+    assert call['reason'] == 'response_metadata_withheld'
+    visible, = (json.loads(line) for line in lines if json.loads(line)['event'] == 'call')
+    assert visible['call_id'] == call['call_id']
+    assert visible['reason'] == 'response_metadata_withheld'

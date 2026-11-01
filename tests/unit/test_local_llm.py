@@ -670,6 +670,11 @@ def test_response_evidence_survives_local_terminal_accounting(selected, failure)
             assert owner.usage[0]['response']['actual_mode']=='text'
             assert journal.record_call.call_args.kwargs['response']==owner.usage[0]['response']
             assert journal.record_call.call_args.kwargs['call_id']==owner.usage[0]['call_id']
+            from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
+            import json
+            displayed=json.loads(LocalDiagnosticProjection().format(dict(event='call', **journal.record_call.call_args.kwargs)))
+            assert displayed['response']==owner.usage[0]['response']
+            assert displayed['output_mechanism']=='text'
         finally:await owner.aclose()
     asyncio.run(scenario())
 

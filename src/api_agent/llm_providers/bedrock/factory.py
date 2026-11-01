@@ -194,8 +194,10 @@ class BedrockProvider:
         from .response_policy import prepare_response
         prepared, _ = prepare_response(request, self.api_mode, endpoint=self.endpoint, stream=stream)
         prepared = self._effective_request(prepared)
+        from .response_policy import qualified_native_responses
         if (stream and self.endpoint == 'runtime' and self.api_mode != 'converse'
-                and prepared.payload.structured is not None):
+                and prepared.payload.structured is not None
+                and not qualified_native_responses(prepared, self.api_mode, self.endpoint)):
             raise OperationalError('unsupported')
         catalog.selection(prepared.selected_llm, self.api_mode, self.endpoint).validate(prepared)
         validate_request(prepared, endpoint=self.endpoint, api_mode=self.api_mode)

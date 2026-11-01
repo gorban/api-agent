@@ -462,9 +462,10 @@ def test_compatibility_owner_tool_evidence_uses_captured_instance_id(monkeypatch
     assert recorded == [('primary', 'demo/primary', 'demo/primary')]
 
 
+@pytest.mark.parametrize('model', ['us.openai.gpt-5.6-luna', 'us.openai.gpt-6-luna'])
 @pytest.mark.parametrize('effort', ['low', 'high'])
 @pytest.mark.parametrize('invalid_verdict', [False, True])
-def test_bedrock_reasoning_reviewer_fallback_preserves_schema_validation(effort, invalid_verdict):
+def test_bedrock_reasoning_native_reviewer_preserves_schema_validation(model, effort, invalid_verdict):
     from api_agent.llm_providers.bedrock.response_policy import prepare_response
     from api_agent.providers.contracts import ProviderAccessError
     from api_agent.providers.rich_inference import async_validate_result
@@ -488,7 +489,7 @@ def test_bedrock_reasoning_reviewer_fallback_preserves_schema_validation(effort,
         json.dumps(reviewer), 'Hello'])
     owner = Owner()
     original = request()
-    selected = replace(original, selected_llm='us.openai.gpt-5.6-luna',
+    selected = replace(original, selected_llm=model,
         payload=replace(original.payload, generation=GenerationOptions(reasoning_effort=effort)))
 
     if invalid_verdict:
@@ -501,7 +502,8 @@ def test_bedrock_reasoning_reviewer_fallback_preserves_schema_validation(effort,
         assert len(llm.requests) == 3
 
     adapted, evidence = llm.policies[1]
-    assert evidence.actual_mode == 'prompted_json'
+    assert llm.policies[0][1].actual_mode == 'prompted_json'
+    assert evidence.actual_mode == 'structured'
     assert evidence.requested_mode == 'structured'
     assert adapted.payload.generation.reasoning_effort == effort
     assert llm.requests[1].payload.response.fallback == 'allow'

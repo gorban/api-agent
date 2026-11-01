@@ -35,6 +35,19 @@ class LocalDiagnosticProjection:
         if not isinstance(row, Mapping):
             raise ValueError('Diagnostic observation must be an admitted mapping')
         result = {key: _plain(row[key]) for key in _KEYS if key in row}
+        if row.get('response') is not None:
+            from api_agent.providers.rich_inference import response_evidence_from_wire, response_evidence_to_wire
+            try:
+                evidence = response_evidence_from_wire(_plain(row['response']))
+            except ValueError:
+                # Credential redaction can replace a fixed policy label too.
+                # Keep the call visible without restoring or exposing that label.
+                result['output_mechanism'] = 'unavailable'
+                result['response_notice'] = 'withheld_or_invalid'
+            else:
+                result['response'] = response_evidence_to_wire(evidence)
+                result['output_mechanism'] = {'structured': 'native_json_schema', 'json': 'json_mode',
+                    'prompted_json': 'prompted_json', 'text': 'text'}[evidence.actual_mode]
         if row.get('event') == 'capture':
             if 'values' not in row:
                 result['content'] = row.get('reason', 'withheld')
