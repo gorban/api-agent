@@ -14,3 +14,5 @@
 The source implementation and repairs passed independent code review, the complete applicable unit gate at exact line/branch coverage, actual renderer/browser checks and relocated installed-package verification. Ordinary freshness checks require no renderer. Broader application startup, execution overlays and full CI wiring retain their own requirements.
 
 - [ ] Human acceptance alongside the combined declaration/diagram and managed-viewer checkpoint.
+
+Repository-preview syntax enforcement follows the [shared envelope checks](implementation_plan_b1a3b.md), using this same staged/CI dispatcher.

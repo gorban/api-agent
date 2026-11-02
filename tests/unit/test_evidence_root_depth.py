@@ -282,3 +282,62 @@ async def test_real_setup_channel_to_payload_recording_retains_depth_and_redacti
         await server.aclose()
         await registry.aclose()
         scope.close()
+
+
+@pytest.mark.parametrize('phase', ['request', 'response'])
+@pytest.mark.parametrize('depth', [7, 8])
+@pytest.mark.parametrize('shape', ['object', 'array'])
+def test_provider_payload_identity_survives_graph_wrapper_and_recording(tmp_path, phase, depth, shape):
+    from api_agent.workflows.attribution import bind_workflow_visit
+    from api_agent.workflows.inference_capture import capture_rows
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from api_agent.testing.payloads import PayloadResolver, PayloadStore, hydrate_journal
+    from test_payloads import recorder, result
+    from test_workflow_observations import config, definition
+
+    value = 'visible final answer'
+    for _ in range(depth - 1):
+        value = {'nested': value} if shape == 'object' else [value]
+    payload = {'provider_payload': value}
+    boundary = EmissionBoundary(ContentPolicy(True))
+    wire = project_values({'values': payload}, {'type': 'object'}, boundary,
+                          _content_wrapper=True, _provider_content=True)['values']
+    assert wire == payload
+    row = dict(phase=phase, content=wire, reason='captured', capture_source='provider')
+    adapter = WorkflowObservationFactory(config(True), boundary=boundary).create(definition())
+    graph, visit, call = str(uuid4()), str(uuid4()), str(uuid4())
+    adapter.observe(dict(event='scope_start', scope_id=graph, owner='GRAPH', kind='graph'))
+    adapter.observe(dict(event='scope_start', scope_id=visit, parent_id=graph, owner='Make', kind='node'))
+    with bind_workflow_visit(adapter, visit):
+        capture_rows([row], call)
+    packet = adapter.finalize()
+    captured = next(event for event in packet['events'] if event['event'] == 'capture')
+    assert captured['reason'] == 'captured'
+    assert captured['values'] == {'llm_' + phase: payload}
+
+    run = recorder(tmp_path)
+    store = PayloadStore(run, 'test')
+    store.put_wire(call, phase, wire, capture_source='provider')
+    envelope = store.materialize_journal(packet)
+    run.record_artifact('payload-index.json', json.dumps(store.index()).encode())
+    run.record_test(result())
+    manifest = run.finalize()
+    with PayloadResolver.local(tmp_path, manifest) as resolver:
+        resolver.index('payload-index.json')
+        assert hydrate_journal(envelope, resolver) == packet
+
+
+@pytest.mark.parametrize('provider_content', [False, True])
+@pytest.mark.parametrize('items', [2046, 2047])
+def test_graph_wrapper_preserves_provider_item_ceiling_without_broadening_normal_capture(provider_content, items):
+    from api_agent.workflows.journal import _capture_contract
+
+    content = {'items': [0] * items}
+    wrapped = {'llm_request': content}
+    report = set()
+    captured = project_values(wrapped, {'type': 'object'}, EmissionBoundary(ContentPolicy(True)),
+                              _provider_content=provider_content, report=report)
+    admitted = provider_content and items == 2046
+    assert captured == (wrapped if admitted else {})
+    assert report == (set() if admitted else {'truncated'})
+    assert _capture_contract(wrapped, max_depth=8, provider_content=provider_content) is admitted

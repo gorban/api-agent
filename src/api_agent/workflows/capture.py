@@ -8,7 +8,7 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 
-from .journal import _schema_field, _provider_field
+from .journal import _schema_field, _provider_field, _provider_wrapper
 
 _OMIT = object()
 
@@ -30,11 +30,12 @@ def project_values(values, schema, boundary, *, limit=None, report=None, max_byt
                              or type(values['values']) is not dict or schema != {'type': 'object'}):
         raise ValueError('Invalid internal content wrapper')
     # The transport wrapper is not part of the logical evidence value.
-    root_depth = -1 if _content_wrapper else 0
+    wrapped = _content_wrapper or (_provider_content and _provider_wrapper(values))
+    root_depth = -1 if wrapped else 0
     # Privacy must see original JSON carriers before schemas remove fields or
     # limits clip text. Bound the entire representation without fragmenting a
     # JSON container; unknown runtime objects cannot be serialized as JSON.
-    admission_budget = [max_bytes, 2048 + int(_content_wrapper)]
+    admission_budget = [max_bytes, 2048 + int(wrapped)]
     overflow = [False]
     def original(value, seen, depth):
         admission_budget[1] -= 1
@@ -107,7 +108,7 @@ def project_values(values, schema, boundary, *, limit=None, report=None, max_byt
         report.add('unsupported')
         return {}
     values = exported['values']
-    budget = [2048 + int(_content_wrapper)]
+    budget = [2048 + int(wrapped)]
     validator = Draft202012Validator(schema, registry=Registry())
     def matches_type(value, rule):
         try:

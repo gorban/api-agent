@@ -32,7 +32,7 @@ from api_agent.providers.contracts import ProviderAccessError
 from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent
 
 
-pytestmark = pytest.mark.feature('Prompt caching')
+pytestmark = [pytest.mark.feature('Prompt caching'), pytest.mark.credential_authorities('coordinator')]
 
 @dataclass(frozen=True)
 class CacheExpectation:
