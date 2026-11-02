@@ -9,10 +9,10 @@ connections, start local services, run tests and inspect failures.
 ## Included
 
 - **Replaceable LLM connections:** OpenAI subscription or API-key access,
-  compatible endpoints such as OpenRouter, and Bedrock Mantle with session,
-  access-key or API-key authentication. Select an included provider or add your own.
-  Contributions welcome to add Anthropic / Claude support as another
-  out-of-the-box option.
+  compatible endpoints such as OpenRouter, and Amazon Bedrock Runtime or Mantle
+  with endpoint-appropriate authentication. Anthropic Claude models are supported
+  through Bedrock. Select an included provider or add your own. A Claude Code
+  subscription adapter is not yet included; contributions are welcome.
 
 - **Executable workflows:** a small default chat graph plus a separate
   [API demonstration](docs/api_demo.md) combining LLM and deterministic nodes,
