@@ -257,3 +257,42 @@ raise SystemExit(code)
         capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stdout + run.stderr
     assert json.loads(events.read_text()) == lookups + [status]
+
+
+def test_cache_acceptance_runs_both_calls_through_declared_shared_authority():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from api_agent.providers.setup_registry import SetupRegistry
+    from api_agent.providers.setup_transport import SetupServer
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.testing.authority_scope import authority_scope
+    from api_agent.testing.provider_setup import RemoteIntegrationLLM
+
+    calls = []
+    class Owner:
+        ensure_ready = AsyncMock()
+        aclose = AsyncMock()
+
+        async def complete(self, request):
+            calls.append(request)
+            return result(cached=0 if len(calls) == 1 else 1024)
+
+    async def scenario():
+        registry = SetupRegistry('cache-proof', 'selected', Owner)
+        server = SetupServer(registry, 'synthetic-cache-proof-capability-0000', timeout=5,
+                             authority=EmissionBoundary(ContentPolicy(True)))
+        provider = RemoteIntegrationLLM(await server.start(), {'LLM_SETUP_REQUEST_TIMEOUT_SECONDS': 5})
+        marker = next((mark for mark in _acceptance.pytestmark
+                       if mark.name == 'credential_authorities'), None)
+        try:
+            with authority_scope(None if marker is None else marker.args) as scope:
+                await asyncio.wait_for(asyncio.to_thread(run, provider), 5)
+                await asyncio.to_thread(scope.finish_evidence)
+            assert len(calls) == 2
+            assert calls[0] == calls[1]
+        finally:
+            await asyncio.to_thread(provider.close)
+            await server.aclose()
+            await registry.aclose()
+
+    asyncio.run(scenario())

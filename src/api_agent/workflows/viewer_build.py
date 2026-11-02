@@ -360,6 +360,14 @@ def _inventory_files(root, projections, contexts, inputs, **kwargs):
 
 
 def _check_inventory_files(files, root, owners):
+    from .document_format import check_repository_preview
+    from .layout import LayoutError
+    for file in files:
+        if file.content_type == 'text/html; charset=utf-8':
+            try:
+                check_repository_preview(file.body, path=_physical_file(file.path, {'base': root}))
+            except LayoutError as error:
+                raise RenderError(str(error)) from error
     for owner in owners:
         selected = tuple(_rebase_file(file, {"base": root}, owner) for file in files
                          if _physical_file(file.path, {"base": root}).is_relative_to(owner))

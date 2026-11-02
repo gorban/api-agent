@@ -67,3 +67,5 @@ engine, client and the Compose capabilities actually used when selecting:
   remain applicable; live account or unfinished E2E behavior is not newly claimed.
 - [ ] Complete applicable unit gates and independent review. Retain fresh-machine,
   platform, real-engine/browser and human acceptance explicitly where unexecuted.
+
+Human acceptance: automatic dependency and frontend preparation, Studio startup and warm reuse were approved November 2, 2026. Unexecuted platform qualification and host-engine prerequisites remain separate.

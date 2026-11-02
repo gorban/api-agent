@@ -111,8 +111,18 @@ def _provider_field(key):
                                         'thinking', 'thinking_content', 'chain_of_thought')
 
 
+def _provider_wrapper(value):
+    """Identify the journal label around one logical provider payload."""
+    return (type(value) is dict and len(value) == 1
+            and next(iter(value)) in ('llm_request', 'llm_response')
+            and type(next(iter(value.values()))) is dict)
+
+
 def _capture_contract(value, depth=0, *, max_depth=4, budget=None, provider_content=False):
-    budget = [2048] if budget is None else budget
+    if budget is None:
+        wrapper = provider_content and _provider_wrapper(value)
+        depth -= int(wrapper)
+        budget = [2048 + int(wrapper)]
     budget[0] -= 1
     if depth > max_depth or budget[0] < 0:
         return False

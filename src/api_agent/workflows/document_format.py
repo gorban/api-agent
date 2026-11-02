@@ -133,6 +133,30 @@ def _normalize_view_command(raw: bytes, *, flow_path: str | None = None) -> byte
     return prefix + separator + body
 
 
+
+def check_repository_preview(raw: bytes, *, path: Path) -> None:
+    """Require CommonMark to consume every reserved browser bootstrap label.
+
+    This is independent of envelope generation/freshness. Inspect only the
+    carrier prefix, so literal examples in the workflow body remain allowed.
+    Legacy HTML-only envelopes have no Markdown bootstrap to validate.
+    """
+    if not raw.startswith(_HINT):
+        return
+    from markdown_it import MarkdownIt
+    from .layout import LayoutError
+    extracted = extract_document(raw, path=path)
+    prefix = raw[:raw.index(_CARRIER) + len(_CARRIER)]
+    required = {label.decode('ascii').upper()
+                for label in re.findall(rb'^\[([a-z-]+)\]:', _HEAD + _CARRIER, re.M)}
+    if _is_root_document(extracted.executable_bytes):
+        required.add('WORKFLOW-HELP')
+    environment = {}
+    MarkdownIt('commonmark', {'html': True}).parse(prefix.decode('utf-8'), environment)
+    if not required.issubset(environment.get('references', {})):
+        raise LayoutError(f'{path}: malformed repository Markdown bootstrap; regenerate workflow views')
+
+
 def _saved_generated(generated):
     image, _, links = generated.partition(b'\n\n')
     target = image.removeprefix(b'![Workflow diagram](').removesuffix(b')')
