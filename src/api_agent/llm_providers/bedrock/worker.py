@@ -147,6 +147,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
     endpoint = None
     decode_failure = None
     failed_observation = None
+    model_scrub = None
     inference_observed = False
     try:
         json_value(request)
@@ -316,7 +317,12 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     raise failure
                 raise ValueError()
             try:
-                guard_semantic(value, secrets)
+                if operation in ('models', 'runtime_models'):
+                    from api_agent.providers.scrubbed_response import scrub_response
+                    value, model_scrub = scrub_response(value, schema={'type': 'object'},
+                        secrets=secrets, operation='bedrock_model_discovery')
+                else:
+                    guard_semantic(value, secrets)
             except Exception:
                 decode_failure = 'response_safety_rejected'
                 failed_observation = {'version':1, 'response_validation':'rejected'}
@@ -365,6 +371,11 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     failed_observation = {'version':1, 'response_validation':'rejected'}
                     raise
             metadata = {}
+            if model_scrub:
+                metadata = dict(version=1,
+                    scrub_empty_strings=sum(item.action == 'empty_string' for item in model_scrub),
+                    scrub_omitted_members=sum(item.action == 'omit_member' for item in model_scrub),
+                    scrub_omitted_events=model_scrub.omitted_diagnostics)
             if operation not in ('models', 'runtime_models'):
                 from api_agent.telemetry.inference_diagnostics import valid_diagnostics, scrub_diagnostics
                 from api_agent.telemetry.privacy import EmissionBoundary

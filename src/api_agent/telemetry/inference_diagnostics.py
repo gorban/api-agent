@@ -4,7 +4,7 @@ import re
 
 _COUNTS = {'output_items', 'message_items', 'reasoning_items', 'tool_items', 'other_items',
            'visible_text_characters', 'reasoning_text_characters', 'decoded_visible_text_characters',
-           'max_output_tokens'}
+           'max_output_tokens', 'scrub_empty_strings', 'scrub_omitted_members', 'scrub_omitted_events'}
 _ENUMS = {
     'observation': {'sdk_decoded'},
     'api': {'responses', 'completions', 'converse', 'normalized'},

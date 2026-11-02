@@ -24,6 +24,11 @@ def test_pool_coalesces_identical_effective_config_and_retains_distinct_owners(m
     rows = pool.start()
     assert len(made) == 2
     assert rows['one']['setup_backend'] == rows['two']['setup_backend'] != rows['three']['setup_backend']
+    made[0].diagnostic_stderr = 'first shared setup notice'
+    made[1].diagnostic_stderr = 'second shared setup notice'
+    assert pool.stderr_for('one') == pool.stderr_for('two') == 'first shared setup notice'
+    assert pool.stderr_for('three') == 'second shared setup notice'
+    assert pool.stderr_for('missing') == ''
     rows['one']['config']['api'] = 'changed'
     assert pool.profiles['one']['config']['api'] == profiles['one']['config']['api'] == 'a'
     pool.close()

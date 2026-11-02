@@ -92,7 +92,7 @@ def test_disabled_toggle_does_not_append_even_with_explicit_csv_path(tmp_path, e
 
 @pytest.mark.parametrize('status', ['passed', 'failed', 'cancelled'])
 @pytest.mark.parametrize('storage_failure', [False, True])
-def test_empty_local_destinations_keep_s3_and_cleanup_staging(tmp_path, monkeypatch, status, storage_failure):
+def test_empty_local_destinations_keep_s3_and_cleanup_staging(tmp_path, monkeypatch, status, storage_failure, capsys):
     context, test, config = recording_fixture(tmp_path)
     config.update(ALLURE_RESULTS_DIR='', ALLURE_SECONDARY_DIR='',
                   TOKEN_USAGE_CSV_ENABLED=True, TOKEN_USAGE_CSV='')
@@ -111,7 +111,9 @@ def test_empty_local_destinations_keep_s3_and_cleanup_staging(tmp_path, monkeypa
     assert storage.secondary_directory is None
     result = recorded.run_recorded_integration(context, [test], config, accepted=True,
                                               storage=storage, runner=fake_runner(status))
-    assert result.exit_code == (130 if status == 'cancelled' else int(status != 'passed' or storage_failure))
+    assert result.exit_code == (130 if status == 'cancelled' else int(status != 'passed'))
+    assert result.execution.tests[0].status == status
+    assert ('Allure publication failed:' in capsys.readouterr().err) is storage_failure
     assert result.persisted is not storage_failure
     assert result.directory is None
     assert len(staging) == 1 and not staging[0].exists()

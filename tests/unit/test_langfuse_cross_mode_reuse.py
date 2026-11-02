@@ -27,7 +27,7 @@ def test_cross_mode_retained_stack_reuses_exact_provisioning(tmp_path, test_mode
             anchors={'owner_root': tmp_path})
         assert not result.errors and not result.missing
         assert result.values['LANGFUSE_ADMIN_EMAIL'] == credentials.get('LANGFUSE_ADMIN_EMAIL', 'admin@local.dev')
-        assert result.values['LANGFUSE_ADMIN_PASSWORD'] == credentials.get('LANGFUSE_ADMIN_PASSWORD', 'password')
+        assert result.values['LANGFUSE_ADMIN_PASSWORD'] == credentials.get('LANGFUSE_ADMIN_PASSWORD', 'Local-LF-9vQ7!mR2#xK8@pT4')
         plan = plan_compose(result.values, scope)
         managers.append(PrerequisiteManager(plan, scope, tmp_path / 'ownership',
             command_runner=engine.run, readiness_probe=lambda *args: True,

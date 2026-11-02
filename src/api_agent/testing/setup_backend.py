@@ -25,6 +25,8 @@ class _SetupOwner:
             interaction=backend.interaction, quota_observer=backend.quota_observer,
             authority=backend.authority)
         self.trace = None
+        self._trace_unavailable = False
+        self._stderr_sink = getattr(backend, 'capture_stderr', None)
         factory = getattr(backend, 'trace_prerequisites_factory', None)
         self.trace_prerequisites = factory(backend.config) if factory is not None else None
         if backend.config.get('TRACE_MODE', ''):
@@ -34,11 +36,38 @@ class _SetupOwner:
                                               self.provider.emissions)
 
     async def _ensure_tracing(self):
-        if self.trace_prerequisites is not None:
+        if self.trace_prerequisites is not None and not self._trace_unavailable:
+            from api_agent.runtime.prerequisites import PrerequisiteCancelled
             from api_agent.runtime.tasks import offload
             manager = self.trace_prerequisites
-            async with report_timeout('Integration trace collector readiness', manager.timeout) as budget:
-                await offload(manager.acquire, _deadline=manager.now() + budget.remaining)
+            try:
+                async with report_timeout('Integration trace collector readiness', manager.timeout) as budget:
+                    await offload(manager.acquire, _deadline=manager.now() + budget.remaining)
+            except PrerequisiteCancelled:
+                raise
+            except Exception as error:
+                self._trace_failure('collector setup', error)
+
+    def _trace_failure(self, stage, error):
+        from .diagnostics import CredentialScrubber
+        from api_agent.runtime.prerequisites import PrerequisiteError
+        from api_agent.telemetry.tracing import TraceError
+        from api_agent.providers.setup_transport import _diagnostic
+        import sys
+        scrub = CredentialScrubber(boundary=self.provider.emissions)
+        detail = str(error) if type(error) in (PrerequisiteError, TraceError) else _diagnostic(error, 'Tracing')
+        message = scrub(f'Tracing failed during {stage}: {detail}\nContinuing without tracing.\n')
+        # A failed diagnostic write must propagate rather than silently lose evidence.
+        # Textual's capture writer returns None rather than a character count.
+        # Retain an owned copy before accepting that convention; an arbitrary
+        # no-count/null writer without this sink is not proof of delivery.
+        if self._stderr_sink is not None:
+            self._stderr_sink(message)
+        written = sys.stderr.write(message)
+        if written != len(message) and not (written is None and self._stderr_sink is not None):
+            raise OSError('Could not record tracing failure diagnostic.')
+        sys.stderr.flush()
+        self._trace_unavailable = True
 
     async def _close_tracing(self):
         if self.trace is not None:
@@ -49,18 +78,32 @@ class _SetupOwner:
 
     async def ensure_ready(self):
         await self._ensure_tracing()
-        await self.provider._ensure()
+        await self._provider_call(self.provider._ensure)
 
     async def describe(self):
-        return await self.provider._describe()
+        return await self._provider_call(self.provider._describe)
+
+    async def _provider_call(self, callback, *args):
+        from api_agent.providers.diagnostic_output import diagnostic_output
+        with diagnostic_output(self._stderr_sink):
+            return await callback(*args)
 
     async def complete(self, request):
         from api_agent.workflows.inference_capture import bind_boundary, bind_inference_trace
         bind_boundary(self.provider.emissions)
-        if self.trace is not None:
+        if self.trace is not None and not self._trace_unavailable:
             await self._ensure_tracing()
-            await self.trace.astart()
-            bind_inference_trace(self.trace)
+            if not self._trace_unavailable:
+                from api_agent.telemetry.tracing import TraceError
+                try:
+                    await self.trace.astart()
+                except TraceError as error:
+                    self._trace_failure('SDK initialization', error)
+            if not self._trace_unavailable:
+                bind_inference_trace(self.trace)
+        # Inference notices belong to the caller, not to every test sharing
+        # setup. Keep them on the operation's terminal channel; only readiness
+        # and catalog notices are copied into shared setup details.
         return await self.provider._complete(request)
 
     def quote_cost(self, request, result):
@@ -134,6 +177,8 @@ class SetupBackend(CleanupLeaseOwner):
         self.descriptor = None
         self.closed = self.pending = False
         self._lock = threading.RLock()
+        self._stderr_lock = threading.Lock()
+        self._stderr = ''
         self._ready = threading.Event()
         self._thread_error = None
         self._start_future = self._close_future = None
@@ -148,6 +193,16 @@ class SetupBackend(CleanupLeaseOwner):
     @property
     def config(self):
         return deepcopy(self._config)
+
+    def capture_stderr(self, text):
+        from api_agent.providers.diagnostic_output import bounded_stderr
+        with self._stderr_lock:
+            self._stderr = bounded_stderr(self._stderr + text)
+
+    @property
+    def diagnostic_stderr(self):
+        with self._stderr_lock:
+            return self._stderr
 
     @property
     def capture_sources(self):

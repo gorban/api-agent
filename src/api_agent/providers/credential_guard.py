@@ -79,7 +79,53 @@ def _charge_carrier_work(current, amount):
     return total
 
 
-def guard_json(value, secrets):
+def _json_document(value, *, max_depth=64):
+    parts = []
+    count = 0
+    size = 0
+    def text_part(item):
+        nonlocal size
+        # Bound before copying, encoding, concatenating, or normalizing.
+        size += len(item)
+        if size > 8 * 1024 * 1024:
+            raise ValueError()
+        parts.append(item)
+    def clone(item, depth):
+        nonlocal count
+        count += 1
+        if count > 100000 or depth > max_depth:
+            raise ValueError()
+        if type(item) is str:
+            text_part(item)
+            return item
+        if type(item) is dict:
+            if any(type(key) is not str for key in item):
+                raise ValueError()
+            result = {}
+            for key, child in item.items():
+                text_part(key)
+                result[key] = clone(child, depth + 1)
+            return result
+        if type(item) is list:
+            result = [clone(child, depth + 1) for child in item]
+            # Only a sequence of text fragments is one carrier. Object
+            # members and keys have independent meanings.
+            if result and all(type(child) is str for child in result):
+                parts.append(''.join(result))
+            return result
+        if type(item) in (int, bool, type(None)):
+            return item
+        if type(item) is float and math.isfinite(item):
+            return item
+        raise ValueError()
+    result = clone(value, 0)
+    encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
+    if len(encoded) > 8 * 1024 * 1024:
+        raise ValueError()
+    return result, parts, encoded
+
+
+def _check_json(value, secrets):
     """Return an independent, unchanged JSON value or reject unsafe content.
 
     This conservative guard rejects rather than changing structural or typed
@@ -91,48 +137,7 @@ def guard_json(value, secrets):
         known = registered_values(secrets)
         if any(type(secret) is not str or not secret for secret in known):
             raise ValueError()
-        parts = []
-        count = 0
-        size = 0
-        def text_part(item):
-            nonlocal size
-            # Bound before copying, encoding, concatenating, or normalizing.
-            size += len(item)
-            if size > 8 * 1024 * 1024:
-                raise ValueError()
-            parts.append(item)
-        def clone(item, depth):
-            nonlocal count
-            count += 1
-            if count > 100000 or depth > 64:
-                raise ValueError()
-            if type(item) is str:
-                text_part(item)
-                return item
-            if type(item) is dict:
-                if any(type(key) is not str for key in item):
-                    raise ValueError()
-                result = {}
-                for key, child in item.items():
-                    text_part(key)
-                    result[key] = clone(child, depth + 1)
-                return result
-            if type(item) is list:
-                result = [clone(child, depth + 1) for child in item]
-                # Only a sequence of text fragments is one carrier. Object
-                # members and keys have independent meanings.
-                if result and all(type(child) is str for child in result):
-                    parts.append(''.join(result))
-                return result
-            if type(item) in (int, bool, type(None)):
-                return item
-            if type(item) is float and math.isfinite(item):
-                return item
-            raise ValueError()
-        result = clone(value, 0)
-        encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
-        if len(encoded) > 8 * 1024 * 1024:
-            raise ValueError()
+        result, parts, encoded = _json_document(value)
         # Check fields and explicitly joined text sequences, including escaped
         # representations and controls inserted into credential text.
         for candidate in (*parts, encoded):
@@ -230,6 +235,19 @@ def guard_json(value, secrets):
         return result
     except (TypeError, ValueError, UnicodeError, RecursionError, OverflowError):
         raise CredentialProtectionError('Content cannot be safely released.') from None
+
+
+def guard_json(value, secrets):
+    """Validate an unchanged functional payload through the shared boundary."""
+    from .scrubbed_response import scrub_response, ResponseValidationError
+    failure = None
+    try:
+        return scrub_response(value, schema=None, secrets=secrets,
+                              operation='provider_contract', transform=False)[0]
+    except ResponseValidationError as error:
+        failure = CredentialProtectionError('Content cannot be safely released.')
+        failure.diagnostics = error.diagnostics
+    raise failure
 
 
 async def async_guard_json(value, secrets):

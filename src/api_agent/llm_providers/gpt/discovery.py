@@ -71,9 +71,9 @@ def _catalog(data, subscription, token, *, base_url=None):
         description = row.get('display_name') if subscription else ''
         if (type(identifier) is not str or not identifier or len(identifier) > 200
                 or not identifier.isprintable() or identifier.strip() != identifier
-                or identifier in seen or token in identifier
+                or identifier in seen
                 or type(description) is not str or (subscription and not description) or len(description) > 512
-                or (description and (not description.isprintable() or token in description))):
+                or (description and not description.isprintable())):
             raise ModelDiscoveryError('unknown', 'GPT model discovery returned an invalid catalog.')
         seen.add(identifier)
         if not (identifier.startswith('gpt-') or identifier.startswith('openai/gpt-')):
@@ -86,7 +86,6 @@ def _catalog(data, subscription, token, *, base_url=None):
         context = row.get('context_length')
         if (type(name) is not str or len(name) > 200 or (name and not name.isprintable())
                 or (version is not None and (type(version) is not str or len(version) > 100 or (version and not version.isprintable())))
-                or any(token in text for text in (name, version or '') if text)
                 or any(value is not None and (type(value) is not int or not 0 < value <= 2147483647)
                        for value in (maximum, context))):
             raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata.')
@@ -141,7 +140,13 @@ async def discover_models(*, client, base_url, access_token, subscription):
             status, data, request_id, authentication_type = await _get(client, base_url + '/models', access_token, budget)
             if status != 200:
                 raise _failure(status, data, request_id, access_token, authentication_type)
-            return _catalog(data, subscription, access_token, base_url=base_url)
+            from api_agent.providers.scrubbed_response import async_scrub_response, ResponseValidationError
+            try:
+                clean, _ = await async_scrub_response(data, schema=lambda value: _catalog(value, subscription, access_token, base_url=base_url),
+                    secrets={access_token}, operation='model_discovery')
+            except ResponseValidationError:
+                raise ModelDiscoveryError('unknown', 'GPT model discovery returned an invalid catalog after response validation.') from None
+            return _catalog(clean, subscription, access_token, base_url=base_url)
     except (TimeoutError, httpx.TimeoutException):
         failure = ModelDiscoveryError('deadline', 'GPT model discovery timed out.')
     except httpx.RequestError:
@@ -164,7 +169,8 @@ async def _get(client, url, token, budget):
                 raise ModelDiscoveryError('unknown', 'GPT model discovery response exceeded its limit.')
             body.extend(chunk)
         try:
-            data = json.loads(body)
+            from api_agent.providers.scrubbed_response import decode_json
+            data = decode_json(bytes(body))
         except (ValueError, UnicodeDecodeError, RecursionError):
             data = None
         return (response.status_code, data, response.headers.get('x-request-id'),
@@ -178,9 +184,21 @@ async def discover_selections(*, client, base_url, access_token, subscription, a
     async def checked_get(url, token, budget):
         result = await _get(client, url, token, budget)
         from .inference import _guard_content
+        from api_agent.providers.scrubbed_response import async_scrub_response, ResponseValidationError
         try:
-            await _guard_content(list(result), access_token, authority)
-        except ProviderAccessError:
+            if result[0] == 200:
+                generation, snapshot = authority.snapshot_content() if authority is not None else (None, None)
+                secrets = {access_token} if snapshot is None else {*snapshot._secrets, access_token}
+                expected = ((lambda value: _catalog(value, subscription, access_token, base_url=base_url))
+                            if url.endswith('/models') and not (subscription and token is None) else {})
+                data, _ = await async_scrub_response(result[1], schema=expected,
+                                                     secrets=secrets, operation='model_discovery')
+                if authority is not None and not authority.commit_if_current(generation, lambda: None):
+                    raise ResponseValidationError('model_discovery')
+                result = result[0], data, result[2], result[3]
+            else:
+                await _guard_content(list(result), access_token, authority)
+        except (ProviderAccessError, ResponseValidationError):
             status = result[0]
             if type(status) is int and 400 <= status <= 599:
                 kind = {401: 'authentication', 403: 'authorization', 429: 'rate_limited'}.get(
@@ -190,19 +208,21 @@ async def discover_selections(*, client, base_url, access_token, subscription, a
         return result
     async def handoff(catalog):
         from api_agent.providers.catalog import catalog_from_wire, catalog_to_wire
-        from api_agent.providers.credential_guard import async_guard_json, CredentialProtectionError
+        from api_agent.providers.credential_guard import CredentialProtectionError
+        from api_agent.providers.scrubbed_response import async_scrub_response, ResponseValidationError
         rows = catalog_to_wire(catalog)
         try:
             if authority is None:
-                return catalog_from_wire(await async_guard_json(rows, {access_token}))
+                result, _ = await async_scrub_response(rows, schema=catalog_from_wire, secrets={access_token}, operation='model_catalog')
+                return catalog_from_wire(result)
             generation, snapshot = authority.snapshot_content()
-            owned = await async_guard_json(rows, {*snapshot._secrets, access_token})
-            result = catalog_from_wire(owned)
+            result, _ = await async_scrub_response(rows, schema=catalog_from_wire,
+                secrets={*snapshot._secrets, access_token}, operation='model_catalog')
             published = []
             if not authority.commit_if_current(generation, lambda: published.append(result)):
                 raise CredentialProtectionError('Credential registrations changed during handoff.')
-            return published.pop()
-        except CredentialProtectionError:
+            return catalog_from_wire(published.pop())
+        except (CredentialProtectionError, ResponseValidationError):
             raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata or protected authentication content.') from None
     try:
         async with component_timeout('GPT authenticated discovery', _TIMEOUT) as budget:

@@ -2,6 +2,21 @@ from api_agent.telemetry.usage_output import starting_usage_line, final_usage_te
 import pytest
 
 
+@pytest.mark.parametrize('stdout', ['', 'stdout diagnostic\n'])
+def test_successful_test_details_include_stderr_and_preserve_pass_status(stdout):
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.testing.contracts import TestResult
+    from api_agent.tui.test_results import test_details
+    identity = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
+    result = TestResult(identity, 'passed', local_stderr='Response scrubbed: operation=model_discovery fields=1\n',
+                        local_stdout=stdout)
+    details = test_details(result, {}, {}).plain
+    assert 'stderr:\nResponse scrubbed:' in details
+    assert details.endswith('PASSED')
+    assert ('stdout:\nstdout diagnostic' in details) == bool(stdout)
+    assert result.status == 'passed'
+
+
 def test_usage_lines_measured_zero_and_unavailable():
     report = {'pct_used_before': 10.0, 'pct_used_after': 10.0, 'pct_point_delta': 0.0,
               'prompt_count': 0, 'pct_used_per_prompt': '0.000', 'reset_countdown_hms': '01:02:03'}

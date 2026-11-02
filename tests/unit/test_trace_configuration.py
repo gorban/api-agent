@@ -52,8 +52,8 @@ def test_tracing_dependencies_selected_only_by_operation_preflight():
 
 @pytest.mark.parametrize('mode', ['OTEL', '', 'LangFuse'])
 @pytest.mark.parametrize('target, expected', [
-    ('http://localhost:3000', ('admin@local.dev', 'password')),
-    ('http://127.0.0.1:3000/', ('admin@local.dev', 'password')),
+    ('http://localhost:3000', ('admin@local.dev', 'Local-LF-9vQ7!mR2#xK8@pT4')),
+    ('http://127.0.0.1:3000/', ('admin@local.dev', 'Local-LF-9vQ7!mR2#xK8@pT4')),
     ('https://trace.example.invalid', (None, None)),
 ])
 def test_session_review_admin_defaults_follow_target_without_writes(tmp_path, mode, target, expected):

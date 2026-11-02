@@ -9,7 +9,7 @@ The same responsiveness requirements apply to Review configuration, including
 selected-test review, row navigation and edits. Treat substantial delays in
 these interactions as a regression requiring repair.
 
-- [x] Render configuration table values literally, including regex emoji shortcodes such as `:-1:` and Rich markup delimiters. Preserve actual Unicode characters and the original editable value in Review configuration and Clear .env configuration.
+- [x] Render configuration table values literally, including regex emoji shortcodes such as `:-1:` and Rich markup delimiters. Preserve actual Unicode characters and the original editable value in Review configuration and Clear .env configuration. Human review approved on 2026-11-01 after confirming the regex no longer displays an emoji.
 
 - [ ] Measure steady row movement, individual/group toggles, initial entry and configuration-review return with representative selected workflow/tool declarations. Separate event-loop work, rendering, declaration discovery, configuration composition and historical storage access; record unprofiled latency alongside profiler attribution.
 - [x] Reuse parsed definitions within a bounded configuration session, rechecking captured bytes and lexical paths, including explicit replacements, on each reuse. Reduce repeated resolution within review-row refreshes and account availability checks. Keep effective settings and selected-tool composition fresh; use no persistent cache.
@@ -67,3 +67,11 @@ sampling, an agreed latency budget and human acceptance stay open above.
 ## Large unit-suite follow-up
 
 - [ ] Complete [large-suite profiling and the human-reviewed optimization plan](implementation_plan_a12a.md). Earlier small-catalog repairs do not establish responsiveness with more than twenty thousand rows.
+
+## Successful-test diagnostics
+
+- [x] Preserve bounded, credential-scrubbed stderr in successful unit/integration/E2E test details by default. Declare `SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL=warning` for stderr and `info` to include pytest stdout as well; expose it through normal configuration review. Keep failed-test behavior and functional status independent. Distinguish per-test pytest stderr from shared setup notices; shared notices belong only to tests using that effective backend configuration. Keep these transient local diagnostic fields outside Allure artifacts and ordinary runner events.
+- [x] Capture framework-owned shared-provider scrub notices through operation-local diagnostic observers, including offloaded work, without globally redirecting stdout/stderr or mixing concurrent operation sinks. Mark oversized/unavailable captures explicitly.
+- [x] Complete regression/live and external review gates: 23,541 units at exact 100% lines/branches, normal Studio E2E with retained scrub notice, and reviewed finite-index checks.
+- [x] Human acceptance of the shared recovery stderr path on November 2, 2026, in interactive and noninteractive execution; functional E2E remained passing.
+- [x] Human acceptance of `info` stdout display and its absence at `warning`, including combined `SCRUB_DIAGNOSTICS_LEVEL` and `SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL` behavior.

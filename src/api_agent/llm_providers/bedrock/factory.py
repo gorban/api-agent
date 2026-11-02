@@ -140,16 +140,20 @@ class BedrockProvider:
             async with component_timeout('Bedrock regional catalog', 60):
                 response = await self.transport.call('runtime_models' if self.endpoint == 'runtime' else 'models', {},
                                                      auth=auth, join=self._join_credentials)
-                selections = catalog.catalog(response, self.api_mode, self.endpoint)
                 from api_agent.providers.catalog import catalog_from_wire, catalog_to_wire
-                from api_agent.providers.credential_guard import async_guard_json, CredentialProtectionError
+                from api_agent.providers.credential_guard import CredentialProtectionError
+                from api_agent.providers.scrubbed_response import async_scrub_response, ResponseValidationError
                 secrets, lease = await self._join_credentials(())
                 try:
-                    rows = await async_guard_json(catalog_to_wire(selections), secrets)
-                    result = catalog_from_wire(rows)
+                    selections, _ = await async_scrub_response(response,
+                        schema=lambda value: catalog.catalog(value, self.api_mode, self.endpoint),
+                        secrets=secrets, operation='bedrock_model_discovery')
+                    selections = catalog.catalog(selections, self.api_mode, self.endpoint)
+                    result, _ = await async_scrub_response(catalog_to_wire(selections), schema=catalog_from_wire,
+                        secrets=secrets, operation='bedrock_model_catalog')
                     self._open()
-                    return result, lease
-                except CredentialProtectionError:
+                    return catalog_from_wire(result), lease
+                except (CredentialProtectionError, ResponseValidationError):
                     lease.release()
                     raise ContractError('Bedrock catalog could not be safely released.') from None
                 except BaseException:

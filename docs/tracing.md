@@ -46,6 +46,21 @@ omits them. Redirecting stderr captures that literal status. Structured stdout,
 home/status JSON, log events, trace payloads and inspection descriptors exclude
 them independently of content settings.
 
+Changing `LANGFUSE_ADMIN_EMAIL` or `LANGFUSE_ADMIN_PASSWORD` can make a retained
+managed web container incompatible with the new configuration. The recovery
+notice names changed initialization settings when inspection proves them,
+without showing credential values. Otherwise it explains the possible cause
+without asserting which setting changed.
+
+To preserve traces, stop every Run local, trace viewer and test invocation using
+that stack. In the same container engine/context, confirm the identified web
+container is stopped and remove only that container using the notice's command.
+Keep all volumes; do not force removal or use `-v`, `compose down -v`, or volume
+pruning. Rerunning recreates the web container. Existing database accounts keep
+their actual credentials; recreating a container does not rotate the account.
+Shared test setup retains this recovery notice in successful-test stderr details
+when tracing is unavailable, while the original functional request continues.
+
 When RUN_UI or DEBUG opens the headed startup browser, tabs appear as home,
 ready tracing dashboard, actual selected workflow, and the optional prepared UI
 last. Without either flag there is no automatic browser or dashboard sign-in.

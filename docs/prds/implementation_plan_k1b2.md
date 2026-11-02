@@ -20,9 +20,12 @@
 
 Standalone local trace inspection is specified in [Standalone local trace viewer](implementation_plan_k1b3.md).
 
+Operational failures follow [optional observability availability](implementation_plan_k1b4.md); its remaining lifecycle gates are independent of payload support.
+
 ## Remaining integration lifecycle requirements
 
 - [x] Before integration/E2E inference exports to a configured managed local collector, acquire and verify that collector through the existing shared infrastructure owners. Keep reporting storage and tracing leases independent; remote targets must not start local services. Release the tracing lease only after all shared provider exporters finish, including failure and cancellation.
+- [ ] Managed collector setup and trace SDK/export failures must log scrubbed actionable diagnostics without failing application or functional test outcomes. Disable unavailable tracing for the operation without repeating inference or setup attempts; preserve cancellation and genuine pending cleanup ownership. Failure to record the required diagnostic may fail execution. Do not replace incompatible stacks automatically.
 - [x] Human accepted automatic managed integration collector startup/readiness, shared leases, exporter-before-collector shutdown and retained trace data on October 30, 2026. This approval does not close native backend payload views, full GenAI conformance or the separate delivery-loss summary requirement.
 - [ ] Surface confirmed trace-delivery loss in the final suite summary and retained diagnostics, separately from test outcomes and Allure publication. Preserve successful tests when optional export fails and disposal is acknowledged; do not silently discard the warning or reopen disposed resources. Verify reachable, unavailable and rejected collectors plus shared ownership and shutdown ordering.
 

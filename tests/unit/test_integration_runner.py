@@ -30,6 +30,140 @@ def context(base, owner=None):
                            suite_paths=lambda mode: (owner / 'tests/integration',) if mode == 'integration' else (base / 'tests/unit',))
 
 
+def test_invalid_success_diagnostics_level_rejects_before_worker_launch(tmp_path):
+    with pytest.raises(ValueError, match='SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL must be warning or info'):
+        run_integration_tests(context(tmp_path), [], accepted=True,
+                              config={'SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL': 'debug'})
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('worker_stderr', ['', 'worker diagnostic\n'])
+def test_shared_setup_stderr_is_scrubbed_and_added_once_at_finalization(tmp_path, monkeypatch, worker_stderr):
+    from api_agent.testing.setup_pool import SetupPool
+    from api_agent.telemetry.privacy import EmissionBoundary
+    base = fixture_repo(tmp_path / 'base', 'import sys\ndef test_ok():\n'
+                        f'    sys.stderr.write({worker_stderr!r})\n')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    seen = []
+    def shared(owner, test_id):
+        seen.append(test_id)
+        return 'shared diagnostic synthetic-secret\n'
+    monkeypatch.setattr(SetupPool, 'stderr_for', shared)
+    result = run_integration_tests(ctx, selected, accepted=True,
+        config={'TUI_MODE': 'integration'}, evidence_boundary=EmissionBoundary(secrets=('synthetic-secret',)))
+    assert result.exit_code == 0 and result.tests[0].status == 'passed'
+    stderr = result.tests[0].local_stderr
+    assert stderr.count('Shared setup stderr:') == 1
+    assert stderr.count('shared diagnostic') == 1
+    assert 'synthetic-secret' not in stderr
+    assert stderr.startswith(worker_stderr)
+    assert set(seen) == {selected[0].id}
+
+
+@pytest.mark.parametrize('jobs,debug,terminal', [(0, False, False), (2, False, False), (2, True, False), (0, True, True), (2, True, True)])
+@pytest.mark.parametrize('level', ['warning', 'info'])
+def test_typed_profile_stdout_uses_schema_scrubbing_after_worker_capture(tmp_path, monkeypatch, jobs, debug, terminal, level):
+    import json
+    from api_agent.providers import scrubbed_response
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.testing.inspection_controls import InspectionGroup
+    monkeypatch.setattr(scrubbed_response._LOG, 'handlers', [])
+    monkeypatch.setattr(scrubbed_response._LOG, 'level', scrubbed_response._LOG.level)
+    scrubbed_response.configure_diagnostics('info')
+    profile = {'LLM_DEFAULT_MODEL': {'value': 'synthetic-secret', 'source': 'shared_default'},
+        'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS': {'value': None, 'source': 'shared_default'}}
+    base = fixture_repo(tmp_path / 'base', 'import pytest, sys\n'
+        '@pytest.fixture(autouse=True)\n'
+        'def evidence(record_property):\n'
+        f'    record_property("integration_test_profile", {json.dumps(profile)!r})\n'
+        'def test_ok():\n'
+        '    print(r"ordinary output: \\u0061")\n'
+        '    sys.stderr.write("worker diagnostic")\n')
+    ctx = context(base)
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+        parallel_jobs=jobs, evidence_boundary=EmissionBoundary(secrets=('synthetic-secret',)),
+        config={'TUI_MODE': 'integration', 'DEBUG': debug, 'NO_STD_IN': terminal, 'SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL': level})
+    try:
+        assert result.exit_code == 0 and result.tests[0].status == 'passed'
+        assert 'Integration test profile:' not in result.output
+        if terminal:
+            assert 'ordinary output: ' not in result.output
+            assert 'worker diagnostic' not in result.output
+        stdout = result.tests[0].local_stdout
+        if level == 'warning':
+            assert stdout == ''
+        else:
+            assert 'ordinary output: \\u0061' in stdout
+            data = json.loads(stdout.split('Integration test profile: ', 1)[1])
+            assert data['LLM_DEFAULT_MODEL'] == {'value': '', 'source': 'shared_default'}
+            assert data['LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS']['value'] is None
+            assert 'synthetic-secret' not in stdout
+            assert 'worker diagnostic\nResponse scrubbed: operation=test_profile_diagnostic' in result.tests[0].local_stderr
+    finally:
+        assert InspectionGroup(result.inspections).close(force=True)
+
+
+def test_profile_stdout_reprojects_against_credentials_registered_after_test_completion(tmp_path):
+    import json
+    from api_agent.telemetry.privacy import EmissionBoundary
+    profile = {'LLM_DEFAULT_MODEL': {'value': 'late-secret', 'source': 'shared_default'}}
+    base = fixture_repo(tmp_path / 'base', 'import pytest\n'
+        '@pytest.fixture(autouse=True)\n'
+        'def evidence(record_property):\n'
+        f'    record_property("integration_test_profile", {json.dumps(profile)!r})\n'
+        'def test_ok():\n    pass\n')
+    ctx = context(base)
+    boundary = EmissionBoundary()
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+        evidence_boundary=boundary, config={'TUI_MODE': 'integration', 'SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL': 'info'},
+        on_result=lambda result: boundary.register_secret('late-secret'))
+    assert result.exit_code == 0
+    data = json.loads(result.tests[0].local_stdout.removeprefix('Integration test profile: '))
+    assert data['LLM_DEFAULT_MODEL']['value'] == ''
+    assert data['LLM_DEFAULT_MODEL']['source'] == 'shared_default'
+
+
+@pytest.mark.parametrize('jobs', [0, 2])
+@pytest.mark.parametrize('level', ['warning', 'info'])
+@pytest.mark.parametrize('debug', [False, True])
+def test_success_retains_scrubbed_streams_at_selected_level(tmp_path, jobs, level, debug):
+    from api_agent.telemetry.privacy import EmissionBoundary
+    base = fixture_repo(tmp_path / 'base', '''import sys
+def test_ok():
+    print('stdout-only-value synthetic-credential')
+    print('stderr diagnostic synthetic-credential', file=sys.stderr)
+''')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    boundary = EmissionBoundary(secrets=('synthetic-credential',))
+    digest = '1234abcd' * 8
+    events = []
+    result = run_integration_tests(ctx, selected, accepted=True, parallel_jobs=jobs,
+                                   evidence_boundary=boundary, on_event=events.append, config={'TUI_MODE': 'integration',
+                                       'DEBUG': debug,
+                                       '_COST_REQUEST_SETTINGS': {'LLM_MAX_OUTPUT_TOKENS': digest},
+                                       'SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL': level})
+    assert result.exit_code == 0
+    assert result.tests[0].status == 'passed'
+    stderr = result.tests[0].local_stderr
+    assert 'stderr diagnostic' in stderr
+    assert 'synthetic-credential' not in stderr
+    assert 'stdout-only-value' not in stderr
+    assert stderr.count('stderr diagnostic') == 1
+    assert digest not in boundary._secrets
+    from dataclasses import asdict
+    reports = [asdict(event) for event in events if event.kind == 'test_finished']
+    assert len(reports) == 1
+    assert 'stderr diagnostic' not in str(reports)
+    assert 'stdout-only-value' not in str(reports)
+    if level == 'info':
+        assert 'stdout-only-value' in result.tests[0].local_stdout
+        assert 'synthetic-credential' not in result.tests[0].local_stdout
+    else:
+        assert result.tests[0].local_stdout == ''
+
+
 @pytest.mark.parametrize('jobs', [0, 2])
 def test_component_progress_is_bound_to_test_in_serial_and_parallel_workers(tmp_path, jobs):
     base = fixture_repo(tmp_path / 'base', '''

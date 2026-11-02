@@ -815,9 +815,9 @@ async def test_real_mcp_partial_response_scrubs_header_and_token_before_result(e
         spec = await owner.describe()
         result = await owner.invoke(prepared(spec, '{ hello echo echoToken broken }'))
         assert result.status == 'partial'
-        assert result.data == {'hello': 'world', 'echo': '[REDACTED]',
-                               'echoToken': '[REDACTED]', 'broken': None}
-        assert result.errors[0]['message'] == '[REDACTED]'
+        assert result.data == {'hello': 'world', 'echo': '',
+                               'echoToken': '', 'broken': None}
+        assert result.errors[0]['message'] == ''
         assert secret not in json.dumps({'data': result.data, 'errors': result.errors})
         assert len(calls) == 2
     finally:
@@ -827,7 +827,8 @@ async def test_real_mcp_partial_response_scrubs_header_and_token_before_result(e
 def test_scrub_traverses_nested_keys_and_extensions():
     owner = GraphQLMcpOwner('http://127.0.0.1:1/graphql', headers={'X-Key': 'SYNTHETIC_TEST_ONLY'})
     source = {'SYNTHETIC_TEST_ONLY': {'extensions': [{'detail': 'before SYNTHETIC_TEST_ONLY after'}]}}
-    assert owner._scrub(source) == {'[REDACTED]': {'extensions': [{'detail': 'before [REDACTED] after'}]}}
+    assert owner._scrub(source) == {}
+    assert source['SYNTHETIC_TEST_ONLY']['extensions'][0]['detail'] == 'before SYNTHETIC_TEST_ONLY after'
 
 @pytest.mark.asyncio
 async def test_invocation_views_refresh_schema_without_restarting_transport():
@@ -966,7 +967,7 @@ async def test_source_lock_fingerprint_blocks_preparation(monkeypatch, tmp_path)
 
 def test_unsupported_authorization_scheme_still_scrubs_full_value():
     owner = GraphQLMcpOwner('http://127.0.0.1:1/graphql', headers={'Authorization': 'Token SYNTHETIC_TEST_ONLY'})
-    assert owner._scrub('Token SYNTHETIC_TEST_ONLY') == '[REDACTED]'
+    assert owner._scrub('Token SYNTHETIC_TEST_ONLY') == ''
     assert owner._scrub('SYNTHETIC_TEST_ONLY') == 'SYNTHETIC_TEST_ONLY'
 
 
@@ -994,15 +995,14 @@ async def test_oversized_printed_schema_fails_discovery(endpoint, monkeypatch):
         await owner.aclose()
 
 
-def test_scrub_rejects_excessive_depth_and_key_collision():
+def test_scrub_rejects_excessive_depth_and_omits_protected_names_without_collision():
     owner = GraphQLMcpOwner('http://127.0.0.1:1/graphql', headers={'X-Key': 'SYNTHETIC_TEST_ONLY'})
     nested = 'leaf'
     for _ in range(34):
         nested = [nested]
     with pytest.raises(GraphQLMcpError, match='result_depth'):
         owner._scrub(nested)
-    with pytest.raises(GraphQLMcpError, match='result_secret_collision'):
-        owner._scrub({'SYNTHETIC_TEST_ONLY': 1, '[REDACTED]': 2})
+    assert owner._scrub({'SYNTHETIC_TEST_ONLY': 1, '[REDACTED]': 2}) == {'[REDACTED]': 2}
 
 
 @pytest.mark.asyncio
@@ -1048,8 +1048,8 @@ async def test_normalized_credentials_are_scrubbed_from_direct_results(endpoint)
         spec = await owner.describe()
         result = await owner.invoke(prepared(spec, '{ echoToken }'))
         assert secret not in repr(result)
-        assert result.data == {'echoToken': '[REDACTED]'}
-        assert owner._scrub({'other': secret}) == {'other': '[REDACTED]'}
+        assert result.data == {'echoToken': ''}
+        assert owner._scrub({'other': secret}) == {'other': ''}
     finally:
         await owner.aclose()
 
@@ -1057,8 +1057,8 @@ async def test_normalized_credentials_are_scrubbed_from_direct_results(endpoint)
 def test_surrounding_header_whitespace_is_scrubbed():
     secret = 'SYNTHETIC_TEST_ONLY'
     owner = GraphQLMcpOwner('http://127.0.0.1:1/graphql', headers={'X-Key': '  ' + secret + '  '})
-    assert owner._scrub({'echo': secret}) == {'echo': '[REDACTED]'}
-    assert owner._scrub(secret) == '[REDACTED]'
+    assert owner._scrub({'echo': secret}) == {'echo': ''}
+    assert owner._scrub(secret) == ''
 
 
 def test_tab_separated_authorization_token_is_registered():
@@ -1072,7 +1072,7 @@ def test_tab_separated_authorization_token_is_registered():
     owner = GraphQLMcpOwner('http://127.0.0.1:1/graphql',
                             headers={'Authorization': ' Bearer\t' + secret + ' '})
     assert owner._headers['Authorization'] == 'Bearer ' + secret
-    assert owner._scrub(secret) == '[REDACTED]'
+    assert owner._scrub(secret) == ''
 
 
 @pytest.mark.asyncio
@@ -1153,12 +1153,30 @@ async def test_planner_schema_description_scrubs_header_echo(endpoint, monkeypat
     url, _ = endpoint
     secret = 'SYNTHETIC_TEST_ONLY'
     owner = GraphQLMcpOwner(url, headers={'X-Key': secret})
-    original_print = owner_module.print_schema
-    monkeypatch.setattr(owner_module, 'print_schema', lambda schema: original_print(schema) + '\n# ' + secret)
+    original_parse = owner._parse_json
+    def parse_with_secret_description(text, is_error):
+        response = original_parse(text, is_error)
+        for item in response['data']['__schema']['types']:
+            if item['name'] == 'Query':
+                item['description'] = secret
+        return response
+    monkeypatch.setattr(owner, '_parse_json', parse_with_secret_description)
+    original_build = owner_module.build_client_schema
+    def build_with_description(data):
+        assert secret not in repr(data)
+        return original_build(data)
+    monkeypatch.setattr(owner_module, 'build_client_schema', build_with_description)
     try:
         spec = await owner.describe()
         description = spec.input_schema['properties']['query']['description']
         assert secret not in description
-        assert '[REDACTED]' in description
+        assert 'type Query' in description
     finally:
         await owner.aclose()
+
+
+def test_anonymous_result_overflow_has_a_protection_classification():
+    secret = 'SYNTHETIC_TEST_ONLY'
+    owner = GraphQLMcpOwner('http://127.0.0.1:1/graphql', headers={'X-Key': secret})
+    with pytest.raises(GraphQLMcpError, match='result_protection'):
+        owner._scrub({secret + str(index): index for index in range(101)})

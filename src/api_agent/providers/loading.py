@@ -540,6 +540,8 @@ def load_provider(location, config, services, *, kind=None, _failed_owners=None)
         factory = getattr(module, factory_name, None)
         if not callable(factory):
             raise ProviderError('provider_factory_invalid')
+        from .scrubbed_response import configure_diagnostics
+        configure_diagnostics(dict(config).get('SCRUB_DIAGNOSTICS_LEVEL', 'warning'))
         adapter = factory(MappingProxyType(dict(config)), services)
         if inspect.isawaitable(adapter):
             if inspect.iscoroutine(adapter):
@@ -813,6 +815,8 @@ async def aload_tool(admission, config, services):
             inspect.signature(factory).bind(MappingProxyType(dict(config)), services)
         except (TypeError, ValueError):
             raise ProviderError('tool_factory_invalid') from None
+        from .scrubbed_response import configure_diagnostics
+        configure_diagnostics(dict(config).get('SCRUB_DIAGNOSTICS_LEVEL', 'warning'))
         adapter = factory(MappingProxyType(dict(config)), services)
         if inspect.isawaitable(adapter):
             if inspect.iscoroutine(adapter):

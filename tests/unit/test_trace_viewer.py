@@ -40,7 +40,7 @@ def test_trace_config_uses_cli_environment_and_dotenv_precedence():
 def test_langfuse_admin_values_use_managed_defaults():
     values = resolve(environ={'TRACE_MODE': 'LangFuse'})
     assert values['LANGFUSE_ADMIN_EMAIL'] == 'admin@local.dev'
-    assert values['LANGFUSE_ADMIN_PASSWORD'] == 'password'
+    assert values['LANGFUSE_ADMIN_PASSWORD'] == 'Local-LF-9vQ7!mR2#xK8@pT4'
     assert values['LANGFUSE_PUBLIC_KEY'] == 'pk-lf-local-dev-0000000000'
     assert values['LANGFUSE_SECRET_KEY'] == 'sk-lf-local-dev-0000000000'
 

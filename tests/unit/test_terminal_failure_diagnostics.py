@@ -560,3 +560,23 @@ def test_actual_terminal_first_disposal_interrupt_keeps_prior_cause_and_owned_re
     finally:
         for process in processes:
             finalize(process)
+
+
+def test_terminal_success_uses_authority_registered_during_shared_setup(
+        terminal_failure_launch, monkeypatch, capsys):
+    identities, _ = terminal_failure_launch
+    def run(*args, **kwargs):
+        # This secret spans the terminal formatter's stream separator. Neither
+        # individually protected stream contains the complete credential.
+        kwargs['evidence_boundary'].register_secret('tail\n\nstdout:\nhead')
+        completed = TestResult(identities[0], 'passed', local_stderr='tail', local_stdout='head')
+        kwargs['output']('all tests finished\n')
+        return SimpleNamespace(execution=IntegrationRunResult(0, (completed,), ''),
+                               persisted=True, exit_code=0)
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
+
+    assert main([*ARGS, '--successful-test-diagnostics-level=info'], base_root=ROOT) == 0
+
+    output = capsys.readouterr().out
+    assert 'tail' not in output and 'head' not in output
+    assert output.index('all tests finished') < output.index('Test diagnostics withheld: credential protection.') < output.index('Integration results:')

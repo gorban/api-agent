@@ -141,6 +141,7 @@ class UnitRunResult:
 _PLUGIN = r'''
 import json, os, sys, time
 import pytest
+from api_agent.providers.diagnostic_output import bounded_stderr, bounded_stdout
 event_path = sys.argv[1]
 class Events:
     def send(self, **row):
@@ -152,6 +153,11 @@ class Events:
     def pytest_runtest_logreport(self, report):
         self.send(kind='report', node=report.nodeid, phase=report.when,
                   status=report.outcome, duration=report.duration,
+                  stderr=bounded_stderr(''.join(text for title, text in report.sections
+                                     if title == 'Captured stderr ' + report.when)),
+                  stdout=(bounded_stdout(''.join(text for title, text in report.sections
+                                     if title == 'Captured stdout ' + report.when))
+                          if os.environ.get('API_AGENT_SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL') == 'info' else ''),
                   traceback=str(report.longrepr) if report.failed else '')
 with open(os.environ['API_AGENT_UNIT_SELECTION'], encoding='utf-8') as selection_file:
     selected_nodes = list(dict.fromkeys(json.load(selection_file)))
@@ -220,13 +226,15 @@ def _production_sources(context, root):
 
 
 @suite_locked
-def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False):
+def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, successful_test_diagnostics_level='warning', evidence_boundary=None):
     """Run selected collected identities once; preserve owner configs and full source scope.
 
     Callbacks run on the calling thread. Cancellation terminates and reaps only
     owned process groups. Nonzero also signals skipped/incomplete selected tests.
     """
     started_at = time.monotonic()
+    if successful_test_diagnostics_level not in ('warning', 'info'):
+        raise ValueError('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL must be warning or info.')
     tests = tuple(dict((test.id, test) for test in tests).values())
     if not tests:
         raise CollectionError('Cannot execute an empty unit selection')
@@ -247,6 +255,9 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     owner_roots = composition_roots(context) if ordered else (base, owner)
     roots = {repository_label(context, root): root for root in dict.fromkeys(owner_roots)}
     env = os.environ.copy()
+    env['API_AGENT_SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL'] = successful_test_diagnostics_level
+    from .diagnostics import CredentialScrubber
+    stderr_scrub = CredentialScrubber(env, boundary=evidence_boundary)
     env['PYTHONPATH'] = (composition_pythonpath(context, env.get('PYTHONPATH', ''))
                          if ordered else os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')]))
     env['PYTHONUNBUFFERED'] = '1'
@@ -411,7 +422,15 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                             details.append(timeout_details[identity.id])
                         elif not complete:
                             details.append('Unit pytest report incomplete: no complete setup/call/teardown report was received.')
-                        result = TestResult(identity, status, sum(row['duration'] for row in rows), '\n'.join(details))
+                        from api_agent.providers.diagnostic_output import bounded_stderr, bounded_stdout
+                        stderr = ''.join(row.get('stderr', '') if type(row.get('stderr', '')) is str
+                                         else 'stderr unavailable: invalid capture.\n' for row in rows)
+                        stderr = bounded_stderr(stderr_scrub(stderr)) if stderr else ''
+                        stdout = ''.join(row.get('stdout', '') if type(row.get('stdout', '')) is str
+                                         else 'stdout unavailable: invalid capture.\n' for row in rows)
+                        stdout = bounded_stdout(stderr_scrub(stdout)) if stdout and status == 'passed' else ''
+                        result = TestResult(identity, status, sum(row['duration'] for row in rows), '\n'.join(details),
+                                            local_stderr=stderr, local_stdout=stdout)
                         results[identity.id] = result
                         emit(RunnerEvent('test_finished', repo, identity, status, result.duration, result.traceback))
                     while process.poll() is None:

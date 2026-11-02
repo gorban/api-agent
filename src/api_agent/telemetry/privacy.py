@@ -270,7 +270,7 @@ class EmissionBoundary:
             commit()
             return True
 
-    def _text(self, value):
+    def _text_spans(self, value):
         # Collect every range from the original text. Replacing a registered
         # scheme or an inner Bearer token first can conceal the other guard.
         registered = []
@@ -314,6 +314,10 @@ class EmissionBoundary:
                 merged[-1] = (previous_start, max(previous_end, end), previous_scheme)
             else:
                 merged.append((start, end, scheme_end))
+        return registered, merged
+
+    def _text(self, value):
+        registered, merged = self._text_spans(value)
         for start, end, scheme_end in reversed(merged):
             replacement = '[REDACTED]'
             if (scheme_end is not None and

@@ -66,7 +66,7 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         # No report installer, storage lease, recorder, attachment, manifest or
         # publication exists on this explicitly unrecorded path.
         execution = run_integration_tests(context, tests, accepted=accepted,
-            no_std_in=False, config=config,
+            no_std_in=False, config=config, evidence_boundary=boundary,
             explicit_debug_test_ids=explicit_debug_test_ids,
             parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
             on_event=observe, output=options.get('output'),

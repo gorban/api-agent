@@ -14,6 +14,16 @@ from api_agent.providers.control import CleanupPendingError
 from api_agent.testing import provider_setup, setup_backend
 
 
+def test_backend_retains_bounded_stderr_without_starting_provider(tmp_path):
+    backend = setup_backend.SetupBackend({}, tmp_path)
+    backend.capture_stderr('first notice\n')
+    backend.capture_stderr('second notice\n')
+    assert backend.diagnostic_stderr == 'first notice\nsecond notice\n'
+    backend.capture_stderr('x' * 65537)
+    assert 'stderr omitted' in backend.diagnostic_stderr
+    assert backend.thread is None and backend.registry is None
+
+
 @pytest.fixture
 def fake_host(monkeypatch, tmp_path):
     from api_agent.providers import setup_transport

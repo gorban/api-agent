@@ -113,6 +113,20 @@ type = "bool"
 default = false
 help = "Default False withholds trace payload content. Explicit True permits scrubbed content, including provider-returned plaintext reasoning, in OTEL and LangFuse spans. Does not enable logs, local diagnostics or Allure content; LOG_CONTENT controls those destinations. Credentials, encrypted reasoning and internal state remain excluded."
 
+[fields.SCRUB_DIAGNOSTICS_LEVEL]
+type = "str"
+enum = ["off", "warning", "info", "debug"]
+default = "warning"
+help = "Response scrub diagnostics on stderr: info reports operation and changed-field count; debug adds safe schema paths and actions. Never emits values, anonymous members or credential-bearing field names. Does not enable payload logs or trace content."
+
+[fields.SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL]
+type = "str"
+enum = ["warning", "info"]
+default = "warning"
+help = "Successful test details: warning includes stderr; info also includes pytest stdout. Does not change test outcomes, failed-test diagnostics, payload logging or trace-content permission. Credentials remain scrubbed."
+[fields.SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL.applies_when]
+TUI_MODE = ["unit", "integration", "e2e"]
+
 [fields.RUN_LOG_FULL_CONTENT]
 type = "bool"
 default = false
@@ -133,7 +147,7 @@ COLLECT_ONLY = false
 
 [fields.LANGFUSE_ADMIN_PASSWORD]
 type = "str"
-conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "password"}]
+conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "Local-LF-9vQ7!mR2#xK8@pT4"}]
 help = "Administrator password for managed local LangFuse provisioning across Run local and test modes, and Run local dashboard sign-in. Configure the actual existing account; initialization does not reset it."
 [fields.LANGFUSE_ADMIN_PASSWORD.applies_when]
 TRACE_MODE = "LangFuse"

@@ -60,6 +60,24 @@ def test_recorded_entry_rejects_skip_before_creating_artifacts(tmp_path):
     assert not config['ALLURE_RESULTS_DIR'].exists()
 
 
+def test_local_success_streams_do_not_enter_allure_metadata(tmp_path):
+    from dataclasses import replace
+    context, test, config = fixture(tmp_path)
+    def runner(context, tests, **hooks):
+        delegate = fake_runner()
+        on_result = hooks['on_result']
+        def delivered(result):
+            on_result(replace(result, local_stderr='local-only-stderr-marker',
+                              local_stdout='local-only-stdout-marker'))
+        return delegate(context, tests, **dict(hooks, on_result=delivered))
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                                               runner=runner, storage=Storage())
+    assert result.exit_code == 0 and result.persisted
+    artifacts = '\n'.join(path.read_text() for path in result.directory.rglob('*.json'))
+    assert 'local-only-stderr-marker' not in artifacts
+    assert 'local-only-stdout-marker' not in artifacts
+
+
 @pytest.mark.parametrize('status,expected', [('passed', 'completed'), ('failed', 'failed'), ('cancelled', 'interrupted')])
 @pytest.mark.parametrize('delta', [0, 1.5])
 def test_hooks_preserve_outcomes_usage_and_finalization_after_cleanup(tmp_path, status, expected, delta):
@@ -140,16 +158,33 @@ def test_unavailable_quota_and_missing_callbacks_still_record_zero_prompt_run(tm
     assert options[0][0] == 'synthetic' and options[0][1]['prefix'] == 'allure'
 
 
-def test_quota_failure_is_unavailable_and_storage_failure_fails_operation(tmp_path):
+@pytest.mark.parametrize('status, expected_exit', [('passed', 0), ('failed', 1)])
+def test_quota_and_publication_failures_preserve_test_outcome(tmp_path, capsys, status, expected_exit):
     context, test, config = fixture(tmp_path)
     def fail():
         raise RuntimeError('private-quota-token')
     result = recorded.run_recorded_integration(context, [test], config, accepted=True,
-                   quota_fetcher=fail, storage=Storage(fail=True), runner=fake_runner())
-    assert result.exit_code == 1 and not result.persisted
+                   quota_fetcher=fail, storage=Storage(fail=True), runner=fake_runner(status),
+                   secret_values=('private-provider-error',))
+    assert result.exit_code == expected_exit and not result.persisted
+    assert result.execution.tests[0].status == status
+    diagnostic = capsys.readouterr().err
+    assert 'Allure publication failed:' in diagnostic
+    assert 'private-provider-error' not in diagnostic
     assert result.usage['quota_unavailable_reason'] == 'missing_snapshot'
     assert 'private-quota-token' not in json.dumps(result.usage)
     assert 'private-provider-error' not in result.execution.output
+
+
+def test_unrecordable_publication_failure_may_fail_operation(tmp_path, monkeypatch):
+    import sys
+    context, test, config = fixture(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'stderr', SimpleNamespace(write=lambda text: 0))
+        result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+            storage=Storage(fail=True), runner=fake_runner())
+    assert result.exit_code == 1 and not result.persisted
+    assert result.execution.tests[0].status == 'passed'
 
 
 def test_bad_optional_csv_keeps_primary_usage_and_records_finalization_failure(tmp_path):

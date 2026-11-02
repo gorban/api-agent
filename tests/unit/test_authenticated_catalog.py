@@ -90,7 +90,7 @@ def test_registered_other_credential_in_error_is_not_released():
     asyncio.run(run())
 
 
-def test_credential_registered_during_key_verification_rejects_prior_catalog():
+def test_credential_registered_during_key_verification_scrubs_prior_optional_metadata():
     from api_agent.telemetry.privacy import EmissionBoundary
     boundary = EmissionBoundary()
     other = 'synthetic-late-catalog-secret'
@@ -101,24 +101,25 @@ def test_credential_registered_during_key_verification_rejects_prior_catalog():
         return httpx.Response(200, json={'data': [{'id': 'gpt-example', 'name': other}]})
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            with pytest.raises(ModelDiscoveryError) as caught:
-                await discover_selections(client=client, base_url=BASE, access_token=SECRET, subscription=False, authority=boundary)
-        assert caught.value.kind == 'unknown' and other not in str(caught.value)
+            rows = await discover_selections(client=client, base_url=BASE, access_token=SECRET, subscription=False, authority=boundary)
+        assert rows[0].selected_llm == 'gpt-example'
+        assert rows[0].display_name == ''
+        assert other not in repr(rows)
     asyncio.run(run())
 
 
 @pytest.mark.parametrize('public', [False, True])
 def test_catalog_handoff_rejects_registration_during_validation(monkeypatch, public):
     from api_agent.telemetry.privacy import EmissionBoundary
-    from api_agent.providers import credential_guard
+    from api_agent.providers import scrubbed_response
     boundary = EmissionBoundary()
-    original = credential_guard.async_guard_json
-    async def racing_guard(value, secrets):
-        checked = await original(value, secrets)
+    original = scrubbed_response.async_scrub_response
+    async def racing_guard(value, **options):
+        checked = await original(value, **options)
         if type(value) is list and value and type(value[0]) is dict and 'selected_llm' in value[0]:
             boundary.register_secret('synthetic-concurrently-registered-secret')
         return checked
-    monkeypatch.setattr(credential_guard, 'async_guard_json', racing_guard)
+    monkeypatch.setattr(scrubbed_response, 'async_scrub_response', racing_guard)
     def handler(request):
         if request.url.path.endswith('/key'):
             return httpx.Response(200, json={'data': {'label': 'selected'}})
@@ -261,8 +262,8 @@ def test_factory_catalog_owns_client_and_fixed_subscription_origin(monkeypatch, 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('field,value', [('name', 1), ('name', 'x'*201), ('name', '\n'), ('name', SECRET),
-    ('version', 1), ('version', 'x'*101), ('version', '\n'), ('version', SECRET),
+@pytest.mark.parametrize('field,value', [('name', 1), ('name', 'x'*201), ('name', '\n'),
+    ('version', 1), ('version', 'x'*101), ('version', '\n'),
     ('max_output_tokens', True), ('max_output_tokens', -1), ('context_length', 0), ('context_length', '8192')])
 def test_bad_metadata_rejected_without_key_submission(field, value):
     payload = {'data': [{'id': 'gpt-example', field: value}]}
@@ -281,5 +282,29 @@ def test_unknown_limits_and_version_are_preserved_without_guessing():
 
 def test_catalog_selection_count_is_bounded():
     payload = {'data': [{'id': f'gpt-example-{i}'} for i in range(257)]}
-    with pytest.raises(ModelDiscoveryError, match='too many selections'):
+    with pytest.raises(ModelDiscoveryError, match='invalid metadata'):
         invoke(lambda request: httpx.Response(200, json=payload))
+
+
+
+def test_catalog_selection_count_admits_the_exact_limit():
+    payload = {'data': [{'id': f'gpt-example-{i}'} for i in range(256)]}
+    def handler(request):
+        body = payload if request.url.path.endswith('/models') else {'data': {'label': 'selected'}}
+        return httpx.Response(200, json=body)
+    values, _ = invoke(handler)
+    assert len(values) == 256
+
+
+@pytest.mark.parametrize('field', ['name', 'version'])
+def test_optional_metadata_redaction_still_requires_selected_key_verification(field):
+    def handler(request):
+        payload = ({'data': [{'id': 'gpt-example', field: SECRET}]}
+                   if request.url.path.endswith('/models') else {'data': {'label': 'selected'}})
+        return httpx.Response(200, json=payload)
+    values, calls = invoke(handler)
+    assert len(calls) == 2
+    assert calls[1].headers['Authorization'] == 'Bearer ' + SECRET
+    assert values[0].selected_llm == 'gpt-example'
+    assert getattr(values[0], 'display_name' if field == 'name' else 'version') == ''
+    assert SECRET not in repr(values)

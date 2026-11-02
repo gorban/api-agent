@@ -156,7 +156,7 @@ class RecordedIntegrationResult:
 
     @property
     def exit_code(self):
-        return self.execution.exit_code or (0 if self.persisted or self.reporting_skipped else 1)
+        return self.execution.exit_code
 
 
 def validate_integration_start(tests, config, *, accepted=False, no_std_in=False):
@@ -205,8 +205,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     """Prepare once, record every outcome, and persist only after child cleanup.
 
     ``prepare(usage)`` may attach this suite tracker to owned provider callbacks.
-    A quota-fetch failure is unavailable data; result-persistence failure fails
-    the operation. Raw pytest evidence sinks must apply their own approved
+    A quota-fetch failure is unavailable data; publication failure is reported
+    separately from functional outcomes. Raw pytest evidence sinks must apply their own approved
     evidence/secret policy, as documented by the integration runner.
     Raw inference attachments require LOG_CONTENT=True; failure diagnostics and
     accounting remain independent. Register credentials before emitting evidence.
@@ -546,8 +546,27 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             from .allure_preview import emit_snapshot
             emit_snapshot(recorder, recording_ids, on_snapshot, manifest=manifest)
             estimator.ingest(directory, manifest)
-            storage.persist(directory, manifest)
-            persisted = True
+            try:
+                storage.persist(directory, manifest)
+            except Exception as error:
+                from .suite_lock import _cleanup_receipts
+                if any(_cleanup_receipts(error)):
+                    # A reporting outcome must never erase a live disposal duty.
+                    # Separating pending cleanup from run status is a distinct gate.
+                    raise
+                from .diagnostics import CredentialScrubber
+                from .storage import StorageError
+                from api_agent.providers.setup_transport import _diagnostic
+                import sys
+                scrub = CredentialScrubber(boundary=evidence_boundary)
+                detail = str(error) if type(error) is StorageError else _diagnostic(error, 'Allure publication')
+                message = scrub(f'Allure publication failed: {detail}\n'
+                                'Local evidence availability and integrity are unverified.\n')
+                if sys.stderr.write(message) != len(message):
+                    raise OSError('Could not record Allure publication failure diagnostic.')
+                sys.stderr.flush()
+            else:
+                persisted = True
             if external_failed or cleanup_failed or output_failed:
                 raise RuntimeError('Recording finalization failed')
 

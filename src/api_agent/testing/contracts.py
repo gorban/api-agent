@@ -13,6 +13,8 @@ class TestResult:
     traceback: str = ''
     # Captured TUI/credential-scrubbed CI evidence; never runner/report contracts.
     local_diagnostic: str = field(default='', repr=False, compare=False)
+    local_stderr: str = field(default='', repr=False, compare=False)
+    local_stdout: str = field(default='', repr=False, compare=False)
 
 
 @dataclass(frozen=True)

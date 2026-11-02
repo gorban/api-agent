@@ -138,8 +138,8 @@ for prerequisites and connection instructions.
 ## Known issues
 
 - **Managed local LangFuse has known development credentials:**
-  `admin@local.dev` / `password`. Anyone who can reach that dashboard can try
-  these defaults; keep it local and override them for other use. Existing
+  `admin@local.dev` / `Local-LF-9vQ7!mR2#xK8@pT4`. Anyone who can reach that dashboard can try
+  these defaults. The longer password avoids common-word credential-scrubbing matches; it is still public, not a secret. Keep it local and override them for other use. Existing
   accounts are not reset by changing initialization settings. The planned
   [safe multi-stage runtime image](docs/prds/implementation_plan_k2a.md#deployment-dashboard-credential-defaults)
   will clear both admin defaults to empty and require explicit configuration

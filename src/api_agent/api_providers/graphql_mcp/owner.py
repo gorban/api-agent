@@ -23,6 +23,7 @@ from graphql import (
 from graphql.language import Visitor, visit
 from graphql.language.ast import FieldNode, FragmentSpreadNode
 
+from api_agent.providers.scrubbed_response import decode_json, scrub_response, ResponseValidationError
 from api_agent.providers.tools import PreparedCall, ToolResult, ToolSpec, ToolValidationError
 
 MAX_QUERY = 8192
@@ -37,8 +38,16 @@ _HTTP_PREFIX = "GraphQL request failed: "
 _RENDERABLE_FAILURES = frozenset({
     "http_failure", "mcp_tool_error", "mcp_error", "protocol_output",
     "protocol_id", "mcp_content", "graphql_json", "graphql_shape",
-    "mcp_envelope", "result_size", "result_depth", "result_secret_collision",
+    "mcp_envelope", "result_size", "result_depth", "result_protection",
 })
+_GRAPHQL_RESPONSE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'data': {'type': ['object', 'null']},
+        'errors': {'type': 'array', 'minItems': 1, 'items': {'type': 'object'}},
+    },
+    'anyOf': [{'required': ['data']}, {'required': ['errors']}],
+}
 _ASSETS = Path(__file__).resolve().parent
 
 
@@ -223,7 +232,7 @@ class GraphQLMcpOwner:
                 if not line or len(line) > MAX_RESULT:
                     raise GraphQLMcpError("protocol_output")
                 try:
-                    response = json.loads(line)
+                    response = decode_json(line)
                 except (ValueError, UnicodeDecodeError) as exc:
                     raise GraphQLMcpError("protocol_output") from exc
                 if type(response) is not dict or response.get("jsonrpc") != "2.0":
@@ -310,7 +319,7 @@ class GraphQLMcpOwner:
             # query through MCP supplies the canonical, complete response instead.
             result = await self._call("query-graphql", {"query": get_introspection_query()})
             text, is_error = self._text(result)
-            response = self._parse_json(text, is_error)
+            response = self._scrub(self._parse_json(text, is_error), schema=_GRAPHQL_RESPONSE_SCHEMA)
             if is_error or response.get("errors") or type(response.get("data")) is not dict:
                 raise GraphQLMcpError("introspection_failed")
             if not self._complete_introspection(response["data"]):
@@ -322,7 +331,7 @@ class GraphQLMcpOwner:
             except Exception as exc:
                 raise GraphQLMcpError("introspection_incomplete") from exc
             self._schema = schema
-            schema_sdl = self._scrub(print_schema(schema))
+            schema_sdl = print_schema(schema)
             if len(schema_sdl.encode()) > MAX_SDL:
                 raise GraphQLMcpError("schema_size")
             fingerprint = hashlib.sha256(json.dumps(response["data"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -342,7 +351,7 @@ class GraphQLMcpOwner:
                 raise GraphQLMcpError("mcp_tool_error")
             text = text[len(_ERROR_PREFIX):]
         try:
-            result = json.loads(text)
+            result = decode_json(text)
         except ValueError as exc:
             raise GraphQLMcpError("graphql_json") from exc
         if type(result) is not dict or ("data" not in result and "errors" not in result):
@@ -355,24 +364,13 @@ class GraphQLMcpOwner:
             raise GraphQLMcpError("graphql_shape")
         return result
 
-    def _scrub(self, value: Any, depth: int = 0) -> Any:
-        if depth > 32:
-            raise GraphQLMcpError("result_depth")
-        if type(value) is str:
-            for secret in self._secrets:
-                value = value.replace(secret, "[REDACTED]")
-            return value
-        if type(value) is list:
-            return [self._scrub(item, depth + 1) for item in value]
-        if type(value) is dict:
-            result = {}
-            for key, item in value.items():
-                clean_key = self._scrub(key, depth + 1)
-                if clean_key in result:
-                    raise GraphQLMcpError("result_secret_collision")
-                result[clean_key] = self._scrub(item, depth + 1)
-            return result
-        return value
+    def _scrub(self, value: Any, *, schema=None) -> Any:
+        try:
+            return scrub_response(value, schema={} if schema is None else schema, secrets=self._secrets,
+                                  operation='graphql_response', max_depth=32)[0]
+        except ResponseValidationError as error:
+            code = 'result_depth' if error.rule == 'invalid_json' else 'result_protection'
+            raise GraphQLMcpError(code) from None
 
     async def validate(self, prepared: PreparedCall) -> None:
         spec = await self.describe()
@@ -429,9 +427,9 @@ class GraphQLMcpOwner:
         try:
             result = await self._call("query-graphql", {"query": prepared.arguments["query"]})
             text, is_error = self._text(result)
-            response = self._parse_json(text, is_error)
-            data = self._scrub(response.get("data"))
-            errors = tuple(self._scrub(response.get("errors", ())))
+            response = self._scrub(self._parse_json(text, is_error), schema=_GRAPHQL_RESPONSE_SCHEMA)
+            data = response.get("data")
+            errors = tuple(response.get("errors", ()))
             if errors and not is_error:
                 raise GraphQLMcpError("mcp_envelope")
             status = "partial" if errors and data is not None else "failure" if errors else "success"
