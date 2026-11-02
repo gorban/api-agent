@@ -48,3 +48,5 @@ Managed link audit covers all six included workflow hierarchies through a real b
 - [x] Serve explicitly referenced captured Python node, router and state-schema files as UTF-8 plain text in saved and temporary managed views. Preserve their source links, verify exact captured hashes and bounded text, and reject arbitrary filesystem routes. Cover actual source bytes and content type in the host regression and retain the recursive rendered-link audit.
 
 Python source viewing supports the loader’s 8 MiB resource limit independently of smaller JSON/TOML display limits. Native-only flows preserve their source links. Exact-text/content-type host checks and the browser crawl pass; 20,943 unit tests pass with 100% line and branch coverage. Normal launcher integration passes both viewer cases with Allure publication and no inference; external source/QA review returned GO.
+
+Repository preview compatibility follows the [fallback-envelope requirements](implementation_plan_b1a3a.md).
