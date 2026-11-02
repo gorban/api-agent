@@ -23,7 +23,7 @@ def discover(context, selection=None, *, definition_loader=None):
     operation = operation_selection(selection)
     load = definition_loader or load_selected_definition
     roots = {'base': getattr(context, 'workflow_base_root', None) or context.base_root,
-             'pack': context.pack_root}
+             'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
     capture = Capture(roots, library_files=getattr(context, 'workflow_library_files', None))
     definitions, diagnostics, selected, profiles, selected_profiles = {}, {}, (), {}, ()
     path = getattr(context, 'tool_catalog_path', None)
@@ -78,7 +78,8 @@ def discover(context, selection=None, *, definition_loader=None):
                 graph_context = replace(context, workflow_root=spec['root'],
                     workflow_entry=(resource_root or roots[spec['root']]) / spec['entry'],
                     workflow_base_root=resource_root or getattr(context, 'workflow_base_root', None),
-                    pack_root=resource_root or context.pack_root,
+                    pack_root=resource_root or roots['pack'],
+                    workflow_pack_root=resource_root or roots['pack'],
                     workflow_library_files=library_files,
                     workflow_replacements=tuple((row['target_id'], Path(row['entry']), row['root_id'])
                         for row in spec.get('replacements', ())))

@@ -577,6 +577,9 @@ def _http_identity(readiness, timeout, *, cancelled=lambda: False):
             body = response.read(65537)
             if len(body) > 65536 or getattr(response, 'length', None) not in (None, 0):
                 return False
+            if readiness.kind == 'http-status':
+                _request_remaining(deadline, cancelled)
+                return True
             value = json.loads(body)
             matches = (isinstance(value, dict)
                 and type(value.get(readiness.identity_field)) is type(readiness.identity_value)
@@ -592,7 +595,7 @@ class PrerequisiteManager:
                  command_runner=run_command, cancelled=lambda: False,
                  readiness_probe=_readiness, deadline_seconds=120,
                  now=time.monotonic, sleep=time.sleep, identity=process_identity,
-                 cleanup_timeout_seconds=15):
+                 cleanup_timeout_seconds=15, engine_target=None, engine_registry=None):
         self.plan, self.scope = plan, scope
         self.conditional = {item.compose_name: item for item in getattr(plan, 'conditional', ())}
         self._rollback = None
@@ -601,6 +604,15 @@ class PrerequisiteManager:
         if deadline_seconds <= 0:
             raise PrerequisiteError('Prerequisite deadline must be positive.')
         self.directory = Path(ownership_directory).resolve()
+        self.engine_target = engine_target
+        if engine_target is not None:
+            self.directory = self.directory / "engines" / engine_target.lease_key
+            if plan.command[0] != engine_target.executable:
+                raise PrerequisiteError("Prerequisite executable differs from selected engine.")
+            if engine_environment is not None and dict(engine_environment) != dict(engine_target.environment):
+                raise PrerequisiteError("Prerequisite environment differs from selected engine.")
+            engine_environment = engine_target.environment
+            engine_target.verify(cancelled=cancelled)
         engine_override = controlled_engine_environment(engine_environment)
         if self.conditional and any(plan.environment.get(key) != value
                 for key, value in engine_override.items()):
@@ -610,6 +622,8 @@ class PrerequisiteManager:
             for key in ENGINE_ENVIRONMENT_KEYS if key in self.environment})
         self.engine_id = sha256(json.dumps({'command': plan.command[0],
             'environment': dict(self.engine_environment)}, sort_keys=True).encode()).hexdigest()
+        if engine_target is not None:
+            self.engine_id = engine_target.lease_key
         self.runner, self.cancelled, self.probe = command_runner, cancelled, readiness_probe
         if (type(cleanup_timeout_seconds) not in (int, float)
                 or not math.isfinite(cleanup_timeout_seconds) or not 0 < cleanup_timeout_seconds <= 300):
@@ -645,8 +659,19 @@ class PrerequisiteManager:
                              for name, spec in self.specs.items()}
         self.lease = None
         self.snapshot_directory = None
+        if engine_target is not None and engine_registry is not None:
+            engine_registry.remember(engine_target)
+
+    def _verify_engine(self, *, cleanup=False):
+        if self.engine_target is not None:
+            from .engine_targets import EngineTargetError
+            try:
+                self.engine_target.verify(cancelled=(lambda: False) if cleanup else self.cancelled)
+            except EngineTargetError:
+                raise PrerequisiteError("Selected engine unavailable or identity changed.") from None
 
     def _command(self, args, deadline, *, cleanup=False):
+        self._verify_engine(cleanup=cleanup)
         return self.runner(tuple(args), environment=self.environment, directory=self.plan.directory,
             deadline=deadline, cancelled=(lambda: False) if cleanup else self.cancelled, now=self.now)
 
@@ -739,10 +764,15 @@ class PrerequisiteManager:
         scrubber = CredentialScrubber({**self.environment, **{name + '.' + key: value
             for name, specification in self.specs.items()
             for key, value in specification.get('environment', {}).items()}})
+        self._verify_engine()
         return self.runner((self.plan.command[0], 'logs', '--tail', str(tail), identifier),
             environment=self.environment, directory=self.plan.directory, deadline=deadline,
             cancelled=self.cancelled, now=self.now, combine_output=True,
             output_limit=output_limit, output_scrubber=scrubber)
+
+    def _probe(self, profile, timeout, environment):
+        self._verify_engine()
+        return self.probe(profile, timeout, environment)
 
     def _conditional_ready(self, current, deadline, *, names=None, checks=None):
         for name, specification in self.conditional.items():
@@ -750,11 +780,14 @@ class PrerequisiteManager:
                 continue
             if name not in current:
                 return False
+            if 'runtime' in self.specs[name]:
+                self.verify_conditional_storage(name, current[name].id, deadline)
             for readiness in ((specification.readiness, specification.seed_completion)
                               if checks is None else checks):
                 if readiness is None:
                     continue
                 _check(deadline, self.cancelled, self.now)
+                self._verify_engine()
                 if readiness.kind == 'health':
                     if current[name].health != 'healthy':
                         return False
@@ -794,6 +827,11 @@ class PrerequisiteManager:
                 deadline, cleanup=cleanup))
             if record['Id'] != identifier:
                 raise ValueError()
+            from .tool_policy import verify_isolation
+            try:
+                verify_isolation(self.specs[name], record, network=self.scope.project + '_default')
+            except ValueError as error:
+                raise PrerequisiteError('Prerequisite isolation could not be verified.') from error
             mounts = record['Mounts']
             expected = self.specs[name].get('volumes', [])
             if len(mounts) != len(expected):
@@ -1020,6 +1058,14 @@ class PrerequisiteManager:
         deadline = self.now() + self.timeout
         if _deadline is not None:
             deadline = min(deadline, _deadline)
+        runtimes = {spec['runtime'] for spec in self.specs.values() if 'runtime' in spec}
+        if runtimes:
+            try:
+                available = json.loads(self._command((self.plan.command[0], 'info', '--format', '{{json .Runtimes}}'), deadline))
+            except ValueError as error:
+                raise PrerequisiteError('Required isolated runtime inventory is invalid.') from error
+            if not isinstance(available, dict) or not runtimes <= set(available):
+                raise PrerequisiteError('Required isolated runtime is unavailable on the selected engine.')
         with (nullcontext() if _prelocked else _locked(self.directory, self.scope, deadline=deadline,
                      cancelled=self.cancelled, now=self.now, sleep=self.sleep)):
             for legacy in self.scope.legacy_ids:
@@ -1098,7 +1144,7 @@ class PrerequisiteManager:
                         raise PrerequisiteError('Verified prerequisite readiness changed during acquisition.')
                     if (len(current) == len(self.specs)
                             and all(item.health in {None, 'healthy'} for item in current.values())
-                            and all(self.probe(profile, min(1, max(.001, deadline - self.now())),
+                            and all(self._probe(profile, min(1, max(.001, deadline - self.now())),
                                     self.environment) for profile in self.plan.profiles
                                     if profile not in {item.profile for item in self.conditional.values()})):
                         _check(deadline, self.cancelled, self.now)

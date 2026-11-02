@@ -72,7 +72,7 @@ def _url(value: str, *, local: bool, hostname: str | None = None):
 def _check(rule: Readiness, endpoints: Mapping[str, ResolvedEndpoint]) -> ResolvedCheck:
     if rule.kind == 'health':
         return ResolvedCheck('health', status=rule.status, timeout=rule.timeout)
-    if (rule.kind != 'http' or '/' not in rule.target
+    if (rule.kind not in ('http', 'http-status') or '/' not in rule.target
             or any(not 33 <= ord(character) <= 126 for character in rule.target)):
         raise ComposeError('Infrastructure HTTP readiness requires an endpoint and path.')
     name, path = rule.target.split('/', 1)
@@ -80,7 +80,9 @@ def _check(rule: Readiness, endpoints: Mapping[str, ResolvedEndpoint]) -> Resolv
             or not re.fullmatch("[A-Za-z0-9._~!$&'()*+,;=:@%/-]+", path)
             or re.search(r'%(?![0-9A-Fa-f]{2})', path)):
         raise ComposeError('Infrastructure HTTP readiness target is invalid.')
-    return ResolvedCheck('http', endpoints[name].host.rstrip('/') + '/' + path,
+    if rule.kind == 'http-status' and (rule.identity_field or rule.identity_value):
+        raise ComposeError('HTTP status readiness cannot assert JSON identity.')
+    return ResolvedCheck(rule.kind, endpoints[name].host.rstrip('/') + '/' + path,
                          rule.status, rule.identity_field, rule.identity_value, rule.timeout)
 
 
@@ -125,7 +127,7 @@ def _unix_transport(environment: Mapping[str, str]) -> None:
 
 def _compose_fragment(service, name, profile, scope, all_profiles, assets, used_ports, dependency_outputs):
     source = service.compose
-    allowed = {'image', 'ports', 'environment', 'volumes', 'command'}
+    allowed = {'image', 'ports', 'environment', 'volumes', 'command', 'isolation'}
     if set(source) - allowed or 'image' not in source:
         raise ComposeError('Unsupported infrastructure Compose service feature.')
     image = source['image']
@@ -138,6 +140,9 @@ def _compose_fragment(service, name, profile, scope, all_profiles, assets, used_
         'api-agent.scope': '${SA_SCOPE:?controlled local development value required}',
         'api-agent.declaration-sha256': service.declaration_source.sha256,
         'api-agent.compose-source-sha256': service.compose_source.sha256}}
+    if 'isolation' in source:
+        from .tool_policy import isolation_fragment
+        result.update(isolation_fragment(source['isolation']))
     ports = source.get('ports', ())
     if not isinstance(ports, tuple) or len(ports) > 16:
         raise ComposeError('Infrastructure ports must be a bounded list.')

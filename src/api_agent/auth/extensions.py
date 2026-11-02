@@ -24,7 +24,7 @@ def load_identity_adapter(context, config):
         return None
     if not isinstance(config, Mapping):
         raise IdentityExtensionError('Identity factory needs resolved configuration values')
-    if not path.resolve().is_relative_to(context.pack_root.resolve()) or not path.is_file():
+    if not path.resolve().is_relative_to((getattr(context, 'identity_pack_root', None) or context.pack_root).resolve()) or not path.is_file():
         raise IdentityExtensionError('Identity factory must remain inside its selected pack')
     name = '_api_agent_identity_' + uuid.uuid4().hex
     spec = importlib.util.spec_from_file_location(name, path)

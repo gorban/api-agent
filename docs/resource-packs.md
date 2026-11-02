@@ -7,6 +7,31 @@ Use the pack's own launcher, or select it from api-agent:
 ./launch.sh --resource-pack-dir /path/to/pack
 ```
 
+Repeat the option to compose packs in order:
+```bash
+./launch.sh --resource-pack-dir /path/to/shared-pack --resource-pack-dir /path/to/application-pack
+```
+
+Later pack declarations/defaults override earlier ones. Provider configs, suites,
+production roots, dotenv files and infrastructure remain ordered contributions.
+Relative path/provider defaults keep their contributing owner. An external pack
+selection never inserts the demo pack. CLI/environment values retain their normal
+precedence. The final pack owns output/configuration writes and service naming.
+
+When a later pack redeclares `UI_PROVIDER` or `API_PROVIDER`, acknowledge that
+replacement explicitly in its manifest:
+```toml
+[composition]
+version = 1
+replace = ["ui", "api"]
+```
+
+Select the implementations with existing typed fields or `[defaults]`. A single
+earlier workflow/tool catalog is inherited. Competing workflow declarations need
+`"workflow"` in `replace` and use existing workflow library/replacement contracts.
+Multiple catalogs or differing workflow/catalog pack owners fail closed. See the
+[composition requirements](prds/pack_composition.md) for scope and acceptance.
+
 A pack launcher locates the shared checkout through `API_AGENT_DIR`, normally
 `../api-agent` relative to its root. .env, environment and CLI can override it.
 Source launchers load that checkout directly without an editable installation.
@@ -126,3 +151,9 @@ optional dashboard/login capabilities, nested configuration and optional recursi
 local infrastructure through existing shared owners. Its documentation acceptance
 includes a dedicated provider guide and examples linked from this overview.
 See [current tracing configuration](tracing.md) for behavior available today.
+
+For ordered packs, inherited auxiliary `[providers].configs` declarations must
+use owner-independent defaults: absolute paths/selectors or base-root paths.
+Relative path/selector defaults with pack/owner dependence, including conditional
+defaults, are rejected. Put those defaults in the owning pack's main configuration
+or use absolute auxiliary defaults until provider bootstrap supports per-file owners.

@@ -44,6 +44,11 @@ class LaunchContext:
     infrastructure_paths: tuple[Path, ...] = ()
     tool_catalog_path: Path | None = None
     inventory_sources: tuple = ()
+    pack_layers: tuple = ()
+    composition_replacements: tuple[str, ...] = ()
+    workflow_pack_root: Path | None = None
+    identity_pack_root: Path | None = None
+    infrastructure_sources: tuple = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -78,6 +83,9 @@ def load_launch_context(
     resource_pack_dir: Path | None = None,
     launcher_root: Path | None = None,
 ) -> LaunchContext:
+    if isinstance(resource_pack_dir, (list, tuple)):
+        from .pack_composition import load_ordered_context
+        return load_ordered_context(base_root, resource_pack_dir, launcher_root)
     base = Path(base_root).resolve()
     if not base.is_dir():
         raise ResourcePackError(f"Base api-agent directory does not exist: {base}")
@@ -98,7 +106,7 @@ def load_launch_context(
             data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure", "tooling"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure", "tooling", "composition"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -224,6 +232,8 @@ def load_launch_context(
                                               'workflow.replacements entry')
             selected.append((target, checked.relative_to(roots[replacement_root]), replacement_root))
         workflow_replacements = tuple(selected)
+    from .pack_composition import validate_replacements
+    composition_replacements = validate_replacements(data.get("composition"))
     defaults = data.get("defaults", {})
     providers = data.get('providers', {})
     if not isinstance(providers, dict) or set(providers) - {'configs'}:
@@ -312,6 +322,7 @@ def load_launch_context(
         infrastructure_paths=tuple(infrastructure_paths),
         tool_catalog_path=tool_catalog_path,
         inventory_sources=tuple(inventory_sources),
+        composition_replacements=composition_replacements,
     )
 
 
@@ -464,17 +475,18 @@ def load_selected_definition(context):
     if not entry.is_file():
         raise ResourcePackError('The bundled application workflow entry is unavailable')
     replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
-    owner = context.pack_root if context.workflow_root == 'pack' else base
+    pack = getattr(context, 'workflow_pack_root', None) or context.pack_root
+    owner = pack if context.workflow_root == 'pack' else base
     from api_agent.workflows.document_format import canonical_executable_bytes
     heading = canonical_executable_bytes(_read_bounded(entry, owner), path=entry).split(b'\n', 1)[0]
     if heading == b'# Workflow v3':
         from api_agent.workflows.stateful import load_stateful_definition
         definition = load_stateful_definition(entry, base_root=base,
-                                              pack_root=context.pack_root, replacements=replacements,
+                                              pack_root=pack, replacements=replacements,
                                               entry_root=context.workflow_root)
     else:
         definition = load_definition(entry, base_root=base,
-                                     pack_root=context.pack_root, replacements=replacements,
+                                     pack_root=pack, replacements=replacements,
                                      entry_root=context.workflow_root)
     owned = getattr(context, 'workflow_library_files', None)
     if owned is not None:
@@ -498,7 +510,7 @@ def load_workflow(context, registry, conditions=None, *, definition=None, config
     expected_replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
     if (not isinstance(definition, (WorkflowDefinition, StatefulDefinition)) or definition.entry != expected_entry
             or definition.entry_root != context.workflow_root
-            or definition.roots != {'base': base, 'pack': context.pack_root}
+            or definition.roots != {'base': base, 'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
             or definition.replacements != expected_replacements):
         raise ResourcePackError('Workflow definition does not match selected pack graph')
     if isinstance(definition, StatefulDefinition):

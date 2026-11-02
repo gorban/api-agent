@@ -68,18 +68,47 @@ def _engine_environment():
 
 
 class ContainerRuntime:
-    def __init__(self, executable=None, scope=None, *, ownership_directory=None):
+    def __init__(self, executable=None, scope=None, *, ownership_directory=None, engine_target=None, inventory_catalog=None):
+        self.engine_target = engine_target
+        if engine_target is not None:
+            executable = engine_target.executable
         self.executable = executable
         self.scope = scope
+        self.inventory_pairs = frozenset()
+        from .ownership import PROFILES
+        self.profiles = PROFILES
+        if inventory_catalog is not None:
+            from .inventory import InventoryCatalog
+            try:
+                if type(inventory_catalog) is not InventoryCatalog or scope is None:
+                    raise ValueError()
+                self.inventory_pairs = frozenset(inventory_catalog.verify(scope))
+            except ValueError:
+                raise ContainerError("Invalid container inventory authority.") from None
+            self.profiles |= frozenset(profile for _, profile in self.inventory_pairs)
         self.ownership_directory = ownership_directory
+        if engine_target is not None and ownership_directory is not None:
+            self.ownership_directory = Path(ownership_directory) / "engines" / engine_target.lease_key
+
+    def _verify_engine(self):
+        if self.engine_target is not None:
+            from .engine_targets import EngineTargetError
+            try:
+                self.engine_target.verify()
+            except EngineTargetError:
+                raise ContainerError("Selected engine unavailable or identity changed.") from None
+
+    def _environment(self):
+        return self.engine_target.environment if self.engine_target is not None else _engine_environment()
 
     def _run(self, arguments, *, timeout=5):
+        self._verify_engine()
         executable = self.executable or shutil.which("docker") or shutil.which("podman")
         if not executable:
             raise ContainerError("Container inventory unavailable: docker and podman are absent from PATH.")
         try:
             result = subprocess.run([executable, *arguments], capture_output=True, text=True, timeout=timeout, check=False,
-                                    env=_engine_environment())
+                                    env=self._environment())
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ContainerError(f"Container engine unavailable: {type(error).__name__}.") from error
         if result.returncode:
@@ -106,7 +135,11 @@ class ContainerRuntime:
             raise ContainerError("Container inventory unavailable: invalid engine response.") from error
 
     def _eligible(self, record, protected):
-        return (self.scope.owns(record["Config"].get("Labels"))
+        from .ownership import PROFILES
+        labels = record["Config"].get("Labels")
+        return (self.scope.owns(labels, profiles=self.profiles)
+                and (labels['api-agent.profile'] in PROFILES
+                     or (labels['com.docker.compose.service'], labels['api-agent.profile']) in self.inventory_pairs)
                 and not is_session_container(record["Id"], record["Name"], protected)
                 and not any(key.startswith(("com.github.containers.toolbox", "distrobox", "io.github.distrobox"))
                             or (key == "manager" and value == "distrobox")
@@ -176,7 +209,8 @@ class ContainerRuntime:
         scrubber = scrubber or CredentialScrubber(dict(os.environ))
         with report_timeout_sync('Container logs', 5) as budget:
             def command(arguments, *, combine_output=False):
-                return run_command((executable, *arguments), environment=_engine_environment(),
+                self._verify_engine()
+                return run_command((executable, *arguments), environment=self._environment(),
                     directory=Path.cwd(), deadline=time.monotonic() + budget.remaining,
                     cancelled=cancelled, combine_output=combine_output, output_scrubber=scrubber,
                     output_limit=65536 if combine_output else None)

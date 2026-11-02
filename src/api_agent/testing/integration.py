@@ -288,7 +288,10 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     row['config'] = cost_config(context, values)
             stage = 'Integration runner configuration'
             base, owner = Path(context.base_root).resolve(), Path(context.owner_root).resolve()
-            roots = {repository_label(context, root): root for root in dict.fromkeys((base, owner))}
+            from .pack_sources import composition_roots, composition_pythonpath
+            ordered = bool(getattr(context, 'pack_layers', ()))
+            owner_roots = composition_roots(context) if ordered else (base, owner)
+            roots = {repository_label(context, root): root for root in dict.fromkeys(owner_roots)}
             env = os.environ.copy()
             if config is not None and config.get('SKIP_ALLURE_REPORTING') is True:
                 env['API_AGENT_ALLURE_REPORTING'] = '0'
@@ -296,7 +299,8 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 env['API_AGENT_ALLURE_REPORTING'] = '1'
             else:
                 env.pop('API_AGENT_ALLURE_REPORTING', None)
-            env['PYTHONPATH'] = os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')])
+            env['PYTHONPATH'] = (composition_pythonpath(context, env.get('PYTHONPATH', ''))
+                                 if ordered else os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')]))
             env['PYTHONUNBUFFERED'] = '1'
             backend_descriptor = None
             interaction_descriptor = None
