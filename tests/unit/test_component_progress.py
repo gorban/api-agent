@@ -195,7 +195,7 @@ def test_nested_component_display_and_late_events(tmp_path):
             assert table.get_row_at(0)[2] == ''
             app.unit_event(RunnerEvent('test_finished', identity=test, status='failed', duration=213.375))
             app.unit_event(RunnerEvent('component_progress', identity=test, component=parent))
-            assert table.get_row_at(0) == ['FAILED', test.id, '213.375s']
+            assert list(map(str, table.get_row_at(0))) == ['FAILED', test.id, '213.375s']
             assert test.id not in app.test_components
             assert 'GPT login' not in app.unit_progress().plain
             app.test_components['stale'] = {'p': parent}
@@ -229,14 +229,14 @@ def test_parallel_component_clocks_stay_in_their_rows(tmp_path, mode):
             assert app.screen.query_one('#body', Static).content.plain == (
                 f'Running selected {mode} tests… 0 passed / 0 failed / 0 skipped / 2 running / 0 pending')
             app.unit_event(RunnerEvent('test_finished', identity=first, status='passed', duration=72.125))
-            assert table.get_row(first.id) == ['PASSED', first.id, '72.125s']
+            assert list(map(str, table.get_row(first.id))) == ['PASSED', first.id, '72.125s']
             assert table.get_row(second.id)[2] == '3s elapsed; timeout 15s — Password-manager username'
             assert app.screen.query_one('#body', Static).content.plain == (
                 f'Running selected {mode} tests… 1 passed / 0 failed / 0 skipped / 1 running / 0 pending')
             app.unit_event(RunnerEvent('test_finished', identity=second, status='failed', duration=24.875))
             app.unit_event(RunnerEvent('component_progress', identity=first, component=login))
             assert table.get_row(first.id)[2] == '72.125s'
-            assert table.get_row(second.id) == ['FAILED', second.id, '24.875s']
+            assert list(map(str, table.get_row(second.id))) == ['FAILED', second.id, '24.875s']
             assert not app.test_components
             assert app.screen.query_one('#body', Static).content.plain == (
                 f'Running selected {mode} tests… 1 passed / 1 failed / 0 skipped / 0 running / 0 pending')

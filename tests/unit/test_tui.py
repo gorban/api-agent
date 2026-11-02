@@ -698,7 +698,7 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             assert rows['E2E_RERUNS'][1] == '2'
             assert rows['E2E_BROWSER_RESOLUTION'][1] == '1440x900'
             assert {'RUN_UI', 'RUN_LOG_SOURCE'} <= rows.keys()
-            assert rows['AGENT_DJANGO_URL'][1] == 'https://localhost:8443'
+            assert str(rows['AGENT_DJANGO_URL'][1]) == 'https://localhost:8443'
             assert not {'HELP', 'TUI_MODE', 'UNATTENDED_AUTH', 'NO_STD_IN', 'COLLECT_ONLY',
                         'API_AGENT_DIR', 'UI_SOURCE_DIR', 'UI_NX_APP', 'E2E_DEBUG',
                         'AUTH_BROWSER_DEBUG', 'E2E_LOG_INDEX'} & rows.keys()
@@ -785,7 +785,7 @@ def test_optional_trace_rows_and_conditional_target_review(tmp_path):
             assert app.screen.kind == 'defaults'
             table = app.screen.query_one(DataTable)
             assert table.get_row_at(0) == ['TRACE_MODE', '', 'Not provided']
-            assert table.get_row_at(1) == ['TRACE_TARGET', '', 'Not provided']
+            assert list(map(str, table.get_row_at(1))) == ['TRACE_TARGET', '', 'Not provided']
             assert not app.focused_default()
             await pilot.press('a')
             assert not (tmp_path / '.env').exists()
@@ -796,12 +796,12 @@ def test_optional_trace_rows_and_conditional_target_review(tmp_path):
             await pilot.click('#submit')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(1) == ['TRACE_TARGET', 'http://localhost:3000', 'shared_default']
+            assert list(map(str, table.get_row_at(1))) == ['TRACE_TARGET', 'http://localhost:3000', 'shared_default']
             app.session.set_value('TRACE_MODE', 'OTEL')
             app.show_configuration()
             await pilot.pause()
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(1) == ['TRACE_TARGET', 'http://localhost:4318/v1/traces', 'shared_default']
+            assert list(map(str, table.get_row_at(1))) == ['TRACE_TARGET', 'http://localhost:4318/v1/traces', 'shared_default']
             table.move_cursor(row=1)
             assert app.focused_default()
             await pilot.press('a')
@@ -809,7 +809,7 @@ def test_optional_trace_rows_and_conditional_target_review(tmp_path):
             app.session.set_value('TRACE_MODE', 'LangFuse')
             app.show_configuration()
             await pilot.pause()
-            assert app.screen.query_one(DataTable).get_row_at(1)[1] == 'http://localhost:4318/v1/traces'
+            assert str(app.screen.query_one(DataTable).get_row_at(1)[1]) == 'http://localhost:4318/v1/traces'
     asyncio.run(scenario())
 
 
@@ -1214,7 +1214,7 @@ def test_unit_runner_events_final_failure_and_view(tmp_path, workers, expected):
             assert app.operation_status == 1, str(app.screen.query_one("#body", Static).content)
             assert app.screen.kind == 'test-results'
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0) == ['FAILED', identity.id, '0.125s']
+            assert list(map(str, table.get_row_at(0))) == ['FAILED', identity.id, '0.125s']
             assert '50.00%' in str(app.screen.query_one('#body', Static).render())
             await pilot.press('enter')
             await pilot.pause()
@@ -1241,13 +1241,13 @@ def test_completed_unit_failures_sort_stably_first_and_reset_selection(tmp_path)
             app.show_unit_results('Running')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[1] for i in range(4)] == list(app.unit_rows)
+            assert [str(table.get_row_at(i)[1]) for i in range(4)] == list(app.unit_rows)
             table.move_cursor(row=3)
             app.unit_result = UnitRunResult(1, (), (), '')
             app.show_unit_results('Done')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[1] for i in range(4)] == [
+            assert [str(table.get_row_at(i)[1]) for i in range(4)] == [
                 'fail-first', 'fail-second', 'pass-first', 'pass-second']
             assert table.cursor_row == 0
     asyncio.run(scenario())

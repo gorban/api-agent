@@ -10,6 +10,32 @@ from api_agent.testing import TestIdentity as Identity
 from test_tui import fixture
 
 
+@pytest.mark.parametrize('mode', [None, 'config-cleanup'])
+@pytest.mark.parametrize('value', [r'openai\.gpt-oss-20b(?:-1:0)?', ':smile:', '[red]literal[/red]', 'Actual Unicode: 👍'])
+def test_configuration_values_do_not_interpret_markup_or_emoji(tmp_path, mode, value):
+    from rich.console import Console
+    from rich.text import Text
+
+    async def scenario():
+        app = fixture(tmp_path, mode, fields={'MODEL_PATTERN': {'type': 'str', 'default': value}})
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            row = table.get_row('MODEL_PATTERN')
+            cell = row[1]
+            assert isinstance(cell, Text)
+            console = Console(width=100, color_system=None)
+            with console.capture() as capture:
+                console.print(cell, end='')
+            assert capture.get() == value
+            if mode is None:
+                await pilot.press('e')
+                await pilot.pause()
+                assert app.screen.query_one(Input).value == value
+
+    asyncio.run(scenario())
+
+
 async def assert_native_focus_cycle(app, pilot, controls):
     assert app.screen.focus_chain == controls
     controls[0].focus()

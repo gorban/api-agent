@@ -146,7 +146,7 @@ async def test_selected_review_mounts_case_setting_value_and_source_columns(tmp_
         assert [str(column.label) for column in table.columns.values()] == [
             'Test', 'Setting', 'Effective value', 'Source']
         assert table.row_count == 1
-        assert list(table.get_row_at(0)) == [test.id, 'LLM_DEFAULT_MODEL',
+        assert list(map(str, table.get_row_at(0))) == [test.id, 'LLM_DEFAULT_MODEL',
             'example-model', 'application:shared_default']
 
 
