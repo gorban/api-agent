@@ -209,7 +209,11 @@ def _stop_execution(process):
 
 def _production_sources(context, root):
     candidates = [root / 'src']
-    if root == Path(context.owner_root).resolve():
+    layers = getattr(context, 'pack_layers', ())
+    if layers:
+        candidates.extend(path for layer in layers if Path(layer.owner_root).resolve() == root
+                          for path in layer.production_paths)
+    elif root == Path(context.owner_root).resolve():
         candidates.extend(getattr(context, 'production_paths', ()))
     return tuple(dict.fromkeys(Path(path).resolve() for path in candidates
                                if Path(path).is_dir() and any(Path(path).rglob('*.py'))))
@@ -238,9 +242,13 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     # The reusable runner prepares only the selected source library's own base suite.
     if base == source_root():
         ensure_source_frontend(cancellation=cancel_event)
-    roots = {repository_label(context, root): root for root in dict.fromkeys((base, owner))}
+    from .pack_sources import composition_roots, composition_pythonpath
+    ordered = bool(getattr(context, 'pack_layers', ()))
+    owner_roots = composition_roots(context) if ordered else (base, owner)
+    roots = {repository_label(context, root): root for root in dict.fromkeys(owner_roots)}
     env = os.environ.copy()
-    env['PYTHONPATH'] = os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')])
+    env['PYTHONPATH'] = (composition_pythonpath(context, env.get('PYTHONPATH', ''))
+                         if ordered else os.pathsep.join([str(base / 'src'), str(owner / 'src'), env.get('PYTHONPATH', '')]))
     env['PYTHONUNBUFFERED'] = '1'
     chunks, results, areas = [], {}, []
     retained = []

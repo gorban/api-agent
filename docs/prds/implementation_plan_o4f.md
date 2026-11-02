@@ -32,3 +32,7 @@ These generic requirements cover a selected tool that uses an HTTP sidecar. They
 - [ ] Required runtime missing, unsupported platform, forged isolation evidence, incompatible retained container and conflicting service identity reject without silent fallback. Complete applicable coverage, causal rejection tests, controlled lifecycle/installed proofs and independent/human gates before claiming container support.
 
 This specifies required support, not delivery. The existing bounded Compose foundation does not yet admit explicit runtime selection; complete that extension before accepting a tool that requires it.
+
+## Implementation slice
+
+[Selected sidecar preparation and engine binding proof](implementation_plan_o4f2.md) records bounded interfaces, deterministic verification and remaining platform acceptance.

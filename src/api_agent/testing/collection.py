@@ -65,6 +65,11 @@ def repository_label(context, root):
     """Use the same repository identity for collection and recording."""
     base, owner, root = (Path(path).resolve() for path in
                          (context.base_root, context.owner_root, root))
+    layers = getattr(context, 'pack_layers', ())
+    if layers and root not in {base, owner}:
+        for index, layer in enumerate(layers):
+            if root == Path(layer.owner_root).resolve():
+                return f'pack:{index}:{root.name}'
     raw_collision = base != owner and base.name == owner.name
     base_label = 'api-agent' if _installed_base_identity(base) else ('base' if raw_collision else base.name)
     owner_label = 'pack' if raw_collision else owner.name
@@ -225,6 +230,9 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
         raise CollectionError(f"Collection requires unit, integration, or e2e mode; got {mode!r}")
     base = Path(context.base_root).resolve()
     owner = Path(context.owner_root).resolve()
+    from .pack_sources import composition_roots, composition_pythonpath
+    ordered = bool(getattr(context, 'pack_layers', ()))
+    owners = composition_roots(context) if ordered else (base, owner)
     suites = {}
     declared = list(context.suite_paths(mode))
     if ((mode == 'integration' or mode == 'e2e' and base == owner)
@@ -239,7 +247,9 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
         if path == base / f'tests/{mode}':
             root = base
         else:
-            root = owner if path.is_relative_to(owner) else base
+            root = (max((candidate for candidate in owners if path.is_relative_to(candidate)),
+                        key=lambda candidate: len(candidate.parts), default=base)
+                    if ordered else owner if path.is_relative_to(owner) else base)
         if not path.is_relative_to(root):
             raise CollectionError(f"Suite is outside its repository owner: {path}")
         suites.setdefault(root, []).append(path)
@@ -254,10 +264,11 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
         source_paths.append(str(owner / "src"))
     if child_env.get("PYTHONPATH"):
         source_paths.append(child_env["PYTHONPATH"])
-    child_env["PYTHONPATH"] = os.pathsep.join(source_paths)
+    child_env["PYTHONPATH"] = (composition_pythonpath(context, child_env.get('PYTHONPATH', ''))
+                               if ordered else os.pathsep.join(source_paths))
     labels = {root: repository_label(context, root) for root in suites}
     for root in suites:
-        if root not in {base, owner}:
+        if root not in owners:
             labels[root] = 'provider:' + str(root)
     collected = {}
     for root, paths in suites.items():

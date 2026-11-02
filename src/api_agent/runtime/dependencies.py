@@ -40,7 +40,8 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
     dependencies = []
     library_root = getattr(context, 'workflow_base_root', None)
     projects = {}
-    roots = (context.base_root, context.pack_root, library_root)
+    roots = (context.base_root, context.pack_root, library_root,
+             *(layer.pack_root for layer in getattr(context, 'pack_layers', ())))
     for root in dict.fromkeys(Path(root).resolve() for root in roots if root is not None):
         manifest = root / 'pyproject.toml'
         if manifest.is_file():
@@ -50,7 +51,16 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
                        if library_root is not None and getattr(context, 'workflow_library_files', None) is None
                        else {})
     normalize = lambda value: re.sub(r'[-_.]+', '-', value).lower()
-    local_name = normalize(library_project.get('name', ''))
+    local_projects = {normalize(library_project['name']): library_project} if library_project.get('name') else {}
+    local_roots = {name: Path(library_root).resolve() for name in local_projects}
+    for layer in getattr(context, 'pack_layers', ()):
+        project = projects.get(layer.pack_root, {})
+        if project.get('name'):
+            name = normalize(project['name'])
+            if name in local_roots and local_roots[name] != layer.pack_root:
+                raise ValueError('Selected source packs have conflicting distribution identities')
+            local_projects[name] = project
+            local_roots[name] = layer.pack_root
     expanded_extras = set()
 
     def add_requirement(raw):
@@ -58,16 +68,17 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
         name = normalize(parsed.name)
         if name == 'api-agent':
             return
-        if not local_name or name != local_name:
+        project = local_projects.get(name)
+        if project is None:
             dependencies.append(raw)
             return
         if parsed.marker and not parsed.marker.evaluate({'extra': ''}):
             return
-        version = library_project.get('version')
+        version = project.get('version')
         if not version or version not in parsed.specifier:
             raise ValueError('Selected source workflow library has an incompatible or missing version')
         optional = {}
-        for key, value in library_project.get('optional-dependencies', {}).items():
+        for key, value in project.get('optional-dependencies', {}).items():
             normalized = normalize(key)
             if normalized in optional:
                 raise ValueError('Selected source workflow library has colliding extras')
@@ -75,9 +86,9 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
         for extra in sorted({normalize(extra) for extra in parsed.extras}):
             if extra not in optional:
                 raise ValueError('Selected source workflow library has an unknown extra')
-            if extra in expanded_extras:
+            if (name, extra) in expanded_extras:
                 continue
-            expanded_extras.add(extra)
+            expanded_extras.add((name, extra))
             for child in optional[extra]:
                 requirement = _parsed_requirement(child)
                 if requirement.marker:
@@ -228,7 +239,8 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
 def _relaunch(context, python, argv, *, replace_process=False):
     """Preserve the library subprocess contract unless the CLI owns this process."""
     pack_arguments = [] if getattr(context, 'show_pack_bootstrap', False) else [
-        '--resource-pack-dir', str(context.pack_root)]
+        value for layer in (getattr(context, 'pack_layers', ()) or (context,))
+        for value in ('--resource-pack-dir', str(layer.pack_root))]
     # The parent already completed the gate; this is an internal interpreter handoff,
     # not another user launch. No command-line or environment approval flag exists.
     handoff = (

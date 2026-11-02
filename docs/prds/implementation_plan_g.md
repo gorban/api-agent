@@ -138,3 +138,5 @@ Extend this skeleton through the [conditional infrastructure/host UI plan](imple
 Use [strict Markdown Layout](implementation_plan_b1.md) with genuine declaration-relative links for engine-local prompts. Pack prompt links retain `<resource_pack>` visibly and in their destination for runtime resolution; they do not resolve in editors/GitHub or point to a particular resource pack.
 
 Document the public upstream interfaces and independently authored snapshot/cache and retrieval design used for this backend. Keep backend lifecycle and persistence requirements explicit in this plan.
+
+- [ ] Integrate [ordered resource-pack composition](pack_composition.md) after its repository gates and independent review.

@@ -139,7 +139,7 @@ def _readiness(value: object) -> Readiness:
             {"kind", "target", "status", "identity_field", "identity_value", "timeout"}):
         raise InfrastructureDeclarationError("invalid readiness declaration")
     kind = value.get("kind")
-    if kind not in ("health", "http") or type(kind) is not str:
+    if kind not in ("health", "http", "http-status") or type(kind) is not str:
         raise InfrastructureDeclarationError("unsupported readiness kind")
     target = value.get("target", "")
     identity_field = value.get("identity_field", "")
@@ -153,6 +153,8 @@ def _readiness(value: object) -> Readiness:
         raise InfrastructureDeclarationError("invalid readiness value")
     if kind == "health" and {"target", "status", "identity_field", "identity_value"} & set(value):
         raise InfrastructureDeclarationError("health readiness has no HTTP target")
+    if kind == "http-status" and (not target or {"identity_field", "identity_value"} & set(value)):
+        raise InfrastructureDeclarationError("HTTP status readiness requires only target and status")
     if kind == "http" and (not target or not identity_field or not identity_value):
         raise InfrastructureDeclarationError("HTTP readiness requires target and identity")
     return Readiness(kind, target, status, identity_field, identity_value, timeout)
@@ -250,8 +252,9 @@ def _service(spec: object, *, owner: str, root: Path, source: Path,
 
 def load_infrastructure_contributions(context, *, selected_provider_locations=()) -> tuple[InfrastructureService, ...]:
     """Capture selected pack and provider declarations without adapter imports."""
-    sources = [(context.pack_root, path.relative_to(context.pack_root).as_posix())
-               for path in context.infrastructure_paths]
+    sources = [(root, path.relative_to(root).as_posix())
+               for root, paths in (getattr(context, 'infrastructure_sources', ()) or ((context.pack_root, context.infrastructure_paths),))
+               for path in paths]
     from api_agent.providers.loading import provider_location
     for location in selected_provider_locations:
         path, _ = provider_location(location, owner_root=context.owner_root)
@@ -277,7 +280,10 @@ def load_infrastructure_contributions(context, *, selected_provider_locations=()
                 or type(data["services"]) is not list):
             raise InfrastructureDeclarationError("unsupported infrastructure declaration")
         owner = _identifier(data["owner"], "infrastructure owner")
-        if Path(root).resolve() == context.pack_root.resolve() and owner != context.pack_id:
+        expected_owner = next((layer.pack_id for layer in
+            (getattr(context, 'pack_layers', ()) or (context,))
+            if Path(root).resolve() == layer.pack_root.resolve()), None)
+        if expected_owner is not None and owner != expected_owner:
             raise InfrastructureDeclarationError("pack infrastructure owner differs from pack id")
         source = Path(root) / relative
         for spec in data["services"]:

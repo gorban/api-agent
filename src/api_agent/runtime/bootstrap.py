@@ -5,9 +5,9 @@ import subprocess
 import sys
 
 
-def _extract_option(argv, names):
+def _extract_option(argv, names, *, multiple=False):
     """Consume a bootstrap option without changing the remaining argument order."""
-    remaining, selected = [], None
+    remaining, selected = [], [] if multiple else None
     index = 0
     while index < len(argv):
         token = argv[index]
@@ -19,7 +19,7 @@ def _extract_option(argv, names):
         if name not in names:
             remaining.append(token)
             continue
-        if selected is not None:
+        if selected is not None and not multiple:
             raise ValueError(f'Duplicate option {sorted(names)[0]}')
         if not separator:
             if index == len(argv) or argv[index].startswith('--'):
@@ -28,7 +28,10 @@ def _extract_option(argv, names):
             index += 1
         if not value.strip() or value.startswith('--'):
             raise ValueError(f'{name} requires a nonempty directory value')
-        selected = value
+        if multiple:
+            selected.append(value)
+        else:
+            selected = value
     return remaining, selected
 
 
@@ -119,13 +122,13 @@ def resource_pack_main(argv=None, *, launcher_root, replace_process=False):
     argv = list(sys.argv[1:] if argv is None else argv)
     root = Path(launcher_root).resolve()
     try:
-        remaining, pack_override = _extract_option(argv, {'--resource-pack-dir', '--resource_pack_dir'})
-        if pack_override is None:
-            pack_override = os.environ.get('RESOURCE_PACK_DIR')
-        if pack_override is not None:
-            if not pack_override.strip():
+        remaining, pack_override = _extract_option(argv, {'--resource-pack-dir', '--resource_pack_dir'}, multiple=True)
+        if not pack_override:
+            pack_override = [os.environ['RESOURCE_PACK_DIR']] if 'RESOURCE_PACK_DIR' in os.environ else []
+        if pack_override:
+            if any(not value.strip() for value in pack_override):
                 raise ValueError('RESOURCE_PACK_DIR requires a nonempty directory value')
-            root = Path(pack_override).expanduser().resolve()
+            root = Path(pack_override[-1]).expanduser().resolve()
         remaining, explicit = _extract_option(remaining, {'--api-agent-dir', '--api_agent_dir'})
         dotenv = read_dotenv(root / '.env')
         raw = explicit if explicit is not None else os.environ.get(
@@ -143,7 +146,8 @@ def resource_pack_main(argv=None, *, launcher_root, replace_process=False):
         if explicit is not None:
             boundary = remaining.index('--') if '--' in remaining else len(remaining)
             remaining.insert(boundary, f'--api-agent-dir={explicit}')
-        command = ['/bin/sh', str(entry), '--resource-pack-dir', str(root), '--_launcher-root', str(Path(launcher_root).resolve()), *remaining]
+        pack_args = [value for pack in (pack_override or [str(root)]) for value in ('--resource-pack-dir', pack)]
+        command = ['/bin/sh', str(entry), *pack_args, '--_launcher-root', str(Path(launcher_root).resolve()), *remaining]
         if replace_process:
             os.execve(command[0], command, os.environ.copy())
         return subprocess.call(command, env=os.environ.copy())
@@ -189,6 +193,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                       read_dotenv, resolve_config)
     from api_agent.config.resolve import runtime_directory_overrides, retain_runtime_directory
     from api_agent.runtime.resource_pack import load_launch_context
+    from api_agent.runtime.pack_composition import load_context_schema
     from api_agent.runtime.worktrees import verify_worktrees, WorktreeGateError
     argv = list(sys.argv[1:] if argv is None else argv)
     handoff_options = {'replace_process': True} if _replace_process else {}
@@ -200,13 +205,13 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         argv, origin = _extract_option(argv, {'--_launcher-root'})
         if origin is not None:
             launcher_root = Path(origin).expanduser().resolve()
-        argv, selected_pack = _extract_option(argv, {'--resource-pack-dir', '--resource_pack_dir'})
-        if selected_pack is None and resource_pack_dir is None:
-            selected_pack = os.environ.get('RESOURCE_PACK_DIR')
-        if selected_pack is not None:
-            if not selected_pack.strip():
+        argv, selected_pack = _extract_option(argv, {'--resource-pack-dir', '--resource_pack_dir'}, multiple=True)
+        if not selected_pack and resource_pack_dir is None:
+            selected_pack = [os.environ['RESOURCE_PACK_DIR']] if 'RESOURCE_PACK_DIR' in os.environ else []
+        if selected_pack:
+            if any(not value.strip() for value in selected_pack):
                 raise ValueError('RESOURCE_PACK_DIR requires a nonempty directory value')
-            resource_pack_dir = Path(selected_pack).expanduser().resolve()
+            resource_pack_dir = [Path(value).expanduser().resolve() for value in selected_pack]
         if base_root is None:
             origin = Path(__file__).resolve()
             candidate = origin.parents[3]
@@ -219,7 +224,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         from api_agent.runtime.hook_assurance import assure_hook
         assure_hook(context.base_root)
         if not _worktrees_verified:
-            verify_worktrees([context.base_root, context.pack_root, context.owner_root], stdin=sys.stdin, stdout=sys.stdout,
+            verify_worktrees(list(dict.fromkeys([context.base_root, *[layer.pack_root for layer in context.pack_layers], *[layer.owner_root for layer in context.pack_layers], context.pack_root, context.owner_root])), stdin=sys.stdin, stdout=sys.stdout,
                              resource_pack_name=context.pack_id if context.external_pack else None)
         if trace_viewer_requested:
             trace_arguments, _ = _extract_option(argv, {'--api-agent-dir', '--api_agent_dir'})
@@ -228,8 +233,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                       'Open the configured managed local trace dashboard in a headed browser.')
                 return 0
             shared = load_shared_schema(context.base_root)
-            schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
-                                    overrides=context.defaults)
+            schema = load_context_schema(context, shared)
             dotenv = {}
             for path in dict.fromkeys((context.base_root / '.env', *context.shared_dotenv_paths,
                                        (context.launcher_root or context.base_root) / '.env', context.dotenv_path)):
@@ -259,8 +263,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             from api_agent.runtime.view_flow import run_view_flow
             return run_view_flow(context) if view_entry is None else run_view_flow(context, entry=view_entry)
         shared = load_shared_schema(context.base_root)
-        schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared, source='pack_default'),
-                                overrides=context.defaults)
+        schema = load_context_schema(context, shared)
         dotenv = {}
         for path in dict.fromkeys((context.base_root / '.env',
                                   *context.shared_dotenv_paths,
@@ -331,7 +334,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             print(generated_help(schema, pack_launcher=context.external_pack,
                                  color=_supports_color(sys.stdout),
                                  declaration_paths=[context.base_root / 'cfg/config.toml',
-                                                    context.config_path, context.pack_root / 'pack.toml']))
+                                                    *[path for layer in (context.pack_layers or (context,))
+                                                      for path in (layer.config_path, layer.pack_root / 'pack.toml')]]))
             if context.show_pack_bootstrap:
                 print('\n' + _colored('Bootstrap: --resource-pack-dir PATH or RESOURCE_PACK_DIR selects a resource pack.',
                                       '31', _supports_color(sys.stdout)))

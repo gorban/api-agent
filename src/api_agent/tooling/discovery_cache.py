@@ -36,7 +36,7 @@ class DefinitionCache:
         base = getattr(context, 'workflow_base_root', None) or context.base_root
         entry = context.workflow_entry or base / 'flow.md.html'
         owned = getattr(context, 'workflow_library_files', None)
-        key = (base, context.pack_root, entry, context.workflow_root,
+        key = (base, getattr(context, 'workflow_pack_root', None) or context.pack_root, entry, context.workflow_root,
                tuple(context.workflow_replacements), None if owned is None else frozenset(owned))
         with self._lock:
             cached = self._entries.pop(key, None)

@@ -115,9 +115,8 @@ def inspect_relocated_pack(base_root: Path, pack_root: Path):
 
     context = load_launch_context(base_root, pack_root)
     shared = load_shared_schema(base_root)
-    schema = compose_schema(shared,
-                            load_declarations(context.config_path, base_schema=shared,
-                                              source='pack_default'), context.defaults)
+    from api_agent.runtime.pack_composition import load_context_schema
+    schema = load_context_schema(context, shared)
     from api_agent.providers.loading import bootstrap_schema
     schema = bootstrap_schema(schema, [], {}, {}, owner_root=context.owner_root,
                               configuration_paths=context.provider_config_paths)

@@ -31,7 +31,13 @@ def cost_config(context, config):
         # missing compatibility evidence for the actual retry policy.
         result['E2E_RERUNS'] = 0
     pack_root = Path(getattr(context, 'pack_root', context.owner_root))
-    result['_COST_PACK_IDENTITY'] = file_fingerprint(pack_root / 'pack.toml')
+    layers = getattr(context, 'pack_layers', ())
+    if layers:
+        fingerprints = [file_fingerprint(layer.pack_root / 'pack.toml') for layer in layers]
+        result['_COST_PACK_IDENTITY'] = (sha256(json.dumps(fingerprints).encode()).hexdigest()
+                                         if all(fingerprints) else None)
+    else:
+        result['_COST_PACK_IDENTITY'] = file_fingerprint(pack_root / 'pack.toml')
     result['_COST_REQUEST_SETTINGS'] = None
     result['_COST_IGNORED_SETTINGS'] = ()
     location = config.get('LLM_PROVIDER')
@@ -47,8 +53,12 @@ def cost_config(context, config):
         from api_agent.config.resolve import _matches
         from api_agent.telemetry.privacy import _credential_key
         shared = load_shared_schema(context.base_root)
-        schema = compose_schema(shared, load_declarations(getattr(context, 'config_path', pack_root / 'cfg/config.toml'), base_schema=shared, source='pack_default'),
-                                getattr(context, 'default_overrides', {}))
+        if layers:
+            from api_agent.runtime.pack_composition import load_context_schema
+            schema = load_context_schema(context, shared)
+        else:
+            schema = compose_schema(shared, load_declarations(getattr(context, 'config_path', pack_root / 'cfg/config.toml'), base_schema=shared, source='pack_default'),
+                                    getattr(context, 'default_overrides', {}))
         choices = {name: value for name, value in config.items() if not name.startswith('_')}
         schema = bootstrap_schema(schema, (), {}, {}, choices, owner_root=context.owner_root,
                                   configuration_paths=getattr(context, 'provider_config_paths', ()))

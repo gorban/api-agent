@@ -32,8 +32,9 @@ def _view_context(context, entry):
     from api_agent.workflows.viewer_build import read_view_roots, VIEW_ROOTS_PATH
     from api_agent.runtime.resource_pack import ResourcePackError
     path = Path(os.path.abspath(Path(entry).expanduser()))
+    graph_pack = getattr(context, 'workflow_pack_root', None) or context.pack_root
     roots = tuple(dict.fromkeys((context.base_root,
-                  context.workflow_base_root or context.base_root, context.pack_root)))
+                  context.workflow_base_root or context.base_root, graph_pack)))
     containing = sorted((root for root in roots if path.is_relative_to(root)),
                         key=lambda root: len(root.parts), reverse=True)
     if not containing:
@@ -59,11 +60,11 @@ def _view_context(context, entry):
             mapped_owned = frozenset(Path(item).relative_to(prefix).as_posix()
                                     for item in owned if Path(item).is_relative_to(prefix))
         return replace(context, workflow_entry=path, workflow_root=mapping.entry_root,
-                       base_root=mapping.base_root, workflow_base_root=None, pack_root=mapping.pack_root,
+                       base_root=mapping.base_root, workflow_base_root=None, pack_root=mapping.pack_root, workflow_pack_root=mapping.pack_root,
                        workflow_replacements=(), workflow_library_files=mapped_owned)
     if path == (context.workflow_entry or (context.workflow_base_root or context.base_root) / 'flow.md.html'):
         return context
-    root_id = 'pack' if path.is_relative_to(context.pack_root) else 'base'
+    root_id = 'pack' if path.is_relative_to(graph_pack) else 'base'
     return replace(context, workflow_entry=path, workflow_root=root_id, workflow_replacements=())
 
 

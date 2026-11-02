@@ -250,12 +250,14 @@ class DeleteDialog(QuitDialog):
 
 
 class StopContainersDialog(QuitDialog):
-    def __init__(self, containers):
+    def __init__(self, containers, engine_label=None):
         super().__init__()
         self.containers = containers
+        self.engine_label = engine_label
 
     def compose(self) -> ComposeResult:
-        yield Static("Stop these running containers?\n" + "\n".join(
+        prefix = ("Selected engine: " + self.engine_label + "\n") if self.engine_label is not None else ""
+        yield Static(prefix + "Stop these running containers?\n" + "\n".join(
             f"{item.name} ({item.id})" for item in self.containers) +
             "\nEnter literal y to stop; every other response cancels.", markup=False)
         yield EditableInput(id="stop-answer")
@@ -1602,12 +1604,15 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         selected = tuple(item for item in self.containers if item.running and item.id in self.container_marked)
         if not selected:
             raise ValueError("Select at least one running container.")
-        self.push_screen(StopContainersDialog(selected), lambda yes: self.run_worker(
-            self._stop_containers(selected), group="containers", exclusive=True) if yes else None)
+        runtime = getattr(self.container_runtime, "selected_runtime", self.container_runtime)
+        label = self.container_engine_display()
+        self.push_screen(StopContainersDialog(selected, label), lambda yes: self.run_worker(
+            self._stop_containers(selected, runtime), group="containers", exclusive=True) if yes else None)
 
-    async def _stop_containers(self, selected):
+    async def _stop_containers(self, selected, runtime=None):
+        runtime = self.container_runtime if runtime is None else runtime
         try:
-            await asyncio.to_thread(self.container_runtime.stop, tuple(item.id for item in selected))
+            await asyncio.to_thread(runtime.stop, tuple(item.id for item in selected))
             self.operation_status = 0
             self.container_marked.clear()
             await self._refresh_container_inventory()
@@ -2621,6 +2626,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         try:
             if key == "stop-containers":
                 self.request_container_stop()
+            elif key.startswith("container-engine-"):
+                self.select_container_engine(key[len("container-engine-"):])
             elif key == "refresh-containers":
                 self.refresh_container_inventory()
             elif key == "container-logs":

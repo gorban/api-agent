@@ -43,8 +43,9 @@ def inventory_authority(context, plan=None):
         if tool.infrastructure:
             item = tool.infrastructure
             add(item['owner'], item['owner_root'], item['declarations'])
-    if getattr(context, 'infrastructure_paths', ()):
-        add(context.pack_id, context.pack_root, context.infrastructure_paths)
+    for layer in getattr(context, 'pack_layers', ()) or (context,):
+        if getattr(layer, 'infrastructure_paths', ()):
+            add(layer.pack_id, layer.pack_root, layer.infrastructure_paths)
     for owner, root, paths in getattr(context, 'inventory_sources', ()):
         add(owner, root, paths)
     result = []

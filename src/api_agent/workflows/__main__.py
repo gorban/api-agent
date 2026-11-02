@@ -18,7 +18,7 @@ def main(argv=None):
     parser.add_argument('--base-root', type=Path)
     parser.add_argument('--pack-root', type=Path)
     parser.add_argument('--demo', choices=('contrived',))
-    parser.add_argument('--resource-pack-dir', type=Path,
+    parser.add_argument('--resource-pack-dir', type=Path, action='append',
                         help='Select the manifest workflow, including ordered replacements.')
     args = parser.parse_args(argv)
     if args.entry is not None and args.demo is not None:
@@ -31,7 +31,7 @@ def main(argv=None):
         if args.resource_pack_dir is not None:
             from api_agent.runtime.resource_pack import load_launch_context, load_selected_definition
             base = args.base_root.resolve() if args.base_root else bundled_root()
-            context = load_launch_context(base, args.resource_pack_dir.resolve())
+            context = load_launch_context(base, [path.resolve() for path in args.resource_pack_dir])
             definition = load_selected_definition(context)
         else:
             base = (args.base_root.resolve() if args.base_root else
