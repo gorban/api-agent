@@ -49,6 +49,10 @@ def test_details(result, usage, cost, *, historical_tokens=False, accounting_pen
         if cost.get('basis') and cost['basis'] != 'unavailable':
             lines.append(f"Cost basis: {cost['basis']}")
         lines.append(tokens_text(usage, result.identity.id))
+    if getattr(result, 'local_stderr', ''):
+        lines.extend(('', 'stderr:', result.local_stderr))
+    if getattr(result, 'local_stdout', ''):
+        lines.extend(('', 'stdout:', result.local_stdout))
     if not failure:
         lines.extend(('', details))
     text = Text('\n'.join(lines))

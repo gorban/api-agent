@@ -337,7 +337,14 @@ class SDKTransport:
                     if set(frame) != {'result', 'diagnostics'} or not valid_diagnostics(frame['diagnostics']):
                         raise ContractError('Invalid Bedrock worker diagnostics')
                     from api_agent.workflows.inference_capture import capture_transport_diagnostics
-                    capture_transport_diagnostics(frame.pop('diagnostics'))
+                    metadata = frame.pop('diagnostics')
+                    count_keys = {'scrub_empty_strings', 'scrub_omitted_members', 'scrub_omitted_events'}
+                    if count_keys & metadata.keys():
+                        if operation not in ('models', 'runtime_models') or not count_keys <= metadata.keys():
+                            raise ContractError('Invalid Bedrock scrub diagnostics')
+                        from api_agent.providers.scrubbed_response import report_worker_counts
+                        report_worker_counts('bedrock_model_discovery', metadata)
+                    capture_transport_diagnostics(metadata)
                 if set(frame) not in ({'event'}, {'result'}) or not isinstance(next(iter(frame.values())), dict):
                     raise ContractError('Invalid Bedrock worker response')
                 inference_observed = True

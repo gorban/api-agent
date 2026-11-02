@@ -98,3 +98,28 @@ def test_no_selected_tool_dependencies_has_no_environment_effect(monkeypatch):
     prepare_selected_tool_dependencies(SimpleNamespace(), object())
 
     install.assert_not_called()
+
+
+@pytest.mark.parametrize('supplied', [False, True])
+def test_unrecorded_runner_shares_credential_authority(monkeypatch, tmp_path, supplied):
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.testing import integration
+    caller = EmissionBoundary(ContentPolicy(False))
+    test = TestIdentity('owner::test.py::test_one', 'owner', 'test.py', 'test.py::test_one')
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
+    captured = []
+    def execute(*args, **kwargs):
+        boundary = kwargs['evidence_boundary']
+        captured.append(boundary)
+        boundary.register_secret('setup-registered-credential')
+        return SimpleNamespace(exit_code=0, tests=(), cancelled=False, inspections=())
+    monkeypatch.setattr(integration, 'run_integration_tests', execute)
+
+    run_launched_integration(context, (test,),
+        {'SKIP_ALLURE_REPORTING': True, 'TUI_MODE': 'integration'}, accepted=True,
+        **({'evidence_boundary': caller} if supplied else {}))
+
+    assert len(captured) == 1
+    assert 'setup-registered-credential' in captured[0]._secrets
+    if supplied:
+        assert captured[0] is caller

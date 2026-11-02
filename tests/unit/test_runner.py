@@ -34,6 +34,34 @@ def context(base, pack=None):
                            suite_paths=lambda mode: [base / 'tests/unit'] + ([pack / 'tests/unit'] if pack else []))
 
 
+def test_invalid_success_diagnostics_level_rejects_before_worker_launch(tmp_path):
+    with pytest.raises(ValueError, match='SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL must be warning or info'):
+        run_unit_tests(context(tmp_path), [], successful_test_diagnostics_level='debug')
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('jobs', [0, 2])
+@pytest.mark.parametrize('level', ['warning', 'info'])
+def test_passed_unit_retains_streams_at_selected_level(tmp_path, monkeypatch, jobs, level):
+    monkeypatch.setenv('EXAMPLE_API_KEY', 'synthetic-unit-secret')
+    base = fixture_repo(tmp_path / 'base', test='import sys\nfrom tiny import VALUE\n'
+        'def test_ok():\n    assert VALUE == 1\n    print("stdout-only-value synthetic-unit-secret")\n'
+        '    print("unit stderr synthetic-unit-secret", file=sys.stderr)\n')
+    ctx = context(base)
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'), parallel_jobs=jobs,
+                            successful_test_diagnostics_level=level)
+    assert result.exit_code == 0 and result.tests[0].status == 'passed'
+    stderr = result.tests[0].local_stderr
+    assert 'unit stderr' in stderr
+    assert 'synthetic-unit-secret' not in stderr and 'stdout-only-value' not in stderr
+    assert stderr.count('unit stderr') == 1
+    if level == 'info':
+        assert 'stdout-only-value' in result.tests[0].local_stdout
+        assert 'synthetic-unit-secret' not in result.tests[0].local_stdout
+    else:
+        assert result.tests[0].local_stdout == ''
+
+
 def test_real_owner_execution_results_output_and_coverage(tmp_path):
     base = fixture_repo(tmp_path / 'base')
     pack = fixture_repo(tmp_path / 'pack', test='from pathlib import Path\ndef test_owner():\n    assert Path.cwd().name == "pack"\n')

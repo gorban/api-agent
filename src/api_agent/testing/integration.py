@@ -7,6 +7,7 @@ TestResult.local_diagnostic is transient captured evidence containing exception
 chains and command or worker output, for TUI or an explicitly credential-scrubbed
 CI terminal channel. Never put it in artifacts/events; reporting callbacks must
 select the explicit approved report fields.
+The local_stderr and local_stdout fields follow the same local-only boundary.
 Run callbacks run synchronously on the calling thread; retained inspection
 completion events run on their monitor thread. ``after_run`` receives the
 final result after pytest completes; debug inspection handles retain owned workers.
@@ -65,6 +66,8 @@ import os
 def run(stdout_boundary):
     import json, signal, sys, threading
     import pytest
+    from api_agent.providers.diagnostic_output import bounded_stderr, bounded_stdout
+    from api_agent.testing.structured_diagnostics import profile_records
     if os.name == 'posix' and 'API_AGENT_LAUNCHER_LIVENESS_FD' in os.environ:
         fd = int(os.environ['API_AGENT_LAUNCHER_LIVENESS_FD'])
         def parent_liveness():
@@ -89,6 +92,13 @@ def run(stdout_boundary):
         def pytest_runtest_logreport(self, report):
             self.send(kind='report', node=report.nodeid, phase=report.when,
                       status=report.outcome, duration=report.duration,
+                      stderr=bounded_stderr(''.join(text for title, text in report.sections
+                                     if title == 'Captured stderr ' + report.when)),
+                      stdout=(bounded_stdout(''.join(text for title, text in report.sections
+                                     if title == 'Captured stdout ' + report.when))
+                              if os.environ.get('API_AGENT_SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL') == 'info' else ''),
+                      profile_evidence=(profile_records(report.user_properties)
+                          if report.when == 'setup' and os.environ.get('API_AGENT_SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL') == 'info' else []),
                       traceback=(str(report.longrepr[2]).removeprefix('Skipped: ')
                                  if report.skipped and isinstance(report.longrepr, tuple)
                                  else str(report.longrepr) if report.failed or report.skipped else ''))
@@ -133,6 +143,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     stdout and traceback remain explicit test evidence in the result/event stream.
     """
     mode = 'e2e' if (config or {}).get('TUI_MODE') == 'e2e' else 'integration'
+    diagnostics_level = (config or {}).get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL', 'warning')
+    if diagnostics_level not in ('warning', 'info'):
+        raise ValueError('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL must be warning or info.')
     if mode == 'e2e':
         from .recorded import validate_integration_start
         tests = validate_integration_start(tests, config, accepted=accepted, no_std_in=no_std_in)
@@ -156,8 +169,17 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     disabled = set()
     diagnostics = {}
     local_diagnostics = {}
+    test_stderr = {}
+    test_stdout = {}
+    test_profile_evidence = {}
     reader_diagnostics = {}
     stage = 'runner initialization'
+    from .diagnostics import CredentialScrubber
+    # Cost compatibility contains hashes under request-setting names, not raw
+    # credentials. Never enroll those hashes into the shared live authority.
+    stderr_config = {name: value for name, value in (config or {}).items()
+                     if not name.startswith('_COST_')}
+    stderr_scrub = CredentialScrubber(stderr_config, boundary=evidence_boundary)
 
     def local_exception(boundary, error):
         return format_exception(error, boundary)
@@ -168,11 +190,28 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             local_diagnostics.setdefault(identity.id, []).append(local)
 
     def enrich_local(result):
+        from api_agent.providers.diagnostic_output import bounded_stderr, bounded_stdout
         local = '\n\n'.join([*local_diagnostics.get(result.identity.id, ()),
                                *reader_diagnostics.get(result.identity.id, ())])
         if local and result.traceback:
             local += '\n\nTest report diagnostic:\n' + result.traceback
-        return replace(result, local_diagnostic=local) if local else result
+        shared_stderr = (backend.stderr_for(result.identity.id)
+                         if backend is not None and hasattr(backend, 'stderr_for') else '')
+        stderr = test_stderr.get(result.identity.id, result.local_stderr)
+        if shared_stderr:
+            stderr += ('\n' if stderr else '') + 'Shared setup stderr:\n' + shared_stderr
+        stdout = test_stdout.get(result.identity.id, result.local_stdout)
+        stdout = stderr_scrub(stdout) if stdout else ''
+        from .structured_diagnostics import append_profile_records
+        from api_agent.providers.diagnostic_output import diagnostic_output
+        emitted = []
+        with diagnostic_output(emitted.append):
+            stdout = append_profile_records(stdout, test_profile_evidence.get(result.identity.id, ()), stderr_scrub)
+        if emitted:
+            stderr += ('\n' if stderr and not stderr.endswith('\n') else '') + ''.join(emitted)
+        return replace(result, local_diagnostic=local or result.local_diagnostic,
+                       local_stderr=bounded_stderr(stderr_scrub(stderr)) if stderr else '',
+                       local_stdout=bounded_stdout(stdout) if stdout else '')
 
     def final_tests():
         return tuple(enrich_local(results[test.id]) for test in tests)
@@ -249,6 +288,17 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 'No failure diagnostic was captured for this test.')
         result = TestResult(identity, status, sum(float(row['duration']) for row in rows), traceback,
                             '\n\n'.join(local_diagnostics.get(identity.id, ())))
+        from api_agent.providers.diagnostic_output import bounded_stderr
+        stderr = bounded_stderr(''.join(row.get('stderr', '')
+                         if type(row.get('stderr', '')) is str else 'stderr unavailable: invalid capture.\n'
+                         for row in rows))
+        test_stderr[identity.id] = stderr
+        test_stdout[identity.id] = (''.join(row.get('stdout', '') if type(row.get('stdout', '')) is str
+                           else 'stdout unavailable: invalid capture.\n' for row in rows)
+                           if status == 'passed' and diagnostics_level == 'info' else '')
+        from .structured_diagnostics import report_records
+        test_profile_evidence[identity.id] = (report_records(rows)
+            if status == 'passed' and diagnostics_level == 'info' else ())
         result = enrich_local(result)
         results[identity.id] = result
         emit(RunnerEvent('test_finished', repo, identity, status, result.duration, result.traceback))
@@ -368,6 +418,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 'tool_cases': {identity.node_id: identity.id for identity in selected.values()}}
                                if tool_plan is not None else {})))
                     event_file = Path(temporary) / 'events.jsonl'
+                    env['API_AGENT_SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL'] = diagnostics_level
                     event_file.touch()
                     from .inference_content import initialize_evidence, read_evidence, failure_reported, has_pending
                     evidence_file = str(Path(temporary) / 'inference.sqlite')
@@ -385,7 +436,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     traceback_style = 'long' if config is not None and config.get('DEBUG') else 'short'
                     args = [sys.executable, '-c', _PLUGIN.replace('__API_AGENT_STDOUT_BOUNDARY__', repr(stdout_marker)), str(event_file), '-p', 'api_agent.testing.provider_setup', '-p', 'api_agent.testing.inference_content', '-p', 'api_agent.testing.ui_inspection', '-p', 'api_agent.testing.progress', '-o', 'addopts=', f'--tb={traceback_style}', '--rootdir', str(root)]
                     if config is not None and config.get('DEBUG'):
-                        args.append('-s')
+                        args.append('--capture=sys' if config.get('NO_STD_IN') else '--capture=tee-sys')
                     if parallel_jobs:
                         args += ['-n', str(parallel_jobs), '--dist=worksteal']
                     args.extend(selected)

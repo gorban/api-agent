@@ -226,18 +226,77 @@ def test_luna_56_catalog_api_keeps_exact_capability_boundary():
     assert [(sent.method, str(sent.url)) for sent in requests] == [('GET', BASE + '/models')]
 
 
-def test_authenticated_discovery_rejects_registered_non_access_credential():
+def test_authenticated_discovery_scrubs_unused_registered_credential():
     from api_agent.llm_providers.gpt.discovery import discover_selections
-    from api_agent.providers.contracts import ProviderAccessError
     from api_agent.telemetry.privacy import EmissionBoundary
-
     boundary = EmissionBoundary()
     boundary.register_secret('synthetic-refresh-credential')
     async def run():
-        async with httpx.AsyncClient(transport=httpx.MockTransport(
-                lambda request: httpx.Response(200, json={'data': [
-                    {'id': 'gpt-4.1', 'description': 'synthetic-refresh-credential'}]}))) as client:
-            with pytest.raises(ProviderAccessError):
+        def handler(request):
+            if 'authorization' not in request.headers:
+                return httpx.Response(401, json={'error': {'message': 'Authentication required'}})
+            return httpx.Response(200, json={'models': [{'slug': 'gpt-6-luna',
+                'visibility': 'list', 'display_name': 'GPT Luna',
+                'description': 'synthetic-refresh-credential'}]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await discover_selections(client=client, base_url=BASE, access_token=TOKEN,
+                                              subscription=True, authority=boundary)
+    catalog = asyncio.run(run())
+    assert catalog[0].selected_llm == 'gpt-6-luna'
+    assert 'synthetic-refresh-credential' not in repr(catalog)
+
+
+def test_authenticated_discovery_rejects_duplicate_model_members():
+    from api_agent.llm_providers.gpt.discovery import discover_selections
+    async def run():
+        def handler(request):
+            if 'authorization' not in request.headers:
+                return httpx.Response(401, json={})
+            return httpx.Response(200, content=b'{"models":[{"visibility":"list","slug":"gpt-6-luna","slug":"gpt-6-sol","display_name":"GPT"}]}')
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(ModelDiscoveryError):
                 await discover_selections(client=client, base_url=BASE, access_token=TOKEN,
-                                          subscription=False, authority=boundary)
+                                          subscription=True)
     asyncio.run(run())
+
+
+
+def test_single_request_catalog_contract_rejects_without_retaining_input():
+    payload = {'data': [{'id': 'gpt-example'}], 'extra': {'private': 17}}
+    with pytest.raises(ModelDiscoveryError, match='invalid catalog after response validation') as caught:
+        run_discovery(httpx.Response(200, json=payload), token='{"private":17}')
+    assert 'private' not in str(caught.value)
+
+
+def test_raw_catalog_generation_change_rejects_before_publishing(monkeypatch):
+    from api_agent.providers import scrubbed_response
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.llm_providers.gpt.discovery import discover_selections
+    boundary = EmissionBoundary()
+    original = scrubbed_response.async_scrub_response
+    async def racing(value, **options):
+        result = await original(value, **options)
+        boundary.register_secret('late-registration')
+        return result
+    monkeypatch.setattr(scrubbed_response, 'async_scrub_response', racing)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={'data': [{'id': 'gpt-example'}]}))) as client:
+            with pytest.raises(ModelDiscoveryError, match='invalid metadata'):
+                await discover_selections(client=client, base_url=BASE, access_token=TOKEN,
+                    subscription=False, authority=boundary)
+    asyncio.run(run())
+
+
+
+def test_optional_catalog_metadata_uses_shared_scrubbing_for_selected_credential():
+    rows, _ = run_discovery(httpx.Response(200, json={'data': [
+        {'id': 'gpt-example', 'name': TOKEN, 'version': TOKEN}]}))
+    assert rows[0].selected_llm == 'gpt-example'
+    assert rows[0].display_name == rows[0].version == ''
+    assert TOKEN not in repr(rows)
+
+
+def test_required_catalog_identity_cannot_become_an_empty_selection():
+    with pytest.raises(ModelDiscoveryError, match='invalid catalog after response validation'):
+        run_discovery(httpx.Response(200, json={'data': [{'id': 'gpt-' + TOKEN}]}))

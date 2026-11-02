@@ -752,3 +752,16 @@ def test_rejected_response_retains_code_when_diagnostics_are_unavailable(monkeyp
     frames, closed = fake_execute([completion()], stream=False)
     assert frames == [{'error':'unknown', 'execution':'possibly_executed', 'code':'invalid_response'}]
     assert closed == ['client', 'http']
+
+
+def test_catalog_unused_metadata_scrub_emits_only_bounded_counts():
+    selected = request()['auth']['api_key']
+    payload = {'data': [{'id': 'zai.glm-4.7-flash', 'extra': selected}]}
+    def http_factory(*, timeout):
+        return httpx2.Client(transport=httpx2.MockTransport(lambda _: httpx2.Response(200, json=payload)))
+    frames = []
+    worker.execute(request(), frames.append, http_factory=http_factory)
+    assert frames == [{'result': {'data': [{'id': 'zai.glm-4.7-flash', 'extra': ''}]},
+        'diagnostics': {'version': 1, 'scrub_empty_strings': 1,
+                        'scrub_omitted_members': 0, 'scrub_omitted_events': 0}}]
+    assert selected not in json.dumps(frames)

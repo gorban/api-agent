@@ -10,6 +10,35 @@ from api_agent.testing import TestIdentity as Identity
 from test_tui import fixture
 
 
+@pytest.mark.parametrize('setting', ['SCRUB_DIAGNOSTICS_LEVEL', 'SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL'])
+def test_diagnostics_can_be_changed_in_configuration_review(tmp_path, setting):
+    from api_agent.config import load_shared_schema
+    from textual.widgets import Select
+
+    async def scenario():
+        app = fixture(tmp_path)
+        app.schema = load_shared_schema()
+        app.session.schema = app.schema
+        app.context.anchors = {name: tmp_path for name in ('owner_root', 'base_root', 'pack_root')}
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            assert app.screen.kind == 'defaults'
+            table = app.screen.query_one(DataTable)
+            assert str(table.get_row(setting)[1]) == 'warning'
+            index = next(i for i, row in enumerate(table.ordered_rows)
+                         if row.key.value == setting)
+            table.move_cursor(row=index)
+            await pilot.press('e')
+            await pilot.pause()
+            app.screen.query_one(Select).value = 'info'
+            await pilot.click('#submit')
+            await pilot.pause()
+            assert app.session.result(_review=True).values[setting] == 'info'
+            assert str(app.screen.query_one(DataTable).get_row(setting)[1]) == 'info'
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('mode', [None, 'config-cleanup'])
 @pytest.mark.parametrize('value', [r'openai\.gpt-oss-20b(?:-1:0)?', ':smile:', '[red]literal[/red]', 'Actual Unicode: 👍'])
 def test_configuration_values_do_not_interpret_markup_or_emoji(tmp_path, mode, value):

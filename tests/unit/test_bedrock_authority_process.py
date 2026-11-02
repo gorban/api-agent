@@ -98,7 +98,7 @@ class ClientSDK:
             marker = os.environ.get("SYNTHETIC_CATALOG_MARKER")
             if marker:
                 with open(marker, "w") as out: out.write("dispatched")
-            return types.SimpleNamespace(model_dump=lambda **kw: {"data":[{"id":"zai.glm-4.7-flash", "extra":os.environ.get("SYNTHETIC_CATALOG_EXTRA", "safe")} ]})
+            return types.SimpleNamespace(model_dump=lambda **kw: {"data":[{"id":os.environ.get("SYNTHETIC_CATALOG_ID", "zai.glm-4.7-flash"), "extra":os.environ.get("SYNTHETIC_CATALOG_EXTRA", "safe")} ]})
         self.models = types.SimpleNamespace(list=list_models)
     def close(self): pass
 openai.OpenAI = ClientSDK
@@ -141,7 +141,7 @@ if sys.argv[0].endswith("bedrock/worker.py"):
 
 
 @pytest.mark.parametrize('log,trace', [(False, False), (False, True), (True, False), (True, True)])
-def test_catalog_joins_authority_before_dispatch_and_rejects_echo(synthetic_sdk, monkeypatch, log, trace):
+def test_catalog_joins_authority_before_dispatch_and_scrubs_unused_echo(synthetic_sdk, monkeypatch, log, trace):
     from api_agent.llm_providers.bedrock.factory import BedrockProvider
     from api_agent.telemetry.privacy import ContentPolicy
 
@@ -153,16 +153,16 @@ def test_catalog_joins_authority_before_dispatch_and_rejects_echo(synthetic_sdk,
         provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': boundary})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         try:
-            with pytest.raises(ProviderAccessError) as failure:
-                await provider.adescribe(auth=session)
-            assert 'synthetic-caller-only' not in str(failure.value)
+            rows = await provider.adescribe(auth=session)
+            assert rows[0].selected_llm == 'zai.glm-4.7-flash'
+            assert 'synthetic-caller-only' not in repr(rows)
             assert {'synthetic-access', 'synthetic-secret', 'synthetic-token'} <= boundary._secrets
         finally:
             await provider.aclose()
     asyncio.run(run())
 
 
-def test_catalog_registration_is_causal_for_caller_credential(synthetic_sdk, monkeypatch):
+def test_catalog_registration_is_causal_for_caller_credential(synthetic_sdk, monkeypatch, caplog):
     from api_agent.llm_providers.bedrock.factory import BedrockProvider
 
     monkeypatch.setenv('SYNTHETIC_CATALOG_EXTRA', 'synthetic-caller-only')
@@ -173,21 +173,24 @@ def test_catalog_registration_is_causal_for_caller_credential(synthetic_sdk, mon
         async def disabled_registration(values):
             return values, None
         try:
-            with pytest.raises(ProviderAccessError):
-                await provider.transport.call('models', {}, auth=session, join=provider._join_credentials)
+            protected = await provider.transport.call('models', {}, auth=session, join=provider._join_credentials)
+            assert protected['data'][0]['extra'] == ''
             exposed = await provider.transport.call('models', {}, auth=session, join=disabled_registration)
             assert exposed['data'][0]['extra'] == 'synthetic-caller-only'
         finally:
             await provider.aclose()
-    asyncio.run(run())
+    import logging
+    with caplog.at_level(logging.INFO, logger='api_agent.scrubbing'):
+        asyncio.run(run())
+    assert 'operation=bedrock_model_discovery' in caplog.text
+    assert 'empty_strings=1' in caplog.text
+    assert 'synthetic-caller-only' not in caplog.text
 
 
 @pytest.mark.parametrize('secret_source', ['caller', 'coordinator'])
 def test_catalog_generated_metadata_uses_complete_call_authority(synthetic_sdk, secret_source):
     from api_agent.llm_providers.bedrock.factory import BedrockProvider
     from api_agent.providers.call_authority import bind_call_authority
-    from api_agent.providers.contracts import ContractError
-
     async def run():
         secret = 'GLM 4.7 Flash'
         coordinator = EmissionBoundary(secrets=(secret,) if secret_source == 'coordinator' else ())
@@ -196,8 +199,9 @@ def test_catalog_generated_metadata_uses_complete_call_authority(synthetic_sdk, 
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         try:
             with bind_call_authority(coordinator, caller):
-                with pytest.raises(ContractError, match='safely released'):
-                    await provider.adescribe(auth=session)
+                rows = await provider.adescribe(auth=session)
+                assert rows[0].selected_llm == 'zai.glm-4.7-flash'
+                assert rows[0].display_name == ''
         finally:
             await provider.aclose()
     asyncio.run(run())
@@ -206,19 +210,19 @@ def test_catalog_generated_metadata_uses_complete_call_authority(synthetic_sdk, 
 def test_catalog_close_drains_validation_and_releases_coordinator(synthetic_sdk, monkeypatch):
     from api_agent.llm_providers.bedrock.factory import BedrockProvider
     from api_agent.providers.call_authority import bind_call_authority
-    from api_agent.providers import credential_guard
+    from api_agent.providers import scrubbed_response
 
     async def run():
         coordinator = EmissionBoundary()
         provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': EmissionBoundary()})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         entered = asyncio.Event()
-        original = credential_guard.async_guard_json
-        async def gated_guard(value, secrets):
+        original = scrubbed_response.async_scrub_response
+        async def gated_guard(value, **options):
             entered.set()
             await asyncio.Event().wait()
-            return await original(value, secrets)
-        monkeypatch.setattr(credential_guard, 'async_guard_json', gated_guard)
+            return await original(value, **options)
+        monkeypatch.setattr(scrubbed_response, 'async_scrub_response', gated_guard)
         with bind_call_authority(coordinator, ()):
             task = asyncio.create_task(provider.adescribe(auth=session))
         await asyncio.wait_for(entered.wait(), 5)
@@ -235,19 +239,19 @@ def test_catalog_close_drains_validation_and_releases_coordinator(synthetic_sdk,
 
 def test_catalog_late_matching_registration_waits_for_caller_handoff(synthetic_sdk, monkeypatch):
     from api_agent.llm_providers.bedrock.factory import BedrockProvider
-    from api_agent.providers import credential_guard
+    from api_agent.providers import scrubbed_response
 
     async def run():
         boundary = EmissionBoundary()
         provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': boundary})
         session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
         entered, release = asyncio.Event(), asyncio.Event()
-        original = credential_guard.async_guard_json
-        async def gated_guard(value, secrets):
+        original = scrubbed_response.async_scrub_response
+        async def gated_guard(value, **options):
             entered.set()
             await release.wait()
-            return await original(value, secrets)
-        monkeypatch.setattr(credential_guard, 'async_guard_json', gated_guard)
+            return await original(value, **options)
+        monkeypatch.setattr(scrubbed_response, 'async_scrub_response', gated_guard)
         async def consume():
             rows = await provider.adescribe(auth=session)
             assert not registration.done()
@@ -686,3 +690,23 @@ def test_cancelled_real_worker_releases_authority_and_process(synthetic_sdk, tmp
 def test_real_worker_retry_scrubs_later_refreshed_credential_from_earlier_response(synthetic_sdk, tmp_path, monkeypatch):
     monkeypatch.setenv('SYNTHETIC_RETRY_COUNTER', str(tmp_path / 'retry-count'))
     test_bedrock_worker_through_recorded_allure(synthetic_sdk, tmp_path, monkeypatch, True, False, False)
+
+
+
+def test_credential_in_required_catalog_identity_rejects_and_releases_lease(synthetic_sdk, monkeypatch):
+    from api_agent.llm_providers.bedrock.factory import BedrockProvider
+    from api_agent.providers.contracts import ContractError
+    secret = 'synthetic-caller-only'
+    monkeypatch.setenv('SYNTHETIC_CATALOG_ID', secret)
+    async def run():
+        boundary = EmissionBoundary(secrets=(secret,))
+        provider = BedrockProvider({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {'emissions': boundary})
+        session = BedrockAuthSession({'mode': 'session', 'region': 'us-east-1', 'profile': None})
+        try:
+            with pytest.raises(ContractError, match='safely released') as caught:
+                await provider.adescribe(auth=session)
+            assert secret not in str(caught.value)
+            await asyncio.wait_for(boundary.aregister_secret('after-failed-validation'), 1)
+        finally:
+            await provider.aclose()
+    asyncio.run(run())

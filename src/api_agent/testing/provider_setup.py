@@ -1136,7 +1136,6 @@ def integration_config(request, record_property):
         evidence = {key: {'value': requirements.values.get(key), 'source': source}
                     for key, source in requirements.provenance.items()}
         record_property('integration_test_profile', json.dumps(evidence, sort_keys=True, default=str))
-        print('Integration test profile: ' + json.dumps(evidence, sort_keys=True, default=str), flush=True)
     return requirements
 
 
@@ -1170,4 +1169,3 @@ def pytest_runtest_setup(item):
                     for key, source in provenance.items()}
         rendered = json.dumps(evidence, sort_keys=True, default=str)
         item.user_properties.append(('integration_test_profile', rendered))
-        print('Integration test profile: ' + rendered, flush=True)

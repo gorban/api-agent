@@ -189,22 +189,10 @@ def _billing(data, request_id, token):
     return billing
 
 
-def _pairs(items):
-    result = {}
-    for key, value in items:
-        if key in result:
-            raise ValueError('Duplicate JSON key')
-        result[key] = value
-    return result
-
-
-def _constant(value):
-    raise ValueError('Invalid JSON constant')
-
-
 def _json(body):
     try:
-        return json.loads(body, object_pairs_hook=_pairs, parse_constant=_constant)
+        from api_agent.providers.scrubbed_response import decode_json
+        return decode_json(body)
     except (ValueError, UnicodeDecodeError, RecursionError):
         raise _invalid() from None
 

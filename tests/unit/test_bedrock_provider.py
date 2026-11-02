@@ -165,27 +165,27 @@ def test_unknown_model_fails_before_transport(controlled):
 
 
 def test_catalog_handoff_holds_lease_through_concurrent_registration(controlled, monkeypatch):
-    from api_agent.providers import credential_guard
+    from api_agent.providers import scrubbed_response
     from api_agent.telemetry.privacy import EmissionBoundary
 
     _, _, transport, _ = controlled
     transport.call.return_value = {'data': [{'id': MODEL}]}
     boundary = EmissionBoundary()
     async def run():
-        original = credential_guard.async_guard_json
+        original = scrubbed_response.async_scrub_response
         entered, release = asyncio.Event(), asyncio.Event()
-        async def gated_guard(value, secrets):
+        async def gated_guard(value, **options):
             entered.set()
             await release.wait()
-            return await original(value, secrets)
-        monkeypatch.setattr(credential_guard, 'async_guard_json', gated_guard)
+            return await original(value, **options)
+        monkeypatch.setattr(scrubbed_response, 'async_scrub_response', gated_guard)
         provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
         async def consume():
             result = await provider.adescribe(auth=None)
             assert not registration.done()
             return result
         task = asyncio.create_task(consume())
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), 2)
         registration = asyncio.create_task(boundary.aregister_secret('GLM 4.7 Flash'))
         await asyncio.sleep(0)
         assert not registration.done()
@@ -197,7 +197,7 @@ def test_catalog_handoff_holds_lease_through_concurrent_registration(controlled,
     asyncio.run(run())
 
 
-def test_catalog_handoff_rejects_credential_in_generated_metadata(controlled):
+def test_catalog_handoff_scrubs_optional_generated_metadata(controlled):
     from api_agent.telemetry.privacy import EmissionBoundary
 
     _, _, transport, _ = controlled
@@ -205,8 +205,9 @@ def test_catalog_handoff_rejects_credential_in_generated_metadata(controlled):
     async def run():
         boundary = EmissionBoundary(secrets=('GLM 4.7 Flash',))
         provider = module.factory({'BEDROCK_ENDPOINT': 'mantle', 'BEDROCK_API_MODE': 'completions'}, {'emissions': boundary})
-        with pytest.raises(ContractError, match='safely released'):
-            await provider.adescribe(auth=None)
+        selections = await provider.adescribe(auth=None)
+        assert selections[0].selected_llm == MODEL
+        assert selections[0].display_name == ''
         await provider.aclose()
     asyncio.run(run())
 

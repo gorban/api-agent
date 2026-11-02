@@ -105,3 +105,16 @@ def test_join_hides_even_contract_exceptions_from_provider():
     with pytest.raises(CredentialProtectionError, match='could not join') as error:
         require_joined_provider(Provider(), EmissionBoundary())
     assert 'private detail' not in str(error.value)
+
+
+
+def test_invalid_empty_credential_registration_is_not_accepted():
+    with pytest.raises(CredentialProtectionError):
+        guard_json({'safe': 'ordinary'}, {''})
+
+
+
+def test_kernel_rejects_invalid_registration_even_without_its_outer_boundary():
+    from api_agent.providers.credential_guard import _check_json
+    with pytest.raises(CredentialProtectionError):
+        _check_json({'safe': 'ordinary'}, {''})

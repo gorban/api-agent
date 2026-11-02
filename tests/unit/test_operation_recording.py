@@ -91,13 +91,15 @@ def test_failed_shared_attachment_replacement_never_publishes_partial_run(tmp_pa
         recorder.finalize(status='failed')
 
 
-def test_usage_is_output_even_when_publication_fails(tmp_path):
+def test_usage_is_output_even_when_publication_fails(tmp_path, capsys):
     context, test, config = fixture(tmp_path)
     lines = []
     storage = Storage(fail=True)
     completed = recorded.run_recorded_integration(context, [test], config,
         accepted=True, storage=storage, usage_output=lines.append, runner=fake_runner())
-    assert completed.exit_code == 1 and not completed.persisted
+    assert completed.exit_code == 0 and not completed.persisted
+    assert completed.execution.tests[0].status == 'passed'
+    assert 'Allure publication failed:' in capsys.readouterr().err
     assert all('quota' not in line.lower() for line in lines)
     assert len(lines) == 1
     assert 'This suite cost:' in lines[0] and 'Tokens this run:' in lines[0]

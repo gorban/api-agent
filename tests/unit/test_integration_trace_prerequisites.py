@@ -94,6 +94,54 @@ async def setup_owner(monkeypatch, tmp_path, log):
     return _SetupOwner(backend), manager, trace
 
 
+def test_shared_provider_scrub_notice_reaches_its_own_capture(monkeypatch, tmp_path):
+    from api_agent.providers import scrubbed_response
+    captured = []
+    monkeypatch.setattr(scrubbed_response._LOG, 'handlers', [])
+    monkeypatch.setattr(scrubbed_response._LOG, 'level', scrubbed_response._LOG.level)
+    scrubbed_response.configure_diagnostics('info')
+
+    async def run():
+        owner, _, _ = await setup_owner(monkeypatch, tmp_path, [])
+        owner._stderr_sink = captured.append
+        async def describe():
+            return await asyncio.to_thread(scrubbed_response.scrub_response,
+                {'optional': 'synthetic-secret'}, schema={}, secrets=('synthetic-secret',),
+                operation='model_discovery')
+        owner.provider._describe = describe
+        clean, _ = await owner.describe()
+        assert clean == {'optional': ''}
+        await owner.aclose()
+
+    asyncio.run(run())
+    assert captured == ['Response scrubbed: operation=model_discovery fields=1 omitted_events=0\n']
+    assert 'synthetic-secret' not in ''.join(captured)
+
+
+def test_inference_notice_is_not_copied_to_other_tests_shared_setup(monkeypatch, tmp_path, capsys):
+    from api_agent.providers import scrubbed_response
+    captured = []
+    monkeypatch.setattr(scrubbed_response._LOG, 'handlers', [])
+    monkeypatch.setattr(scrubbed_response._LOG, 'level', scrubbed_response._LOG.level)
+    scrubbed_response.configure_diagnostics('info')
+
+    async def run():
+        owner, _, _ = await setup_owner(monkeypatch, tmp_path, [])
+        owner._stderr_sink = captured.append
+        async def complete(request):
+            return await asyncio.to_thread(scrubbed_response.scrub_response,
+                {'optional': 'synthetic-secret'}, schema={}, secrets=('synthetic-secret',),
+                operation='inference')
+        owner.provider._complete = complete
+        clean, _ = await owner.complete(object())
+        assert clean == {'optional': ''}
+        await owner.aclose()
+
+    asyncio.run(run())
+    assert captured == []
+    assert 'Response scrubbed: operation=inference fields=1' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('publication', [False, True])
 def test_collector_ready_before_inference_and_released_after_flush(monkeypatch, tmp_path, publication):
     log = []
@@ -123,19 +171,172 @@ def test_collector_ready_before_inference_and_released_after_flush(monkeypatch, 
     manager.release.assert_called_once_with(retain=False)
 
 
-def test_failed_readiness_prevents_authentication_and_inference(monkeypatch, tmp_path):
+@pytest.mark.parametrize('failure', [RuntimeError('not ready'), TimeoutError('private-timeout-detail'),
+                                     RuntimeError('unregistered-private-detail')])
+def test_failed_collector_readiness_does_not_block_inference(monkeypatch, tmp_path, capsys, failure):
     log = []
     async def run():
         owner, manager, trace = await setup_owner(monkeypatch, tmp_path, log)
-        manager.acquire.side_effect = RuntimeError('not ready')
-        with pytest.raises(RuntimeError, match='not ready'):
-            await owner.ensure_ready()
+        manager.acquire.side_effect = failure
+        await owner.ensure_ready()
+        assert await owner.complete('request') == 'Ok'
+        assert await owner.complete('request') == 'Ok'
+        manager.acquire.assert_called_once()
+        trace.astart.assert_not_called()
         await owner.aclose()
         return owner
     owner = asyncio.run(run())
-    assert log == ['provider-close', 'trace-flush', 'release']
-    owner.provider._ensure.assert_not_called()
-    owner.provider._complete.assert_not_called()
+    assert log == ['provider-ready', 'inference', 'inference', 'provider-close', 'trace-flush', 'release']
+    diagnostic = capsys.readouterr().err
+    assert diagnostic.count('Tracing failed during collector setup') == 1
+    assert str(failure) not in diagnostic
+    owner.provider._ensure.assert_awaited_once()
+
+
+def test_first_inference_collector_failure_skips_trace_start_without_skipping_request(monkeypatch, tmp_path, capsys):
+    async def run():
+        owner, manager, trace = await setup_owner(monkeypatch, tmp_path, [])
+        manager.acquire.side_effect = RuntimeError('unregistered-private-detail')
+        assert await owner.complete('request') == 'Ok'
+        owner.provider._complete.assert_awaited_once_with('request')
+        trace.astart.assert_not_awaited()
+        await owner.aclose()
+    asyncio.run(run())
+    diagnostic = capsys.readouterr().err
+    assert 'Tracing failed during collector setup:' in diagnostic
+    assert 'unregistered-private-detail' not in diagnostic
+
+
+def test_collector_failure_diagnostic_scrubs_secrets(monkeypatch, tmp_path, capsys):
+    from api_agent.runtime.prerequisites import PrerequisiteError
+    captured = []
+
+    async def run():
+        owner, manager, _ = await setup_owner(monkeypatch, tmp_path, [])
+        owner._stderr_sink = captured.append
+        owner.provider.emissions.register_secret('synthetic-collector-secret')
+        manager.acquire.side_effect = PrerequisiteError(
+            'Existing prerequisite stack is incompatible; synthetic-collector-secret',
+            local_details='private engine diagnostic')
+        await owner.ensure_ready()
+        assert await owner.complete('request') == 'Ok'
+        owner.provider._ensure.assert_awaited_once()
+        await owner.aclose()
+
+    asyncio.run(run())
+    text = capsys.readouterr().err
+    assert 'Existing prerequisite stack is incompatible' in text
+    assert 'synthetic-collector-secret' not in text
+    assert 'private engine diagnostic' not in text
+    assert captured == [text]
+
+
+def test_trace_sdk_failure_does_not_block_inference(monkeypatch, tmp_path, capsys):
+    from api_agent.telemetry.tracing import TraceError
+
+    async def run():
+        owner, _, trace = await setup_owner(monkeypatch, tmp_path, [])
+        trace.astart.side_effect = TraceError('Tracing initialization failed.')
+        await owner.ensure_ready()
+        assert await owner.complete('request') == 'Ok'
+        assert await owner.complete('request') == 'Ok'
+        trace.astart.assert_awaited_once()
+        await owner.aclose()
+
+    asyncio.run(run())
+    assert 'Tracing failed during SDK initialization' in capsys.readouterr().err
+
+
+def test_unrecordable_trace_failure_is_fatal(monkeypatch, tmp_path):
+    import sys
+
+    async def run():
+        owner, manager, _ = await setup_owner(monkeypatch, tmp_path, [])
+        manager.acquire.side_effect = RuntimeError('not ready')
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'stderr', SimpleNamespace(write=lambda text: 0))
+            with pytest.raises(OSError, match='Could not record tracing failure'):
+                await owner.ensure_ready()
+        owner.provider._ensure.assert_not_called()
+        await owner.aclose()
+
+    asyncio.run(run())
+
+
+def test_textual_no_count_writer_retains_actionable_trace_notice_without_failing_request(monkeypatch, tmp_path):
+    from textual.app import App
+    from api_agent.runtime.prerequisites import PrerequisiteError
+    from api_agent.runtime.prerequisite_diagnostics import incompatible_stack_message
+    captured = []
+    notice = incompatible_stack_message(SimpleNamespace(service='langfuse-web', profile='langfuse',
+        initialization_changes=('LANGFUSE_ADMIN_PASSWORD',), id='a' * 64),
+        configuration_changed=True, executable='docker', project='sa-test')
+
+    async def run():
+        async with App().run_test():
+            import sys
+            assert type(sys.stderr).__module__ == 'textual.app'
+            owner, manager, trace = await setup_owner(monkeypatch, tmp_path, [])
+            owner._stderr_sink = captured.append
+            manager.acquire.side_effect = PrerequisiteError(notice)
+            assert await owner.complete('request') == 'Ok'
+            owner.provider._complete.assert_awaited_once_with('request')
+            trace.astart.assert_not_awaited()
+            await owner.aclose()
+    asyncio.run(run())
+    assert len(captured) == 1
+    assert '!' * 72 in captured[0]
+    assert 'ACTION REQUIRED:' in captured[0]
+    assert 'Continuing without tracing.' in captured[0]
+
+
+@pytest.mark.parametrize('captured', [False, True])
+def test_short_trace_diagnostic_write_remains_fatal_with_or_without_capture(monkeypatch, tmp_path, captured):
+    import sys
+    retained = []
+    async def run():
+        owner, manager, _ = await setup_owner(monkeypatch, tmp_path, [])
+        if captured:
+            owner._stderr_sink = retained.append
+        manager.acquire.side_effect = RuntimeError('not ready')
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'stderr', SimpleNamespace(write=lambda text: 0))
+            with pytest.raises(OSError, match='Could not record tracing failure'):
+                await owner.ensure_ready()
+        owner.provider._ensure.assert_not_called()
+        await owner.aclose()
+    asyncio.run(run())
+    assert bool(retained) is captured
+
+
+def test_no_count_writer_without_an_owned_capture_remains_unverified(monkeypatch, tmp_path):
+    import sys
+    async def run():
+        owner, manager, _ = await setup_owner(monkeypatch, tmp_path, [])
+        manager.acquire.side_effect = RuntimeError('not ready')
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'stderr', SimpleNamespace(write=lambda text: None))
+            with pytest.raises(OSError, match='Could not record tracing failure'):
+                await owner.ensure_ready()
+        owner.provider._ensure.assert_not_called()
+        await owner.aclose()
+    asyncio.run(run())
+
+
+def test_collector_cancellation_retains_its_identity(monkeypatch, tmp_path):
+    from api_agent.runtime.prerequisites import PrerequisiteCancelled
+
+    async def run():
+        owner, manager, _ = await setup_owner(monkeypatch, tmp_path, [])
+        cancellation = PrerequisiteCancelled('cancelled')
+        manager.acquire.side_effect = cancellation
+        with pytest.raises(PrerequisiteCancelled) as caught:
+            await owner.ensure_ready()
+        assert caught.value is cancellation
+        owner.provider._ensure.assert_not_called()
+        await owner.aclose()
+
+    asyncio.run(run())
 
 
 def test_unfinished_exporter_keeps_collector_until_cleanup_retry(monkeypatch, tmp_path):

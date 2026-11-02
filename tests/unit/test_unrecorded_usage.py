@@ -31,6 +31,8 @@ class Adapter:
 def factory(config, services): return Adapter()
 """.replace('MODEL', repr(selection)).replace('VALUES', repr(usage or {})).replace('QUOTE', repr(quote or {'list_cost_usd': None, 'payment': None})))
     (suite / 'test_usage.py').write_text(
+        'import pytest\n'
+        'pytestmark = pytest.mark.credential_authorities("coordinator")\n'
         'from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent\n'
         'def test_usage(llm_selection, llm_provider):\n'
         '    result = llm_provider.complete(LLMRequest(llm_selection, CompletionRequest(\n'

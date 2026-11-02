@@ -72,6 +72,7 @@ class ManagedService:
     running: bool
     health: str | None
     profile: str
+    initialization_changes: tuple[str, ...] = ()
 
 
 def process_identity(pid):
@@ -718,9 +719,13 @@ class PrerequisiteManager:
                             profiles=PROFILES | frozenset(self.plan.profiles) |
                                 frozenset(profile for _, profile in self.inventory_pairs))):
                     raise PrerequisiteError('Compose project includes a container with foreign ownership.')
-                result[identifier] = ManagedService(identifier, labels['com.docker.compose.service'],
+                from .prerequisite_diagnostics import initialization_changes
+                service = labels['com.docker.compose.service']
+                expected_environment = _interpolate(self.specs.get(service, {}).get('environment', {}), self.environment)
+                changes = initialization_changes(service, config.get('Env'), expected_environment)
+                result[identifier] = ManagedService(identifier, service,
                     config['Image'], record.get('Image'), labels.get(CONFIG_LABEL, ''), bool(state.get('Running')),
-                    state.get('Health', {}).get('Status'), labels['api-agent.profile'])
+                    state.get('Health', {}).get('Status'), labels['api-agent.profile'], changes)
             return result
         except (KeyError, TypeError, ValueError) as error:
             raise PrerequisiteError('Invalid prerequisite inspection response.') from error
@@ -1008,7 +1013,10 @@ class PrerequisiteManager:
             if (item.service in desired or not image_matches
                     or item.fingerprint != self.fingerprints[item.service] or (not item.running and not allow_stopped)
                     or item.profile != self.specs[item.service]['profiles'][0]):
-                raise PrerequisiteError('Existing prerequisite stack is incompatible; review it before replacement.')
+                from .prerequisite_diagnostics import incompatible_stack_message
+                raise PrerequisiteError(incompatible_stack_message(item,
+                    configuration_changed=item.fingerprint != self.fingerprints[item.service],
+                    executable=self.plan.command[0], project=self.scope.project))
             desired[item.service] = item
         return desired
 

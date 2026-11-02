@@ -398,4 +398,16 @@ A host command prefix can be configured as `ALLURE_CLI="distrobox-host-exec /abs
 
 Completed integration/E2E tests open timing, token and cost details with Enter, including passed tests without LLM calls. Within details, **c Close** restores the results row/scroll without ending inspection; **a View in Allure** opens that same attempt.
 
+`SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL` controls successful unit, integration and E2E test details: `warning` (default) includes captured stderr; `info` also includes captured pytest stdout. Both streams remain credential-scrubbed and bounded. Shared provider notices are labeled **Shared setup stderr** for tests using that setup. Reopen details after suite finalization for the complete shared notices. Failed-test diagnostics and test outcomes are unchanged. These local detail streams are not added to Allure metadata or ordinary result events. `SCRUB_DIAGNOSTICS_LEVEL` independently controls which response-scrubbing notices are emitted; use `info` there to emit those notices.
+
 Viewer notifications and history pages keep wrapped report/archive URLs as whole links. Click to open the report and copy its complete URL; rendering and hovering do not copy. The separately labelled **Browser CDP** address is for automation: click it to copy the connection base. Its root may return an empty page; `/json/version` returns debugger discovery metadata. Use the report URL for viewing results and the CDP base for attaching inspection tools.
+
+Provider response parsing uses the [schema-aware scrubber](architecture/response_scrubbing.md); the guide explains safe diagnostics, anonymous extra members and exact authentication/evidence boundaries.
+
+The successful-test `Integration test profile` record uses that same mechanism
+before JSON is rendered. Safe profile fields survive a credential match in a
+different field. A required field made unusable by redaction produces an explicit
+withheld diagnostic. These typed records appear in interactive `info` details;
+noninteractive execution prints retained streams after all tests finish, before final summaries.
+
+With `--no-std-in`, retained successful-test diagnostics are printed after all tests finish and before the final summary, coverage and cost accounting. `SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL=warning` includes stderr; `info` also includes stdout. Empty captures are omitted, and test blocks follow selection order. Existing failure diagnostics and live progress remain separate.

@@ -1806,12 +1806,15 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     return
             self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
             self.show_unit_results(self.unit_progress())
+            run_values = self.session.result().values
             result = await asyncio.to_thread(
                 runner, self.context, self.selection.selected_tests,
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel,
-                parallel_jobs=unit_parallel_jobs(self.session.result().values),
-                coverage_full=self.session.result().values.get('UNIT_COVERAGE_FULL', False),
+                parallel_jobs=unit_parallel_jobs(run_values),
+                coverage_full=run_values.get('UNIT_COVERAGE_FULL', False),
+                **({'successful_test_diagnostics_level': 'info'}
+                   if run_values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL') == 'info' else {}),
                 require_full_coverage=self.selection.groups()[0].selected)
             self.unit_result = result
             for test in result.tests:
@@ -2509,7 +2512,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             from api_agent.telemetry.usage_output import has_tokens
             historical = (self.cost_estimator.predictions.get(key, {}).get('has_token_history', False)
                           if self.cost_estimator is not None else False)
-            if result and (self.mode in {'integration', 'e2e'} or result.status != 'passed' or getattr(result, 'local_diagnostic', '')
+            if result and (self.mode in {'integration', 'e2e'} or result.status != 'passed' or getattr(result, 'local_diagnostic', '') or getattr(result, 'local_stderr', '') or getattr(result, 'local_stdout', '')
                            or has_tokens(self.suite_usage, key) or historical):
                 mode = (self.mode or 'unit').capitalize()
                 title = (f"{mode} test details" if result.status == 'passed' else

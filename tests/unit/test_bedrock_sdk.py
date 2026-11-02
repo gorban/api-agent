@@ -1443,3 +1443,32 @@ async def test_exclusive_validation_negotiates_once_and_caches(auth, fake_proces
         await owner.aclose()
         await transport.aclose()
     assert dispatched == [200000, 127999, 127999]
+
+
+@pytest.mark.asyncio
+async def test_catalog_worker_scrub_counts_are_logged_without_values(auth, fake_process, caplog):
+    import logging
+    diagnostics = dict(version=1, scrub_empty_strings=2, scrub_omitted_members=1, scrub_omitted_events=0)
+    fake_process[0]['frames'] = [{'result': {'data': []}, 'diagnostics': diagnostics}]
+    transport = sdk.SDKTransport()
+    try:
+        with caplog.at_level(logging.INFO, logger='api_agent.scrubbing'):
+            assert await transport.call('models', {}, auth=auth) == {'data': []}
+        assert 'operation=bedrock_model_discovery empty_strings=2 omitted_members=1 omitted_events=0' in caplog.text
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation, diagnostics', [
+    ('completions', dict(version=1, scrub_empty_strings=1, scrub_omitted_members=0, scrub_omitted_events=0)),
+    ('models', dict(version=1, scrub_empty_strings=1)),
+])
+async def test_invalid_scrub_count_routes_or_incomplete_counts_reject(auth, fake_process, operation, diagnostics):
+    fake_process[0]['frames'] = [{'result': {'data': []}, 'diagnostics': diagnostics}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ContractError, match='Invalid Bedrock scrub diagnostics'):
+            await transport.call(operation, {}, auth=auth)
+    finally:
+        await transport.aclose()

@@ -11,10 +11,12 @@ class SetupPool:
         self.config_fields = deepcopy(services.pop('config_fields', None))
         self.owner_root, self.services = owner_root, services
         self.owners = []
+        self._test_owners = {}
 
     def start(self):
         shared = {}
-        for row in self.profiles.values():
+        owners_by_key = {}
+        for test_id, row in self.profiles.items():
             key = json.dumps(row['config'], sort_keys=True, default=str, allow_nan=False)
             if key not in shared:
                 from .setup_backend import SetupBackend
@@ -23,11 +25,17 @@ class SetupPool:
                 owner = SetupBackend(row['config'], self.owner_root, **self.services,
                                      **({'capture_sources': sources} if sources else {}))
                 self.owners.append(owner)
+                owners_by_key[key] = owner
                 retain_suite_cleanup(owner)
                 shared[key] = owner.start()
+            self._test_owners[test_id] = owners_by_key[key]
             if shared[key] is not None:
                 row['setup_backend'] = shared[key]
         return deepcopy(self.profiles)
+
+    def stderr_for(self, test_id):
+        owner = self._test_owners.get(test_id)
+        return '' if owner is None else getattr(owner, 'diagnostic_stderr', '')
 
     def _all(self, method, *args):
         first = None

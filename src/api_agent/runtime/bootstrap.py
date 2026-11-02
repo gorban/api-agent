@@ -373,11 +373,19 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 result.raise_for_errors()
                 if result.missing:
                     raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
-            execution = run_unit_tests(context, tests, output=lambda chunk: print(chunk, end='', flush=True),
+            from api_agent.testing.diagnostics import CredentialScrubber
+            unit_scrubber = CredentialScrubber(result.values)
+            execution = run_unit_tests(context, tests, evidence_boundary=unit_scrubber.boundary, output=lambda chunk: print(chunk, end='', flush=True),
                                        parallel_jobs=unit_parallel_jobs(result.values),
                                        coverage_full=result.values.get('UNIT_COVERAGE_FULL', False),
+                                       **({'successful_test_diagnostics_level': 'info'}
+                                          if result.values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL') == 'info' else {}),
                                        require_full_coverage=not result.positionals)
             print()
+            from api_agent.testing.terminal_diagnostics import write_successful_diagnostics
+            write_successful_diagnostics(execution.tests, lambda text: print(text, flush=True),
+                scrubber=unit_scrubber,
+                level=result.values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL', 'warning'))
             print(format_unit_summary(execution))
             return execution.exit_code
         if result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'} and automatically_started(result):
@@ -449,6 +457,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         explicit_debug_test_ids=result.positionals,
                         config_fields=result.fields,
                         content_policy=ContentPolicy.from_config(result),
+                        evidence_boundary=scrubber.boundary,
                         **({'tool_plan': result.tool_plan} if result.tool_plan is not None else {}),
                         interaction=TerminalInteraction(presentation=presentation),
                         usage_output=lambda line: presentation.write(scrubber(line)) if '\n' not in line else None,
@@ -462,8 +471,12 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         presentation.write(scrubber(pending_output), end='')
                     presentation.close()
                 from api_agent.testing.inspection_controls import finish_terminal_inspection
+                from api_agent.testing.terminal_diagnostics import write_successful_diagnostics
                 if not finish_terminal_inspection(execution, lambda line: print(scrubber(line), flush=True),
-                                                  diagnostic_output=diagnostic_output):
+                        diagnostic_output=diagnostic_output,
+                        successful_output=lambda tests: write_successful_diagnostics(tests,
+                            presentation.write, scrubber=scrubber,
+                            level=result.values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL', 'warning'))):
                     return 3
                 return execution.exit_code
             except BaseException as error:

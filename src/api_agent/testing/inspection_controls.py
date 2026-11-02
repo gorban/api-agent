@@ -155,7 +155,7 @@ class InspectionGroup:
         return not self.active
 
 
-def finish_terminal_inspection(recorded, output, *, diagnostic_output=None):
+def finish_terminal_inspection(recorded, output, *, diagnostic_output=None, successful_output=None):
     """Print completed results before waiting for the debug windows to close."""
     execution = getattr(recorded, 'execution', None)
     if execution is None:
@@ -170,6 +170,8 @@ def finish_terminal_inspection(recorded, output, *, diagnostic_output=None):
                 from .diagnostics import result_diagnostics
                 for details in result_diagnostics(execution.tests):
                     diagnostic_output(details)
+            if successful_output is not None:
+                successful_output(execution.tests)
             output(format_test_summary('integration', execution.tests,
                 state='CANCELLED' if execution.cancelled else None, elapsed=getattr(recorded, 'elapsed', None)))
             publication = ('SKIPPED' if getattr(recorded, 'reporting_skipped', False)
