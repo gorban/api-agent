@@ -67,8 +67,9 @@ def test_generated_viewing_command_rejects_unsafe_paths(relative):
 def test_root_page_rejects_mismatched_help_and_editor_commands(tmp_path):
     wrapped = wrap_document(b'# Workflow v2\n', root=True,
                             asset_prefix='.private_resources/viewer/', flow_path='nested/flow.md.html')
-    changed = wrapped.replace(b'<pre>./launch.sh --view-flow "nested/flow.md.html"</pre>',
-                              b'<pre>./launch.sh --view-flow "other/flow.md.html"</pre>')
+    changed = wrapped.replace(b'<pre>./launch.sh --view-flow &quot;nested/flow.md.html&quot;</pre>',
+                              b'<pre>./launch.sh --view-flow &quot;other/flow.md.html&quot;</pre>')
+    assert changed != wrapped
     with pytest.raises(LayoutError, match='envelope'):
         extract_document(changed, path=tmp_path / 'flow.md.html')
 

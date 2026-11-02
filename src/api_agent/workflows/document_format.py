@@ -124,8 +124,11 @@ def _normalize_view_command(raw: bytes, *, flow_path: str | None = None) -> byte
     except (UnicodeError, ValueError) as error:
         raise LayoutError('invalid workflow viewing command') from error
     base = b'./launch.sh --view-flow'
-    prefix = prefix.replace(b'<pre>' + html.escape(command, quote=False).encode() + b'</pre>',
-                            b'<pre>' + base + b'</pre>')
+    # Published envelopes used literal quotes inside Markdown link titles.
+    # Accept those exact legacy commands as well as the escaped presentation.
+    for displayed in (html.escape(command, quote=False), html.escape(command, quote=True)):
+        prefix = prefix.replace(b'<pre>' + displayed.encode() + b'</pre>',
+                                b'<pre>' + base + b'</pre>')
     prefix = prefix.replace(match[0], base, 1)
     return prefix + separator + body
 
@@ -365,5 +368,5 @@ def wrap_document(executable_bytes: bytes, *, root: bool, asset_prefix: str,
     if root:
         command = _view_command(flow_path)
         head = head.replace(b'./launch.sh --view-flow', command.encode('utf-8'))
-        help_body = help_body.replace(b'./launch.sh --view-flow', html.escape(command, quote=False).encode())
+        help_body = help_body.replace(b'./launch.sh --view-flow', html.escape(command, quote=True).encode())
     return head + help_body + _CARRIER + executable_bytes

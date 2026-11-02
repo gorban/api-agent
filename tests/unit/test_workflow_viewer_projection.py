@@ -713,3 +713,33 @@ def test_bare_generated_links_allow_owned_destination(tmp_path):
     saved = wrap_document(b'# Workflow v2\n', root=True,
                           asset_prefix='.private_resources/viewer/', generated=generated).split(fmt._CARRIER, 1)[1]
     validate_presentation_location(saved, path=tmp_path / 'flow.md.html', root=tmp_path)
+
+
+@pytest.mark.parametrize('flow_path', [None, 'flow.md.html', 'demo/simple/flow.md.html',
+    'demo/contrived/flow.md.html', 'nested/a "quoted" & $value`part/flow.md.html'])
+def test_repository_markdown_hides_fallback_for_quoted_flow_paths(tmp_path, flow_path):
+    from html import unescape
+    from markdown_it import MarkdownIt
+    from api_agent.workflows.document_format import _view_command
+    source = b'# LangGraph flow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n'
+
+    saved = wrap_document(source, root=True, asset_prefix='.private_resources/viewer/', flow_path=flow_path)
+    rendered = MarkdownIt('commonmark', {'html': True}).render(saved.decode())
+
+    assert '[workflow-help]' not in rendered
+    assert '[workflow-source]' not in rendered
+    assert 'Viewing this file' not in rendered
+    assert 'workflow-fallback' not in rendered
+    assert '<h1>LangGraph flow</h1>' in rendered
+    assert _view_command(flow_path) in unescape(saved.decode().split('<pre>', 1)[1].split('</pre>', 1)[0])
+    assert extract_document(saved, path=tmp_path / 'flow.md.html').executable_bytes == source
+
+
+def test_legacy_literal_quote_envelope_remains_readable(tmp_path):
+    source = b'# LangGraph flow\n'
+    saved = wrap_document(source, root=True, asset_prefix='.private_resources/viewer/',
+                          flow_path='demo/simple/flow.md.html')
+    legacy = saved.replace(b'&quot;', b'"')
+
+    assert legacy != saved
+    assert extract_document(legacy, path=tmp_path / 'flow.md.html').executable_bytes == source
