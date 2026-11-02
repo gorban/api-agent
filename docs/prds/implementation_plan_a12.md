@@ -9,6 +9,8 @@ The same responsiveness requirements apply to Review configuration, including
 selected-test review, row navigation and edits. Treat substantial delays in
 these interactions as a regression requiring repair.
 
+- [x] Render configuration table values literally, including regex emoji shortcodes such as `:-1:` and Rich markup delimiters. Preserve actual Unicode characters and the original editable value in Review configuration and Clear .env configuration.
+
 - [ ] Measure steady row movement, individual/group toggles, initial entry and configuration-review return with representative selected workflow/tool declarations. Separate event-loop work, rendering, declaration discovery, configuration composition and historical storage access; record unprofiled latency alongside profiler attribution.
 - [x] Reuse parsed definitions within a bounded configuration session, rechecking captured bytes and lexical paths, including explicit replacements, on each reuse. Reduce repeated resolution within review-row refreshes and account availability checks. Keep effective settings and selected-tool composition fresh; use no persistent cache.
 - [x] Preserve freshness after declaration, implementation selector, account, environment or saved configuration changes. Start continues to validate the current selection and effective inputs; reuse must not authorize stale configuration or execution. Verify missing/invalid resources, retargeted links, installed ownership changes and bounded cache eviction with deterministic regressions.

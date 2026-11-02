@@ -131,7 +131,7 @@ def test_timing_preview_scroll_resize_and_mouse_metadata(tmp_path):
             assert not scrolled.startswith('…') and scrolled.endswith(' 1m 2s elapsed; ')
             table.action_extend_range(1)
             assert table.selected_row_keys == ('one', 'two')
-            assert table.get_row_at(0)[1] == name
+            assert str(table.get_row_at(0)[1]) == name
             assert table.render_line(1).crop(width - 16, width).text == ' 1m 2s elapsed; '
             start = sum(column.get_render_width(table) for column in table.ordered_columns[:-1])
             table.scroll_to(x=start, animate=False)
@@ -182,7 +182,7 @@ def test_integration_cost_preview_follows_timing_and_keeps_identity(tmp_path):
             assert 'Est. $' in table.render_line(0).text[:width]
             assert table.render_line(1).text[:width].rstrip().endswith('0.123456')
             assert '…' in table.render_line(1).text[:width]
-            assert table.get_row_at(0)[1].startswith('base::t.py::test_')
+            assert str(table.get_row_at(0)[1]).startswith('base::t.py::test_')
             table.scroll_to(x=table.max_scroll_x,animate=False)
             await pilot.pause()
             assert '0.123456' in table.render_line(1).text[:width]

@@ -81,8 +81,8 @@ def component_timing(components):
 
 
 def literal_cell(value):
-    """Bracket-bearing data is literal text, never Rich markup."""
-    return Text(value) if isinstance(value, str) and "[" in value else value
+    """Render markup and emoji shortcode delimiters as literal table data."""
+    return Text(value) if isinstance(value, str) and ("[" in value or ":" in value) else value
 
 
 def append_usage_line(text, line, *, style=''):
