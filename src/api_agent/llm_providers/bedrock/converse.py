@@ -215,7 +215,7 @@ def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
                 _require(type(tool.get('input')) is dict, rule='tool_input',
                          path='$.output.message.content[].toolUse.input')
                 seen.add(identifier)
-                _require(tool.get('type') in (None, 'function'), rule='tool_type',
+                _require(tool.get('type') in (None, 'function', 'tool_use'), rule='tool_type',
                          path='$.output.message.content[].toolUse.type')
                 name = _text_at(tool.get('name'), '$.output.message.content[].toolUse.name', empty=False)
                 arguments = json.dumps(tool['input'], allow_nan=False)

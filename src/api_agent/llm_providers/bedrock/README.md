@@ -1,5 +1,8 @@
 # Amazon Bedrock provider
 
+Start with the [Bedrock setup and support matrix](../../../../docs/bedrock.md)
+for TUI configuration, route selection and qualification limits.
+
 This optional provider supports regional bedrock-mantle and bedrock-runtime endpoints through the ordinary provider interface. The worker owns SDK signing and transport. InvokeModel, the Messages API and direct OpenAI fallback remain unsupported.
 Controlled tests qualify the initial matrix below; live account access remains
 a separate acceptance step.
@@ -88,10 +91,12 @@ the list against AWS documentation and account access. Incompatible requests may
 be rejected by AWS. Runtime prices are unavailable until independently qualified.
 Native structured output is limited to documented strict schemas; the existing
 fallback policy handles unqualified models and unsupported streaming combinations.
-GPT-5.4 is documented as Mantle-only. Converse accepts completed non-tool replies
-containing plaintext reasoning and returns only the visible final answer. Signed
-tool continuations, unfinished reasoning and opaque/redacted reasoning still fail
-explicitly because their replay state is not supported.
+Endpoint/API support remains model-specific. Converse preserves signed and
+opaque reasoning through answers and tool continuations; binary state uses a
+bounded private wire representation and is restored to SDK bytes on replay.
+Unfinished or malformed reasoning is rejected. Displayable reasoning is separate
+from final answers; opaque state stays out of UI and optional evidence. See
+[Converse controls and replay](../../../../docs/testing_bedrock_converse.md).
 
 Both endpoints support session, access-key and API-key authentication, including
 API keys read from the selected unattended user. Mantle with Converse is an

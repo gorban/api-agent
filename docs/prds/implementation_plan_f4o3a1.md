@@ -22,8 +22,9 @@
   route evidence separately from offline protocol checks.
 - [ ] Human acceptance of the repaired route and useful failure diagnostics.
 
-Converse binary redacted reasoning needs a bounded private replay representation;
-never display, discard or coerce those bytes. A model returning non-JSON under
+Converse binary redacted reasoning now uses the
+[bounded private replay representation](implementation_plan_f4o4a.md); never
+display, discard or coerce those bytes. A model returning non-JSON under
 prompted JSON remains a schema failure and must not bypass local validation.
 
 The Runtime Responses tier-resolution repair completed a bounded live Luna 6

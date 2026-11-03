@@ -211,3 +211,43 @@ def test_worker_rejects_unqualified_native_schema_stream_before_authentication(m
                            auth={'mode': 'session'}), output.append,
                    session_factory=lambda **kwargs: pytest.fail('Invalid stream selected credentials'))
     assert output == [{'error': 'unknown', 'execution': 'not_started'}]
+
+
+@pytest.mark.parametrize('label', ['function', 'tool_use'])
+def test_client_tool_stream_type_is_preserved_in_native_continuation(label):
+    from api_agent.llm_providers.bedrock.converse import decode, continuation_message
+    events = [
+        {'messageStart': {'role': 'assistant'}},
+        {'contentBlockDelta': {'contentBlockIndex': 0, 'delta': {'reasoningContent': {'text': 'Use the lookup tool.'}}}},
+        {'contentBlockDelta': {'contentBlockIndex': 0, 'delta': {'reasoningContent': {'signature': 'opaque-signature'}}}},
+        {'contentBlockStop': {'contentBlockIndex': 0}},
+        {'contentBlockStart': {'contentBlockIndex': 1, 'start': {'toolUse': {
+            'toolUseId': 'call-1', 'name': 'lookup', 'type': label}}}},
+        {'contentBlockDelta': {'contentBlockIndex': 1, 'delta': {'toolUse': {'input': '{"key":"sample"}'}}}},
+        {'contentBlockStop': {'contentBlockIndex': 1}},
+        {'messageStop': {'stopReason': 'tool_use'}},
+        {'metadata': {'usage': {'inputTokens': 2, 'outputTokens': 3, 'totalTokens': 5}}},
+    ]
+    raw = stream.collect(events, time.monotonic() + 5)
+    result = decode(raw, selected_llm=CONVERSE_MODEL)
+    assert result.outcome == 'tool_calls'
+    assert result.payload.calls[0].name == 'lookup'
+    assert json.loads(result.payload.calls[0].arguments) == {'key': 'sample'}
+    assert result.payload.continuation is not None
+    assert continuation_message(result.payload, CONVERSE_MODEL) == raw['output']['message']
+    assert raw['output']['message']['content'][1]['toolUse']['type'] == label
+
+
+@pytest.mark.parametrize('label', ['server_tool_use', 'unknown', '', None, 7])
+def test_stream_does_not_convert_unmanaged_or_invalid_tool_types_to_client_calls(label):
+    events = [
+        {'messageStart': {'role': 'assistant'}},
+        {'contentBlockStart': {'contentBlockIndex': 0, 'start': {'toolUse': {
+            'toolUseId': 'call-1', 'name': 'lookup', 'type': label}}}},
+        {'contentBlockDelta': {'contentBlockIndex': 0, 'delta': {'toolUse': {'input': '{}'}}}},
+        {'contentBlockStop': {'contentBlockIndex': 0}},
+        {'messageStop': {'stopReason': 'tool_use'}},
+        {'metadata': {'usage': {'inputTokens': 2, 'outputTokens': 3, 'totalTokens': 5}}},
+    ]
+    with pytest.raises(ProviderAccessError):
+        stream.collect(events, time.monotonic() + 5)

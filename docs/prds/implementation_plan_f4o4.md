@@ -109,3 +109,6 @@ a separate route-specific plan requiring review of numerical defaults.
 track the bounded native-state repair and provider-owned control qualification.
 The reviewed budget presets apply where manual thinking budgets are required,
 including the Opus 4.5 hybrid control. Newer adaptive versions use native effort.
+
+[Operator guide and remaining live qualification](implementation_plan_f4o4b.md)
+separate current admission from the broader model/API matrix.
