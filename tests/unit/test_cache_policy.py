@@ -107,7 +107,7 @@ def test_openrouter_known_families_and_normalized_endpoint(base, selection, poli
     assert prompt_cache_fields(policy, selection, base_url=base, subscription=False) == expected
 
 
-@pytest.mark.parametrize('selection', ['gpt-6-luna', 'openai/gpt-5.5', 'openai/gpt-4.1', 'openai/gpt-6-unknown', 'openai/gpt-7', 'anthropic/claude-sonnet-4', 'google/gemini-2.5-pro'])
+@pytest.mark.parametrize('selection', ['gpt-6-luna', 'openai/gpt-5.5', 'openai/gpt-4.1', 'openai/gpt-5.5-unknown', 'openai/gpt-7..0', 'anthropic/claude-sonnet-4', 'google/gemini-2.5-pro'])
 @pytest.mark.parametrize('policy', ['off', 'medium', 'high'])
 def test_openrouter_unknown_or_older_models_reject(selection, policy):
     with pytest.raises(ProviderAccessError, match='unknown.*OpenRouter'):
@@ -312,7 +312,7 @@ def test_openrouter_actual_effective_payload(mode, configured, override, effecti
     assert len(bodies) == 1
 
 
-@pytest.mark.parametrize('selection,base,tail', [('openai/gpt-5.5', OPENROUTER, 'Task'), ('openai/gpt-6-unknown', OPENROUTER, 'Task'), ('openai/gpt-6-luna', 'https://other.example/api/v1', 'Task'), ('openai/gpt-6-luna', OPENROUTER, ''), ('openai/gpt-6-luna-2099-99-99', OPENROUTER, 'Task'), ('openai/gpt-6-luna-20999999', OPENROUTER, 'Task'), ('openai/gpt-6-luna-２０９９９９９９', OPENROUTER, 'Task')])
+@pytest.mark.parametrize('selection,base,tail', [('openai/gpt-5.5', OPENROUTER, 'Task'), ('openai/gpt-5.5-unknown', OPENROUTER, 'Task'), ('openai/gpt-6-luna', 'https://other.example/api/v1', 'Task'), ('openai/gpt-6-luna', OPENROUTER, ''), ('openai/gpt-6-luna-2099-99-99', OPENROUTER, 'Task'), ('openai/gpt-6-luna-20999999', OPENROUTER, 'Task'), ('openai/gpt-6-luna-２０９９９９９９', OPENROUTER, 'Task')])
 @pytest.mark.parametrize('mode', ['responses', 'completions'])
 def test_openrouter_unsupported_effective_request_precedes_auth(tmp_path, monkeypatch, selection, base, tail, mode):
     from api_agent.testing import provider_setup

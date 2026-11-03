@@ -92,3 +92,68 @@ Expanded response details should contain native reasoning separately from `Ok`.
 API-key inference currently delivers this text after each call completes; this
 is not token streaming. Use the optional node-summary E2E from the parent guide
 to check delivery before the overall multi-node response finishes.
+
+
+## Version ranges and cache qualification
+
+The GPT provider carries reasoning support forward from a minimum numeric version
+for each family. It does not require another alias entry for every release:
+
+| Family | Version default | Common effort controls |
+| --- | --- | --- |
+| Luna | 5.6 and later | Off, Low, Medium, High |
+| Terra | 5.6 and later | Off, Low, Medium, High |
+| Sol | 5.6 through versions below 6.1 | Off, Low, Medium, High |
+| Sol | 6.1 and later | Low, Medium, High |
+| Astra | 6 and later | Low, Medium, High |
+
+Later versions inherit the latest known rule: Sol 6.2, for example, inherits
+Sol 6.1's absence of Off. A known later change can define another range boundary.
+The same defaults apply on the official GPT route and canonical OpenRouter
+`openai/` route. Other compatible URLs do not inherit them. Model IDs are sent
+unchanged; display labels do not drive admission. Numeric components must use
+canonical spelling, so zero-padded and malformed aliases remain unqualified.
+
+On OpenRouter, an explicit catalog report can further narrow the common controls,
+including mandatory reasoning or no common controls. Malformed metadata remains
+unknown. Observed restrictions stay with that provider instance and are checked
+before inference even when the request omits an output limit. Omitting an effort
+continues to use provider defaults. Version defaults establish eligibility; they
+do not certify every future model or API combination.
+
+Bounded live checks accepted all four common efforts for exact GPT-5.6 Luna,
+Terra and Sol on both Responses and Completions. The outgoing requests retained
+the selected effort, required parameter support and disabled routing fallbacks.
+These short exact-Ok checks establish control acceptance, not puzzle correctness,
+visible reasoning or a promise of nonzero reasoning tokens.
+
+The documented GPT-5.6+ cache rule also replaces per-release cache admission.
+OpenRouter uses explicit breakpoints; the official API retains its own implicit
+cache rendering. Exact Terra 6.1 passed fresh/repeated-prefix checks on both APIs:
+Medium and High each wrote 1,024 cache tokens on the cold request and read at
+least 1,024 on the repeated request. Off sent explicit mode without breakpoints
+and reported zero cache reads twice. Completions reported zero writes; Responses
+omitted its raw write counter, so zero physical writes are not claimed there.
+
+Medium and High currently both request a 30-minute cache lifetime on OpenRouter.
+A short cache-hit test does not prove that lifetime or distinct High retention.
+The provider-owned cache integration test keeps explicit fixture eligibility
+because its exact token-count assertions must remain calibrated; that fixture
+list does not restrict ordinary application requests for later versions.
+
+For Studio inspection, select your matching OpenRouter API-key account and use:
+
+```dotenv
+GPT_BASE_URL=https://openrouter.ai/api/v1
+GPT_AUTH_MODE=api_key
+GPT_API_MODE=responses
+LLM_ALLOWED_MODELS=openai/gpt-(?:5[.]6-(?:luna|terra|sol)|6[.]1-terra)
+LLM_DEFAULT_MODEL=openai/gpt-5[.]6-luna
+LLM_REASONING_EFFORT=low
+LLM_CACHE_POLICY=medium
+```
+
+Restart the ordinary Studio DEBUG test to refresh its provider-owned catalog.
+[Qualification requirements](prds/implementation_plan_f4o3b4.md) retain the
+separate live, coverage, review and human-acceptance scope. Tool, native schema,
+display and opaque-replay behavior are not inherited from these effort ranges.

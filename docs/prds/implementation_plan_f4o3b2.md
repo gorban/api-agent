@@ -54,3 +54,7 @@ from finalized Allure accounting. Human acceptance remains unchecked.
 A missing cache-policy feature rejected otherwise supported Studio requests
 before transport when an explicit output ceiling enabled full catalog validation.
 Standalone requests without an explicit ceiling did not exercise that gate.
+
+
+[Additional family qualification](implementation_plan_f4o3b4.md) covers the
+GPT-5.6 reasoning catalog gaps and Terra 6.1 cache presets separately.

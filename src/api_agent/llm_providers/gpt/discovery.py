@@ -91,7 +91,9 @@ def _catalog(data, subscription, token, *, base_url=None):
             raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata.')
         family, inferred_version = _selection_identity(identifier)
         from .reasoning import reasoning_efforts
-        efforts = reasoning_efforts(identifier, base_url=base_url)
+        efforts = (reasoning_efforts(identifier, base_url=base_url, metadata=row['reasoning'])
+                   if base_url == 'https://openrouter.ai/api/v1' and 'reasoning' in row
+                   else reasoning_efforts(identifier, base_url=base_url))
         # OpenRouter declares token-limit support and its finite output ceiling.
         # Retain the previously qualified Luna route when its ceiling is omitted;
         # other selections need both pieces of metadata before shared clamping.
