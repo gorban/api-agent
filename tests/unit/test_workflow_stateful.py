@@ -112,13 +112,15 @@ def test_admitted_state_continues_at_entry_with_message_id_replacement(fixture_g
 
 
 def test_stateful_cycle_keeps_node_history_but_a_new_turn_starts_fresh(fixture_graph):
+    import json
+    from api_agent.llm_providers.gpt.inference import _result, validate_text_request
     from api_agent.providers.llm import LLMResult, Message, TextContent
     root, entry = fixture_graph
     native = root / 'native.py'
     native.write_text(native.read_text().replace('def intake(state, context):', '''async def intake(state, context):
     from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent
     from uuid import uuid4
-    request = LLMRequest('selected-model', CompletionRequest((
+    request = LLMRequest('openai/gpt-6.1-terra', CompletionRequest((
         Message('system', (TextContent('Keep prior context'),)),
         Message('user', (TextContent('Visit ' + str(state['visits'])),)))), str(uuid4()))
     await context.services['complete'](request)
@@ -129,9 +131,17 @@ def test_stateful_cycle_keeps_node_history_but_a_new_turn_starts_fresh(fixture_g
         '| finish | END | - | - |\n', ''))
     definition = load_stateful_definition(entry, base_root=root, pack_root=root)
     requests = []
+    native = [
+        {'type': 'reasoning', 'id': 'rs-1', 'status': 'completed', 'summary': [],
+         'encrypted_content': 'opaque-retry-state', 'format': 'synthetic'},
+        {'type': 'message', 'id': 'msg-1', 'status': 'completed', 'role': 'assistant',
+         'content': [{'type': 'output_text', 'text': 'Prior response', 'annotations': []}]},
+    ]
+    assistant = _result({'status': 'completed', 'output': native}, True,
+                        'credential-sentinel', openrouter=True).payload
     async def complete(value):
         requests.append(value)
-        return LLMResult(Message('assistant', (TextContent('Prior response'),)))
+        return LLMResult(assistant)
     workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
         reducers={'messages':add_messages}, services={'complete':complete})
 
@@ -143,7 +153,11 @@ def test_stateful_cycle_keeps_node_history_but_a_new_turn_starts_fresh(fixture_g
 
     assert len(requests) == 4
     assert requests[1].payload.messages[:2] == requests[0].payload.messages
-    assert requests[1].payload.messages[2] == Message('assistant', (TextContent('Prior response'),))
+    assert requests[1].payload.messages[2] is assistant
+    assert json.loads(assistant.continuation)['state'] == native
+    _, wire = validate_text_request(base_url='https://openrouter.ai/api/v1',
+        access_token='credential-sentinel', subscription=False, api_mode='responses', request=requests[1])
+    assert wire['input'][2:4] == native
     assert requests[1].payload.messages[3].content[0].text == 'Visit 1'
     assert len(requests[2].payload.messages) == 2
     assert requests[2].payload.messages == requests[0].payload.messages

@@ -16,6 +16,7 @@ def reasoning_text(item):
         raise ContractError('Invalid OpenRouter reasoning fields')
     texts = []
     summaries = []
+    all_text = []
     for name, kind, destination in (('summary', 'summary_text', summaries),
                                     ('content', 'reasoning_text', texts)):
         rows = item.get(name, [])
@@ -27,20 +28,21 @@ def reasoning_text(item):
             if (type(row) is not dict or set(row) != {'type', 'text'}
                     or row['type'] != kind or type(row['text']) is not str):
                 raise ContractError('Invalid OpenRouter reasoning text')
-            destination.append(row['text'])
+            all_text.append(row['text'])
+            if row['text'].strip():
+                destination.append(row['text'])
     for name, limit in (('signature', 32768), ('format', 100), ('encrypted_content', 32768)):
         value = item.get(name)
         if value is not None and (type(value) is not str or not value or len(value) > limit
                                   or not value.isprintable()):
             raise ContractError('Invalid OpenRouter reasoning metadata')
-    all_text = (*summaries, *texts)
     try:
         size = sum(len(value.encode('utf-8')) for value in all_text)
     except UnicodeEncodeError:
         raise ContractError('Invalid OpenRouter reasoning text') from None
     if size > 65536:
         raise ContractError('OpenRouter reasoning exceeds byte limit')
-    return '\n'.join(summaries or texts), all_text
+    return '\n'.join(summaries or texts), tuple(all_text)
 
 
 def carriers(value, continuation=None, *, arguments=(), maximum=MAX_CARRIERS):

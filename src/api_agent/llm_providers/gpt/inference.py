@@ -718,8 +718,8 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
         await _guard_observed(data, access_token, authority,
                               reported=data.get('usage') if type(data) is dict else None,
                               responses=api_mode == 'responses')
-        from .reasoning import display_reasoning
-        router_native = display_reasoning(request.selected_llm, base_url=base_url, api_mode=api_mode) and base_url == 'https://openrouter.ai/api/v1'
+        from .reasoning import native_reasoning
+        router_native = native_reasoning(request.selected_llm, base_url=base_url, api_mode=api_mode)
         if (base_url == 'https://openrouter.ai/api/v1' and api_mode == 'responses'
                 and not router_native and type(data) is dict and type(data.get('output')) is list
                 and any(type(item) is dict and item.get('type') == 'reasoning' for item in data['output'])):

@@ -3,6 +3,7 @@ import asyncio
 import re
 import secrets
 import socket
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from api_agent.api import Runtime, create_application
@@ -52,7 +53,8 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
             policy=ModelSelectionPolicy({'LLM_ALLOWED_MODELS': re.escape(selection),
                                          'LLM_DEFAULT_MODEL': re.escape(selection), **(policy_config or {})}),
             origin=origin, nonce=nonce, scrub=lambda _: 'Selected provider rejected the request.',
-            reasoning_default=reasoning_default, timeout=timeout)
+            reasoning_default=reasoning_default, timeout=timeout,
+            on_error=lambda error: _execution_error(provider, nonce, error))
         duties.push(backend.aclose)
         runtime = Runtime('demo', services={'studio_backend': backend})
         asgi_application = create_application(runtime)
@@ -67,6 +69,17 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
                 assert not task.done(), 'Agent listener stopped before readiness.'
                 await asyncio.sleep(.01)
         yield endpoint
+
+
+def _execution_error(provider, nonce, error):
+    from .diagnostics import write_exception_diagnostic
+    owner = getattr(provider, 'manual', provider)
+    def write(text):
+        if sys.stderr.write(text) != len(text):
+            raise OSError('Could not record Studio execution diagnostic.')
+        sys.stderr.flush()
+    write_exception_diagnostic(error, write, authority=getattr(owner, 'emissions', None),
+        secret_values=(nonce,), label='Studio execution failed')
 
 
 async def _close_socket(listener):
