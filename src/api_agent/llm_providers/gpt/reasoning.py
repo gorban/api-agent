@@ -26,6 +26,12 @@ _EFFORTS = {
 # https://openrouter.ai/api/v1/models, verified 2026-11-02.
 _OPENROUTER_EFFORTS = {'openai/' + model: choices for model, choices in _EFFORTS.items()}
 _OPENROUTER_EFFORTS['openai/gpt-6.1-terra'] = ('off', 'low', 'medium', 'high')
+# Both exact catalog rows declare mandatory reasoning and these three efforts.
+# https://openrouter.ai/api/v1/models, verified 2026-11-02.
+_OPENROUTER_EFFORTS.update({
+    model: ('low', 'medium', 'high')
+    for model in ('openai/gpt-oss-20b', 'openai/gpt-oss-120b')
+})
 
 
 # Official verification does not establish support on another route.
@@ -44,7 +50,9 @@ _DISPLAY_SUMMARIES = frozenset({'gpt-6-luna'})
 
 
 def display_reasoning(selection, *, base_url, api_mode):
-    return base_url == OFFICIAL_BASE_URL and api_mode == 'responses' and selection in _DISPLAY_SUMMARIES
+    return api_mode == 'responses' and (
+        base_url == OFFICIAL_BASE_URL and selection in _DISPLAY_SUMMARIES
+        or base_url == 'https://openrouter.ai/api/v1' and selection in ('openai/gpt-oss-20b', 'openai/gpt-oss-120b'))
 
 def reasoning_efforts(selection, *, base_url):
     """Return verified common choices without authentication or discovery I/O."""
@@ -68,7 +76,7 @@ def reasoning_fields(request, *, base_url, api_mode):
         if (request.selected_llm in _CHAT_TOOLS_RESPONSES_ONLY
                 or (request.selected_llm in _CHAT_TOOLS_OFF_ONLY and effort != 'off')):
             raise ProviderAccessError('unsupported', 'This GPT model requires Responses for reasoning with tools; select responses mode or a documented disabled-reasoning tool route.')
-    if generation.display_summary and display_reasoning(request.selected_llm, base_url=base_url, api_mode=api_mode) and effort != 'off':
+    if generation.display_summary and base_url == OFFICIAL_BASE_URL and display_reasoning(request.selected_llm, base_url=base_url, api_mode=api_mode) and effort != 'off':
         return {'reasoning': {'summary': 'auto', **({'effort': effort} if effort else {})}}
     if not effort:
         return {}

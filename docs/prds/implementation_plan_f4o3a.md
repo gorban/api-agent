@@ -1,6 +1,7 @@
 # Progressive display reasoning
 
-[Reasoning carriers and Studio](implementation_plan_f4o3.md)
+[Reasoning carriers and Studio](implementation_plan_f4o3.md) ·
+[Streaming failure diagnostics](implementation_plan_f4o3a1.md)
 
 Expose provider-returned plaintext reasoning as progress, separately from the final
 answer. It is model output, not a verified explanation or a generated friendly

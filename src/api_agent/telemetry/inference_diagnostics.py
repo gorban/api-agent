@@ -4,9 +4,17 @@ import re
 
 _COUNTS = {'output_items', 'message_items', 'reasoning_items', 'tool_items', 'other_items',
            'visible_text_characters', 'reasoning_text_characters', 'decoded_visible_text_characters',
-           'max_output_tokens', 'scrub_empty_strings', 'scrub_omitted_members', 'scrub_omitted_events'}
+           'max_output_tokens', 'scrub_empty_strings', 'scrub_omitted_members', 'scrub_omitted_events', 'stream_sequence'}
 _ENUMS = {
     'observation': {'sdk_decoded'},
+    'stream_event': {'other', 'eof', 'response.created', 'response.in_progress',
+        'response.completed', 'response.incomplete', 'response.output_item.added',
+        'response.output_item.done', 'response.function_call_arguments.delta',
+        'response.function_call_arguments.done', 'response.content_part.added',
+        'response.content_part.done', 'response.output_text.delta', 'response.output_text.done',
+        'response.reasoning_summary_part.added', 'response.reasoning_summary_part.done',
+        'response.reasoning_summary_text.delta', 'response.reasoning_summary_text.done',
+        'response.reasoning_text.delta', 'response.reasoning_text.done'},
     'api': {'responses', 'completions', 'converse', 'normalized'},
     'response_status': {'completed', 'incomplete', 'failed', 'cancelled', 'in_progress', 'queued'},
     'incomplete_reason': {'max_output_tokens', 'content_filter', 'other'},
@@ -18,12 +26,12 @@ _ENUMS = {
                         'usage_object', 'usage_count', 'text_value', 'output_message',
                         'assistant_message', 'content_block', 'tool_identity', 'tool_input',
                         'tool_type', 'service_tier', 'reasoning_content',
-                        'unsupported_continuation'},
-    'validation_path': {'$', '$.model', '$.choices', '$.choices[].index',
-                        '$.choices[].message', '$.choices[].message.role',
+                        'unsupported_continuation', 'stream_state', 'stream_metadata', 'reasoning_aliases', 'summary_size'},
+    'validation_path': {'$', '$.model', '$.service_tier', '$.serving_revision', '$.choices', '$.choices[].index',
+                        '$.choices[].message', '$.choices[].message.role', '$.choices[].delta',
                         '$.choices[].message.annotations', '$.choices[].message.tool_calls[]',
                         '$.choices[].message.tool_calls[].function', '$.choices[].finish_reason',
-                        '$.status', '$.output', '$.output[]', '$.stopReason', '$.usage',
+                        '$.status', '$.output', '$.output[]', '$.output[].summary', '$.stopReason', '$.usage',
                         '$.usage.inputTokens', '$.usage.outputTokens', '$.usage.totalTokens',
                         '$.usage.cacheReadInputTokens', '$.usage.cacheWriteInputTokens',
                         '$.output.message', '$.output.message.content[]',
@@ -37,7 +45,7 @@ _ENUMS = {
                         '$.serviceTier.type'},
 }
 _STOPS = {'stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'other'}
-_IDENTIFIERS = {'request_id', 'response_id'}
+_IDENTIFIERS = {'request_id', 'response_id', 'validation_location'}
 _BOOLEANS = {'error_present', 'encrypted_reasoning_present'}
 _VERSION_KEYS = {'openai', 'httpx'}
 _CONTENT_KEYS = {'values', 'prompt', 'messages', 'response', 'provider_payload', 'provider_response',

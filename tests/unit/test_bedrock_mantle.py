@@ -596,3 +596,72 @@ def test_reasoning_off_remains_unsupported(effort, mode):
         m.encode(req, mode)
 
     assert error.value.kind == 'unsupported'
+
+
+@pytest.mark.parametrize('created_model,terminal_model', [
+    ('us.openai.gpt-6-luna', 'openai.gpt-6-luna'),
+    ('openai.gpt-6-luna', 'us.openai.gpt-6-luna'),
+])
+def test_responses_stream_preserves_actual_model_across_valid_profile_aliases(created_model, terminal_model):
+    events = response_stream()
+    events[0]['response']['model'] = created_model
+    events[1]['response']['model'] = created_model
+    events[-1]['response']['model'] = terminal_model
+    decoder = m.StreamDecoder('responses', selected_llm='us.openai.gpt-6-luna', endpoint='runtime')
+    for event in events:
+        decoder.feed(event)
+    result = decoder.finish()
+    assert result.payload.content[0].text == 'hi'
+    assert result.actual_model == terminal_model
+
+
+@pytest.mark.parametrize('field,initial,final', [
+    ('model', 'us.openai.gpt-6-luna', 'us.openai.gpt-5.6-luna'),
+    ('serving_revision', 'revision-a', 'revision-b'),
+])
+def test_responses_stream_still_rejects_changed_target_or_execution_metadata(field, initial, final):
+    events = response_stream()
+    for event in (events[0], events[1], events[-1]):
+        event['response']['model'] = 'us.openai.gpt-6-luna'
+    events[0]['response'][field] = initial
+    events[1]['response'][field] = initial
+    events[-1]['response'][field] = final
+    decoder = m.StreamDecoder('responses', selected_llm='us.openai.gpt-6-luna', endpoint='runtime')
+    with pytest.raises(ProviderAccessError):
+        for event in events:
+            decoder.feed(event)
+
+
+@pytest.mark.parametrize('initial,final', [('auto', 'default'), ('priority', 'default'), ('default', 'priority')])
+def test_responses_terminal_tier_reports_actual_processing(initial, final):
+    events = response_stream()
+    events[0]['response']['service_tier'] = initial
+    events[1]['response']['service_tier'] = initial
+    events[-1]['response']['service_tier'] = final
+    decoder = m.StreamDecoder('responses', selected_llm=MODEL)
+    for event in events:
+        decoder.feed(event)
+    result = decoder.finish()
+    assert result.service_tier == final
+    assert result.payload.content[0].text == 'hi'
+
+
+def test_automatic_tier_can_resolve_before_terminal():
+    events = response_stream()
+    events[0]['response']['service_tier'] = 'auto'
+    events[1]['response']['service_tier'] = 'default'
+    events[-1]['response']['service_tier'] = 'default'
+    decoder = m.StreamDecoder('responses', selected_llm=MODEL)
+    for event in events:
+        decoder.feed(event)
+    assert decoder.finish().service_tier == 'default'
+
+
+def test_in_progress_concrete_tier_drift_is_rejected():
+    events = response_stream()
+    events[0]['response']['service_tier'] = 'priority'
+    events[1]['response']['service_tier'] = 'default'
+    decoder = m.StreamDecoder('responses', selected_llm=MODEL)
+    decoder.feed(events[0])
+    with pytest.raises(ProviderAccessError):
+        decoder.feed(events[1])

@@ -149,6 +149,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
     failed_observation = None
     model_scrub = None
     inference_observed = False
+    stream_decoder_active = False
     try:
         json_value(request)
         if set(request) != {'operation', 'auth', 'payload', 'timeout'} or request['operation'] not in ALL_OPERATIONS:
@@ -274,6 +275,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             from api_agent.llm_providers.bedrock.normalized_stream import WorkerStream
             decoder = WorkerStream('responses' if response else 'completions', arguments['model'], secrets,
                 reasoning_format=reasoning_format, **({'endpoint': endpoint} if endpoint != 'mantle' else {}))
+            stream_decoder_active = True
             for event in body:
                 inference_observed = True
                 value = json_value(event.model_dump(exclude_unset=True))
@@ -406,6 +408,16 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             else:
                 emit(dict(result=value, **({'diagnostics': metadata} if metadata else {})))
     except Exception as error:
+        if stream_decoder_active:
+            from api_agent.providers.contracts import ProviderAccessError
+            from api_agent.llm_providers.bedrock.mantle import RESPONSE_CODES
+            if isinstance(error, ProviderAccessError) and error.code in RESPONSE_CODES:
+                from api_agent.telemetry.inference_diagnostics import scrub_diagnostics
+                from api_agent.telemetry.privacy import EmissionBoundary
+                decode_failure = error.code
+                failed_observation = scrub_diagnostics(dict(
+                    getattr(error, 'provider_diagnostics', {}), version=1,
+                    response_validation='rejected'), EmissionBoundary(secrets=secrets or ()))
         name = type(error).__name__
         status = getattr(error, 'status_code', None)
         if status is None:

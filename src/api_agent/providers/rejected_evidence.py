@@ -11,7 +11,7 @@ _MAX_BYTES = 524288
 _MAX_DEPTH = 20
 
 
-def _guard_response_fragments(leaves, secrets):
+def _guard_response_fragments(leaves, secrets, *, max_leaves=_MAX_LEAVES):
     """Conservatively recognize credentials assembled from independent leaves.
 
     Reachable credential offsets admit fragments in any order, even with other
@@ -26,7 +26,7 @@ def _guard_response_fragments(leaves, secrets):
         work += amount
         if work > _MAX_WORK:
             raise ContractError('Response evidence exceeds carrier protection limit.')
-    if len(leaves) > _MAX_LEAVES:
+    if len(leaves) > max_leaves:
         raise ContractError('Response evidence exceeds carrier protection limit.')
     fragments = set()
     for leaf in leaves:

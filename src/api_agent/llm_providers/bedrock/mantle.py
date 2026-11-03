@@ -446,8 +446,26 @@ class StreamDecoder:
         try:
             return self._feed(event)
         except ProviderAccessError as error:
-            raw = event.get('response', event) if type(event) is dict else None
-            raise _reported_error(error, raw, self.mode == 'responses')
+            self._raise_stream_error(error, event)
+
+    def _raise_stream_error(self, error, event):
+        from api_agent.telemetry.inference_diagnostics import _ENUMS
+        diagnostic = dict(getattr(error, 'provider_diagnostics', {
+            'version': 1, 'validation_rule': 'stream_state', 'validation_path': '$'}))
+        if self.mode == 'responses' and type(event) is dict:
+            kind = event.get('type')
+            diagnostic['stream_event'] = kind if type(kind) is str and kind in _ENUMS['stream_event'] else 'other'
+            sequence = event.get('sequence_number')
+            if type(sequence) is int and 0 <= sequence <= (1 << 53) - 1:
+                diagnostic['stream_sequence'] = sequence
+        trace = error.__traceback__
+        while trace is not None:
+            if trace.tb_frame.f_code.co_filename == __file__ and trace.tb_frame.f_code.co_name != '_require':
+                diagnostic['validation_location'] = f'api_agent.llm_providers.bedrock.mantle:{trace.tb_lineno}'
+            trace = trace.tb_next
+        error.provider_diagnostics = diagnostic
+        raw = event.get('response', event) if type(event) is dict else None
+        raise _reported_error(error, raw, self.mode == 'responses')
 
     def _feed(self, event):
         _require(not self.finished and self.terminal is None and type(event) is dict and event.get('error') is None)
@@ -470,10 +488,15 @@ class StreamDecoder:
         self.held_envelope = False
         return (StreamEvent(TextContent(fragment)),)
 
-    def _remember_metadata(self, raw):
+    def _remember_metadata(self, raw, *, terminal=False):
         for key, value in _metadata(raw).items():
             if value is not None:
-                _require(key not in self.metadata or self.metadata[key] == value)
+                if key in self.metadata and self.metadata[key] != value:
+                    # Runtime may report the geographic profile at creation
+                    # and its already-admitted underlying target at completion.
+                    _require((key == 'model' and same_model(value, self.model, self.endpoint))
+                             or (key == 'service_tier' and (self.metadata[key] == 'auto' or terminal)),
+                             rule='stream_metadata', path='$.' + key)
                 self.metadata[key] = value
 
     def _completions(self, event):
@@ -560,7 +583,7 @@ class StreamDecoder:
             _require(type(raw) is dict and raw.get('id') == self.identity and len(self.closed) == len(self.items)
                      and raw.get('output') == self.items
                      and raw.get('status') == ('completed' if kind == 'response.completed' else 'incomplete'))
-            self._remember_metadata(raw)
+            self._remember_metadata(raw, terminal=True)
             raw = {**raw, **self.metadata}
             decoded = decode(raw, self.mode, selected_llm=self.model, endpoint=self.endpoint)
             _require(decoded.payload.content == (TextContent(self.text),))
@@ -685,7 +708,11 @@ class StreamDecoder:
         return ()
 
     def finish(self):
-        _require(not self.finished and self.terminal is not None)
-        result = decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint, reasoning_format=self.reasoning_format)
-        self.finished = True
-        return result
+        try:
+            _require(not self.finished and self.terminal is not None)
+            result = decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint, reasoning_format=self.reasoning_format)
+            self.finished = True
+            return result
+        except ProviderAccessError as error:
+            self._raise_stream_error(error, {'type': 'eof', 'sequence_number': self.sequence,
+                                            'response': self.terminal})
