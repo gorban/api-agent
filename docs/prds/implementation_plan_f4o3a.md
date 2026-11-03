@@ -36,8 +36,9 @@ signatures, or undocumented fields.
   calls. Concurrent completed-call consumers share one success/error receipt.
 - [x] Close applicable unit coverage and independent/external review before
   human acceptance. Do not require every model to produce reasoning.
-- [ ] Human acceptance: inspect reasoning between calls, the settled final
-  answer and collapsed details on a selected supported route.
+- [x] Human acceptance: available reasoning before the final response and again
+  in retained response metadata approved on November 2, 2026. Broader model/API
+  qualification remains separate.
 
 Friendly translation is optional application behavior and can incur inference.
 Optional declarative summaries and replay preservation follow the

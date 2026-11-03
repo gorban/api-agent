@@ -100,7 +100,14 @@ def _catalog(data, subscription, token, *, base_url=None):
                            and type(supported) is list
                            and ('max_tokens' in supported or 'max_completion_tokens' in supported)
                            and (identifier == 'openai/gpt-6-luna' or maximum is not None))
-        features = (('reasoning_effort',) if efforts else ()) + (('max_output_tokens',) if limit_supported else ())
+        from .cache_policy import prompt_cache_fields
+        try:
+            prompt_cache_fields('medium', identifier, base_url=base_url, subscription=subscription)
+        except ProviderAccessError:
+            cache_features = ()
+        else:
+            cache_features = ('cache_policy',)
+        features = (('reasoning_effort',) if efforts else ()) + (('max_output_tokens',) if limit_supported else ()) + cache_features
         selections.append(AvailableSelection(identifier, description, display_name=name,
                           version=version if version is not None else inferred_version,
                           max_output_tokens=maximum, context_length=context, family=family,

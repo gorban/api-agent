@@ -23,7 +23,10 @@ Preserve separate graph executions beneath their actual user turns and conversat
 - [x] Deterministic production-path tests cover two turns in one conversation, a second conversation, multiple graph invocations in one turn, independent trials, failure/cancellation, duplicate delivery, conflicting identity and legacy history hydration.
 - [x] Verify new-chat request history excludes the previous chat; assert actual state/input separation in addition to distinct labels. Prove exact-once rollups with calls outside GRAPH and outside conversations, mixed rates and unavailable evidence.
 - [x] Complete applicable exact unit coverage, package/relocation and boundary checks, independent implementation review and external review.
-- [ ] Human inspection confirms grouping, costs and retry/error ancestor attention. Historical overlay UI remains a separate requirement.
+- [x] Human acceptance of conversation/turn grouping, restarted turn numbering and
+  exact-once cost totals, recorded on November 2, 2026.
+- [ ] Human inspection of retry/error ancestor attention. Historical overlay UI
+  remains a separate requirement.
 
 **Deferred human review**
 

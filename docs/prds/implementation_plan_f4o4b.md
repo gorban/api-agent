@@ -87,6 +87,7 @@ Synthetic strict-function output adaptation, optional preflight probes,
 configurable capability caches and newer-version candidate ordering remain in
 [capability discovery](implementation_plan_f1a2.md).
 
-- [ ] Human acceptance: follow the guide to switch providers in the TUI, select a
-  compatible model/API, inspect reasoning and tool evidence, and verify that the
-  support matrix accurately explains the observed fallback or rejection.
+- [x] Human acceptance of the Bedrock setup/support guide, including TUI provider
+  selection instructions, support matrix and troubleshooting, recorded on
+  November 2, 2026. This approves the guide; it does not establish additional
+  live model/API/tool qualification beyond the separately recorded evidence.
