@@ -2,6 +2,11 @@
 
 [Test execution](development.md#testing) · [Provider test profiles](integration_test_profiles.md)
 
+Before integration/E2E commands, save `ALLURE_S3_USE_LOCALSTACK=True` in Review
+configuration or append `--allure-s3-use-localstack=True` for managed local history.
+For external S3, choose False and supply `ALLURE_S3_BUCKET`. Unit tests need no
+report storage.
+
 Run all unit tests without selectors; require every test to pass and 100% line
 and branch coverage. Run integrations under the documented qualified settings
 needed to cover every applicable test. Providers can require different settings

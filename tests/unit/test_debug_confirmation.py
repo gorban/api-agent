@@ -107,7 +107,7 @@ def test_terminal_dispatch_confirms_before_runner(answer, expected_status):
                return_value=SimpleNamespace(exit_code=0, persisted=True,
                                             execution=IntegrationRunResult(0, (), ''))) as runner:
         status = main(['--tui-mode=integration', '--no-std-in', '--debug',
-                       '--allure-s3-bucket=synthetic'], base_root=ROOT)
+                       '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'], base_root=ROOT)
 
     assert status == expected_status, error.getvalue()
     assert 'up to 2' in output.getvalue()

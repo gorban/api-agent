@@ -18,23 +18,23 @@ def test_llm_only_declaration_exposes_generic_index_without_secondary_role():
     schema = selected_schema()
     assert 'UNATTENDED_SECONDARY_USER' not in schema.fields
     assert '--unattended-user-index' in generated_help(schema)
-    result = resolve_config(schema, environ={'TUI_MODE': 'run-local'}, argv=['--unattended-user-index=1'])
+    result = resolve_config(schema, environ={'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local'}, argv=['--unattended-user-index=1'])
     result.raise_for_errors()
     assert result.values['UNATTENDED_USER_INDEX'] == 1
     assert result.fields['UNATTENDED_USER_INDEX'].explicit
-    assert resolve_config(schema, environ={'TUI_MODE': 'run-local'}).values.get('UNATTENDED_USER_INDEX') is None
+    assert resolve_config(schema, environ={'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local'}).values.get('UNATTENDED_USER_INDEX') is None
     assert not schema.fields['UNATTENDED_USER_INDEX'].acknowledge_default
 
 @pytest.mark.parametrize('index', ['-1', 'invalid'])
 def test_invalid_declared_index_is_rejected(index):
-    assert resolve_config(selected_schema(), environ={'TUI_MODE': 'run-local'}, argv=['--unattended-user-index=' + index]).errors
+    assert resolve_config(selected_schema(), environ={'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local'}, argv=['--unattended-user-index=' + index]).errors
 
 
 def test_empty_cli_index_overrides_saved_and_environment_selection(tmp_path):
     path = tmp_path / '.env'
     path.write_text('UNATTENDED_USER_INDEX=2\n')
     result = resolve_config(selected_schema(), dotenv={'UNATTENDED_USER_INDEX': '2'},
-        environ={'TUI_MODE': 'run-local', 'UNATTENDED_USER_INDEX': '1'},
+        environ={'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'UNATTENDED_USER_INDEX': '1'},
         argv=['--unattended-user-index='])
     result.raise_for_errors()
     assert result.values['UNATTENDED_USER_INDEX'] is None
@@ -58,7 +58,7 @@ def test_optional_int_empty_only_when_declared_and_keeps_other_type_checks():
 
 @pytest.mark.parametrize('setting,expected', [(None, False), ('False', False), ('True', True)])
 def test_integration_ignores_run_ui_without_frontend_requirements(tmp_path, setting, expected):
-    environ = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic-results'}
+    environ = {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic-results'}
     if setting is not None:
         environ['RUN_UI'] = setting
     result = resolve_config(load_shared_schema(), environ=environ, anchors={'owner_root': tmp_path})

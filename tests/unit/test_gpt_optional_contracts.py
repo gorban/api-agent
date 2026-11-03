@@ -147,7 +147,10 @@ def test_plain_text_ignores_boundaries_and_accepts_native_budget(mode, lifetime)
     assert inference._payload(hinted, mode, False) == inference._payload(plain, mode, False)
     result, sent = complete(hinted, mode, 'structured', 'Answer')
     body = json.loads(sent[0].content)
-    assert body == inference._payload(plain, mode, False)
+    expected = inference._payload(plain, mode, False)
+    if mode == 'responses':
+        expected['include'] = ['reasoning.encrypted_content']
+    assert body == expected
     assert body['max_output_tokens' if mode == 'responses' else 'max_completion_tokens'] == 131072
     assert result.applied_cache_boundaries == ()
     assert result.usage == Usage(9, 3, 4)

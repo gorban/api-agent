@@ -1,5 +1,5 @@
 // Mirrors providers/catalog.py; no provider identities or capabilities are inferred.
-const features = ['tools', 'structured', 'temperature', 'max_output_tokens', 'cache_policy', 'reasoning_effort'];
+const features = ['tools', 'structured', 'temperature', 'max_output_tokens', 'cache_policy', 'reasoning_effort', 'display_reasoning'];
 const efforts = ['off', 'low', 'medium', 'high'];
 const bytes = x => JSON.stringify(x).replace(/[\u007f-\uffff]/g, character => '\\u' + character.charCodeAt(0).toString(16).padStart(4,'0')).length;
 export function normalizeCatalog(input) {

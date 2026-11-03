@@ -334,6 +334,11 @@ def test_trace_conditional_defaults_preserve_explicit_target(session):
     assert session.result().values['TRACE_TARGET'] == 'https://collector.example/traces'
     assert session.result().fields['TRACE_TARGET'].explicit
     session.set_value('TRACE_MODE', '')
+    assert 'TRACE_TARGET' not in session.result().values
+    assert 'TRACE_TARGET' not in session.result(_review=True).active_fields
+    assert read_dotenv(session.dotenv_path)['TRACE_TARGET'] == 'https://collector.example/traces'
+    assert next(row for row in session.cleanup_rows() if row.name == 'TRACE_TARGET').present
+    session.set_value('TRACE_MODE', 'OTEL')
     assert session.result().values['TRACE_TARGET'] == 'https://collector.example/traces'
     with pytest.raises(ConfigError):
         session.set_value('TRACE_MODE', 'otel')
@@ -442,3 +447,44 @@ def test_review_conditional_requirement_uses_effective_mode(session, mode, requi
     session.set_value('TRACE_MODE', 'other')
     session.save_defaults(['OTHER_DEFAULT'])
     assert read_dotenv(session.dotenv_path)['OTHER_DEFAULT'] == 'saved'
+
+
+@pytest.mark.parametrize('mode,skip,collect,required', [
+    ('integration', False, False, True), ('e2e', False, False, True),
+    ('unit', False, False, False), ('allure', False, False, False),
+    ('integration', True, False, False), ('e2e', False, True, False),
+])
+def test_allure_storage_choice_precedes_dependent_settings(session, mode, skip, collect, required):
+    from api_agent.config import load_shared_schema
+    session.schema = load_shared_schema()
+    session.argv = (f'--tui-mode={mode}', f'--skip-allure-reporting={skip}',
+                    f'--collect-only={collect}')
+    result = session.result()
+    assert ('ALLURE_S3_USE_LOCALSTACK' in result.missing) is required
+    assert 'ALLURE_S3_USE_LOCALSTACK' not in result.values
+    dependent = {'ALLURE_S3_BUCKET', 'ALLURE_S3_PREFIX', 'ALLURE_S3_ENDPOINT',
+                 'ALLURE_S3_REGION', 'ALLURE_LOCALSTACK_PORT'}
+    assert not dependent.intersection(session.result(_review=True).active_fields)
+
+
+@pytest.mark.parametrize('local', [True, False])
+def test_allure_explicit_storage_choice_reveals_defaults(session, local):
+    from api_agent.config import load_shared_schema
+    session.schema = load_shared_schema()
+    session.argv = ('--tui-mode=integration',)
+    session.set_value('ALLURE_S3_USE_LOCALSTACK', str(local), persist=True)
+    result = session.result()
+    assert 'ALLURE_S3_USE_LOCALSTACK' not in result.missing
+    assert result.values['ALLURE_S3_PREFIX'] == 'allure'
+    assert result.values['ALLURE_S3_REGION'] == 'us-east-1'
+    assert 'ALLURE_S3_ENDPOINT' in result.active_fields
+    assert ('ALLURE_LOCALSTACK_PORT' in result.active_fields) is local
+    if local:
+        assert result.values['ALLURE_S3_BUCKET'] == 'allure-results'
+        assert result.values['ALLURE_S3_ENDPOINT'] == 'http://localhost:4566'
+        assert 'ALLURE_S3_BUCKET' not in result.missing
+    else:
+        assert 'ALLURE_S3_BUCKET' in result.missing
+        assert 'ALLURE_S3_ENDPOINT' not in result.values
+    session.delete_keys(['ALLURE_S3_USE_LOCALSTACK'])
+    assert 'ALLURE_S3_BUCKET' not in session.result(_review=True).active_fields

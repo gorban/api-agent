@@ -45,12 +45,12 @@ def test_default_port_remains_compatible(tmp_path):
     from api_agent.config.declarations import ConfigSchema
     from api_agent.config.session import ConfigSession
     shared=load_shared_schema()
-    schema=ConfigSchema({name:shared.fields[name] for name in ('NO_STD_IN','TUI_MODE','COLLECT_ONLY','ALLURE_LOCALSTACK_PORT')})
-    invalid=resolve_config(schema,argv=['--tui-mode=integration'],environ={},overrides={'ALLURE_LOCALSTACK_PORT':None})
+    schema=ConfigSchema({name:shared.fields[name] for name in ('NO_STD_IN','TUI_MODE','COLLECT_ONLY','SKIP_ALLURE_REPORTING','ALLURE_S3_USE_LOCALSTACK','ALLURE_LOCALSTACK_PORT')})
+    invalid=resolve_config(schema,argv=['--tui-mode=integration','--allure-s3-use-localstack=True'],environ={},overrides={'ALLURE_LOCALSTACK_PORT':None})
     assert invalid.errors==('ALLURE_LOCALSTACK_PORT: external values must be strings',)
     assert 'ALLURE_LOCALSTACK_PORT' not in invalid.values
     context=SimpleNamespace(base_root=tmp_path,pack_root=tmp_path,external_pack=False,dotenv_path=tmp_path/'.env',anchors={})
-    session=ConfigSession(context,schema,argv=['--tui-mode=integration'],environ={})
+    session=ConfigSession(context,schema,argv=['--tui-mode=integration','--allure-s3-use-localstack=True'],environ={})
     assert session.set_value('ALLURE_LOCALSTACK_PORT','14566',persist=True).values['ALLURE_LOCALSTACK_PORT']==14566
     cleared=session.unset_saved('ALLURE_LOCALSTACK_PORT')
     assert not cleared.errors

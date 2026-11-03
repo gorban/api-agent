@@ -12,7 +12,7 @@ from api_agent.providers.llm import LLMRequest, LLMResult, Message, StreamEvent,
 from api_agent.providers.rich_inference import object_json, request_to_wire, schema, continuation
 from api_agent.providers.response_metadata import _logprobs
 from .catalog import selection
-from .reasoning_carrier import may_be_envelope, final_answer
+from .reasoning_carrier import may_be_envelope, final_answer, display_reasoning
 
 _LIMIT = 524288
 _REASONS = {'stop': 'completed', 'tool_calls': 'tool_calls', 'length': 'length', 'content_filter': 'refused'}
@@ -83,7 +83,7 @@ def _cipher(value, *, empty=False):
 
 
 def native_state(items, message=None):
-    """Validate exact native replay rows; never retain plaintext reasoning."""
+    """Validate exact native replay rows independently of display projections."""
     _bounded(items)
     _require(type(items) is list and 1 <= len(items) <= 64)
     text, tools, identifiers = [], [], set()
@@ -93,9 +93,7 @@ def native_state(items, message=None):
         kind = item.get('type')
         if kind == 'reasoning':
             _reasoning(item)
-            _require(set(item) <= {'type', 'id', 'status', 'summary', 'content', 'encrypted_content'}
-                     and item.get('summary') == [] and item.get('content') in (None, []))
-            _cipher(item.get('encrypted_content'))
+            _require(item.get('encrypted_content') is not None or bool(item.get('content')))
             replay_metadata = True
         elif kind == 'message':
             _require(set(item) <= {'type', 'id', 'status', 'role', 'content', 'phase'}
@@ -125,7 +123,7 @@ def native_state(items, message=None):
             _require(len(identifier) <= 200 and identifier.isprintable() and identifier not in identifiers)
             identifiers.add(identifier)
     calls = _calls(tools, True)
-    _require(bool(calls) and replay_metadata)
+    _require(replay_metadata)
     visible = (TextContent(_text(''.join(text))),)
     if message is not None:
         _require(message.role == 'assistant' and not message.results
@@ -133,13 +131,35 @@ def native_state(items, message=None):
     return deepcopy(items)
 
 
-def continuation_state(message):
+def completion_state(items, message):
+    """Preserve the exact native plaintext carrier for supported tool histories."""
+    _require(type(items) is list and len(items) == 1)
+    row = items[0]
+    tagged = type(row) is dict and row.get('type') == 'tagged_completion'
+    if tagged:
+        _require(set(row) == {'type', 'message'})
+        row = row['message']
+    _fields(row, {'role', 'content', 'tool_calls', 'reasoning', 'reasoning_content', 'annotations'})
+    _require(row.get('role') == 'assistant' and row.get('annotations') in (None, [])
+             and (tagged or any(bool(row.get(key)) for key in ('reasoning', 'reasoning_content'))))
+    for key in ('reasoning', 'reasoning_content'):
+        if row.get(key) is not None:
+            _text(row[key])
+    content = '' if row.get('content') is None else _text(row['content'])
+    if tagged:
+        content = final_answer(content, 'tagged')
+    _require(message.content == (TextContent(content),) and message.calls == _calls(row.get('tool_calls', []), False))
+    return [deepcopy(row)]
+
+
+def continuation_state(message, api_mode='responses'):
     """Validate a provider-owned envelope without interpreting its owner seal."""
     try:
         envelope = continuation(message.continuation)
-        if re.fullmatch(r'bedrock\.responses(?:\.[0-9a-f]{64})?', envelope['provider']) is None:
+        if re.fullmatch(r'bedrock\.' + re.escape(api_mode) + r'(?:\.[0-9a-f]{64})?', envelope['provider']) is None:
             raise ContractError('Invalid Bedrock continuation provider')
-        return native_state(envelope['state'], message)
+        return (native_state(envelope['state'], message) if api_mode == 'responses'
+                else completion_state(envelope['state'], message))
     except (ProviderAccessError, ContractError, ValueError):
         raise ProviderAccessError('invalid_request', 'Invalid Bedrock Responses continuation.') from None
 
@@ -158,9 +178,7 @@ def validate_request(request, *, endpoint="mantle", api_mode="completions"):
         raise ProviderAccessError('unsupported', 'Bedrock request feature is unsupported.')
     for message in payload.messages:
         if message.continuation is not None:
-            if api_mode != 'responses':
-                raise ProviderAccessError('unsupported', 'Bedrock continuation requires Responses.')
-            continuation_state(message)
+            continuation_state(message, api_mode)
     maximum_temperature = 1 if request.selected_llm.startswith('zai.') else 2
     if payload.generation.temperature is not None and payload.generation.temperature > maximum_temperature:
         raise ProviderAccessError('invalid_request', 'Bedrock model temperature is out of range.')
@@ -180,7 +198,7 @@ def encode(request, api_mode, *, endpoint="mantle"):
     for message in payload.messages:
         text = ''.join(part.text for part in message.content)
         if message.continuation is not None:
-            items.extend(continuation_state(message))
+            items.extend(continuation_state(message, api_mode))
             continue
         if response:
             if message.content:
@@ -322,7 +340,8 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle", reasoning_format=
             _require(type(item) is dict)
             if item.get('type') == 'reasoning':
                 _reasoning(item, incomplete=raw['status'] == 'incomplete')
-                summaries.extend(part['text'] for part in item['summary'])
+                display = item['summary'] or item.get('content') or []
+                summaries.extend(part['text'] for part in display)
             elif item.get('type') == 'function_call':
                 _call_metadata(item)
                 _require(item.get('status', 'completed') == 'completed')
@@ -357,8 +376,8 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle", reasoning_format=
         _require(message.get('role') == 'assistant', rule='assistant_role', path='$.choices[].message.role')
         for field in ('reasoning_content', 'reasoning'):
             if message.get(field) is not None:
-                _text(message[field])
-        native_reasoning = any(message.get(field) is not None for field in ('reasoning_content', 'reasoning'))
+                summaries.append(_text(message[field]))
+        native_reasoning = any(bool(message.get(field)) for field in ('reasoning_content', 'reasoning'))
         content = message.get('content')
         text = [] if content is None else [_text(content)]
         calls = _calls(message.get('tool_calls', []), False)
@@ -370,13 +389,19 @@ def _decode(raw, api_mode, *, selected_llm, endpoint="mantle", reasoning_format=
         reason = _REASONS[finish]
     content = _text(''.join(text))
     if not response and not native_reasoning:
+        summaries.append(display_reasoning(content, reasoning_format, incomplete=reason == 'length'))
         content = final_answer(content, reasoning_format, incomplete=reason == 'length')
     metadata = _metadata(raw)
     summary = ''.join(summaries)
     _require(len(summary.encode('utf-8')) <= 65536,
              rule='summary_size', path='$.output[].summary')
     state = None
-    if response and calls and any(item.get('type') == 'reasoning' and item.get('encrypted_content') is not None
+    if not response and native_reasoning and reason in ('completed', 'tool_calls'):
+        state = json.dumps({'provider': 'bedrock.completions', 'state': [message]}, allow_nan=False, separators=(',', ':'))
+    if not response and not native_reasoning and reason in ('completed', 'tool_calls') and content != (message.get('content') or ''):
+        state = json.dumps({'provider': 'bedrock.completions', 'state': [
+            {'type': 'tagged_completion', 'message': message}]}, allow_nan=False, separators=(',', ':'))
+    if response and reason != 'length' and any(item.get('type') == 'reasoning' and (item.get('encrypted_content') is not None or bool(item.get('content')))
             or item.get('type') == 'message' and (item.get('phase') is not None
                 or any('logprobs' in part for part in item.get('content', []))) for item in raw['output']):
         rows = native_state(raw['output'])
@@ -399,6 +424,7 @@ class StreamDecoder:
         self.released = 0
         self.held_envelope = False
         self.native_reasoning = False
+        self.reasoning = {'reasoning_content': '', 'reasoning': ''}
         self.mode, self.model = api_mode, selected_llm
         self.finished = False
         self.terminal = None
@@ -462,7 +488,7 @@ class StreamDecoder:
             _require(self.reason is not None)
             self.terminal = {**self.metadata, 'usage': event.get('usage'), 'choices': [{'index': 0,
                 'message': {'role': 'assistant', 'content': self.text, 'tool_calls': list(self.tools.values()),
-                            **({'reasoning_content': ''} if self.native_reasoning else {})},
+                            **(self.reasoning if self.native_reasoning else {})},
                 'finish_reason': self.reason}]}
             decode(self.terminal, self.mode, selected_llm=self.model, endpoint=self.endpoint, reasoning_format=self.reasoning_format)
             return ()
@@ -478,8 +504,10 @@ class StreamDecoder:
         events = ()
         for field in ('reasoning_content', 'reasoning'):
             if delta.get(field) is not None:
-                _text(delta[field])
-                self.native_reasoning = True
+                self.reasoning[field] = _text(self.reasoning[field] + _text(delta[field]))
+                self.native_reasoning = any(bool(value) for value in self.reasoning.values())
+        _require(sum(bool(value) for value in self.reasoning.values()) <= 1,
+                 rule='reasoning_aliases', path='$.choices[].delta')
         if delta.get('content') is not None:
             events = self._emit(delta['content'])
         rows = delta.get('tool_calls')

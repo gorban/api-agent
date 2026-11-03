@@ -96,6 +96,56 @@ def test_corrected_terminal_summary_replaces_streamed_summary():
     asyncio.run(run())
 
 
+def test_physical_retry_keeps_discarded_progress_out_of_authoritative_summary():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from api_agent.providers.control import OperationalError
+    from api_agent.providers.shared_setup import SharedSetupOwner
+    from api_agent.providers.presentation import complete_with_progress
+
+    async def run():
+        attempts = []
+
+        class Provider:
+            capabilities = SimpleNamespace(operations=('stream',))
+
+            async def astream(self, value, *, auth):
+                attempts.append(value.request_id)
+                if len(attempts) == 1:
+                    yield StreamEvent(TextContent('Discarded attempt.'), kind='reasoning_summary')
+                    raise OperationalError('network', execution='possibly_executed')
+                yield StreamEvent(TextContent('Successful attempt.'), kind='reasoning_summary')
+                yield StreamEvent(TextContent('Ok'))
+                yield StreamEvent(result('Successful attempt.'), kind='completed')
+
+        async def call(callback):
+            return await callback(auth=object())
+
+        provider = Provider()
+        async def invoke(value, *, auth):
+            return await complete_with_progress(provider, value, auth=auth)
+        shared = SharedSetupOwner('progress-operation', 'progress-provider',
+            lambda _: SimpleNamespace(call=call, aclose=AsyncMock()), complete=invoke, max_attempts=2)
+        async def complete(value, **options):
+            final = await shared.complete(value)
+            await present_summary(final, request_id=value.request_id)
+            return final
+        backend, _ = setup_bridge(complete=complete)
+        try:
+            response = await backend.handle(request('POST', payload()), 'chat_stream')
+            frames = [frame.decode() async for frame in response.streaming_content]
+            assert any('Discarded attempt.' in frame for frame in frames if frame.startswith('event: reasoning_token'))
+            final = json.loads(next(frame for frame in frames if frame.startswith('event: result')).split('data: ')[1])
+            assert final['reasoning_summary'] == 'Successful attempt.'
+            assert final['response_text'] == 'Ok'
+            assert len(attempts) == 2
+        finally:
+            await backend.aclose()
+            await shared.aclose()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('tail', ['duplicate', 'late_summary'])
 def test_late_or_duplicate_stream_completion_is_failure(tail):
     async def stream(value, **options):

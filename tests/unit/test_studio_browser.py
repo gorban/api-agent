@@ -11,6 +11,17 @@ CONVERSATION = '11111111-1111-4111-8111-111111111111'
 TURN = '22222222-2222-4222-8222-222222222222'
 
 
+@pytest.mark.asyncio
+async def test_response_observer_runs_inside_owned_turn_before_final_capture(studio):
+    async def inspect(page):
+        assert page is studio.page
+        studio.capture.assert_not_awaited()
+    observer = AsyncMock(side_effect=inspect)
+    assert await browser_prompt(studio.session, observe_response=observer) == 'Ok'
+    observer.assert_awaited_once_with(studio.page)
+    studio.capture.assert_awaited_once()
+
+
 class Locator:
     def __init__(self, text='', value='', state='settled'):
         self.text = text

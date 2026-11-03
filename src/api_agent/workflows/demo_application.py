@@ -72,7 +72,7 @@ class UsefulDemoApplication:
                     raise WorkflowError('Useful demo changed selected model')
                 result = await llm.complete(value, context=context)
                 from api_agent.providers.presentation import present_summary
-                await present_summary(result)
+                await present_summary(result, request_id=value.request_id)
                 return result
 
             services['llm'] = selected
@@ -80,7 +80,7 @@ class UsefulDemoApplication:
             values = await workflow.arun({'messages': messages})
             rendered = result_store.get('rendered_result', services.get('rendered_result'))
             if (rendered is None or values.get('render', {}).get('selected_model') != request.selected_llm
-                    or values['render'].get('response_text') != result_to_wire(rendered)['text']):
+                    or values['render'].get('response_text') != ''.join(part.text for part in rendered.payload.content)):
                 raise WorkflowError('Useful demo did not render through its selected model')
             return rendered
         finally:

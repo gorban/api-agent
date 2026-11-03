@@ -58,7 +58,7 @@ class NativeScope:
     def _provider(self, state):
         body = json.dumps([self.route, self.identity, state], sort_keys=True,
                           separators=(',', ':'), allow_nan=False).encode()
-        return 'bedrock.responses.' + hmac.digest(self.key, body, 'sha256').hex()
+        return 'bedrock.' + self.route[1] + '.' + hmac.digest(self.key, body, 'sha256').hex()
 
     def seal(self, result):
         value = result.payload.continuation
@@ -67,7 +67,7 @@ class NativeScope:
         try:
             self._ready()
             envelope = continuation(value)
-            if envelope['provider'] != 'bedrock.responses':
+            if envelope['provider'] != 'bedrock.' + self.route[1]:
                 raise ProviderAccessError('unknown', 'Invalid Bedrock native continuation publication.')
         except (ProviderAccessError, ContractError) as error:
             error.usage = result.usage

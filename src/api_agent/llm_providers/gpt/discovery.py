@@ -92,12 +92,14 @@ def _catalog(data, subscription, token, *, base_url=None):
         family, inferred_version = _selection_identity(identifier)
         from .reasoning import reasoning_efforts
         efforts = reasoning_efforts(identifier, base_url=base_url)
-        # This exact route/model is qualified separately; catalog parameters alone
-        # do not establish equivalent support across all models and routes.
+        # OpenRouter declares token-limit support and its finite output ceiling.
+        # Retain the previously qualified Luna route when its ceiling is omitted;
+        # other selections need both pieces of metadata before shared clamping.
         supported = row.get('supported_parameters')
         limit_supported = (not subscription and base_url == 'https://openrouter.ai/api/v1'
-                           and identifier == 'openai/gpt-6-luna'
-                           and type(supported) is list and 'max_tokens' in supported)
+                           and type(supported) is list
+                           and ('max_tokens' in supported or 'max_completion_tokens' in supported)
+                           and (identifier == 'openai/gpt-6-luna' or maximum is not None))
         features = (('reasoning_effort',) if efforts else ()) + (('max_output_tokens',) if limit_supported else ())
         selections.append(AvailableSelection(identifier, description, display_name=name,
                           version=version if version is not None else inferred_version,

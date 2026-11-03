@@ -268,9 +268,11 @@ def reasoning():
             'content':[{'type':'reasoning_text','text':'private thought'}]}
 
 
-def test_native_reasoning_is_validated_but_never_exposed_or_continued():
+def test_native_reasoning_keeps_answer_separate_and_retains_exact_provider_items():
     result=m.decode(response([reasoning(),message()]),'responses',selected_llm=MODEL)
-    assert result.payload.content==(TextContent('hi'),) and result.payload.continuation is None
+    import json
+    assert result.payload.content==(TextContent('hi'),)
+    assert json.loads(result.payload.continuation)['state']==[reasoning(),message()]
 
 
 def test_reasoning_capture_cannot_make_an_empty_answer_a_valid_measurement():
@@ -313,7 +315,9 @@ def test_reasoning_stream_is_bounded_checked_and_silent(summary):
         {'type':'response.completed','response':response([done])}]
     for index,event in enumerate(events):
         assert decoder.feed(event|{'sequence_number':index})==()
-    assert decoder.finish().payload==Message('assistant',(TextContent(''),))
+    result=decoder.finish()
+    assert result.payload.content==(TextContent(''),)
+    assert bool(result.payload.continuation) is (not summary)
 
 
 def test_response_without_content_is_valid():
@@ -349,7 +353,7 @@ def test_default_token_bound_and_explicit_override():
     assert m.encode(request(generation=GenerationOptions(max_output_tokens=40)),'completions')['max_tokens']==40
 
 
-def test_chat_native_reasoning_is_suppressed_in_result_and_stream():
+def test_chat_native_reasoning_is_separate_from_answer_and_preserved_for_replay():
     raw=completion();raw['choices'][0]['message']['reasoning_content']='private thought'
     assert m.decode(raw,'completions',selected_llm=MODEL).payload.content==(TextContent('hi'),)
     decoder=m.StreamDecoder('completions',selected_llm=MODEL)
@@ -358,7 +362,8 @@ def test_chat_native_reasoning_is_suppressed_in_result_and_stream():
     emitted=[]
     for event in events:emitted.extend(decoder.feed(event))
     assert [event.payload.text for event in emitted]==['hi']
-    assert decoder.finish().payload.continuation is None
+    import json
+    assert json.loads(decoder.finish().payload.continuation)['state'][0]['reasoning_content'] == 'private thought'
 
 
 @pytest.mark.parametrize('value',[1,pytest.param('x'*(m._LIMIT+1), id='over-limit')])
@@ -555,10 +560,11 @@ def test_nullable_execution_context_is_absence(field):
     assert m.decode(response([call(True)|{field:None}]),'responses',selected_llm=MODEL).payload.calls==(ToolCall('c','lookup','{}'),)
 
 
-@pytest.mark.parametrize('field',['content','encrypted_content','status'])
-def test_nullable_reasoning_metadata_is_absence(field):
+@pytest.mark.parametrize('field,retained',[('content',False),('encrypted_content',True),('status',True)])
+def test_nullable_reasoning_metadata_is_absence(field,retained):
     result=m.decode(response([reasoning()|{field:None},message()]),'responses',selected_llm=MODEL)
-    assert result.payload.content==(TextContent('hi'),) and result.payload.continuation is None
+    assert result.payload.content==(TextContent('hi'),)
+    assert bool(result.payload.continuation) is retained
 
 
 @pytest.mark.parametrize('mode', ['completions', 'responses'])

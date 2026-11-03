@@ -95,6 +95,9 @@ review_optional = true
 conditional_defaults = [{when = {TRACE_MODE = "LangFuse"}, value = "http://localhost:3000"}, {when = {TRACE_MODE = "OTEL"}, value = "http://localhost:4318/v1/traces"}]
 help = "Optional trace destination. Defaults to the selected trace mode's local endpoint. Managed LangFuse recognizes exactly http://localhost:3000 or http://127.0.0.1:3000, each with zero or one trailing slash. Other valid LangFuse URL spellings are custom endpoints: supply explicit credentials; no local stack is started."
 
+[fields.TRACE_TARGET.applies_when]
+TRACE_MODE = ["LangFuse", "OTEL"]
+
 [fields.JAEGER_VIEWER_PORT]
 type = "int"
 default = 16686
@@ -366,8 +369,12 @@ COLLECT_ONLY = false
 
 [fields.ALLURE_S3_USE_LOCALSTACK]
 type = "bool"
-default = false
-help = "Use managed local S3 for result history. True defaults the bucket to allure-results and endpoint to http://localhost:4566; compatible launches share the same managed installation and namespace. False with an explicit endpoint publishes to that service without managing containers, even for loopback. Remote S3 requires False and an explicit bucket."
+review_optional = true
+help = "Choose True or False before configuring result history. Use managed local S3 for result history. True defaults the bucket to allure-results and endpoint to http://localhost:4566; compatible launches share the same managed installation and namespace. False with an explicit endpoint publishes to that service without managing containers, even for loopback. Remote S3 requires False and an explicit bucket."
+[fields.ALLURE_S3_USE_LOCALSTACK.required_when]
+TUI_MODE = ["integration", "e2e"]
+SKIP_ALLURE_REPORTING = false
+COLLECT_ONLY = false
 [fields.ALLURE_S3_USE_LOCALSTACK.applies_when]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
@@ -405,6 +412,7 @@ validation = "positive"
 acknowledge_default = false
 help = "Loopback host port for the owned LocalStack instance. Set ALLURE_S3_ENDPOINT to the same port when overriding it."
 [fields.ALLURE_LOCALSTACK_PORT.applies_when]
+ALLURE_S3_USE_LOCALSTACK = true
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
@@ -416,6 +424,7 @@ help = "Required S3 bucket for integration/E2E result history. Automatically def
 TUI_MODE = ["integration", "e2e"]
 SKIP_ALLURE_REPORTING = false
 [fields.ALLURE_S3_BUCKET.applies_when]
+ALLURE_S3_USE_LOCALSTACK = [true, false]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
@@ -424,6 +433,7 @@ type = "str"
 default = "allure"
 help = "S3 prefix for separate repository/run histories. Existing runs are retained."
 [fields.ALLURE_S3_PREFIX.applies_when]
+ALLURE_S3_USE_LOCALSTACK = [true, false]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
@@ -432,6 +442,7 @@ type = "str"
 conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "http://localhost:4566"}]
 help = "Optional S3-compatible endpoint; omitted uses AWS S3. With ALLURE_S3_USE_LOCALSTACK=False, an explicit endpoint is publication-only and never starts, initializes or stops containers."
 [fields.ALLURE_S3_ENDPOINT.applies_when]
+ALLURE_S3_USE_LOCALSTACK = [true, false]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
@@ -440,6 +451,7 @@ type = "str"
 default = "us-east-1"
 help = "AWS signing region for result storage, including LocalStack."
 [fields.ALLURE_S3_REGION.applies_when]
+ALLURE_S3_USE_LOCALSTACK = [true, false]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 

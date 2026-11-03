@@ -27,7 +27,7 @@ def test_verified_native_mapping(model, mode, effort):
     assert body['model'] == model
 
 
-@pytest.mark.parametrize('base,model', [('https://compatible.example/v1','gpt-6-luna'), ('https://openrouter.ai/api/v1','openai/gpt-unknown'), (BASE,'gpt-6-luna-2026-10-15'), (BASE,'gpt-unknown')])
+@pytest.mark.parametrize('base,model', [('https://compatible.example/v1','gpt-6-luna'), ('https://openrouter.ai/api/v1','openai/gpt-unknown'), (BASE,'gpt-6-luna-2026-10-15'), (BASE,'gpt-unknown'), (BASE,'gpt-6.1-terra')])
 def test_unknown_contract_rejects_explicit_effort(base, model):
     assert reasoning_efforts(model, base_url=base) is None
     with pytest.raises(ProviderAccessError, match='not verified'):
@@ -82,6 +82,21 @@ def test_openrouter_verified_mapping_requires_parameter_support(mode, model, eff
     fields = reasoning_fields(req, base_url='https://openrouter.ai/api/v1', api_mode=mode)
     assert fields == {'reasoning':{'effort':'none' if effort == 'off' else effort},
                       'provider':{'require_parameters':True, 'allow_fallbacks':False}}
+
+
+@pytest.mark.parametrize('mode', ('responses', 'completions'))
+@pytest.mark.parametrize('effort', ('off', 'low', 'medium', 'high'))
+def test_openrouter_terra_61_catalog_control_reaches_the_native_request(mode, effort):
+    model = 'openai/gpt-6.1-terra'
+    selection, = _catalog({'data': [{'id': model}]}, False, 'synthetic-token',
+                         base_url='https://openrouter.ai/api/v1')
+    assert selection.reasoning_efforts == ('off', 'low', 'medium', 'high')
+    selection.validate(request(model, effort))
+    _, body = validate_text_request(base_url='https://openrouter.ai/api/v1',
+        access_token='synthetic-token', subscription=False, api_mode=mode,
+        request=request(model, effort))
+    assert body['reasoning']['effort'] == ('none' if effort == 'off' else effort)
+    assert body['provider'] == {'require_parameters': True, 'allow_fallbacks': False}
 
 
 @pytest.mark.parametrize('effort', (None, '', 'off', 'low', 'medium', 'high'))
@@ -220,6 +235,27 @@ def test_openrouter_catalog_exposes_output_limit_only_when_advertised():
     assert 'max_output_tokens' in luna.features
     assert luna.max_output_tokens == 16384
     assert 'max_output_tokens' not in sol.features
+
+
+@pytest.mark.parametrize('model', ('openai/gpt-6.1-sol', 'openai/gpt-6.1-terra', 'openai/gpt-oss-20b'))
+@pytest.mark.parametrize('parameter', ('max_tokens', 'max_completion_tokens'))
+@pytest.mark.parametrize('mode,field', (('responses', 'max_output_tokens'), ('completions', 'max_completion_tokens')))
+def test_advertised_openrouter_ceiling_replaces_small_text_fallback(model, parameter, mode, field):
+    from api_agent.providers.output_limits import clamp_request
+    selection, = _catalog({'data': [{'id': model, 'supported_parameters': [parameter],
+        'top_provider': {'max_completion_tokens': 128000}}]}, False,
+        'synthetic-token', base_url='https://openrouter.ai/api/v1')
+    prepared = clamp_request(request(model), selection, 200000)
+    assert prepared.payload.generation.max_output_tokens == 128000
+    _, body = validate_text_request(base_url='https://openrouter.ai/api/v1',
+        access_token='synthetic-token', subscription=False, api_mode=mode, request=prepared)
+    assert body[field] == 128000
+    assert body['provider']['require_parameters'] is True
+    bounded = LLMRequest(model, CompletionRequest((Message('user', (TextContent('Hello'),)),),
+        generation=GenerationOptions(max_output_tokens=4096)))
+    assert clamp_request(bounded, selection, 200000).payload.generation.max_output_tokens == 4096
+    if model == 'openai/gpt-oss-20b':
+        assert selection.reasoning_efforts is None
 
 
 @pytest.mark.parametrize('base, supported', [

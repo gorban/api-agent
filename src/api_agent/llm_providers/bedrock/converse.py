@@ -4,10 +4,12 @@ https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.htm
 The SDK owns authentication and transport; this module has no side effects.
 """
 import json
+import re
+from copy import deepcopy
 
 from api_agent.providers.contracts import ContractError, ProviderAccessError
 from api_agent.providers.llm import LLMRequest, LLMResult, Message, TextContent, ToolCall, Usage
-from api_agent.providers.rich_inference import request_to_wire, schema
+from api_agent.providers.rich_inference import continuation, request_to_wire, schema
 from .catalog import selection
 from .mantle import _bounded, _fields, _require, _text
 
@@ -23,11 +25,14 @@ def validate_request(request, *, endpoint='runtime', api_mode='converse'):
     if (payload.structured is not None and not payload.structured.strict
             or payload.generation.cache_policy is not None
             or payload.generation.reasoning_effort not in (None, '')
-            or any(message.cache_boundary is not None or message.continuation is not None
+            or any(message.cache_boundary is not None
                    for message in payload.messages)):
         raise ProviderAccessError('unsupported', 'Bedrock Converse request feature is unsupported.')
     if payload.generation.temperature is not None and payload.generation.temperature > 1:
         raise ProviderAccessError('invalid_request', 'Bedrock Converse temperature must be at most 1.')
+    for message in payload.messages:
+        if message.continuation is not None:
+            continuation_message(message, request.selected_llm)
     try:
         request_to_wire(request)
     except ContractError:
@@ -43,11 +48,31 @@ def _append(messages, role, content):
         messages.append({'role': role, 'content': content})
 
 
+def continuation_message(message, selected_llm):
+    """Validate exact signed native blocks before sending them back to AWS."""
+    try:
+        envelope = continuation(message.continuation)
+        if re.fullmatch(r'bedrock\.converse(?:\.[0-9a-f]{64})?', envelope['provider']) is None or len(envelope['state']) != 1:
+            raise ContractError('Invalid Converse continuation owner')
+        native = envelope['state'][0]
+        parsed = decode({'output': {'message': native}, 'stopReason':'end_turn',
+                         'usage':{'inputTokens':0,'outputTokens':0,'totalTokens':0}}, selected_llm=selected_llm)
+        if (parsed.payload.continuation is None or message.role != 'assistant' or message.calls or message.results
+                or parsed.payload.content != message.content):
+            raise ContractError('Converse continuation differs from its visible message')
+        return deepcopy(native)
+    except (ContractError, ProviderAccessError, ValueError, TypeError):
+        raise ProviderAccessError('invalid_request', 'Invalid Bedrock Converse continuation.') from None
+
+
 def encode(request, api_mode='converse', *, endpoint='runtime'):
     validate_request(request, endpoint=endpoint, api_mode=api_mode)
     payload = request.payload
     system, messages = [], []
     for message in payload.messages:
+        if message.continuation is not None:
+            messages.append(continuation_message(message, request.selected_llm))
+            continue
         blocks = [{'text': part.text} for part in message.content if part.text]
         if message.role == 'system':
             system.extend(blocks)
@@ -138,14 +163,14 @@ def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
                  and len(message['content']) <= 64, rule='assistant_message', path='$.output.message')
         text, calls, seen = [], [], set()
         has_reasoning = False
+        display = []
         for block in message['content']:
             _require(type(block) is dict and len(block) == 1,
                      rule='content_block', path='$.output.message.content[]')
             if 'text' in block:
                 text.append(_text_at(block['text'], '$.output.message.content[].text'))
             elif 'reasoningContent' in block:
-                # AWS permits omitting prior thinking for completed non-tool
-                # replies. Tool continuations must retain signed state instead.
+                # Display is separate from the exact signed replay carrier.
                 path = '$.output.message.content[].reasoningContent'
                 reasoning = block['reasoningContent']
                 _require(type(reasoning) is dict and set(reasoning) == {'reasoningText'},
@@ -156,6 +181,7 @@ def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
                          and ('signature' not in value or type(value['signature']) is str),
                          rule='reasoning_content', path=path + '.reasoningText')
                 has_reasoning = True
+                display.append(_text_at(value['text'], path + '.reasoningText.text'))
             else:
                 _require('toolUse' in block, rule='content_block', path='$.output.message.content[]')
                 tool = block['toolUse']
@@ -191,8 +217,10 @@ def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
             _require(type(tier) is dict and set(tier) == {'type'},
                      rule='service_tier', path='$.serviceTier')
             tier = _text_at(tier['type'], '$.serviceTier.type', empty=False)
-        return LLMResult(Message('assistant', (TextContent(_text_at(''.join(text), '$.output.message.content[]')),), tuple(calls)),
-                         _usage(raw.get('usage')), outcomes[reason], service_tier=tier)
+        state = json.dumps({'provider':'bedrock.converse','state':[message]}, allow_nan=False, separators=(',', ':')) if has_reasoning else None
+        return LLMResult(Message('assistant', (TextContent(_text_at(''.join(text), '$.output.message.content[]')),), tuple(calls), continuation=state),
+                         _usage(raw.get('usage')), outcomes[reason], service_tier=tier,
+                         reasoning_summary=''.join(display) or None)
     except ProviderAccessError as error:
         error.execution = 'possibly_executed'
         if type(raw) is dict and type(raw.get('usage')) is dict:

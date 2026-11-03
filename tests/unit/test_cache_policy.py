@@ -415,7 +415,8 @@ def test_subscription_cache_payload_and_rejection_before_http(policy):
         assert returned.payload.content[0].text == 'Ok'
         assert returned.usage.cached_input_tokens == 1024
         assert len(sent) == 1
-        assert sent[0] == {'model': 'gpt-6.1-sol', 'input': [{'role': 'user', 'content': 'Ok'}], 'store': False, 'stream': True}
+        assert sent[0] == {'model': 'gpt-6.1-sol', 'input': [{'role': 'user', 'content': 'Ok'}], 'store': False, 'stream': True,
+                           'include':['reasoning.encrypted_content']}
 
 
 @pytest.mark.parametrize('explicit', [None, 'medium', 'off', 'high'])

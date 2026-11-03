@@ -32,3 +32,17 @@ def final_answer(text, policy='auto', *, incomplete=False):
         raise ProviderAccessError('unknown', 'Incomplete Bedrock reasoning envelope.',
                                   code='invalid_response')
     return answer
+
+
+def display_reasoning(text, policy='auto', *, incomplete=False):
+    """Read only an explicitly admitted leading envelope, never literal markup."""
+    if policy != 'tagged':
+        return ''
+    tag = next((tag for tag in TAGS if text.startswith('<' + tag + '>')), None)
+    if tag is None:
+        return ''
+    body = text[len(tag) + 2:]
+    reasoning, separator, _ = body.partition('</' + tag + '>')
+    if not separator:
+        return '' if incomplete else reasoning
+    return reasoning

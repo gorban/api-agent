@@ -11,7 +11,7 @@ from types import MappingProxyType
 from urllib.parse import unquote, urlsplit
 from weakref import WeakKeyDictionary
 
-from .layout import Layout, LayoutError, Step, _COLUMNS, _RESPONSE_COLUMNS, _ID, _MD, _validate
+from .layout import Layout, LayoutError, Step, _COLUMNS, _RESPONSE_COLUMNS, _SUMMARY_COLUMNS, _ID, _MD, _validate
 from .document_format import extract_document, validate_presentation_location
 
 
@@ -281,6 +281,8 @@ def _table(path, body, columns):
         header = tuple(part.strip() for part in nonempty[0][1].strip('|').split('|'))
         if header == _RESPONSE_COLUMNS:
             columns = _RESPONSE_COLUMNS
+        if header == _SUMMARY_COLUMNS:
+            columns = _SUMMARY_COLUMNS
     def cells(item):
         number, value = item
         if not value.startswith('|') or not value.endswith('|'):

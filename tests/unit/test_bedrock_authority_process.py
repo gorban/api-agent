@@ -451,9 +451,15 @@ def test_bedrock_worker_through_recorded_allure(synthetic_sdk, tmp_path, monkeyp
     suite.mkdir(parents=True)
     (pack / 'acquirer.py').write_text('''
 from api_agent.llm_providers.bedrock.acquisition import SessionMaterial
+import os,time
+from pathlib import Path
 class Acquirer:
     version = 1
-    async def acquire(self, request, *, previous=None): return SessionMaterial(kind='profile')
+    async def acquire(self, request, *, previous=None):
+        counter=os.environ.get('SYNTHETIC_RETRY_COUNTER')
+        refreshed=counter is not None and Path(counter).exists()
+        return SessionMaterial(kind='temporary',access_key='synthetic-access',secret_key='synthetic-secret',
+            session_token='synthetic-refreshed-token' if refreshed else 'synthetic-token',expires_at=time.time()+30)
     async def aclose(self): pass
 def factory(config, services): return Acquirer()
 ''')

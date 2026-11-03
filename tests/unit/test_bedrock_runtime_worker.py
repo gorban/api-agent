@@ -175,7 +175,7 @@ def test_converse_validates_before_buffered_publication_and_closes(operation, st
 
 
 @pytest.mark.parametrize('operation', ['converse', 'converse_stream'])
-def test_signed_plaintext_reasoning_publishes_only_final_answer(operation):
+def test_signed_plaintext_reasoning_is_displayed_without_signature(operation):
     raw = converse_response('final answer')
     raw['output']['message']['content'].insert(0, {'reasoningContent': {
         'reasoningText': {'text': 'private reasoning canary', 'signature': 'private signature canary'}}})
@@ -183,7 +183,7 @@ def test_signed_plaintext_reasoning_publishes_only_final_answer(operation):
     worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse',
         'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
         boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None))
-    assert len(frames) == (1 if operation == 'converse' else 2)
+    assert len(frames) == (1 if operation == 'converse' else 3)
     if operation == 'converse':
         assert frames[0]['result'] == raw
         from api_agent.llm_providers.bedrock.converse import decode
@@ -200,9 +200,14 @@ def test_signed_plaintext_reasoning_publishes_only_final_answer(operation):
         assert 'private signature canary' not in str(captured)
     else:
         assert frames[0] == {'event': {'kind': 'text', 'text': 'final answer'}}
-        assert frames[1]['event']['result']['text'] == 'final answer'
-        assert 'private reasoning canary' not in str(frames)
-        assert 'private signature canary' not in str(frames)
+        assert frames[1] == {'event': {'kind': 'reasoning_summary', 'text': 'private reasoning canary'}}
+        from api_agent.providers.inference import result_from_wire
+        from api_agent.api.chat_contract import result as browser_result
+        normalized = result_from_wire(frames[2]['event']['result'])
+        assert normalized.payload.content[0].text == 'final answer'
+        assert frames[2]['event']['result']['reasoning_summary'] == 'private reasoning canary'
+        assert 'private signature canary' not in str(frames[:2])
+        assert 'private signature canary' not in str(browser_result('turn', normalized))
 
 
 @pytest.mark.parametrize('operation', ['converse', 'converse_stream'])

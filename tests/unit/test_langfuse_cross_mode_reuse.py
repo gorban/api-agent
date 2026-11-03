@@ -22,7 +22,7 @@ def test_cross_mode_retained_stack_reuses_exact_provisioning(tmp_path, test_mode
     managers = []
     for mode in modes:
         result = resolve_config(load_shared_schema(), environ={
-            'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse',
+            'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse',
             'ALLURE_S3_BUCKET': 'synthetic-results', **credentials},
             anchors={'owner_root': tmp_path})
         assert not result.errors and not result.missing

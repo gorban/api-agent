@@ -1,6 +1,7 @@
 """Bounded application values, independent of provider transport vocabulary."""
 import json
 import math
+from dataclasses import replace
 from uuid import UUID, uuid4
 
 from ..providers.catalog import catalog_to_wire
@@ -99,6 +100,8 @@ def completion(row, default, reasoning_default):
 
 
 def result(session_id, value):
+    # Opaque replay belongs to the provider/history owner, never the browser.
+    value = replace(value, payload=replace(value.payload, continuation=None))
     row = result_to_wire(value)
     row['response_text'] = row.pop('text')
     return {'session_id': session_id, **row}

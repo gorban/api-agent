@@ -39,7 +39,13 @@ def guard_result(decoded, secrets):
         from api_agent.providers.response_carriers import observable_response_carriers
         text = ''.join(part.text for part in decoded.payload.content)
         arguments = (json.loads(call.arguments) for call in decoded.payload.calls)
-        for carrier in observable_response_carriers(text, arguments, summary=decoded.reasoning_summary):
+        # A Responses item can carry both a display summary and separate native
+        # plaintext. That undisplayed replay carrier still crosses private IPC.
+        state = json.loads(decoded.payload.continuation)['state'] if decoded.payload.continuation else []
+        native = ''.join(part['text'] for item in state if item.get('type') == 'reasoning' and item.get('summary')
+                         for part in item.get('content') or [])
+        for carrier in observable_response_carriers(text, arguments, summary=decoded.reasoning_summary,
+                additional_text=(native,) if native else ()):
             guard_semantic(carrier, secrets)
     except ContractError as error:
         error.usage = result_from_wire(result).usage
@@ -108,6 +114,32 @@ class WorkerStream:
         self.pending = ''
         self.quarantined = False
         self.has_tools = False
+        self.summary_released = ''
+
+    def _summary_frames(self):
+        """Release bounded plaintext prefixes; retain a credential-sized tail."""
+        summary = ''.join(self.decoder.reasoning.values()) if self.decoder.native_reasoning else ''.join(
+            part['text'] for item in self.decoder.items if item.get('type') == 'reasoning'
+            for part in item.get('summary', []))
+        if len(summary.encode('utf-8')) > 65536:
+            raise ContractError('Invalid normalized Bedrock summary')
+        if self.quarantined or ambiguous_carrier(summary):
+            return []
+        guard_semantic(summary, self.secrets)
+        guard_semantic(summary + self.decoder.text, self.secrets)
+        guard_semantic(self.decoder.text + summary, self.secrets)
+        count = len(summary)
+        visible = 0
+        while count and visible < self.lookbehind:
+            count -= 1
+            visible += summary[count].isprintable()
+        count = safe_boundary(summary, count)
+        prefix = summary[:count]
+        if not prefix.startswith(self.summary_released):
+            raise ContractError('Invalid normalized Bedrock summary')
+        fragment = prefix[len(self.summary_released):]
+        self.summary_released = prefix
+        return [{'kind': 'reasoning_summary', 'text': fragment}] if fragment else []
 
     def feed(self, event):
         frames = []
@@ -115,6 +147,7 @@ class WorkerStream:
         self.has_tools = bool(self.decoder.tools) or any(item.get('type') == 'function_call' for item in self.decoder.items)
         if self.has_tools:
             self.quarantined = True
+        frames.extend(self._summary_frames())
         for item in events:
             self.pending += item.payload.text
             if len(self.pending.encode('utf-8')) > _LIMIT:
@@ -145,7 +178,11 @@ class WorkerStream:
         if self.pending:
             frames.append({'kind': 'text', 'text': self.pending})
         if decoded.reasoning_summary:
-            frames.append({'kind': 'reasoning_summary', 'text': decoded.reasoning_summary})
+            if not decoded.reasoning_summary.startswith(self.summary_released):
+                raise ContractError('Invalid normalized Bedrock summary')
+            remainder = decoded.reasoning_summary[len(self.summary_released):]
+            if remainder:
+                frames.append({'kind': 'reasoning_summary', 'text': remainder})
         frames.append({'kind': 'completed', 'result': result})
         return frames
 
@@ -161,9 +198,10 @@ class ParentStream:
         if self.finished or type(frame) is not dict:
             raise ContractError('Invalid normalized Bedrock stream')
         if set(frame) == {'kind', 'text'} and frame['kind'] == 'reasoning_summary' and type(frame['text']) is str:
-            if self.summary is not None or len(frame['text'].encode('utf-8')) > 65536:
+            summary = (self.summary or '') + frame['text']
+            if len(summary.encode('utf-8')) > 65536:
                 raise ContractError('Invalid normalized Bedrock summary')
-            self.summary = frame['text']
+            self.summary = summary
             return (StreamEvent(TextContent(frame['text']), kind='reasoning_summary'),)
         if set(frame) == {'kind', 'text'} and frame['kind'] == 'text' and type(frame['text']) is str:
             self.text += frame['text']

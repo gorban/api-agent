@@ -7,7 +7,7 @@ from uuid import UUID
 import httpx
 
 from api_agent.providers.llm import LLMRequest, LLMResult, Message, TextContent, Usage
-from api_agent.providers.contracts import ProviderAccessError
+from api_agent.providers.contracts import ProviderAccessError, ContractError
 from api_agent.providers.control import OperationalError
 from api_agent.providers.progress import component_timeout
 from .discovery import _endpoint, _failure, _authentication_type
@@ -45,7 +45,7 @@ def _payload(request, api_mode, subscription, *, _validate_instances=True):
     if not isinstance(request, LLMRequest):
         raise ProviderAccessError('invalid_request', 'GPT inference requires an LLM request.')
     payload = request.payload
-    if payload.tools or payload.structured is not None:
+    if payload.tools or payload.structured is not None or any(message.continuation is not None for message in payload.messages):
         from .rich import payload as rich_payload
         return rich_payload(request, api_mode, subscription, _validate_instances=_validate_instances)
     if (payload.tools or payload.structured is not None or payload.generation.temperature is not None
@@ -173,7 +173,23 @@ def _result_body(data, responses, token):
     tier, revision = data.get('service_tier'), data.get('serving_revision')
     if any(value is not None and (type(value) is not str or not 0 < len(value) <= 200 or not value.isprintable() or token in value) for value in (tier, revision)):
         raise _invalid('GPT inference returned invalid billing metadata.')
-    return LLMResult(Message('assistant', (TextContent(joined),)), _usage(data.get('usage'), responses), outcome, model, tier, revision)
+    state, summary = None, None
+    if responses:
+        from .rich import native_summary
+        try:
+            summary = native_summary(data['output'])
+        except ContractError:
+            raise _invalid('GPT inference returned an invalid reasoning summary.') from None
+        if summary and (token in summary or token in ''.join(character for character in summary if character.isprintable())):
+            raise _invalid('GPT inference returned protected authentication content.')
+    if responses and outcome == 'completed' and any(item.get('encrypted_content') is not None for item in data['output']):
+        from .rich import _native_state
+        try:
+            rows = _native_state(data['output'])
+            state = json.dumps({'provider': 'openai.responses', 'state': rows}, allow_nan=False, separators=(',', ':'))
+        except ContractError as error:
+            raise _invalid('GPT inference returned invalid continuation state: ' + str(error)) from None
+    return LLMResult(Message('assistant', (TextContent(joined),), continuation=state), _usage(data.get('usage'), responses), outcome, model, tier, revision, reasoning_summary=summary)
 
 
 def _billing(data, request_id, token):
@@ -350,6 +366,8 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
     prepared, evidence = prepare_response(request, base_url=base_url, api_mode=api_mode, subscription=subscription)
     from api_agent.llm_providers.response_policy import format_payload
     body = format_payload(request, _payload(prepared, api_mode, subscription, _validate_instances=_validate_instances), evidence)
+    if base_url == 'https://api.openai.com/v1' and api_mode == 'responses':
+        body['include'] = ['reasoning.encrypted_content']
     if base_url == 'https://openrouter.ai/api/v1':
         # OpenRouter may reject otherwise tool-capable routes when this explicit
         # parameter is supplied. Returned calls remain independently validated.

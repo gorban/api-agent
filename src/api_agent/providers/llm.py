@@ -6,7 +6,7 @@ from typing import Literal
 from .control import OperationalError
 
 
-LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy", "reasoning_effort", "cache_boundaries"})
+LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy", "reasoning_effort", "cache_boundaries", "display_reasoning"})
 
 
 def _require(condition: bool) -> None:
@@ -108,8 +108,10 @@ class GenerationOptions:
     cache_policy: Literal["off", "medium", "high"] | None = None
 
     reasoning_effort: Literal["", "off", "low", "medium", "high"] | None = None
+    display_summary: bool = False
 
     def __post_init__(self):
+        _require(type(self.display_summary) is bool)
         _require(self.reasoning_effort is None or (type(self.reasoning_effort) is str and self.reasoning_effort in ("", "off", "low", "medium", "high")))
         _require(self.max_output_tokens is None or (type(self.max_output_tokens) is int and self.max_output_tokens > 0))
         _require(self.temperature is None or (type(self.temperature) in {int, float} and math.isfinite(self.temperature) and self.temperature >= 0))

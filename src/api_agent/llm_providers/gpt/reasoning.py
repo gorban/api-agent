@@ -22,6 +22,11 @@ _EFFORTS = {
     'gpt-6.1-sol': ('low', 'medium', 'high'),
 }
 
+# OpenRouter's own catalog qualifies this route independently of official APIs.
+# https://openrouter.ai/api/v1/models, verified 2026-11-02.
+_OPENROUTER_EFFORTS = {'openai/' + model: choices for model, choices in _EFFORTS.items()}
+_OPENROUTER_EFFORTS['openai/gpt-6.1-terra'] = ('off', 'low', 'medium', 'high')
+
 
 # Official verification does not establish support on another route.
 _OFFICIAL_EFFORTS = {**_EFFORTS, **{
@@ -34,12 +39,19 @@ _OFFICIAL_EFFORTS = {**_EFFORTS, **{
 _CHAT_TOOLS_RESPONSES_ONLY = ('gpt-6-astra', 'gpt-6.1-sol')
 _CHAT_TOOLS_OFF_ONLY = ('gpt-6-luna', 'gpt-6-sol', 'gpt-5.6-luna')
 
+# Display summaries require their own route qualification, independent of effort.
+_DISPLAY_SUMMARIES = frozenset({'gpt-6-luna'})
+
+
+def display_reasoning(selection, *, base_url, api_mode):
+    return base_url == OFFICIAL_BASE_URL and api_mode == 'responses' and selection in _DISPLAY_SUMMARIES
+
 def reasoning_efforts(selection, *, base_url):
     """Return verified common choices without authentication or discovery I/O."""
     if base_url == OFFICIAL_BASE_URL:
         return _OFFICIAL_EFFORTS.get(selection)
     if base_url == 'https://openrouter.ai/api/v1':
-        return {'openai/' + model: choices for model, choices in _EFFORTS.items()}.get(selection)
+        return _OPENROUTER_EFFORTS.get(selection)
     return None
 
 
@@ -56,6 +68,8 @@ def reasoning_fields(request, *, base_url, api_mode):
         if (request.selected_llm in _CHAT_TOOLS_RESPONSES_ONLY
                 or (request.selected_llm in _CHAT_TOOLS_OFF_ONLY and effort != 'off')):
             raise ProviderAccessError('unsupported', 'This GPT model requires Responses for reasoning with tools; select responses mode or a documented disabled-reasoning tool route.')
+    if generation.display_summary and display_reasoning(request.selected_llm, base_url=base_url, api_mode=api_mode) and effort != 'off':
+        return {'reasoning': {'summary': 'auto', **({'effort': effort} if effort else {})}}
     if not effort:
         return {}
     native = 'none' if effort == 'off' else effort

@@ -469,7 +469,7 @@ def test_provider_continuation_cannot_replay_on_another_protocol(mode,provider):
 @pytest.mark.parametrize('change',[
     lambda items:items[0].update(encrypted_content=None),lambda items:items[0].update(encrypted_content=''),
     lambda items:items[0].update(encrypted_content='state\n'),lambda items:items[0].update(encrypted_content='x'*32769),
-    lambda items:items[0].update(summary=[dict(type='summary_text',text='plaintext')]),
+    lambda items:items[0].update(summary=[dict(type='summary_text',text=42)]),
     lambda items:items[0].update(content=[dict(type='reasoning_text',text='hidden')]),
     lambda items:items[0].update(status='in_progress'),lambda items:items[0].update(id=items[1]['id']),
     lambda items:items[1].update(call_id=''),lambda items:items[1].update(arguments='[]'),

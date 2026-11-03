@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize('source', ['cli', 'environment', 'dotenv'])
 def test_terminal_start_or_debug_dispatches_recorded_integration(activation, value, source):
     stdout, stderr = StringIO(), StringIO()
-    args = ['--tui-mode=integration', '--no-std-in', '--allure-s3-bucket=synthetic', 'selected.py']
+    args = ['--tui-mode=integration', '--no-std-in', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', 'selected.py']
     environ = {activation: value} if source == 'environment' else {}
     dotenv = {activation: value} if source == 'dotenv' else {}
     if source == 'cli':
@@ -81,7 +81,7 @@ def test_disabled_start_does_not_unlock_terminal_recording(start):
 @pytest.mark.parametrize('mode,debug', [('e2e', False), ('e2e', True), ('integration', False)])
 def test_rejection_describes_only_the_selected_mode(mode, debug):
     stderr = StringIO()
-    args = ['--tui-mode=' + mode, '--no-std-in', '--allure-s3-bucket=synthetic',
+    args = ['--tui-mode=' + mode, '--no-std-in', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic',
             '--ui-source-dir=/tmp/synthetic-ui']
     if mode == 'e2e':
         args.append('--start=True')
@@ -106,7 +106,7 @@ def test_terminal_ui_intent_uses_declared_sources_and_rejects_missing_fields(tmp
     cfg=tmp_path/'cfg'
     cfg.mkdir()
     (cfg/'config.toml').write_text('version=1\n[fields.UI_REQUIRED]\ntype="str"\nrequired=true\nacknowledge_default=false\n[fields.UI_REQUIRED.applies_when]\noperation="ui_session"\n')
-    args=['--tui-mode=integration','--no-std-in','--start','--allure-s3-bucket=synthetic',
+    args=['--tui-mode=integration','--no-std-in','--start','--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic',
         '--ui-provider='+str(provider)+':create']
     if provided:args.append('--ui-required=ready')
     selected=[TestIdentity('base::test_ui.py::test_ready', 'base', 'test_ui.py', 'test_ui.py::test_ready', frozenset({'requires_ui_session'}))]

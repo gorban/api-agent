@@ -154,7 +154,8 @@ class LocalLLM(_Owner):
                 timeout=self._timeout)
             return self.session
         async def complete(request, *, auth):
-            return await implementation.acomplete(request, auth=auth)
+            from api_agent.providers.presentation import complete_with_progress
+            return await complete_with_progress(implementation, request, auth=auth)
         self.shared = SharedSetupOwner(self._operation_id, self._operation_id, owner_factory,
             credentials=credentials, describe=getattr(implementation, 'adescribe', None),
             complete=complete, validate_request=lambda request: validate_provider_request(implementation, request),

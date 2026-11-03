@@ -33,7 +33,7 @@ async def llm_call(inputs, context):
     result = await context.services['llm'](request)
     if result.outcome != 'completed':
         raise WorkflowError('Chat inference did not complete')
-    response = result_to_wire(replace(result, response=None))
+    response = result_to_wire(replace(result, response=None, payload=replace(result.payload, continuation=None)))
     if not response['text']:
         raise WorkflowError('Chat inference returned no text')
     response['response_text'] = response.pop('text')

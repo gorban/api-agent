@@ -11,7 +11,7 @@ from api_agent.runtime.dependencies import requirements
 @pytest.mark.parametrize('mode', ['run-local', 'integration', 'e2e'])
 def test_local_keys_and_public_ca_configuration(mode, tmp_path):
     result = resolve_config(load_shared_schema(), environ={
-        'TUI_MODE': mode, 'UI_SOURCE_DIR': '/example/frontend', 'TRACE_MODE': 'LangFuse', 'CLIENT_CA_FILE': 'public-ca.pem',
+        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'UI_SOURCE_DIR': '/example/frontend', 'TRACE_MODE': 'LangFuse', 'CLIENT_CA_FILE': 'public-ca.pem',
         'ALLURE_S3_BUCKET': 'results', 'LANGFUSE_ADMIN_PASSWORD': 'synthetic-password'}, anchors={'owner_root': tmp_path})
     assert not result.errors and not result.missing
     assert result.values['LANGFUSE_PUBLIC_KEY'] == 'pk-lf-local-dev-0000000000'
@@ -22,7 +22,7 @@ def test_local_keys_and_public_ca_configuration(mode, tmp_path):
 
 def test_remote_keys_have_no_default_and_both_are_required():
     schema = load_shared_schema()
-    env = {'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': 'https://trace.example',
+    env = {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': 'https://trace.example',
            'LANGFUSE_ADMIN_EMAIL': 'admin@example.invalid', 'LANGFUSE_ADMIN_PASSWORD': 'synthetic-password'}
     missing = resolve_config(schema, environ=env)
     assert missing.missing == ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY')
@@ -32,9 +32,9 @@ def test_remote_keys_have_no_default_and_both_are_required():
     assert ready.fields['LANGFUSE_SECRET_KEY'].source == 'environment'
 
 
-@pytest.mark.parametrize('env', [{'TUI_MODE': 'unit', 'TRACE_MODE': 'LangFuse'},
-    {'TUI_MODE': 'integration', 'COLLECT_ONLY': 'True', 'TRACE_MODE': 'LangFuse'},
-    {'TUI_MODE': 'run-local', 'TRACE_MODE': 'OTEL'}, {'TUI_MODE': 'run-local'}])
+@pytest.mark.parametrize('env', [{'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'unit', 'TRACE_MODE': 'LangFuse'},
+    {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'integration', 'COLLECT_ONLY': 'True', 'TRACE_MODE': 'LangFuse'},
+    {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'TRACE_MODE': 'OTEL'}, {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local'}])
 def test_keys_not_required_or_included_when_not_applicable(env):
     result = resolve_config(load_shared_schema(), environ=env)
     assert not result.missing and not result.errors
@@ -62,7 +62,7 @@ def test_session_review_admin_defaults_follow_target_without_writes(tmp_path, mo
         dotenv_path=tmp_path / '.env', external_pack=False,
         anchors={'base_root': tmp_path, 'pack_root': tmp_path, 'owner_root': tmp_path})
     session = ConfigSession(context, load_shared_schema(), environ={
-        'TUI_MODE': 'run-local', 'TRACE_MODE': mode, 'TRACE_TARGET': target})
+        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'TRACE_MODE': mode, 'TRACE_TARGET': target})
 
     result = session.result(_review=True)
 
@@ -79,7 +79,7 @@ def test_session_explicit_empty_admin_credentials_do_not_restore_defaults(tmp_pa
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path,
         dotenv_path=tmp_path / '.env', external_pack=False,
         anchors={'base_root': tmp_path, 'pack_root': tmp_path, 'owner_root': tmp_path})
-    env = {'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse'}
+    env = {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse'}
     credentials = {'LANGFUSE_ADMIN_EMAIL': '', 'LANGFUSE_ADMIN_PASSWORD': ''}
     if source == 'environment':
         env.update(credentials)
@@ -102,7 +102,7 @@ def test_session_explicit_empty_admin_credentials_do_not_restore_defaults(tmp_pa
 @pytest.mark.parametrize('mode', ['integration', 'e2e'])
 def test_remote_test_mode_does_not_require_dashboard_login(mode, tmp_path):
     result = resolve_config(load_shared_schema(), environ={
-        'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse',
+        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse',
         'TRACE_TARGET': 'https://trace.example.invalid',
         'LANGFUSE_PUBLIC_KEY': 'synthetic-public', 'LANGFUSE_SECRET_KEY': 'synthetic-secret',
         'ALLURE_S3_BUCKET': 'synthetic-results', 'UI_SOURCE_DIR': '/example/frontend'},
@@ -114,10 +114,10 @@ def test_remote_test_mode_does_not_require_dashboard_login(mode, tmp_path):
 
 
 @pytest.mark.parametrize('env', [
-    {'TUI_MODE': 'unit', 'TRACE_MODE': 'LangFuse'},
-    {'TUI_MODE': 'integration', 'TRACE_MODE': 'OTEL'},
-    {'TUI_MODE': 'e2e', 'TRACE_MODE': ''},
-    {'TUI_MODE': 'integration', 'TRACE_MODE': 'LangFuse', 'COLLECT_ONLY': 'True'},
+    {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'unit', 'TRACE_MODE': 'LangFuse'},
+    {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'integration', 'TRACE_MODE': 'OTEL'},
+    {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'e2e', 'TRACE_MODE': ''},
+    {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'integration', 'TRACE_MODE': 'LangFuse', 'COLLECT_ONLY': 'True'},
 ])
 def test_dashboard_provisioning_credentials_remain_dormant_when_inactive(env):
     result = resolve_config(load_shared_schema(), environ={
@@ -158,7 +158,7 @@ def test_managed_langfuse_defaults_declare_exact_profile_target_inventory():
 def test_resolver_and_managed_langfuse_profiles_admit_same_targets(tmp_path, mode, target):
     from api_agent.runtime.compose import selected_profiles
     result = resolve_config(load_shared_schema(), environ={
-        'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': target,
+        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': target,
         'ALLURE_S3_BUCKET': 'synthetic-results', 'UI_SOURCE_DIR': '/example/frontend'},
         anchors={'owner_root': tmp_path}, interactive=True)
 
@@ -174,7 +174,7 @@ def test_custom_langfuse_credentials_preserve_explicit_values_and_target(tmp_pat
     credentials = dict(zip(LANGFUSE_CREDENTIAL_FIELDS,
         ('operator@example.invalid', 'synthetic-password', 'synthetic-public', 'synthetic-secret')))
     result = resolve_config(load_shared_schema(), environ={
-        'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': target,
+        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': target,
         'ALLURE_S3_BUCKET': 'synthetic-results', 'UI_SOURCE_DIR': '/example/frontend', **credentials},
         anchors={'owner_root': tmp_path})
 

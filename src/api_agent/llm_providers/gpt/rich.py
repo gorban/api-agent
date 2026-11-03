@@ -10,6 +10,25 @@ from api_agent.providers.response_metadata import _logprob, _logprobs
 _PROVIDER = 'openai.responses'
 
 
+def native_summary(items):
+    parts = []
+    for item in items:
+        if item.get('type') != 'reasoning':
+            continue
+        rows = item.get('summary', [])
+        if type(rows) is not list:
+            raise ContractError('Invalid native reasoning summary')
+        for row in rows:
+            if (type(row) is not dict or set(row) != {'type', 'text'}
+                    or row['type'] != 'summary_text' or type(row['text']) is not str):
+                raise ContractError('Invalid native reasoning summary')
+            parts.append(row['text'])
+    summary = ''.join(parts)
+    if len(summary.encode('utf-8')) > 65536:
+        raise ContractError('Native reasoning summary exceeds byte limit')
+    return summary or None
+
+
 def _native_state(items, message=None):
     """Retain native replay metadata; reasoning remains encrypted-only."""
     calls, text, reasoning, metadata, identifiers = [], [], False, False, set()
@@ -21,11 +40,13 @@ def _native_state(items, message=None):
         kind = item.get('type')
         allowed = {'type', 'id', 'status'}
         if kind == 'reasoning':
-            allowed |= {'encrypted_content', 'summary'}
+            allowed |= {'encrypted_content', 'summary', 'content'}
             encrypted = item.get('encrypted_content')
             if (type(encrypted) is not str or not encrypted or len(encrypted) > 32768
-                    or not encrypted.isprintable() or item.get('summary') != []):
+                    or not encrypted.isprintable() or type(item.get('summary')) is not list
+                    or item.get('content') not in (None, [])):
                 raise ContractError('Provider continuation requires encrypted reasoning')
+            native_summary([item])
             reasoning = True
         elif kind == 'function_call':
             allowed |= {'call_id', 'name', 'arguments'}
@@ -51,7 +72,8 @@ def _native_state(items, message=None):
         if set(item) - allowed or item.get('status') not in (None, 'completed') or identifier in identifiers:
             raise ContractError('Invalid native provider continuation')
         identifiers.add(identifier)
-    if not (reasoning or metadata) or not calls or (message is not None and (tuple(calls) != message.calls or tuple(text) != message.content)):
+    if not (reasoning or metadata) or not (calls or text) or (message is not None and (tuple(calls) != message.calls
+            or ''.join(part.text for part in text) != ''.join(part.text for part in message.content))):
         raise ContractError('Provider continuation does not match assistant output')
     return items
 
@@ -172,7 +194,8 @@ def tool_result(data, responses, token):
             if _protected(object_json(call.arguments), token):
                 raise ValueError()
         result = LLMResult(Message('assistant', tuple(text), tuple(calls), continuation=state), _usage(data.get('usage'), responses),
-                         'tool_calls', data.get('model'), data.get('service_tier'), data.get('serving_revision'))
+                         'tool_calls', data.get('model'), data.get('service_tier'), data.get('serving_revision'),
+                         reasoning_summary=native_summary(data['output']) if responses else None)
         result_to_wire(result)
         return result
     except (ValueError, TypeError, KeyError, AttributeError, ContractError):

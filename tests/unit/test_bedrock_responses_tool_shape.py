@@ -39,12 +39,13 @@ def test_sdk_item_identity_and_position_preserve_call_and_followup():
     assert result.payload.calls == (ToolCall('call-synthetic', 'lookup', '{"query":"hello"}'),)
     assert result.usage == Usage(244, 54, 0, 37)
     assert result.outcome == 'tool_calls'
-    assert result.payload.continuation is None
+    assert result.payload.continuation is not None
+    assert result.reasoning_summary == 'Hidden synthetic reasoning'
     followup = LLMRequest(MODEL, CompletionRequest((Message('user', (TextContent('Question'),)),
         result.payload, Message('tool', results=(ToolResult('call-synthetic', (TextContent('Result'),)),))),
         tools=(Tool('lookup', 'Synthetic lookup', '{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}'),)))
     items = mantle.encode(followup, 'responses')['input']
-    assert items[2] == {'type': 'function_call', 'call_id': 'call-synthetic', 'name': 'lookup', 'arguments': '{"query":"hello"}'}
+    assert items[1:3] == raw['output']
     assert items[3] == {'type': 'function_call_output', 'call_id': 'call-synthetic', 'output': 'Result'}
     assert 'Hidden' not in repr(result)
 
