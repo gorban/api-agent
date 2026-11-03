@@ -26,7 +26,7 @@ def response():
 
 @pytest.mark.parametrize('reason', ['end_turn', 'stop_sequence'])
 @pytest.mark.parametrize('signature', [None, 'synthetic-signature'])
-def test_completed_non_tool_reasoning_preserves_only_final_answer(reason, signature):
+def test_completed_non_tool_reasoning_separates_display_text_from_answer_and_signature(reason, signature):
     raw = response()
     thinking = {'text': 'synthetic private thinking'}
     if signature is not None:
@@ -39,7 +39,9 @@ def test_completed_non_tool_reasoning_preserves_only_final_answer(reason, signat
     assert result.payload.content == (TextContent('hello'),)
     assert result.outcome == 'completed'
     assert result.usage.output_tokens == 3
-    assert result.payload.continuation is None
+    assert json.loads(result.payload.continuation)['state'] == [raw['output']['message']]
+    assert result.reasoning_summary == 'synthetic private thinking'
+    assert 'synthetic-signature' not in repr(result)
 
 
 @pytest.mark.parametrize('thinking', [None, {}, {'redactedContent': 'opaque'},

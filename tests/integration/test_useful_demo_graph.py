@@ -120,3 +120,68 @@ def test_selected_graph_rejects_removed_review_guard_before_execution():
 
     with pytest.raises(ContractError, match='useful demo contract'):
         UsefulDemoApplication(altered, tool_owner=ControlledOwner([]))
+
+
+@pytest.mark.credential_authorities('ui', 'workflow')
+def test_studio_receives_node_reasoning_before_workflow_finishes():
+    """Exercise the real SSE bridge while a later declared node cannot finish."""
+    import secrets
+    import threading
+    from uuid import uuid4
+    import httpx
+    from api_agent.providers.llm import AvailableSelection
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.testing.authority_scope import ajoin_current
+    from api_agent.testing.studio_http import agent_endpoint
+
+    async def scenario():
+        app, _, _, _ = run_demo([verdict()], render='Hello')
+        reviewer_started, release = threading.Event(), threading.Event()
+
+        class Provider:
+            def __init__(self):
+                self.outputs = iter([PLAN, json.dumps(verdict()), 'Hello'])
+                self.calls = 0
+
+            def describe(self):
+                return (AvailableSelection('selected-model'),)
+
+            def complete(self, request):
+                self.calls += 1
+                if self.calls == 2:
+                    reviewer_started.set()
+                    assert release.wait(10), 'Review release was not delivered'
+                return LLMResult(Message('assistant', (TextContent(next(self.outputs)),)),
+                    reasoning_summary=f'Completed call {self.calls}.')
+
+        nonce = secrets.token_urlsafe(32)
+        await ajoin_current('ui', EmissionBoundary(ContentPolicy(False), secrets=(nonce,)))
+        provider = Provider()
+        origin = 'http://127.0.0.1:9443'
+        try:
+            async with agent_endpoint(provider, 'selected-model', origin, nonce, application=app) as endpoint:
+                async with httpx.AsyncClient(trust_env=False, timeout=20) as client:
+                    async with client.stream('POST', endpoint + '/app/agent/chat/stream',
+                        headers={'Origin': origin, 'X-API-Agent-Session': nonce},
+                        json={'session_id': str(uuid4()), 'messages': [{'role': 'user', 'content': 'Hello'}]}) as response:
+                        response.raise_for_status()
+                        lines = response.aiter_lines()
+                        first = []
+                        async for line in lines:
+                            first.append(line)
+                            if line.startswith('data: ') and first[-2] == 'event: reasoning_token':
+                                break
+                        assert await asyncio.to_thread(reviewer_started.wait, 5)
+                        assert provider.calls == 2
+                        assert 'response_complete' not in '\n'.join(first)
+                        assert json.loads(first[-1][6:]) == {'content': 'Completed call 1.'}
+                        release.set()
+                        remaining = '\n'.join([line async for line in lines])
+                        result_line = remaining.split('event: result\n', 1)[1].splitlines()[0]
+                        final = json.loads(result_line[6:])
+                        assert final['response_text'] == 'Hello'
+                        assert final['reasoning_summary'] == 'Completed call 1.\n\nCompleted call 2.\n\nCompleted call 3.'
+        finally:
+            release.set()
+
+    asyncio.run(scenario())

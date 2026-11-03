@@ -422,13 +422,15 @@ def request_to_wire(request, *, _validate_instances=True):
         row['temperature'] = payload.generation.temperature
     if payload.generation.reasoning_effort is not None:
         row['reasoning_effort'] = payload.generation.reasoning_effort
+    if payload.generation.display_summary:
+        row['display_summary'] = True
     request_from_wire(row, _validate_instances=_validate_instances)
     return row
 
 
 def request_from_wire(row, *, _validate_instances=True):
     keys = ('version','selected_llm','request_id','messages','tools','structured','max_output_tokens','cache_policy')
-    extras = tuple(key for key in ('reasoning_effort', 'temperature', 'response') if type(row) is dict and key in row)
+    extras = tuple(key for key in ('reasoning_effort', 'display_summary', 'temperature', 'response') if type(row) is dict and key in row)
     _exact(row, (*keys, *extras))
     _bounded(row)
     try:
@@ -471,14 +473,14 @@ def request_from_wire(row, *, _validate_instances=True):
         if pending:
             raise ValueError()
         return LLMRequest(_identifier(row['selected_llm']), CompletionRequest(messages, tuple(tools),
-            GenerationOptions(row['max_output_tokens'], temperature=row.get('temperature'), cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort')), structured, response), _identifier(row['request_id'], empty=True))
+            GenerationOptions(row['max_output_tokens'], temperature=row.get('temperature'), cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort'), display_summary=row.get('display_summary', False)), structured, response), _identifier(row['request_id'], empty=True))
     except (ValueError, TypeError):
         raise ContractError('Invalid rich inference request') from None
 
 
 def result_to_wire(result):
     from .inference import usage_to_wire
-    if result.response is None and (result.outcome != 'tool_calls' or not result.payload.calls or result.payload.results):
+    if result.response is None and result.payload.continuation is None and (result.outcome != 'tool_calls' or not result.payload.calls or result.payload.results):
         raise ContractError('Tool-call results require the matching outcome')
     row = dict(version=2, message=message_to_wire(result.payload), outcome=result.outcome,
                usage=usage_to_wire(result.usage), actual_model=result.actual_model,
@@ -502,9 +504,11 @@ def result_from_wire(row):
         if (row['version'] == 3) != ('response' in row):
             raise ValueError()
         response = response_evidence_from_wire(row['response']) if row['version'] == 3 else None
-        if row['outcome'] not in ('completed', 'length', 'refused', 'tool_calls') or (row['version'] == 2 and row['outcome'] != 'tool_calls'):
+        if row['outcome'] not in ('completed', 'length', 'refused', 'tool_calls'):
             raise ValueError()
         message = message_from_wire(row['message'])
+        if row['version'] == 2 and row['outcome'] != 'tool_calls' and (row['outcome'] != 'completed' or message.continuation is None):
+            raise ValueError()
         if message.role != 'assistant' or message.results or bool(message.calls) != (row['outcome'] == 'tool_calls') or len({call.call_id for call in message.calls}) != len(message.calls):
             raise ValueError()
         from .inference import result_from_wire as text_result, _cache_boundaries

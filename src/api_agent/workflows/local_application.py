@@ -50,7 +50,7 @@ class LocalChatApplication:
             called = True
             result = await llm.complete(value, context=context)
             from api_agent.providers.presentation import present_summary
-            await present_summary(result)
+            await present_summary(result, request_id=value.request_id)
             results.append(result)
             return result
         from .capture_authority import resolve_capture_services
@@ -69,7 +69,8 @@ class LocalChatApplication:
                 observations.close()
         if len(results) != 1:
             raise WorkflowError('Local chat did not execute its declared LLM call.')
-        expected = result_to_wire(replace(results[0], response=None))
+        expected = result_to_wire(replace(results[0], response=None,
+            payload=replace(results[0].payload, continuation=None)))
         expected['response_text'] = expected.pop('text')
         expected['selected_model'] = request.selected_llm
         if values.get('llm_call') != expected:

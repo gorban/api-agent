@@ -113,13 +113,13 @@ def test_malformed_cipher_fails_with_observed_usage(cipher):
     assert caught.value.usage.input_tokens == 2 and caught.value.usage.output_tokens == 3
 
 
-@pytest.mark.parametrize('field,content', [('summary', [{'type': 'summary_text', 'text': 'Do not replay hidden text'}]),
+@pytest.mark.parametrize('field,content', [
     ('content', [{'type': 'reasoning_text', 'text': 'Do not replay hidden text'}])])
-def test_plaintext_reasoning_is_not_retained_in_native_tool_continuation(field, content):
+def test_admitted_plaintext_reasoning_is_retained_in_native_tool_continuation(field, content):
     output = native_output()
     output[0][field] = content
-    with pytest.raises(ProviderAccessError):
-        decoded_output(output)
+    result = decoded_output(output)
+    assert json.loads(result.payload.continuation)['state'] == output
 
 
 @pytest.mark.parametrize('index,change', [(0, {'unknown': True}), (1, {'unknown': True}),
@@ -132,10 +132,10 @@ def test_unsupported_native_state_or_metadata_is_not_silently_discarded(index, c
         decoded_output(output)
 
 
-def test_final_text_accepts_cipher_but_deliberately_has_no_continuation():
+def test_final_text_preserves_cipher_for_the_next_ordinary_turn():
     result = decoded_output(native_output()[:2])
     assert result.payload.content == (TextContent('Looking up.'),)
-    assert result.payload.continuation is None
+    assert json.loads(result.payload.continuation)['state'] == native_output()[:2]
     assert result_from_wire(result_to_wire(result)) == result
 
 
@@ -294,7 +294,7 @@ def test_native_continuation_node_bound_failure_retains_observed_usage():
 
 
 @pytest.mark.parametrize('nullable_cipher', [False, True])
-def test_legacy_plaintext_reasoning_tool_response_keeps_supported_suppression(nullable_cipher):
+def test_plaintext_responses_reasoning_is_displayed_and_replayed_in_order(nullable_cipher):
     output = native_output()
     output[0].pop('encrypted_content')
     if nullable_cipher:
@@ -302,12 +302,13 @@ def test_legacy_plaintext_reasoning_tool_response_keeps_supported_suppression(nu
     output[0]['content'] = [{'type': 'reasoning_text', 'text': 'Hidden synthetic reasoning'}]
     output[1].pop('phase')
     result = decoded_output(output)
-    assert result.payload.continuation is None
+    assert json.loads(result.payload.continuation)['state'] == output
+    assert result.reasoning_summary == 'Hidden synthetic reasoning'
     assert result.payload.content == (TextContent('Looking up.'),)
     assert result.payload.calls == (ToolCall('c', 'lookup', '{}'),)
     assert result.usage.input_tokens == 2 and result.usage.output_tokens == 3
     assert 'Hidden synthetic reasoning' not in repr(result)
     body = mantle.encode(correction_request(result.payload), 'responses')
-    assert body['input'][1] == {'role': 'assistant', 'content': 'Looking up.'}
+    assert body['input'][1:4] == output
     assert sum(item.get('type') == 'function_call' for item in body['input']) == 1
     assert sum(item.get('type') == 'function_call_output' for item in body['input']) == 1

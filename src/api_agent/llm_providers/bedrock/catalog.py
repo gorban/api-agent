@@ -19,7 +19,7 @@ from api_agent.providers.llm import AvailableSelection
 
 BASE_FEATURES = ('tools', 'temperature', 'max_output_tokens')
 # Provider-level union; individual selections remain the request authority.
-FEATURES = BASE_FEATURES + ('reasoning_effort', 'structured')
+FEATURES = BASE_FEATURES + ('reasoning_effort', 'structured', 'display_reasoning')
 _METADATA = {
     'zai.glm-5': ('GLM 5', 'glm', '5', 200000, 128000),
     'zai.glm-4.7': ('GLM 4.7', 'glm', '4.7', 203000, 128000),
@@ -111,6 +111,8 @@ def selection(identifier, api_mode='completions', endpoint='mantle'):
             raise ContractError('Invalid Bedrock model or inference route.')
         metadata = _RUNTIME.get(identifier)
         features = BASE_FEATURES
+        if (endpoint, api_mode, identifier) in _COMPLETIONS_REASONING_CARRIERS:
+            features += ('display_reasoning',)
         efforts = None if api_mode == 'converse' else ('low', 'medium', 'high')
         if efforts:
             features += ('reasoning_effort',)

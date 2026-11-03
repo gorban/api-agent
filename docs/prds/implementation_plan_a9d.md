@@ -70,3 +70,12 @@ Current human acceptance covers the delivered terminal configuration, test selec
   mounted tests, operation-independent review and generic predicate controls;
   renew coverage, independent/external and public-boundary checks.
 - [x] Human accepted the corrected conditional review after pulling the repair.
+
+
+## Dependent configuration ordering
+
+- [x] Declare TRACE_TARGET applicable only with LangFuse or OTEL selected. Preserve saved inactive targets for later reuse and deletion through Clear .env; do not invent a destination while tracing is disabled.
+- [x] Leave ALLURE_S3_USE_LOCALSTACK omitted until explicitly chosen. Require True or False for non-collection integration/E2E reporting, except when reporting is explicitly skipped. Unit coverage does not require S3 or Allure.
+- [x] Reveal S3 bucket, endpoint, prefix and region only after that choice. True supplies managed bucket/endpoint defaults and reveals the local port; False requires an external bucket without starting managed S3. Use declaration predicates, not special display conditions. Saved assignments remain removable even while inactive.
+- [x] Complete focused rejection checks, applicable coverage, package and independent review gates. All 23,786 unit tests pass with exact 100% line/branch coverage; four causal declaration mutations are rejected. Wheel, source-distribution rebuild without Git, relocated import and mounted Review checks pass.
+- [ ] Human acceptance: switch trace modes and local/external storage in Review configuration; verify defaults, required prompts and saved-value cleanup.

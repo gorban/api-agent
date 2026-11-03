@@ -41,7 +41,7 @@ sampling, an agreed latency budget and human acceptance stay open above.
 - [x] Retain actual background read completion after cancelling its UI waiter. Stop unnecessary cost-history synchronization when returning to the menu or quitting, preserving already cached records and existing transport timeout/retry limits. An in-flight SDK call may exceed the logical synchronization budget; do not promise immediate interruption or shell return. Preserve context-local execution metadata in threaded readers; never detach work still writing the history cache.
 - [x] After the terminal display is restored, identify pending background work with fixed descriptive labels, flush the message immediately and report completion. Keep quick exits quiet and avoid repetitive status spam or raw storage diagnostics. Await owned readers without shutting down another caller's executor.
 - [x] Verify blocked reads, cancellation, late failures, fast exits, menu return/reentry and exception paths, with independent/external review before human acceptance. Record actual exit-phase timing separately from startup and navigation.
-- [ ] Human acceptance of visible shutdown feedback and return of shell control after leaving the integration/E2E picker without running tests.
+- [x] Human acceptance of visible shutdown feedback and return of shell control after leaving the picker without running tests; approved November 2, 2026 for the presented integration-picker scenario. Broader E2E/platform observations are not inferred.
 
 ## Collection transitions and selected text
 

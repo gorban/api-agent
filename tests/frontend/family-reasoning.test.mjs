@@ -4,6 +4,11 @@ import {normalizeCatalog, reasoningEfforts, resolveSelection} from '../../apps/a
 const row = (value, family, reasoning_efforts, features=['reasoning_effort']) => ({value,label:value,description:'Synthetic capability',features,version:value,family,reasoning_efforts,max_output_tokens:null,context_length:null});
 function catalog(rows) { return normalizeCatalog({models:rows,default:'default',reasoning_default:null}); }
 const base = row('default','Other',['off']);
+test('display summaries survive catalog parsing without inventing effort choices',()=>{
+  const rows=catalog([base,row('summary','Summary',null,['display_reasoning'])]);
+  assert.deepEqual(rows.find(x=>x.selected_llm==='summary').features,['display_reasoning']);
+  assert.deepEqual(reasoningEfforts(rows,{model:'summary'}),[]);
+});
 const family = {model:'',family:'Chosen',version:'',reasoning:''};
 test('differing family effort sets disable reasoning without an explicit version',()=>{
   const rows=catalog([base,row('one','Chosen',['off','low','high']),row('two','Chosen',['off','low','medium'])]);

@@ -197,7 +197,7 @@ def test_bootstrap_keeps_terminal_pending_receipt_in_process(monkeypatch):
          patch('api_agent.testing.launched.run_launched_integration', side_effect=pending):
         from api_agent.testing.diagnostics import TerminalDiagnosticError
         with pytest.raises(TerminalDiagnosticError) as caught:
-            main(['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
+            main(['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
     assert caught.value.cleanup_pending is pending
     assert caught.value.inspections == (item,)
     assert caught.value.owners is pending.owners and caught.value.retry is pending.retry
@@ -221,7 +221,7 @@ def test_bootstrap_does_not_drop_active_primary_cleanup_receipt(failure):
         from api_agent.testing.diagnostics import TerminalDiagnosticError
         expected = KeyboardInterrupt if failure is KeyboardInterrupt else TerminalDiagnosticError
         with pytest.raises(expected) as caught:
-            main(['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic'],
+            main(['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'],
                  base_root=Path(__file__).parents[2])
     assert caught.value is not primary
     assert caught.value.inspection_group is primary.inspection_group
@@ -348,7 +348,7 @@ def test_active_noninteractive_execution_interrupt_keeps_cancellation_exit_statu
          patch('api_agent.testing.collection.collect_tests', return_value=[]), \
          patch('api_agent.testing.launched.run_launched_integration', side_effect=KeyboardInterrupt):
         status = main(['--tui-mode=integration', '--no-std-in', '--debug',
-                       '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
+                       '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
     assert status == 130
     assert 'KeyboardInterrupt' in capsys.readouterr().err
 

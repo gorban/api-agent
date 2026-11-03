@@ -80,7 +80,7 @@ def test_parser_bootstrap_handoff_preserves_completed_inspection_after_signal(
                                   external_pack=True, show_pack_bootstrap=True)
         os.environ['HANDOFF_CHILD'] = '1'
         raise SystemExit(dependencies.ensure_environment(context, [
-            '--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-bucket=synthetic'],
+            '--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'],
             replace_process=True))
     ''')
     environment = {key: value for key, value in os.environ.items()

@@ -20,6 +20,8 @@ joins declarations, shared requests, provider adaptation and recorded evidence.
   rows require `-` in all three added cells. Partial or reordered headers reject.
   Existing declarations never change inference behavior merely because they have
   an Output schema.
+  The optional eighth `Display summary` column is specified separately in
+  [node summary requirements](implementation_plan_f4o3b.md).
 - [x] Distinguish `structured` (native response-schema enforcement),
   `prompted_json` (ordinary text requested as JSON and parsed locally), `json`
   (provider JSON mode without schema enforcement), and `text` (ordinary generated

@@ -58,6 +58,7 @@ def test_mode_payload_authorization_no_discovery_and_owned_client(subscription, 
         assert body.get('max_output_tokens', body.get('max_completion_tokens')) == 64
     if mode == 'responses':
         assert body['store'] is False and body['input'][0]['content'] == 'Say Ok'
+        assert body['include'] == ['reasoning.encrypted_content']
     else:
         assert body['messages'][0]['content'] == 'Say Ok'
 
@@ -269,8 +270,8 @@ def test_subscription_rejects_explicit_token_limit_and_advertises_no_limit_featu
     from api_agent.llm_providers.gpt.factory import GPTProvider
     with pytest.raises(ProviderAccessError,match='does not support max_output_tokens'):
         run(subscription=True,req=request())
-    assert GPTProvider({'GPT_AUTH_MODE':'subscription'}).capabilities.features==('cache_policy','structured','tools','reasoning_effort')
-    assert GPTProvider({'GPT_AUTH_MODE':'api_key'}).capabilities.features==('max_output_tokens','cache_policy','structured','tools','reasoning_effort')
+    assert GPTProvider({'GPT_AUTH_MODE':'subscription'}).capabilities.features==('cache_policy','structured','tools','reasoning_effort','display_reasoning')
+    assert GPTProvider({'GPT_AUTH_MODE':'api_key'}).capabilities.features==('max_output_tokens','cache_policy','structured','tools','reasoning_effort','display_reasoning')
 
 
 @pytest.mark.parametrize('mode,key', [('responses','max_output_tokens'),('completions','max_completion_tokens')])

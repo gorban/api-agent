@@ -48,7 +48,7 @@ def test_annotation_semantics_and_malformed_empty_values_are_rejected(annotation
 
 @pytest.mark.parametrize('fields', [{'reasoning': 'synthetic hidden reasoning'}, {'reasoning': None},
     {'reasoning': 'first hidden', 'reasoning_content': 'second hidden'}])
-def test_sdk_reasoning_alias_is_validated_and_suppressed(fields):
+def test_sdk_reasoning_alias_is_separate_from_answer_and_retained_for_replay(fields):
     raw = sdk_completion(**fields)
     assert raw['choices'][0]['message']['reasoning'] == fields['reasoning']
     assert 'annotations' not in raw['choices'][0]['message']
@@ -57,7 +57,7 @@ def test_sdk_reasoning_alias_is_validated_and_suppressed(fields):
 
     assert result.payload.content == (TextContent('hi'),)
     assert result.payload.calls == ()
-    assert result.payload.continuation is None
+    assert (result.payload.continuation is not None) is any(bool(value) for value in fields.values())
     assert result.usage.input_tokens == 2 and result.usage.output_tokens == 3
     assert result.usage.reasoning_tokens is None
     assert result.outcome == 'completed'

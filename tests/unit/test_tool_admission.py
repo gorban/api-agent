@@ -15,6 +15,13 @@ from api_agent.tooling.models import SelectedTool, ToolPlan
 from api_agent.config.declarations import ConfigSchema
 
 
+def test_unowned_dependency_keeps_the_normal_import_route_without_searching_owned_paths(monkeypatch):
+    def unexpected(*args,**kwargs):
+        raise AssertionError('Unowned imports must not enter the owned finder')
+    monkeypatch.setattr(admission.machinery.PathFinder,'find_spec',unexpected)
+    assert admission.admitted_dependency_spec(SimpleNamespace(dependencies=()),'unowned_package',None) is None
+
+
 OWNER = '''class Owner:
     version = 1
     async def describe(self): return 'synthetic'

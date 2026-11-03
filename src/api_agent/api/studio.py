@@ -272,6 +272,7 @@ class StudioBackend:
                 selection.validate(value)
                 queue = asyncio.Queue(maxsize=16)
                 summaries = []
+                completed_summaries = []
                 summary_bytes = 0
                 async def summary(text):
                     nonlocal summary_bytes
@@ -282,10 +283,14 @@ class StudioBackend:
                     await queue.put(('reasoning_token', {'content': text}))
                 async def invoke(context):
                     from contextlib import nullcontext
-                    from ..providers.presentation import summary_delivery
+                    from ..providers.presentation import summary_delivery, reasoning_progress
+                    async def completed_progress(update):
+                        if update.complete:
+                            completed_summaries.append(update.text)
                     from ..workflows.run_context import conversation, turn
+                    from ..workflows.node_summary import display_selection
                     grouping = conversation(row['conversation_id']) if 'conversation_id' in row else nullcontext()
-                    with grouping, turn(session_id), summary_delivery(summary if capability == 'chat_stream' else None):
+                    with grouping, turn(session_id), display_selection(selection), summary_delivery(summary if capability == 'chat_stream' else None), reasoning_progress(completed_progress if capability == 'chat_stream' else None):
                         async with report_timeout('Studio completion', self.timeout):
                             if capability == 'chat_stream' and self.stream is not None:
                                 async def operation(*, auth):
@@ -309,14 +314,12 @@ class StudioBackend:
                                             raise ContractError('Unsupported application stream event')
                                 if final is None or ''.join(chunks) != final['response_text']:
                                     raise ContractError('Invalid stream completion')
-                                if summaries:
-                                    final.setdefault('reasoning_summary', ''.join(summaries))
                                 return final
                             async def operation(*, auth):
                                 return await self.complete(value, auth=auth, context=context)
                             final = chat_contract.result(session_id, await self.owner.call(operation, context=context))
-                            if summaries:
-                                final['reasoning_summary'] = ''.join(summaries)
+                            if completed_summaries:
+                                final['reasoning_summary'] = '\n\n'.join(completed_summaries)
                             return final
                 response_owner = ResponseCleanup(self, session_id) if capability == 'chat_stream' else None
                 if session_id in self._responses or len(self._responses) >= self.lifecycle.max_active + self.lifecycle.max_terminal:

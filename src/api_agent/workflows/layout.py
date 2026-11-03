@@ -49,6 +49,7 @@ _COLUMNS = {
     'Timeouts': ('Owner', 'Source', 'Key'),
 }
 _RESPONSE_COLUMNS = (*_COLUMNS['Functions'], 'Response schema', 'Output mode', 'Fallback')
+_SUMMARY_COLUMNS = (*_RESPONSE_COLUMNS, 'Display summary')
 
 # Notes cannot supply reference definitions to executable sections.
 _MD = MarkdownIt('commonmark').enable('table').disable('reference')
@@ -169,6 +170,8 @@ def load_layout(path, *, base_root, pack_root):
             header = tuple(_plain(cell) for cell in rows[0])
             if name == 'Functions' and header == _RESPONSE_COLUMNS:
                 columns = _RESPONSE_COLUMNS
+            if name == 'Functions' and header == _SUMMARY_COLUMNS:
+                columns = _SUMMARY_COLUMNS
             if header != columns:
                 raise ValueError(f'{name} has unknown or misplaced columns')
             # markdown-it pads/truncates table rows: reject malformed source first.
@@ -257,6 +260,12 @@ def _validate(layout, resource_bytes=None):
     functions = {row['ID']: row for row in layout.tables['Functions']}
     for row in layout.tables['Functions']:
         try:
+            if 'Display summary' in row:
+                summary = row['Display summary']
+                if summary not in ('-', 'native', 'auto', 'explanation'):
+                    raise ValueError('invalid node display summary policy')
+                if summary != '-' and (row['Output mode'] == '-' or summary != 'native' and row['Response schema'] == '-'):
+                    raise ValueError('generated node summaries require a JSON response schema')
             if _ID.fullmatch(row['Registry']) is None:
                 raise ValueError('invalid function registry ID')
             for column in ('Input', 'Output'):

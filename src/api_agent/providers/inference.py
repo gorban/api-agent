@@ -31,7 +31,7 @@ def request_from_wire(row, *, _validate_instances=True):
     if type(row) is dict and 'version' in row:
         from .rich_inference import request_from_wire as rich
         return rich(row, _validate_instances=_validate_instances)
-    if type(row) is not dict or set(row) - {'reasoning_effort'} != {'selected_llm', 'messages', 'max_output_tokens', 'cache_policy', 'request_id'}:
+    if type(row) is not dict or set(row) - {'reasoning_effort', 'display_summary'} != {'selected_llm', 'messages', 'max_output_tokens', 'cache_policy', 'request_id'}:
         _fail()
     _text(row['selected_llm'], 200, identifier=True)
     _text(row['request_id'], 200)
@@ -42,6 +42,8 @@ def request_from_wire(row, *, _validate_instances=True):
     if row['cache_policy'] is not None and (type(row['cache_policy']) is not str or row['cache_policy'] not in ('off', 'medium', 'high')):
         _fail()
     effort = row.get('reasoning_effort')
+    if type(row.get('display_summary', False)) is not bool:
+        _fail()
     if effort is not None and (type(effort) is not str or effort not in ('', 'off', 'low', 'medium', 'high')):
         _fail()
     if type(row['messages']) is not list or not 1 <= len(row['messages']) <= 64:
@@ -54,11 +56,12 @@ def request_from_wire(row, *, _validate_instances=True):
         messages.append(Message(item['role'], (TextContent(_text(item['text'], 524288)),)))
     _size(row)
     return LLMRequest(row['selected_llm'], CompletionRequest(tuple(messages),
-        generation=GenerationOptions(max_output_tokens=row['max_output_tokens'], cache_policy=row['cache_policy'], reasoning_effort=effort)), row['request_id'])
+        generation=GenerationOptions(max_output_tokens=row['max_output_tokens'], cache_policy=row['cache_policy'], reasoning_effort=effort,
+            display_summary=row.get('display_summary', False))), row['request_id'])
 
 
 def request_to_wire(request, *, _validate_instances=True):
-    if isinstance(request, LLMRequest) and (request.payload.tools or request.payload.structured is not None or request.payload.response is not None or request.payload.generation.temperature is not None or any(message.cache_boundary is not None for message in request.payload.messages)):
+    if isinstance(request, LLMRequest) and (request.payload.tools or request.payload.structured is not None or request.payload.response is not None or request.payload.generation.temperature is not None or any(message.cache_boundary is not None or message.continuation is not None for message in request.payload.messages)):
         from .rich_inference import request_to_wire as rich
         return rich(request, _validate_instances=_validate_instances)
     if (not isinstance(request, LLMRequest) or request.payload.tools or request.payload.structured is not None
@@ -74,6 +77,8 @@ def request_to_wire(request, *, _validate_instances=True):
                cache_policy=request.payload.generation.cache_policy, request_id=request.request_id)
     if request.payload.generation.reasoning_effort is not None:
         row['reasoning_effort'] = request.payload.generation.reasoning_effort
+    if request.payload.generation.display_summary:
+        row['display_summary'] = True
     request_from_wire(row)
     return row
 
@@ -128,7 +133,7 @@ def usage_to_wire(usage):
 
 
 def result_to_wire(result):
-    if isinstance(result, LLMResult) and (result.payload.calls or result.response is not None):
+    if isinstance(result, LLMResult) and (result.payload.calls or result.payload.continuation is not None or result.response is not None):
         from .rich_inference import result_to_wire as rich
         return rich(result)
     if (not isinstance(result, LLMResult) or result.payload.calls or result.payload.results or result.payload.continuation is not None

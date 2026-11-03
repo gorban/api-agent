@@ -6,7 +6,7 @@ from api_agent.providers.progress import component_timeout
 from api_agent.testing.ui_turn import ui_turn
 
 
-async def browser_prompt(prepared, *, prompt="Answer with exactly: Ok"):
+async def browser_prompt(prepared, *, prompt="Answer with exactly: Ok", observe_response=None):
     """Consume the selected provider's original prepared page for one request."""
     from playwright.async_api import expect
     async with ui_turn(prepared) as turn:
@@ -37,6 +37,8 @@ async def browser_prompt(prepared, *, prompt="Answer with exactly: Ok"):
                 request = await submitted.value
                 payload = request.post_data_json
                 turn.bind(conversation_id=payload['conversation_id'], turn_id=payload['session_id'])
+                if observe_response is not None:
+                    await observe_response(page)
                 status = page.locator('.assistant .metadata-grid dd').last
                 await expect(status).to_have_text(re.compile(r'Complete|Incomplete'), timeout=120000)
                 assert await status.text_content() == 'Complete', await page.locator('#status').inner_text()

@@ -192,6 +192,7 @@ async def test_custom_acquirer_joins_parsed_flow_and_actual_local_llm(tmp_path, 
         await owner.ensure_ready()
         calls = []
         async def sdk(operation, payload, *, auth, join=None, on_dispatch=None):
+            auth = await auth()
             assert auth.worker_config()['mode'] == 'temporary'
             assert auth.worker_config()['session_token'] == 'synthetic-token'
             if join is not None:

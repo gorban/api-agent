@@ -14,8 +14,8 @@ or an HTTP success alone does not establish final-answer compatibility.
   `BEDROCK_COMPLETIONS_REASONING_FORMAT=auto` has no qualified carrier, reject them with actionable
   configuration guidance. Explicit `tagged` interprets the leading envelope;
   `literal` preserves the entire answer. No model-family whitelist or implicit
-  endpoint change establishes this interpretation. Never promote raw text from
-  either envelope to a displayable reasoning summary.
+  endpoint change establishes this interpretation. Display reasoning from an
+  explicitly admitted carrier follows the [progressive display contract](implementation_plan_f4o3a.md).
 - [x] Keep the declaration default `auto`. For the selected Bedrock provider,
   resolve `auto` to `tagged` only for the exact qualified Runtime Completions
   response carrier `openai.gpt-oss-20b-1:0`; all other selected IDs and routes
@@ -52,7 +52,7 @@ contract rather than applying that rule to unrelated text responses.
 
 ## Studio display of provider-supplied summaries
 
-- [x] Accept only separately supplied displayable summary text: optional progressive SSE `reasoning_token` content and an optional authoritative terminal `reasoning_summary` string. Keep it separate from final answer text, and never parse markup or infer a summary from hidden, encrypted or raw reasoning.
+- [x] Accept separately supplied displayable summary text: optional progressive SSE `reasoning_token` content and an optional authoritative terminal `reasoning_summary` string. Keep it separate from final answer text. [Plaintext reasoning expansion](implementation_plan_f4o3a.md) is separate pending work; encrypted state remains excluded.
 - [x] Show an animated Thinking state while awaiting answer text, respecting reduced-motion preference. Show progressive summary as transient plain text kept only in memory; replace that view with the final answer when it arrives. Persist only the authoritative terminal summary in collapsed response details. Errors and cancellation clear the pending indicator and transient summary.
 - [x] Wait for terminal stream completion, the settled final DOM and completion of finite message animations before normal Studio E2E answer assertions and screenshots. Pending summary updates must not restart the message arrival fade.
 - [x] Qualify the provider's safe summary contract and backend event/result mapping, including explicit content policy and no hidden reasoning disclosure.

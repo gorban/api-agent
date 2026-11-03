@@ -378,6 +378,9 @@ class Workflow:
             values = state['values']
             invocation = _CURRENT_SERVICES.get()
             services = invocation[3].services(self._run_services(), step.id)
+            if row.get('Display summary', '-') != '-':
+                from .node_summary import SummaryServices
+                services = SummaryServices(services, row['Display summary'])
             context = NodeContext(step.id, state['ancestry'], tuple(state['prompts'][item['File']] for item in prompts
                 if item['When'] == 'always' or self._condition(item['When'], values)), services,
                 budget.id, state.get('attempt_id'), row)

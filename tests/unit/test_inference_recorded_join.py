@@ -156,7 +156,7 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
                 {'role': 'user', 'content': 'Answer with exactly: Ok /var/app/prompt.py'}],
                 'stream': False}
             if mode == 'responses':
-                expected_body.update(store=False, max_output_tokens=128)
+                expected_body.update(store=False, max_output_tokens=128, include=['reasoning.encrypted_content'])
             else:
                 expected_body['max_completion_tokens'] = 128
             assert payload == {'provider_payload': expected_body, 'adapter_instructions': []}

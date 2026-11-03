@@ -6,10 +6,12 @@ a separate acceptance step.
 
 ## Reasoning and the final answer
 
-Displayable provider summaries travel separately as `reasoning_summary`; Studio
-can preview them while Thinking and retain them collapsed after the final answer.
-Raw thinking text, signatures and encrypted continuation state are not summaries.
-Providers without displayable summaries still show the pending Thinking state.
+Admitted plaintext reasoning and provider summaries travel separately from the
+answer under the compatible `reasoning_summary` field. This name does not mean
+that plaintext reasoning was translated or independently verified. Studio can
+preview display text while Thinking and retain it collapsed after the final answer.
+Signatures, encrypted continuation state and unknown reasoning carriers remain
+excluded. Providers without display text still show the pending Thinking state.
 The final `response_text` alone is used by answer assertions.
 
 Native reasoning fields take precedence over text interpretation. The declared
@@ -21,7 +23,17 @@ remain `auto`: ordinary answers pass through and ambiguous leading envelopes
 fail with configuration guidance. Explicit `tagged` or `literal` overrides this
 qualification; `literal` preserves the entire text, including leading tags.
 This works without changing the selected endpoint, API or model. Fragmented envelopes are held until
-validated; envelope contents are never presented as displayable summaries.
+validated; explicitly admitted envelope contents may then be displayed separately.
+
+Native Completions reasoning fields and Responses summary fragments can be
+forwarded incrementally after credential protection. Tagged envelopes remain
+buffered until validated. Nonstreaming graph calls publish admitted display text
+when each call completes, before subsequent calls. Ordinary Run local text calls
+use an advertised provider stream when a progress consumer is active; rich calls
+retain their existing response-format negotiation. Display text is bounded to
+64 KiB per call. Application adapters can use request-local
+`reasoning_progress` updates (call ID, text, completion flag) to feed a separate
+friendly-message translator. Studio adds no translation inference.
 
 The exact carrier qualification is the provider's response-interpretation policy,
 not a claim that discovery proves an AWS-wide Chat Completions contract. The AWS

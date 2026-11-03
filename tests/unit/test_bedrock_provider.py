@@ -140,7 +140,7 @@ def test_setup_catalog_completion_stream_and_cleanup(controlled, monkeypatch):
         assert await provider.adescribe(auth=session) == ()
         transport.call.assert_awaited_with('models', {}, auth=session, join=ANY)
         assert await provider.acomplete(request, auth=session) == result
-        transport.call.assert_awaited_with('completions', {'prefix': '/v1', 'body': {'modelId': MODEL}}, auth=session, join=ANY, on_dispatch=ANY)
+        transport.call.assert_awaited_with('completions', {'prefix': '/v1', 'body': {'modelId': MODEL}}, auth=ANY, join=ANY, on_dispatch=ANY)
         assert [event async for event in provider.astream(request, auth=session)] == [
             StreamEvent(TextContent('answer')), StreamEvent(result, 'completed')]
         assert released == [True]

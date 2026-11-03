@@ -254,7 +254,7 @@ class BedrockProvider:
                     dispatched = True
                 try:
                     response = await self.transport.call(self.api_mode, payload,
-                        auth=native_scope.wrap_auth(auth) if self.api_mode == 'responses' else auth,
+                        auth=native_scope.wrap_auth(auth),
                         join=self._join_credentials, on_dispatch=dispatch)
                     from api_agent.workflows.inference_capture import capture_inference
                     codec_options = ({'reasoning_format': reasoning_format}
@@ -338,7 +338,7 @@ class BedrockProvider:
                         record_response_dispatch(evidence)
                     dispatched = True
                 stream = self.transport.stream(self.api_mode + '_stream', payload,
-                    auth=native_scope.wrap_auth(auth) if self.api_mode == 'responses' else auth,
+                    auth=native_scope.wrap_auth(auth),
                     join=self._join_credentials, on_dispatch=dispatch)
             async with aclosing(stream):
                 while True:

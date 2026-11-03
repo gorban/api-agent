@@ -25,7 +25,7 @@ def test_toggle_defaults_csv_to_operation_owner_not_launcher_or_cwd(tmp_path, mo
     shared = load_shared_schema(base)
     schema = compose_schema(shared, load_declarations(context.config_path, base_schema=shared), context.defaults)
     monkeypatch.chdir(tmp_path)
-    settings = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic'}
+    settings = {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic'}
     disabled = resolve_config(schema, environ=settings, anchors=context.anchors, pack_launcher=external)
     assert not disabled.errors
     assert disabled.values['TOKEN_USAGE_CSV_ENABLED'] is False
@@ -44,7 +44,7 @@ def test_toggle_defaults_csv_to_operation_owner_not_launcher_or_cwd(tmp_path, mo
 @pytest.mark.parametrize('name', ['TOKEN_USAGE_CSV', 'ALLURE_RESULTS_DIR', 'ALLURE_SECONDARY_DIR'])
 @pytest.mark.parametrize('source', ['dotenv', 'environment', 'cli'])
 def test_empty_paths_are_explicit_disabled_values_not_root_paths(name, source, tmp_path):
-    options = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
+    options = {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
                'TOKEN_USAGE_CSV_ENABLED': 'True'}
     kwargs = {'environ': options, 'anchors': {'owner_root': tmp_path}}
     if source == 'cli':

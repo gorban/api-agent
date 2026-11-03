@@ -51,7 +51,7 @@ default = "usable-default"
 @pytest.mark.parametrize('collect_only', [False, True])
 def test_missing_active_requirement_stops_terminal_launch(mode, start, collect_only, terminal_launch, capsys):
     args = ['--no-std-in', '--tui-mode=' + mode, '--start=' + start,
-            '--allure-s3-bucket=synthetic', '--ui-source-dir=/synthetic/frontend', 'selected.py']
+            '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', '--ui-source-dir=/synthetic/frontend', 'selected.py']
     if collect_only:
         args.append('--collect-only')
 

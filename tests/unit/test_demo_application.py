@@ -83,6 +83,43 @@ def test_verified_query_executes_after_review_and_renderer_gets_partial_result()
     assert 'optional field failed' in ''.join(part.text for part in llm.requests[-1].payload.messages[-1].content)
 
 
+def test_completed_node_reasoning_is_delivered_while_next_node_is_still_blocked():
+    from api_agent.providers.presentation import summary_delivery
+
+    async def run():
+        reviewer_started, release = asyncio.Event(), asyncio.Event()
+        observed = []
+
+        class ReasoningLLM(LLM):
+            async def complete(self, value, *, context):
+                if len(self.requests) == 1:
+                    reviewer_started.set()
+                    await release.wait()
+                completed = await super().complete(value, context=context)
+                return replace(completed, reasoning_summary=f'Completed call {len(self.requests)}.')
+
+        llm = ReasoningLLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Hello'}),
+                            verdict(), 'Hello'])
+
+        async def sink(text):
+            observed.append(text)
+
+        with summary_delivery(sink):
+            task = asyncio.create_task(application(Owner()).complete(request(), llm=llm,
+                context=OperationContext('request')))
+            try:
+                await asyncio.wait_for(reviewer_started.wait(), 5)
+                assert observed == ['Completed call 1.']
+                assert not task.done()
+            finally:
+                release.set()
+                final = await task
+        assert ''.join(observed) == 'Completed call 1.\n\nCompleted call 2.\n\nCompleted call 3.'
+        assert final.payload.content[0].text == 'Hello'
+
+    asyncio.run(run())
+
+
 def test_fenced_prompted_planner_and_native_reviewer_share_validated_json_consumption():
     from api_agent.llm_providers.response_policy import resolve_response
     from api_agent.providers.rich_inference import async_validate_result

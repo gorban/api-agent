@@ -94,7 +94,7 @@ class GPTProvider:
         # including calls made with newly allocated HTTP clients.
         self.cache_session_id = str(uuid4())
         self.capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"),
-                                                 features=("cache_policy", "structured", "tools", "reasoning_effort") if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy", "structured", "tools", "reasoning_effort"))
+                                                 features=("cache_policy", "structured", "tools", "reasoning_effort", "display_reasoning") if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy", "structured", "tools", "reasoning_effort", "display_reasoning"))
         self.cache_policy = config.get('LLM_CACHE_POLICY')
         self.reasoning_effort = config.get('LLM_REASONING_EFFORT')
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
@@ -321,8 +321,12 @@ class GPTProvider:
         from .discovery import discover_selections
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
-            return await discover_selections(client=client, base_url=base, access_token=auth,
+            selections = await discover_selections(client=client, base_url=base, access_token=auth,
                                               subscription=self.auth_mode == "subscription", authority=self.emissions)
+        from dataclasses import replace
+        from .reasoning import display_reasoning
+        return tuple(replace(row, features=(*row.features, 'display_reasoning'))
+                     if display_reasoning(row.selected_llm, base_url=base, api_mode=self.api_mode) else row for row in selections)
 
     def validate_request(self, request):
         """Validate selected cache support before retrieving authentication."""

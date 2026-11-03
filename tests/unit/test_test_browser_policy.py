@@ -10,7 +10,7 @@ from types import SimpleNamespace
 @pytest.mark.parametrize('mode', ['integration','e2e'])
 @pytest.mark.parametrize('source', ['dotenv','environ','cli'])
 def test_test_modes_ignore_local_frontend_flag_and_keep_debug_ownership(tmp_path,mode,source):
-    values={'TUI_MODE':mode,'ALLURE_S3_BUCKET':'synthetic-results'}
+    values={'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE':mode,'ALLURE_S3_BUCKET':'synthetic-results'}
     kwargs={'environ':values,'anchors':{'owner_root':tmp_path}}
     if source == 'cli':
         kwargs['argv']=['--run-ui=True']
@@ -26,7 +26,7 @@ def test_test_modes_ignore_local_frontend_flag_and_keep_debug_ownership(tmp_path
 
 @pytest.mark.parametrize('mode',['run-local','integration','e2e'])
 def test_debug_remains_explicitly_configurable_without_frontend_flag(tmp_path,mode):
-    result=resolve_config(load_shared_schema(),environ={'TUI_MODE':mode,'DEBUG':'True','ALLURE_S3_BUCKET':'synthetic-results'},anchors={'owner_root':tmp_path})
+    result=resolve_config(load_shared_schema(),environ={'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE':mode,'DEBUG':'True','ALLURE_S3_BUCKET':'synthetic-results'},anchors={'owner_root':tmp_path})
     result.raise_for_errors()
     assert result.values['DEBUG'] is True
     assert result.fields['DEBUG'].explicit

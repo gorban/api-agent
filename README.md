@@ -164,6 +164,11 @@ Choose `unit`, `integration`, or `e2e` as `<tests_type>`:
 ./launch.sh --tui-mode "<tests_type>"
 ```
 
+Integration/E2E reporting requires an explicit storage choice: save
+`ALLURE_S3_USE_LOCALSTACK=True` in Review configuration or add
+`--allure-s3-use-localstack=True` for managed local history. For external S3,
+choose False and supply a bucket; unit coverage needs neither.
+
 All tests start selected. Add positional selectors to preselect tests, or adjust
 selection in the TUI. Append `--no-std-in` for terminal automation, or export
 `NO_STD_IN=True` for multiple commands. Integration requires `--start=True` or `--debug`;
@@ -181,6 +186,8 @@ With `DEBUG=True` and more than one distinct integration or E2E test selected,
 execution asks for literal `y` before opening browsers, including with `--no-std-in`.
 Set `DEBUG=False` and omit `--debug` to avoid the prompt.
 See [test controls and automation](docs/development.md#testing).
+See [reasoning and explanation tests](docs/testing_reasoning.md) for the optional
+summary graph, browser assertions, provider/model examples and replay limitations.
 
 For the full unit line/branch gate and provider/API/authentication matrix, see
 [test qualification](docs/testing_qualification.md).

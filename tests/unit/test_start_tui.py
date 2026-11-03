@@ -316,7 +316,7 @@ def test_noninteractive_e2e_explicit_acceptance_reaches_operation_boundary():
             patch('api_agent.runtime.dependencies.ensure_environment', return_value=19) as prepare, \
             patch('api_agent.auth.extensions.validate_operation') as validate:
         status = main(['--no-std-in', '--tui-mode=e2e', '--start=E2E',
-                       '--ui-source-dir=/tmp/synthetic-ui', '--allure-s3-bucket=synthetic'], base_root=root)
+                       '--ui-source-dir=/tmp/synthetic-ui', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'], base_root=root)
     gate.assert_called_once()
     validate.assert_not_called()
     prepare.assert_called_once()
@@ -344,7 +344,7 @@ def test_noninteractive_e2e_hands_selected_tests_to_launched_owner():
             patch('api_agent.config.tool_resolution.compose_operation_tools', return_value=None), \
             patch('api_agent.testing.launched.run_launched_integration', side_effect=ValueError('synthetic operation requirement')) as execute:
         status = main(['--no-std-in', '--tui-mode=e2e', '--start=E2E', '--e2e-reruns=0',
-                       '--ui-source-dir=/tmp/synthetic-ui', '--allure-s3-bucket=synthetic'], base_root=root)
+                       '--ui-source-dir=/tmp/synthetic-ui', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'], base_root=root)
     assert status == 2 and 'synthetic operation requirement' in stderr.getvalue()
     assert execute.call_args.kwargs['accepted'] is True
     assert execute.call_args.args[2]['TUI_MODE'] == 'e2e'

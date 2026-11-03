@@ -400,6 +400,8 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 text = ''.join(part.text for part in decoded.payload.content)
                 if text:
                     emit({'event': {'kind': 'text', 'text': text}})
+                if decoded.reasoning_summary:
+                    emit({'event': {'kind': 'reasoning_summary', 'text': decoded.reasoning_summary}})
                 emit({'event': {'kind': 'completed', 'result': result_to_wire(decoded)}})
             else:
                 emit(dict(result=value, **({'diagnostics': metadata} if metadata else {})))

@@ -31,7 +31,7 @@ def test_terminal_lost_worker_overrides_successful_publication(monkeypatch, caps
     monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', lambda *a, **k: recorded)
     monkeypatch.setattr(os, 'environ', {})
     status = main(['--tui-mode=integration', '--no-std-in', '--debug',
-                   '--allure-s3-bucket=synthetic'], base_root=Path(__file__).resolve().parents[2])
+                   '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'], base_root=Path(__file__).resolve().parents[2])
     assert status == 3
     evidence = capsys.readouterr().out
     assert 'Allure publication: PASS' in evidence and 'worker exited unexpectedly' in evidence

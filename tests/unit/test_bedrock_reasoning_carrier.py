@@ -71,7 +71,7 @@ def test_envelope_policy_is_model_independent_and_preserves_literal_text(tag, mo
     assert error.value.usage.input_tokens == 2
     normalized = mantle.decode(raw, 'completions', selected_llm=model, endpoint=endpoint, reasoning_format='tagged')
     assert normalized.payload.content[0].text == 'Ok'
-    assert normalized.reasoning_summary is None
+    assert normalized.reasoning_summary == 'Internal material.'
     literal = mantle.decode(raw, 'completions', selected_llm=model, endpoint=endpoint, reasoning_format='literal')
     assert literal.payload.content[0].text == text
 
@@ -100,7 +100,7 @@ def test_native_reasoning_carrier_leaves_answer_markup_literal(field, policy):
     raw['choices'][0]['message'].update({field: 'internal', 'content': text})
     value = mantle.decode(raw, 'completions', selected_llm=MODEL, reasoning_format=policy)
     assert value.payload.content[0].text == text
-    assert value.reasoning_summary is None
+    assert value.reasoning_summary == 'internal'
 
 
 @pytest.mark.parametrize('field', ['reasoning', 'reasoning_content'])
@@ -115,7 +115,8 @@ def test_native_stream_carrier_precedence_survives_fragmentation(field, native_f
     frames.extend(stream.feed(chunk(choices=[], usage=usage())))
     frames.extend(stream.finish())
     assert ''.join(frame['text'] for frame in frames if frame['kind'] == 'text') == '<think>literal answer</think>'
-    assert frames[-1]['result']['text'] == '<think>literal answer</think>'
+    from api_agent.providers.inference import result_from_wire
+    assert result_from_wire(frames[-1]['result']).payload.content[0].text == '<think>literal answer</think>'
 
 
 def test_fragmented_envelope_never_crosses_stream_boundary_before_validation():
@@ -150,7 +151,9 @@ def test_native_summary_excludes_raw_and_encrypted_reasoning_and_is_credential_g
     decoded = mantle.decode(raw, 'responses', selected_llm=MODEL)
     assert decoded.reasoning_summary == 'plan'
     assert decoded.payload.content[0].text == 'Ok'
-    assert 'private thought' not in str(result_to_wire(decoded))
+    from api_agent.testing.inference_content import content_boundary, export_content
+    from test_bedrock_mantle import request
+    assert 'private thought' not in str(export_content(content_boundary({'LOG_CONTENT':True}),request(),decoded))
     with pytest.raises(ContractError):
         guard_result(decoded, {'plan'})
     raw['output'][0]['summary'][0]['text'] = 'é' * 32769
@@ -159,13 +162,12 @@ def test_native_summary_excludes_raw_and_encrypted_reasoning_and_is_credential_g
     assert error.value.provider_diagnostics['validation_rule'] == 'summary_size'
 
 
-@pytest.mark.parametrize('fault', ['duplicate', 'oversized', 'mismatch'])
+@pytest.mark.parametrize('fault', ['oversized', 'mismatch'])
 def test_parent_summary_frames_are_bounded_and_match_terminal(fault):
     decoded = mantle.decode(response([reasoning(), message('')]), 'responses', selected_llm=MODEL)
     parent = ParentStream('responses', selected_llm=MODEL)
     parent.feed({'kind': 'reasoning_summary', 'text': 'plan'})
     frame = ({'kind': 'reasoning_summary', 'text': 'x' * 65537} if fault == 'oversized'
-             else {'kind': 'reasoning_summary', 'text': 'plan'} if fault == 'duplicate'
              else {'kind': 'completed', 'result': result_to_wire(decoded) | {'reasoning_summary': 'different'}})
     with pytest.raises(ContractError, match='summary'):
         parent.feed(frame)
