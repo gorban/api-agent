@@ -123,7 +123,7 @@ arbitrary child output, which may contain credentials even with `LOG_CONTENT=Tru
 
 - [Settings and TUI controls](docs/workbench.md)
 - [Credentials and LLM connections](docs/connections.md)
-- [Included Bedrock provider and conditional AWS setup](src/api_agent/llm_providers/bedrock/README.md)
+- [Amazon Bedrock: setup, authentication and support matrix](docs/bedrock.md)
 - [Resource packs: tools, LLM/UI providers and configuration](docs/resource-packs.md)
 - [Provider-owned integration test profiles](docs/integration_test_profiles.md)
 - [Running, debugging and testing](docs/development.md)

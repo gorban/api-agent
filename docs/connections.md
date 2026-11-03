@@ -8,6 +8,7 @@
 includes the [GPT provider](../src/api_agent/llm_providers/gpt/cfg/config.toml).
 A resource pack can select another provider; explicit .env/ENV/CLI choices win.
 The provider contributes its own settings and authentication roles to the TUI.
+For AWS, see [Bedrock setup and support matrix](bedrock.md).
 
 GPT offers subscription authentication with Responses, or API-key authentication
 with a supporting configured endpoint. Subscription plus Chat Completions is

@@ -54,8 +54,8 @@ with the first E2E command. These overrides do not save configuration.
 
 Catalog access does not prove that an account can invoke a model or that every
 feature works on every endpoint. Use the exact discovered execution ID. Do not
-switch endpoint or authentication automatically to make a test pass. Runtime
-API-key authentication remains unsupported by this adapter.
+switch endpoint or authentication automatically to make a test pass. Authentication permissions remain specific to the selected endpoint and API;
+see [Bedrock setup](bedrock.md).
 Native Bedrock replay requires an identity-bound frozen credential snapshot.
 The bundled session adapter supplies one; legacy custom profile-only adapters
 must adopt that contract before they can replay native reasoning state.

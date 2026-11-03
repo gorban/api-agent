@@ -60,8 +60,9 @@ def collect(events, deadline, observe=None):
                 _require(type(start) is dict and set(start) in (set(), {'toolUse'}))
                 if start:
                     tool = start['toolUse']
-                    _require(type(tool) is dict and set(tool) == {'toolUseId', 'name'}
-                             and all(type(child) is str and child for child in tool.values()))
+                    _require(type(tool) is dict and set(tool) in ({'toolUseId', 'name'}, {'toolUseId', 'name', 'type'})
+                             and all(type(child) is str and child for child in tool.values())
+                             and tool.get('type') in (None, 'function', 'tool_use'))
                     charge(tool['toolUseId'])
                     charge(tool['name'])
                     active.update(type='toolUse', tool=tool, input=[])

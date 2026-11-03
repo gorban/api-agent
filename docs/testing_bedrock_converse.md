@@ -67,7 +67,9 @@ separate reasoning-token count; missing usage remains unknown.
 Live checks established GPT-OSS request/replay and Sonnet 4.5 low-budget replay.
 A separate GPT-6 Luna low-effort request confirmed the nested effort carrier.
 These checks do not qualify every model/version/account or guarantee a nonempty
-summary. Opus 4.5's effort opt-in still needs route-specific live acceptance.
+summary. Opus 4.5 hybrid effort passed low-effort replay and low/high-effort
+named-tool workflows on its Runtime US profile; this does not qualify strict
+tools, answer schemas or every profile. See the [operator guide](bedrock.md).
 
 Consult the [AWS GPT controls](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-luna.html),
 [adaptive thinking](https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html)
