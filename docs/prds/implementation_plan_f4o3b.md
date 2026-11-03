@@ -40,8 +40,10 @@ prove that the provider used reasoning tokens.
 - [ ] Close the newly observed [OpenRouter Responses qualification
   failure](implementation_plan_f4o3b1.md). Earlier qualified routes retain their
   evidence; they do not establish parity across compatible backends.
-- [ ] Human acceptance: inspect preview, final answer, expanded retained details
-  and the provider/model testing guide.
+- [x] Human acceptance: available reasoning preview, final-answer replacement
+  and retained response details approved on November 2, 2026.
+- [ ] Human acceptance of the provider/model testing guide; model/API
+  qualification remains separately scoped.
 
 ## Verification and limits
 

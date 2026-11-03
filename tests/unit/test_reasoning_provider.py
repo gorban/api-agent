@@ -63,7 +63,7 @@ def test_catalog_exposes_verified_capability_only():
     selections = _catalog({'data':[{'id':model} for model in (*MODELS, 'gpt-unknown')]}, False, 'synthetic-token', base_url=BASE)
     assert selections[0].reasoning_efforts == ('off','low','medium','high')
     assert selections[2].reasoning_efforts == ('low','medium','high')
-    assert selections[0].features == ('reasoning_effort',)
+    assert selections[0].features == ('reasoning_effort', 'cache_policy')
     assert selections[-1].reasoning_efforts is None
 
 
@@ -174,7 +174,7 @@ def test_56_official_wire_and_catalog(model, effort, mode):
     selection, = _catalog({'data': [{'id': model}]}, False,
         'synthetic-token', base_url=BASE)
     assert selection.reasoning_efforts == ('off', 'low', 'medium', 'high')
-    assert selection.features == ('reasoning_effort',)
+    assert selection.features == ('reasoning_effort', 'cache_policy')
     _, body = validate_text_request(base_url=BASE, access_token='synthetic-token',
         subscription=False, api_mode=mode, request=request(selection.selected_llm, effort))
     assert body['model'] == model
@@ -198,7 +198,7 @@ def test_56_official_wire_and_catalog(model, effort, mode):
 def test_56_unverified_routes_and_versions(base, model):
     selection, = _catalog({'data': [{'id': model}]}, False, 'synthetic-token', base_url=base)
     assert selection.reasoning_efforts is None
-    assert selection.features == ()
+    assert 'reasoning_effort' not in selection.features
     with pytest.raises(ProviderAccessError, match='not verified'):
         reasoning_fields(request(model, 'off'), base_url=base, api_mode='responses')
     assert reasoning_fields(request(model, ''), base_url=base, api_mode='responses') == {}

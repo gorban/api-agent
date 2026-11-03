@@ -56,4 +56,6 @@ contract rather than applying that rule to unrelated text responses.
 - [x] Show an animated Thinking state while awaiting answer text, respecting reduced-motion preference. Show progressive summary as transient plain text kept only in memory; replace that view with the final answer when it arrives. Persist only the authoritative terminal summary in collapsed response details. Errors and cancellation clear the pending indicator and transient summary.
 - [x] Wait for terminal stream completion, the settled final DOM and completion of finite message animations before normal Studio E2E answer assertions and screenshots. Pending summary updates must not restart the message arrival fade.
 - [x] Qualify the provider's safe summary contract and backend event/result mapping, including explicit content policy and no hidden reasoning disclosure.
-- [ ] Human acceptance: inspect pending, final, and collapsed-summary states on an authorized Studio turn.
+- [x] Human acceptance: pending reasoning, final-answer replacement and retained
+  collapsed response metadata approved on November 2, 2026, where reasoning is
+  available before completion. This does not qualify every provider/model route.

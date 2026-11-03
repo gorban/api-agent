@@ -36,3 +36,21 @@ subsequent manual Sol/Terra medium puzzle turns complete after suite publication
 with enabled controls observed in the original browser and clean owned shutdown.
 These prove completion, not puzzle correctness. Manual turns remain separate
 from finalized Allure accounting. Human acceptance remains unchecked.
+
+
+## Cache-policy catalog admission follow-through
+
+- [x] Derive the catalog cache-policy capability from the existing provider-owned
+  cache renderer, including known compatible backends. Do not duplicate model
+  allowlists or admit unknown model policies. Preserve explicit output ceilings.
+- [x] Verify the Studio request with configured medium caching and an explicit
+  catalog-clamped output limit through the selected compatible backend. The
+  normal Studio integration test and Allure publication pass.
+- [x] Renew applicable coverage and independent/external source review: 24,081
+  unit tests pass at exact 100% line and branch coverage. Both positive and
+  unknown-route mutation controls detect incorrect capability admission; wheel,
+  source-archive rebuild without Git and relocated installed checks pass.
+
+A missing cache-policy feature rejected otherwise supported Studio requests
+before transport when an explicit output ceiling enabled full catalog validation.
+Standalone requests without an explicit ceiling did not exercise that gate.

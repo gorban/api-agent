@@ -35,7 +35,8 @@ def run_discovery(response=None, *, subscription=False, base_url=BASE, handler=N
 def test_discovery_single_authorized_get_preserves_order_and_client(subscription, payload, expected):
     results, requests = run_discovery(httpx.Response(200, json=payload), subscription=subscription)
     assert [(row.selected_llm, row.description) for row in results] == expected
-    assert all(row.features == (('reasoning_effort',) if row.reasoning_efforts else ()) for row in results)
+    assert all(row.features == (('reasoning_effort',) if row.reasoning_efforts else ())
+               + (('cache_policy',) if subscription or row.selected_llm == 'gpt-4.1' else ()) for row in results)
     assert len(requests) == 1
     assert requests[0].method == 'GET' and str(requests[0].url) == BASE + '/models'
     assert requests[0].headers['Authorization'] == 'Bearer ' + TOKEN
@@ -300,3 +301,25 @@ def test_optional_catalog_metadata_uses_shared_scrubbing_for_selected_credential
 def test_required_catalog_identity_cannot_become_an_empty_selection():
     with pytest.raises(ModelDiscoveryError, match='invalid catalog after response validation'):
         run_discovery(httpx.Response(200, json={'data': [{'id': 'gpt-' + TOKEN}]}))
+
+
+@pytest.mark.parametrize('model', ['openai/gpt-6-luna', 'openai/gpt-6.1-sol'])
+def test_router_catalog_cache_admission_with_explicit_output_limit(model):
+    from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent, GenerationOptions
+
+    rows, _ = run_discovery(httpx.Response(200, json={'data': [{'id': model,
+        'supported_parameters': ['max_tokens'], 'top_provider': {'max_completion_tokens': 128000}}]}),
+        base_url='https://openrouter.ai/api/v1')
+    selected = rows[0]
+    request = LLMRequest(model, CompletionRequest((Message('user', (TextContent('Say Ok'),)),),
+        generation=GenerationOptions(max_output_tokens=128000, cache_policy='medium')))
+
+    selected.validate(request)
+
+
+@pytest.mark.parametrize('model', ['openai/gpt-6.1-terra', 'openai/gpt-unknown'])
+def test_router_catalog_does_not_advertise_unknown_cache_policy(model):
+    rows, _ = run_discovery(httpx.Response(200, json={'data': [{'id': model,
+        'supported_parameters': ['max_tokens'], 'top_provider': {'max_completion_tokens': 128000}}]}),
+        base_url='https://openrouter.ai/api/v1')
+    assert 'cache_policy' not in rows[0].features

@@ -78,4 +78,6 @@ Current human acceptance covers the delivered terminal configuration, test selec
 - [x] Leave ALLURE_S3_USE_LOCALSTACK omitted until explicitly chosen. Require True or False for non-collection integration/E2E reporting, except when reporting is explicitly skipped. Unit coverage does not require S3 or Allure.
 - [x] Reveal S3 bucket, endpoint, prefix and region only after that choice. True supplies managed bucket/endpoint defaults and reveals the local port; False requires an external bucket without starting managed S3. Use declaration predicates, not special display conditions. Saved assignments remain removable even while inactive.
 - [x] Complete focused rejection checks, applicable coverage, package and independent review gates. All 23,786 unit tests pass with exact 100% line/branch coverage; four causal declaration mutations are rejected. Wheel, source-distribution rebuild without Git, relocated import and mounted Review checks pass.
-- [ ] Human acceptance: switch trace modes and local/external storage in Review configuration; verify defaults, required prompts and saved-value cleanup.
+- [x] Human acceptance of tracing and Allure configuration ordering, defaults,
+  required prompts and saved inactive-value cleanup, recorded November 2, 2026.
+  Full GenAI tracing conformance remains [separate work](implementation_plan_k1a.md).
