@@ -53,12 +53,23 @@ _CHAT_TOOLS_OFF_ONLY = ('gpt-6-luna', 'gpt-6-sol', 'gpt-5.6-luna')
 
 # Display summaries require their own route qualification, independent of effort.
 _DISPLAY_SUMMARIES = frozenset({'gpt-6-luna'})
+_OPENROUTER_NATIVE_REASONING = {
+    'openai/gpt-oss-20b': True,
+    'openai/gpt-oss-120b': True,
+    'openai/gpt-6.1-terra': False,
+}
+
+
+def native_reasoning(selection, *, base_url, api_mode):
+    """Admit qualified native state independently of readable explanations."""
+    return (api_mode == 'responses' and base_url == 'https://openrouter.ai/api/v1'
+            and type(selection) is str and selection in _OPENROUTER_NATIVE_REASONING)
 
 
 def display_reasoning(selection, *, base_url, api_mode):
-    return api_mode == 'responses' and (
+    return type(selection) is str and api_mode == 'responses' and (
         base_url == OFFICIAL_BASE_URL and selection in _DISPLAY_SUMMARIES
-        or base_url == 'https://openrouter.ai/api/v1' and selection in ('openai/gpt-oss-20b', 'openai/gpt-oss-120b'))
+        or base_url == 'https://openrouter.ai/api/v1' and _OPENROUTER_NATIVE_REASONING.get(selection, False))
 
 def reasoning_efforts(selection, *, base_url, metadata=_CATALOG_MISSING):
     """Carry minimum-version support forward, honoring narrower catalog facts."""

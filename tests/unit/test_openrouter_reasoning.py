@@ -90,6 +90,47 @@ def test_summary_takes_display_precedence_but_all_plaintext_is_guarded():
     assert carriers(None, json.dumps({'provider': 'openai.responses', 'state': []})) == ()
 
 
+@pytest.mark.parametrize('field,kind', [('summary', 'summary_text'), ('content', 'reasoning_text')])
+@pytest.mark.parametrize('empty', ['', ' \n\t'])
+def test_empty_native_text_rows_do_not_manufacture_a_summary(field, kind, empty):
+    raw = native_response()
+    item = raw['output'][0]
+    item.pop('content')
+    item['summary'] = []
+    item[field] = [{'type': kind, 'text': empty}, {'type': kind, 'text': empty}]
+    result = _result(raw, True, 'credential-sentinel', openrouter=True)
+    assert result.reasoning_summary is None
+    assert json.loads(result.payload.continuation)['state'] == raw['output']
+
+
+def test_blank_summary_does_not_hide_actual_plaintext_or_trim_its_spacing():
+    raw = native_response()
+    raw['output'][0]['summary'] = [{'type': 'summary_text', 'text': ' \n\t'}]
+    raw['output'][0]['content'][0]['text'] = '  Check the product.  '
+    result = _result(raw, True, 'credential-sentinel', openrouter=True)
+    assert result.reasoning_summary == '  Check the product.  '
+    assert json.loads(result.payload.continuation)['state'] == raw['output']
+
+
+def test_blank_display_rows_remain_in_credential_carriers_and_byte_budget():
+    item = {'type': 'reasoning', 'summary': [{'type': 'summary_text', 'text': ' \n\t'}],
+            'content': [{'type': 'reasoning_text', 'text': 'Actual explanation.'}]}
+    shown, guarded = reasoning_text(item)
+    assert shown == 'Actual explanation.'
+    assert guarded == (' \n\t', 'Actual explanation.')
+    assert all(text in carriers({'output': [item]}) for text in guarded)
+    item['summary'][0]['text'] = ' ' * 65537
+    with pytest.raises(ContractError, match='byte limit'):
+        reasoning_text(item)
+
+
+@pytest.mark.parametrize('selection', [None, []])
+def test_invalid_native_capability_identifiers_are_not_admitted(selection):
+    from api_agent.llm_providers.gpt.reasoning import display_reasoning, native_reasoning
+    assert not native_reasoning(selection, base_url=BASE, api_mode='responses')
+    assert not display_reasoning(selection, base_url=BASE, api_mode='responses')
+
+
 def test_separate_reasoning_items_keep_a_visible_boundary():
     raw = native_response()
     other = copy.deepcopy(raw['output'][0])
@@ -182,7 +223,7 @@ async def test_other_openrouter_models_do_not_gain_native_admission():
     raw['usage'] = {'input_tokens': 2, 'output_tokens': 3}
     async with httpx.AsyncClient(transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json=raw))) as client:
-        request = LLMRequest('openai/gpt-6.1-terra', CompletionRequest((Message('user', (TextContent('Question'),)),)))
+        request = LLMRequest('openai/gpt-7-terra', CompletionRequest((Message('user', (TextContent('Question'),)),)))
         with pytest.raises(ProviderAccessError, match='not qualified') as caught:
             await complete_text(client=client, base_url=BASE, access_token='credential-sentinel',
                 subscription=False, api_mode='responses', request=request)
@@ -190,7 +231,7 @@ async def test_other_openrouter_models_do_not_gain_native_admission():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('model', ['openai/gpt-oss-20b', 'openai/gpt-oss-120b'])
+@pytest.mark.parametrize('model', ['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'openai/gpt-6.1-terra'])
 async def test_qualified_http_result_keeps_native_reasoning_and_replay(model):
     from api_agent.llm_providers.gpt.inference import complete_text
     import httpx
@@ -221,6 +262,47 @@ async def test_qualified_http_result_keeps_native_reasoning_and_replay(model):
     assert 'Ok' in recorded
     assert any(row['phase'] == 'request' for row in evidence['rows'])
     assert any(row['phase'] == 'response' for row in evidence['rows'])
+
+
+@pytest.mark.asyncio
+async def test_terra_encrypted_items_preserve_order_without_a_blank_explanation():
+    import httpx
+    from api_agent.llm_providers.gpt.inference import complete_text
+    from api_agent.llm_providers.gpt.reasoning import display_reasoning, native_reasoning
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import collect_inference
+    model = 'openai/gpt-6.1-terra'
+    opaque = [dict(type='reasoning', id=f'rs-{index}', status='completed',
+        summary=[], encrypted_content=f'opaque-state-{index}', format='synthetic') for index in range(3)]
+    raw = native_response()
+    raw['output'] = [*opaque, dict(raw['output'][-1], phase='final_answer')]
+    raw['usage'] = {'input_tokens': 7, 'output_tokens': 20,
+                    'output_tokens_details': {'reasoning_tokens': 15}}
+    sent = []
+    def respond(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=raw)
+    request = LLMRequest(model, CompletionRequest((Message('user', (TextContent('Question'),)),),
+        generation=GenerationOptions(reasoning_effort='high')))
+    with collect_inference(EmissionBoundary(ContentPolicy(True)), retain_raw=True) as evidence:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            first = await complete_text(client=client, base_url=BASE, access_token='credential-sentinel',
+                subscription=False, api_mode='responses', request=request)
+            following = replace(request, payload=replace(request.payload,
+                messages=(*request.payload.messages, first.payload, Message('user', (TextContent('Continue'),)))))
+            await complete_text(client=client, base_url=BASE, access_token='credential-sentinel',
+                subscription=False, api_mode='responses', request=following)
+    assert native_reasoning(model, base_url=BASE, api_mode='responses')
+    assert not native_reasoning(model, base_url=BASE, api_mode='completions')
+    assert not native_reasoning(model, base_url='https://api.openai.com/v1', api_mode='responses')
+    assert not display_reasoning(model, base_url=BASE, api_mode='responses')
+    assert first.reasoning_summary is None
+    assert first.usage.reasoning_tokens == 15
+    assert first.payload.content[0].text == 'Ok'
+    assert json.loads(first.payload.continuation)['state'] == raw['output']
+    assert sent[1]['input'][1:5] == raw['output']
+    assert 'opaque-state-' not in json.dumps(evidence['rows'])
+    assert 'opaque-state-' not in json.dumps(browser_result('turn', first))
 
 
 def test_native_carrier_guard_ignores_other_items_but_keeps_nested_strings():

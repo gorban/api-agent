@@ -21,6 +21,9 @@ one shared capture path across built-in and pack-selected implementations.
   and continuation turns. Never adopt an unrelated ambient span or share another
   runtime/account's context. Trace/span log correlation uses actual SDK context;
   application operation IDs are separate identities.
+- [ ] Give post-suite retained DEBUG requests their own tracing owner and exporter
+  lifetime. Keep them separate from finalized test traces and Allure accounting;
+  preserve manual failures, content controls and exporter-before-collector shutdown.
 - [ ] Agree a versioned typed outcome boundary before implementation. An ordinary
   returned object, empty result or HTTP 200 cannot alone prove application success.
   Distinguish terminal failure from retrying, recovered, partial and fallback

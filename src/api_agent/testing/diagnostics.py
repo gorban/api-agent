@@ -302,6 +302,23 @@ def format_exception(error, boundary=''):
     return text
 
 
+def write_exception_diagnostic(error, write, *, authority=None, secret_values=(), label='Execution failed'):
+    """Publish owned exception details against a stable credential snapshot."""
+    if authority is None:
+        from api_agent.providers.setup_transport import _diagnostic
+        write(_diagnostic(error, label) + '\n')
+        return
+    text = format_exception(error, label)
+    for _ in range(3):
+        generation, snapshot = authority.snapshot_content()
+        safe = CredentialScrubber(boundary=snapshot, secret_values=secret_values)(text)
+        safe = ''.join(character if character.isprintable() or character in '\n\t'
+                       else f'\\u{ord(character):04x}' for character in safe)
+        if authority.commit_if_current(generation, lambda: write(safe)):
+            return
+    write(label + ': diagnostic withheld because credential registration changed.\n')
+
+
 def result_diagnostics(tests):
     """Identify each available failure cause once, using explicit terminal fields."""
     seen = set()

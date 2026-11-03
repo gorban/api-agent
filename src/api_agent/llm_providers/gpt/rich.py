@@ -17,7 +17,9 @@ def native_summary(items, *, openrouter=False):
             continue
         if openrouter:
             from .router_reasoning import reasoning_text
-            parts.append(reasoning_text(item)[0])
+            explanation = reasoning_text(item)[0]
+            if explanation:
+                parts.append(explanation)
             continue
         rows = item.get('summary', [])
         if type(rows) is not list:

@@ -157,3 +157,32 @@ Restart the ordinary Studio DEBUG test to refresh its provider-owned catalog.
 [Qualification requirements](prds/implementation_plan_f4o3b4.md) retain the
 separate live, coverage, review and human-acceptance scope. Tool, native schema,
 display and opaque-replay behavior are not inherited from these effort ranges.
+
+## Terra 6.1 encrypted Responses
+
+Exact `openai/gpt-6.1-terra` also admits native reasoning items on Responses.
+Bounded High-effort puzzle checks returned a completed answer and reasoning-token
+usage alongside encrypted items. Two-call verification preserved every original
+native item in order in the following request. These observations establish
+completion and replay, not puzzle correctness or readable reasoning.
+
+Encrypted items stay server-side with their original assistant response.
+Node/dialogue retry history retains that complete payload for the invocation,
+then clears it when the flow exits. The next user turn starts fresh retry
+history. Preserving the provider's state and stable prefix supports cache
+eligibility; it does not guarantee a cache hit. Native response capture excludes
+ciphertext from browser results, Allure and trace content. Empty or whitespace-only
+explanations remain absent. Actual validated plaintext, if returned, can still
+be displayed without altering its spacing or native replay representation.
+
+This route does not advertise guaranteed readable native explanations. Continue
+using the separate summary fixture when testing generated node explanations.
+The effort version ranges do not extend native-state admission to other IDs.
+
+Retained integration bridge errors now produce credential-scrubbed stderr
+diagnostics and stack locations. A missing credential authority permits only
+fixed classifications and locations. Pytest may defer captured stderr until the
+browser closes. Manual DEBUG prompts remain outside finalized test Allure
+results, and their independent tracing owner is still
+[planned work](prds/implementation_plan_k1a1.md).
+[Repair requirements](prds/implementation_plan_f4o3b5.md).
