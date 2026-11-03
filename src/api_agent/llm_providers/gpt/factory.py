@@ -83,6 +83,7 @@ class GPTProvider:
 
     def __init__(self, config, *, inspection=None, emissions=None):
         self.inspection = inspection
+        self._reasoning_catalog = {}
         self.emissions = emissions
         self._credential_setup_started = False
         from api_agent.telemetry.accounting import compatibility
@@ -323,10 +324,22 @@ class GPTProvider:
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
             selections = await discover_selections(client=client, base_url=base, access_token=auth,
                                               subscription=self.auth_mode == "subscription", authority=self.emissions)
+        if base == 'https://openrouter.ai/api/v1':
+            self._reasoning_catalog = {row.selected_llm: row.reasoning_efforts for row in selections}
         from dataclasses import replace
         from .reasoning import display_reasoning
         return tuple(replace(row, features=(*row.features, 'display_reasoning'))
                      if display_reasoning(row.selected_llm, base_url=base, api_mode=self.api_mode) else row for row in selections)
+
+    def _validate_catalog_reasoning(self, request):
+        effort = request.payload.generation.reasoning_effort
+        if effort and request.selected_llm in self._reasoning_catalog:
+            choices = self._reasoning_catalog[request.selected_llm]
+            if choices is None or effort not in choices:
+                from api_agent.providers.contracts import ProviderAccessError
+                raise ProviderAccessError('unsupported',
+                    'OpenRouter catalog does not admit the requested reasoning effort; '
+                    'choose a listed effort or provider default.')
 
     def validate_request(self, request):
         """Validate selected cache support before retrieving authentication."""
@@ -336,6 +349,7 @@ class GPTProvider:
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
         validate_text_request(base_url=base, access_token='preflight-validation',
                               subscription=self.auth_mode == 'subscription', api_mode=self.api_mode, request=request, _validate_instances=False)
+        self._validate_catalog_reasoning(request)
 
     async def acomplete(self, request, *, auth=None):
         if self.closed:
@@ -350,6 +364,7 @@ class GPTProvider:
             await self._register_secret(auth)
         await async_validate_text_request(base_url=base, access_token=auth, subscription=self.auth_mode == 'subscription',
                               api_mode=self.api_mode, request=request)
+        self._validate_catalog_reasoning(request)
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
             return await complete_text(client=client, base_url=base, access_token=auth,
                                        subscription=self.auth_mode == "subscription", api_mode=self.api_mode,

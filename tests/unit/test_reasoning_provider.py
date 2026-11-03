@@ -27,7 +27,7 @@ def test_verified_native_mapping(model, mode, effort):
     assert body['model'] == model
 
 
-@pytest.mark.parametrize('base,model', [('https://compatible.example/v1','gpt-6-luna'), ('https://openrouter.ai/api/v1','openai/gpt-unknown'), (BASE,'gpt-6-luna-2026-10-15'), (BASE,'gpt-unknown'), (BASE,'gpt-6.1-terra')])
+@pytest.mark.parametrize('base,model', [('https://compatible.example/v1','gpt-6-luna'), ('https://openrouter.ai/api/v1','openai/gpt-unknown'), (BASE,'gpt-6-luna-2026-10-15'), (BASE,'gpt-unknown'), (BASE,'gpt-5.5-terra')])
 def test_unknown_contract_rejects_explicit_effort(base, model):
     assert reasoning_efforts(model, base_url=base) is None
     with pytest.raises(ProviderAccessError, match='not verified'):
@@ -188,9 +188,9 @@ def test_56_official_wire_and_catalog(model, effort, mode):
     (BASE, 'gpt-5.6-luna-latest'),
     (BASE, 'gpt-5.6-terra-2026-10-18'),
     (BASE, 'gpt-5.6-sol-latest'),
-    ('https://openrouter.ai/api/v1', 'openai/gpt-5.6-luna'),
-    ('https://openrouter.ai/api/v1', 'openai/gpt-5.6-terra'),
-    ('https://openrouter.ai/api/v1', 'openai/gpt-5.6-sol'),
+    ('https://openrouter.ai/api/v1', 'openai/gpt-5.5-luna'),
+    ('https://openrouter.ai/api/v1', 'openai/gpt-5.5-terra'),
+    ('https://openrouter.ai/api/v1', 'openai/gpt-5.5-sol'),
     ('https://compatible.example/v1', 'gpt-5.6-luna'),
     ('https://compatible.example/v1', 'gpt-5.6-terra'),
     ('https://compatible.example/v1', 'gpt-5.6-sol'),
@@ -336,3 +336,25 @@ def test_openrouter_oss_display_qualification_is_responses_only(model):
     assert reasoning_efforts(model, base_url=BASE) is None
     assert display_reasoning(model, base_url='https://openrouter.ai/api/v1', api_mode='responses')
     assert not display_reasoning(model, base_url='https://openrouter.ai/api/v1', api_mode='completions')
+
+
+@pytest.mark.parametrize('model', ['openai/gpt-5.6-luna', 'openai/gpt-5.6-terra', 'openai/gpt-5.6-sol'])
+@pytest.mark.parametrize('effort', ['off', 'low', 'medium', 'high'])
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+def test_openrouter_56_controls_with_caching_and_output_ceiling(model, effort, mode):
+    from dataclasses import replace
+    selected, = _catalog({'data': [{'id': model, 'supported_parameters': ['max_tokens'],
+        'top_provider': {'max_completion_tokens': 128000}}]}, False, 'synthetic-token',
+        base_url='https://openrouter.ai/api/v1')
+    supplied = request(model, effort)
+    supplied = replace(supplied, payload=replace(supplied.payload,
+        generation=replace(supplied.payload.generation, max_output_tokens=128000, cache_policy='medium')))
+
+    selected.validate(supplied)
+    _, body = validate_text_request(base_url='https://openrouter.ai/api/v1',
+        access_token='synthetic-token', subscription=False, api_mode=mode, request=supplied)
+
+    assert selected.reasoning_efforts == ('off', 'low', 'medium', 'high')
+    assert body['reasoning']['effort'] == ('none' if effort == 'off' else effort)
+    assert body['prompt_cache_options'] == {'mode': 'explicit', 'ttl': '30m'}
+    assert body['provider'] == {'require_parameters': True, 'allow_fallbacks': False}

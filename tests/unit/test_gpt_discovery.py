@@ -303,7 +303,7 @@ def test_required_catalog_identity_cannot_become_an_empty_selection():
         run_discovery(httpx.Response(200, json={'data': [{'id': 'gpt-' + TOKEN}]}))
 
 
-@pytest.mark.parametrize('model', ['openai/gpt-6-luna', 'openai/gpt-6.1-sol'])
+@pytest.mark.parametrize('model', ['openai/gpt-6-luna', 'openai/gpt-6.1-sol', 'openai/gpt-6.1-terra'])
 def test_router_catalog_cache_admission_with_explicit_output_limit(model):
     from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, TextContent, GenerationOptions
 
@@ -317,7 +317,7 @@ def test_router_catalog_cache_admission_with_explicit_output_limit(model):
     selected.validate(request)
 
 
-@pytest.mark.parametrize('model', ['openai/gpt-6.1-terra', 'openai/gpt-unknown'])
+@pytest.mark.parametrize('model', ['openai/gpt-5.5-terra', 'openai/gpt-unknown'])
 def test_router_catalog_does_not_advertise_unknown_cache_policy(model):
     rows, _ = run_discovery(httpx.Response(200, json={'data': [{'id': model,
         'supported_parameters': ['max_tokens'], 'top_provider': {'max_completion_tokens': 128000}}]}),

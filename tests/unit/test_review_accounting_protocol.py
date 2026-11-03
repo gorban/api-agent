@@ -98,10 +98,10 @@ def test_unfinished_terminal_items_fail_json_and_terminal_only_sse_without_losin
     assert caught.value.usage.input_tokens==3 and caught.value.usage.output_tokens==1
 
 
-@pytest.mark.parametrize('selection',['gpt-6-unknown','gpt-6-luna-2026-02-30','gpt-4.1-2026-02-30',
+@pytest.mark.parametrize('selection',['gpt-5.5-unknown','gpt-6-luna-2026-02-30','gpt-4.1-2026-02-30',
     'gpt-4.1-２０２６-１０-１１','gpt-6-luna-２０２６１０１１'])
 @pytest.mark.parametrize('policy',['medium','high'])
-def test_official_cache_preflight_rejects_unknown_families_and_invalid_ascii_snapshots(selection,policy):
+def test_official_cache_preflight_rejects_unqualified_generations_and_invalid_ascii_snapshots(selection,policy):
     with pytest.raises(ProviderAccessError,match='unknown'):
         prompt_cache_fields(policy,selection,base_url='https://api.openai.com/v1',subscription=False)
     assert prompt_cache_fields('',selection,base_url='https://api.openai.com/v1',subscription=False)=={}

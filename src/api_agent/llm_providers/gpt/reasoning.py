@@ -1,4 +1,4 @@
-"""Exact public model effort contracts; unfamiliar routes remain unknown.
+"""Provider-owned GPT effort version ranges and known exceptions.
 
 Contracts: https://developers.openai.com/api/docs/guides/reasoning
 and https://developers.openai.com/api/docs/guides/deployment-checklist.
@@ -10,35 +10,41 @@ Terra and Sol 5.6 official contracts:
 https://developers.openai.com/api/docs/models/gpt-5.6-terra
 https://developers.openai.com/api/docs/models/gpt-5.6-sol
 (verified 2026-10-18; no dated snapshots listed).
-Only published aliases are listed: a date-shaped suffix is not evidence of support.
+Numeric family versions inherit their minimum supported generation.
+Other backends, malformed identifiers and unrecognized families remain unknown.
 """
 from api_agent.providers.contracts import ProviderAccessError
 from .endpoint import OFFICIAL_BASE_URL
 
-_EFFORTS = {
-    'gpt-6-luna': ('off', 'low', 'medium', 'high'),
-    'gpt-6-sol': ('off', 'low', 'medium', 'high'),
-    'gpt-6-astra': ('low', 'medium', 'high'),
-    'gpt-6.1-sol': ('low', 'medium', 'high'),
+# Provider-owned minimum versions; later generations inherit the last known
+# choices. Explicit later changes are boundaries, not growing alias lists.
+from packaging.version import Version
+from .model_versions import gpt_version
+
+_COMMON = ('off', 'low', 'medium', 'high')
+_REASONING_ONLY = ('low', 'medium', 'high')
+_FAMILY_RANGES = {
+    'luna': ((Version('5.6'), _COMMON),),
+    'terra': ((Version('5.6'), _COMMON),),
+    'sol': ((Version('5.6'), _COMMON), (Version('6.1'), _REASONING_ONLY)),
+    'astra': ((Version('6'), _REASONING_ONLY),),
 }
-
-# OpenRouter's own catalog qualifies this route independently of official APIs.
-# https://openrouter.ai/api/v1/models, verified 2026-11-02.
-_OPENROUTER_EFFORTS = {'openai/' + model: choices for model, choices in _EFFORTS.items()}
-_OPENROUTER_EFFORTS['openai/gpt-6.1-terra'] = ('off', 'low', 'medium', 'high')
-# Both exact catalog rows declare mandatory reasoning and these three efforts.
-# https://openrouter.ai/api/v1/models, verified 2026-11-02.
-_OPENROUTER_EFFORTS.update({
-    model: ('low', 'medium', 'high')
-    for model in ('openai/gpt-oss-20b', 'openai/gpt-oss-120b')
-})
+_CATALOG_MISSING = object()
 
 
-# Official verification does not establish support on another route.
-_OFFICIAL_EFFORTS = {**_EFFORTS, **{
-    model: ('off', 'low', 'medium', 'high')
-    for model in ('gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol')
-}}
+def _catalog_choices(metadata, defaults):
+    if type(metadata) is not dict:
+        return None
+    efforts = metadata.get('supported_efforts')
+    mandatory = metadata.get('mandatory', False)
+    if (type(efforts) is not list or len(efforts) > 32 or type(mandatory) is not bool
+            or any(type(item) is not str or not item or len(item) > 32 for item in efforts)
+            or len(set(efforts)) != len(efforts)):
+        return None
+    return tuple(item for item in defaults
+                 if ('none' if item == 'off' else item) in efforts
+                 and (item != 'off' or not mandatory))
+
 
 # These Chat-with-tools route limits are independently documented/retained;
 # adding a model's effort choices must not introduce a new tool restriction.
@@ -54,13 +60,30 @@ def display_reasoning(selection, *, base_url, api_mode):
         base_url == OFFICIAL_BASE_URL and selection in _DISPLAY_SUMMARIES
         or base_url == 'https://openrouter.ai/api/v1' and selection in ('openai/gpt-oss-20b', 'openai/gpt-oss-120b'))
 
-def reasoning_efforts(selection, *, base_url):
-    """Return verified common choices without authentication or discovery I/O."""
+def reasoning_efforts(selection, *, base_url, metadata=_CATALOG_MISSING):
+    """Carry minimum-version support forward, honoring narrower catalog facts."""
+    if type(selection) is not str:
+        return None
     if base_url == OFFICIAL_BASE_URL:
-        return _OFFICIAL_EFFORTS.get(selection)
-    if base_url == 'https://openrouter.ai/api/v1':
-        return _OPENROUTER_EFFORTS.get(selection)
-    return None
+        model = selection
+    elif base_url == 'https://openrouter.ai/api/v1' and selection.startswith('openai/'):
+        model = selection[7:]
+    else:
+        return None
+    if base_url == 'https://openrouter.ai/api/v1' and model in ('gpt-oss-20b', 'gpt-oss-120b'):
+        defaults = _REASONING_ONLY
+    else:
+        parsed = gpt_version(model)
+        if parsed is None:
+            return None
+        version, family = parsed
+        defaults = next((choices for minimum, choices in reversed(_FAMILY_RANGES.get(family, ()))
+                         if version >= minimum), None)
+        if defaults is None:
+            return None
+    if metadata is not _CATALOG_MISSING:
+        return _catalog_choices(metadata, defaults)
+    return defaults
 
 
 def reasoning_fields(request, *, base_url, api_mode):

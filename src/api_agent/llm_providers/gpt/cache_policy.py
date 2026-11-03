@@ -4,6 +4,8 @@ from datetime import date
 
 from api_agent.providers.contracts import ProviderAccessError
 from .endpoint import OFFICIAL_BASE_URL, validate_base_url
+from .model_versions import gpt_version
+from packaging.version import Version
 
 _EXTENDED = frozenset({
     'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.2', 'gpt-5.1-codex-max',
@@ -11,11 +13,14 @@ _EXTENDED = frozenset({
     'gpt-5', 'gpt-5-codex', 'gpt-4.1',
 })
 _OPENROUTER_BASE = 'https://openrouter.ai/api/v1'
+# Existing fixed-token cache-test eligibility. Runtime cache admission uses
+# the documented minimum generation instead of this test-fixture set.
 _OPENROUTER_FAMILIES = frozenset({
     'gpt-5.6-sol', 'gpt-5.6-sol-pro', 'gpt-5.6-terra', 'gpt-5.6-terra-pro',
     'gpt-5.6-luna', 'gpt-5.6-luna-pro',
     'gpt-6-sol', 'gpt-6-sol-pro', 'gpt-6-astra', 'gpt-6-astra-pro',
     'gpt-6-luna', 'gpt-6-luna-pro', 'gpt-6.1-sol', 'gpt-6.1-sol-pro',
+    'gpt-6.1-terra',
 })
 
 
@@ -45,7 +50,8 @@ def prompt_cache_fields(policy, selection, *, base_url, subscription):
     base = validate_base_url(base_url)
     if base == _OPENROUTER_BASE:
         family = _family(selection)
-        if not family.startswith('openai/') or family[7:] not in _OPENROUTER_FAMILIES:
+        generation = gpt_version(family.removeprefix('openai/'))
+        if not family.startswith('openai/') or generation is None or generation[0] < Version('5.6'):
             raise ProviderAccessError('unsupported', 'Prompt-cache policy support is unknown for this OpenRouter GPT selection; use an empty policy for provider defaults.')
         if policy == 'off':
             return {'prompt_cache_options': {'mode': 'explicit'}}
@@ -55,7 +61,8 @@ def prompt_cache_fields(policy, selection, *, base_url, subscription):
     if base != OFFICIAL_BASE_URL:
         raise ProviderAccessError('unsupported', 'LLM_CACHE_POLICY controls are not verified for this compatible backend; use an empty policy for provider defaults.')
     family = _family(selection)
-    if family in _OPENROUTER_FAMILIES or family == 'gpt-5.6':
+    generation = gpt_version(family)
+    if generation is not None and generation[0] >= Version('5.6'):
         if policy == 'off':
             return {'prompt_cache_options': {'mode': 'explicit'}}
         return {'prompt_cache_options': {'mode': 'implicit', 'ttl': '30m'}}
