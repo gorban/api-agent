@@ -311,6 +311,13 @@ class SDKTransport:
                         if rule is not None and path is not None:
                             error.message = f'{message} Validation: {rule} at {path}.'
                             error.args = (error.message,)
+                        if 'stream_event' in frame['diagnostics']:
+                            error.message += ' Stream event: ' + frame['diagnostics']['stream_event'] + '.'
+                            if 'stream_sequence' in frame['diagnostics']:
+                                error.message += ' Sequence: ' + str(frame['diagnostics']['stream_sequence']) + '.'
+                        if 'validation_location' in frame['diagnostics']:
+                            error.message += ' Validation location: ' + frame['diagnostics']['validation_location'] + '.'
+                        error.args = (error.message,)
                         from api_agent.workflows.inference_capture import capture_transport_diagnostics
                         capture_transport_diagnostics(frame['diagnostics'])
                     if 'usage' in frame:

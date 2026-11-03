@@ -10,6 +10,8 @@ for `openai/gpt-6-luna` after inference. Successful discovery is insufficient.
 [Effort controls and output budgets](implementation_plan_f4o3b2.md) tracks the
 separate Terra 6.1 selector and Sol 6.1 reasoning-budget repair.
 
+[GPT-OSS effort qualification](implementation_plan_f4o3b3.md) covers the separate mandatory-reasoning catalog gap.
+
 - [ ] Diagnose the rejected native item shape using credential-safe structural
   evidence. Admit documented OpenRouter Responses metadata without discarding,
   reordering or exposing encrypted state, or weakening unknown-field rejection.

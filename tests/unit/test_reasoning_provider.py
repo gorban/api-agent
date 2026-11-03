@@ -255,7 +255,7 @@ def test_advertised_openrouter_ceiling_replaces_small_text_fallback(model, param
         generation=GenerationOptions(max_output_tokens=4096)))
     assert clamp_request(bounded, selection, 200000).payload.generation.max_output_tokens == 4096
     if model == 'openai/gpt-oss-20b':
-        assert selection.reasoning_efforts is None
+        assert selection.reasoning_efforts == ('low', 'medium', 'high')
 
 
 @pytest.mark.parametrize('base, supported', [
@@ -297,3 +297,42 @@ def test_openrouter_capped_effort_retains_reasoning_and_strict_routing():
         access_token='synthetic-token', subscription=False, api_mode='responses', request=req)
     assert body['provider'] == {'require_parameters': True, 'allow_fallbacks': False}
     assert body['reasoning'] == {'effort': 'high'}
+
+
+@pytest.mark.parametrize('mode', ('responses', 'completions'))
+@pytest.mark.parametrize('model', ('openai/gpt-oss-20b', 'openai/gpt-oss-120b'))
+@pytest.mark.parametrize('effort', ('low', 'medium', 'high'))
+def test_openrouter_oss_catalog_effort_reaches_native_request(mode, model, effort):
+    selection, = _catalog({'data': [{'id': model, 'reasoning': {
+        'mandatory': True, 'supported_efforts': ['high', 'medium', 'low']}}]},
+        False, 'synthetic-token', base_url='https://openrouter.ai/api/v1')
+    assert selection.reasoning_efforts == ('low', 'medium', 'high')
+    selection.validate(request(model, effort))
+    _, body = validate_text_request(base_url='https://openrouter.ai/api/v1',
+        access_token='synthetic-token', subscription=False, api_mode=mode,
+        request=request(model, effort))
+    assert body['reasoning'] == {'effort': effort}
+    assert body['provider'] == {'require_parameters': True, 'allow_fallbacks': False}
+
+
+@pytest.mark.parametrize('model', ('openai/gpt-oss-20b', 'openai/gpt-oss-120b'))
+@pytest.mark.parametrize('effort', ('off',))
+def test_openrouter_oss_rejects_unqualified_effort(model, effort):
+    with pytest.raises(ProviderAccessError, match='not verified'):
+        reasoning_fields(request(model, effort), base_url='https://openrouter.ai/api/v1',
+                         api_mode='responses')
+
+
+@pytest.mark.parametrize('model', ('gpt-oss-20b', 'openai/gpt-oss-20b:free',
+                                 'openai/gpt-oss-120b-unknown'))
+def test_oss_qualification_does_not_expand_to_other_routes_or_aliases(model):
+    assert reasoning_efforts(model, base_url='https://openrouter.ai/api/v1') is None
+    assert reasoning_efforts(model, base_url=BASE) is None
+
+
+@pytest.mark.parametrize('model', ('openai/gpt-oss-20b', 'openai/gpt-oss-120b'))
+def test_openrouter_oss_display_qualification_is_responses_only(model):
+    from api_agent.llm_providers.gpt.reasoning import display_reasoning
+    assert reasoning_efforts(model, base_url=BASE) is None
+    assert display_reasoning(model, base_url='https://openrouter.ai/api/v1', api_mode='responses')
+    assert not display_reasoning(model, base_url='https://openrouter.ai/api/v1', api_mode='completions')

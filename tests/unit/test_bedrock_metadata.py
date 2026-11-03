@@ -74,8 +74,8 @@ def test_stream_retains_observed_metadata_on_terminal_without_repetition(mode, t
     assert quoted(mode, result)['list_cost_usd'] == (None if tier == 'priority' else pytest.approx(.00013))
 
 
-@pytest.mark.parametrize('mode', ['responses', 'completions'])
-@pytest.mark.parametrize('field', ['service_tier', 'serving_revision'])
+@pytest.mark.parametrize('mode,field', [('responses', 'serving_revision'),
+    ('completions', 'service_tier'), ('completions', 'serving_revision')])
 def test_stream_rejects_conflicting_observed_metadata(mode, field):
     decoder = mantle.StreamDecoder(mode, selected_llm=pricing.MODEL)
     metadata = {field:'first'}

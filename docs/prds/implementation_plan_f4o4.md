@@ -91,3 +91,13 @@ effort and its catalog offers no efforts.
 
 Recheck the exact model/API documentation during implementation. These references
 do not establish permission, transport support or measured behavior in an account.
+
+
+## Native-effort qualification targets
+
+For an available Opus version such as 5.5, qualify its documented native
+`output_config.effort` control on the actual Bedrock endpoint/API before enabling
+Studio choices. Do not replace a supported native effort control with a manual
+`budget_tokens` preset. Confirm exact supported values and whether thinking may
+be disabled; family labels alone are insufficient. Budget-only mappings remain
+a separate route-specific plan requiring review of numerical defaults.

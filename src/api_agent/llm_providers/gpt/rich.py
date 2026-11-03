@@ -10,10 +10,14 @@ from api_agent.providers.response_metadata import _logprob, _logprobs
 _PROVIDER = 'openai.responses'
 
 
-def native_summary(items):
+def native_summary(items, *, openrouter=False):
     parts = []
     for item in items:
         if item.get('type') != 'reasoning':
+            continue
+        if openrouter:
+            from .router_reasoning import reasoning_text
+            parts.append(reasoning_text(item)[0])
             continue
         rows = item.get('summary', [])
         if type(rows) is not list:
@@ -23,14 +27,14 @@ def native_summary(items):
                     or row['type'] != 'summary_text' or type(row['text']) is not str):
                 raise ContractError('Invalid native reasoning summary')
             parts.append(row['text'])
-    summary = ''.join(parts)
+    summary = ('\n' if openrouter else '').join(parts)
     if len(summary.encode('utf-8')) > 65536:
         raise ContractError('Native reasoning summary exceeds byte limit')
     return summary or None
 
 
-def _native_state(items, message=None):
-    """Retain native replay metadata; reasoning remains encrypted-only."""
+def _native_state(items, message=None, *, openrouter=False):
+    """Retain exact validated native replay metadata for the selected route."""
     calls, text, reasoning, metadata, identifiers = [], [], False, False, set()
     if type(items) is not list or not 1 <= len(items) <= 64:
         raise ContractError('Invalid native provider continuation')
@@ -41,12 +45,16 @@ def _native_state(items, message=None):
         allowed = {'type', 'id', 'status'}
         if kind == 'reasoning':
             allowed |= {'encrypted_content', 'summary', 'content'}
-            encrypted = item.get('encrypted_content')
-            if (type(encrypted) is not str or not encrypted or len(encrypted) > 32768
-                    or not encrypted.isprintable() or type(item.get('summary')) is not list
-                    or item.get('content') not in (None, [])):
-                raise ContractError('Provider continuation requires encrypted reasoning')
-            native_summary([item])
+            if openrouter:
+                allowed |= {'signature', 'format'}
+                native_summary([item], openrouter=True)
+            else:
+                encrypted = item.get('encrypted_content')
+                if (type(encrypted) is not str or not encrypted or len(encrypted) > 32768
+                        or not encrypted.isprintable() or type(item.get('summary')) is not list
+                        or item.get('content') not in (None, [])):
+                    raise ContractError('Provider continuation requires encrypted reasoning')
+                native_summary([item])
             reasoning = True
         elif kind == 'function_call':
             allowed |= {'call_id', 'name', 'arguments'}
@@ -96,10 +104,11 @@ def payload(request, mode, subscription, *, _validate_instances=True):
         text = ''.join(part.text for part in message.content)
         if message.continuation is not None:
             envelope = continuation(message.continuation)
-            if mode != 'responses' or envelope['provider'] != _PROVIDER:
+            if mode != 'responses' or envelope['provider'] not in (_PROVIDER, 'openrouter.responses'):
                 raise ProviderAccessError('unsupported', 'GPT inference cannot replay this provider continuation.')
             try:
-                rows.extend(_native_state(envelope['state'], message))
+                rows.extend(_native_state(envelope['state'], message,
+                                          openrouter=envelope['provider'] == 'openrouter.responses'))
             except (ContractError, ValueError):
                 raise ProviderAccessError('invalid_request', 'Invalid GPT provider continuation.') from None
             continue
@@ -146,7 +155,7 @@ def _protected(value, token):
     return False
 
 
-def tool_result(data, responses, token):
+def tool_result(data, responses, token, *, openrouter=False):
     from .inference import _invalid, _usage
     calls, text = [], []
     state = None
@@ -186,8 +195,8 @@ def tool_result(data, responses, token):
         if responses and any(item.get('type') == 'reasoning' or
                 (item.get('type') == 'message' and ('phase' in item or
                  any('logprobs' in part for part in item['content']))) for item in data['output']):
-            native = _native_state(data['output'])
-            state = json.dumps(dict(provider=_PROVIDER, state=native), allow_nan=False, separators=(',', ':'))
+            native = _native_state(data['output'], openrouter=openrouter)
+            state = json.dumps(dict(provider='openrouter.responses' if openrouter else _PROVIDER, state=native), allow_nan=False, separators=(',', ':'))
         if not calls or len(calls) > 64 or len({call.call_id for call in calls}) != len(calls):
             raise ValueError()
         for call in calls:
@@ -195,7 +204,7 @@ def tool_result(data, responses, token):
                 raise ValueError()
         result = LLMResult(Message('assistant', tuple(text), tuple(calls), continuation=state), _usage(data.get('usage'), responses),
                          'tool_calls', data.get('model'), data.get('service_tier'), data.get('serving_revision'),
-                         reasoning_summary=native_summary(data['output']) if responses else None)
+                         reasoning_summary=native_summary(data['output'], openrouter=openrouter) if responses else None)
         result_to_wire(result)
         return result
     except (ValueError, TypeError, KeyError, AttributeError, ContractError):

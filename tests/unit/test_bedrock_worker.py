@@ -458,8 +458,12 @@ def test_actual_sdk_rejects_incomplete_terminal_without_lifecycle():
         return http
     worker.execute(request('responses_stream'), emitted.append, http_factory=make_http)
     assert len(seen) == 1 and owners[0].is_closed
-    assert emitted == [{'error': 'unknown', 'execution': 'possibly_executed', 'http_status': 200,
-                        'usage': {'input_tokens': 1, 'output_tokens': 1, 'cached_input_tokens': None, 'reasoning_tokens': None}}]
+    failure, = emitted
+    assert failure['error'] == 'unknown' and failure['execution'] == 'possibly_executed'
+    assert failure['http_status'] == 200 and failure['code'] == 'invalid_response'
+    assert failure['diagnostics']['stream_event'] == 'response.incomplete'
+    assert failure['diagnostics']['stream_sequence'] == 1
+    assert failure['usage'] == {'input_tokens': 1, 'output_tokens': 1, 'cached_input_tokens': None, 'reasoning_tokens': None}
 
 
 def test_actual_sdk_incomplete_response_preserves_text_usage_and_length():
@@ -765,3 +769,40 @@ def test_catalog_unused_metadata_scrub_emits_only_bounded_counts():
         'diagnostics': {'version': 1, 'scrub_empty_strings': 1,
                         'scrub_omitted_members': 0, 'scrub_omitted_events': 0}}]
     assert selected not in json.dumps(frames)
+
+
+def test_stream_contract_failure_keeps_code_and_location_without_content():
+    events = response_stream()
+    events[3]['item_id'] = 'untrusted-response-content'
+    seen = []
+    def handle(_):
+        data = ''.join('data: ' + json.dumps(event) + '\n\n' for event in events)
+        return httpx2.Response(200, headers={'content-type': 'text/event-stream'}, content=data)
+    worker.execute(request('responses_stream'), seen.append,
+        join=lambda secrets, payload: secrets,
+        http_factory=lambda **kw: httpx2.Client(transport=httpx2.MockTransport(handle)))
+    failure = seen[-1]
+    assert failure['code'] == 'invalid_response'
+    assert failure['execution'] == 'possibly_executed'
+    assert failure['http_status'] == 200
+    assert failure['diagnostics']['stream_event'] == 'response.content_part.added'
+    assert failure['diagnostics']['stream_sequence'] == 3
+    assert failure['diagnostics']['validation_rule'] == 'stream_state'
+    assert failure['diagnostics']['validation_location'].startswith('api_agent.llm_providers.bedrock.mantle:')
+    assert 'untrusted-response-content' not in json.dumps(seen)
+    assert not any(row.get('event', {}).get('kind') == 'completed' for row in seen)
+
+
+@pytest.mark.parametrize('events', [[], response_stream()[:-1]])
+def test_stream_eof_failure_keeps_diagnostics(events):
+    seen = []
+    def handle(_):
+        data = ''.join('data: ' + json.dumps(event) + '\n\n' for event in events)
+        return httpx2.Response(200, headers={'content-type': 'text/event-stream'}, content=data)
+    worker.execute(request('responses_stream'), seen.append,
+        http_factory=lambda **kw: httpx2.Client(transport=httpx2.MockTransport(handle)))
+    failure = seen[-1]
+    assert failure['code'] == 'invalid_response'
+    assert failure['diagnostics']['stream_event'] == 'eof'
+    assert failure['diagnostics']['validation_location'].startswith('api_agent.llm_providers.bedrock.mantle:')
+    assert not any(row.get('event', {}).get('kind') == 'completed' for row in seen)

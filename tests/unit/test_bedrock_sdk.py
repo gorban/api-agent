@@ -1472,3 +1472,28 @@ async def test_invalid_scrub_count_routes_or_incomplete_counts_reject(auth, fake
             await transport.call(operation, {}, auth=auth)
     finally:
         await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sequence_fields', [{}, {'stream_sequence': 12}])
+async def test_stream_failure_details_reach_application_with_optional_content_disabled(auth, fake_process, monkeypatch, sequence_fields):
+    monkeypatch.setenv('LOG_CONTENT', 'False')
+    fake_process[0]['frames'] = [{'error': 'unknown', 'execution': 'possibly_executed',
+        'code': 'invalid_response', 'http_status': 200,
+        'diagnostics': {'version': 1, 'response_validation': 'rejected',
+            'validation_rule': 'stream_state', 'validation_path': '$',
+            'stream_event': 'response.output_item.done', **sequence_fields,
+            'validation_location': 'api_agent.llm_providers.bedrock.mantle:600'}}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ProviderAccessError) as caught:
+            await transport.call('responses_stream', {}, auth=auth)
+        message = str(caught.value)
+        assert 'failed contract validation' in message
+        assert 'Stream event: response.output_item.done.' in message
+        assert ('Sequence: 12.' in message) == bool(sequence_fields)
+        assert 'Validation location: api_agent.llm_providers.bedrock.mantle:600.' in message
+        assert caught.value.status == 200
+        assert caught.value.execution == 'possibly_executed'
+    finally:
+        await transport.aclose()
