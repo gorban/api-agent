@@ -43,6 +43,9 @@ _RUNTIME_OPENAI = {
     'openai.gpt-6.1-sol': (('us', 'global'), 'GPT 6.1 Sol', 1000000, 131072),
 }
 _RUNTIME_ANTHROPIC = {
+    'anthropic.claude-sonnet-5-5': (('us', 'eu', 'global'), 'Claude Sonnet 5.5', 1000000, 128000),
+    'anthropic.claude-opus-5-5': (('us', 'eu', 'global'), 'Claude Opus 5.5', 1000000, 128000),
+    'anthropic.claude-haiku-5-5': (('us', 'eu', 'global'), 'Claude Haiku 5.5', 1000000, 128000),
     'anthropic.claude-opus-4-8': (('us', 'eu', 'au', 'jp', 'us-gov', 'global'), 'Claude Opus 4.8', 1000000, 128000),
     'anthropic.claude-opus-4-7': (('us', 'eu', 'au', 'jp', 'global'), 'Claude Opus 4.7', 1000000, 128000),
     'anthropic.claude-opus-4-1-20250805-v1:0': (('us',), 'Claude Opus 4.1', 200000, 32000),
@@ -113,7 +116,12 @@ def selection(identifier, api_mode='completions', endpoint='mantle'):
         features = BASE_FEATURES
         if (endpoint, api_mode, identifier) in _COMPLETIONS_REASONING_CARRIERS:
             features += ('display_reasoning',)
-        efforts = None if api_mode == 'converse' else ('low', 'medium', 'high')
+        from .converse_controls import reasoning_efforts as converse_efforts
+        efforts = converse_efforts(identifier) if api_mode == 'converse' else ('low', 'medium', 'high')
+        if api_mode == 'converse' and identifier in ('us.openai.gpt-6-astra', 'global.openai.gpt-6-astra'):
+            features = tuple(feature for feature in features if feature != 'temperature')
+        if api_mode == 'converse' and efforts:
+            features += ('display_reasoning',)
         if efforts:
             features += ('reasoning_effort',)
         if metadata is None:
@@ -122,7 +130,7 @@ def selection(identifier, api_mode='completions', endpoint='mantle'):
                                       features=features, reasoning_efforts=efforts, display_name=title,
                                       family=family, version=version)
         title, kind, context, output = metadata
-        if ((kind == 'openai' and api_mode in ('responses', 'completions')
+        if ((kind == 'openai' and api_mode in ('responses', 'completions', 'converse')
                 or kind == 'anthropic' and api_mode == 'converse')
                 and identifier != 'us.anthropic.claude-opus-4-1-20250805-v1:0'):
             features += ('structured',)

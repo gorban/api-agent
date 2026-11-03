@@ -72,7 +72,7 @@ def test_converse_rejection_projects_only_maximum(operation):
         raise ClientError({'Error': {'Code': 'ValidationException', 'Message':
             "Value '200000' at 'inferenceConfig.maxTokens' failed to satisfy constraint: Member must have value less than or equal to 8192"},
             'ResponseMetadata': {'HTTPStatusCode': 400}}, 'Converse')
-    client = SimpleNamespace(converse=converse, close=lambda: None)
+    client = SimpleNamespace(converse=converse, converse_stream=converse, close=lambda: None)
     body = {'modelId': 'operator.model-v2:1', 'messages': [], 'inferenceConfig': {'maxTokens': 200000}}
     worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse', 'body': body}), frames.append,
                    boto_client_factory=lambda *args: client, join=lambda values, arguments: values)

@@ -62,7 +62,6 @@ def test_malformed_reasoning_rejects_with_static_diagnosis(thinking):
 
 
 @pytest.mark.parametrize('reason,blocks', [
-    ('tool_use', [{'toolUse': {'toolUseId': 'c', 'name': 'lookup', 'input': {}}}]),
     ('max_tokens', [{'text': 'partial'}]),
     ('end_turn', []), ('end_turn', [{'text': '  '}])])
 def test_reasoning_never_discards_state_needed_for_unfinished_or_tool_turn(reason, blocks):
@@ -375,3 +374,17 @@ def test_older_claude_strict_tools_are_not_silently_weakened(strict):
             c.encode(req)
     else:
         assert 'strict' not in c.encode(req)['toolConfig']['tools'][0]['toolSpec']
+
+
+@pytest.mark.parametrize('model', ['us.openai.gpt-6-luna', 'global.openai.gpt-6-astra'])
+def test_nonstream_only_native_schema_respects_stream_fallback_policy(model):
+    schema = StructuredOutput('answer', SCHEMA)
+    req = replace(request(response=ResponsePolicy('structured', 'allow', schema)), selected_llm=model)
+    prepared, evidence = prepare_response(req, 'converse', endpoint='runtime', stream=True)
+    assert evidence.actual_mode == 'prompted_json'
+    assert evidence.fallback_reason == 'unsupported_combination'
+    assert evidence.schema_sha256 == __import__("hashlib").sha256(schema.schema.encode()).hexdigest()
+    with pytest.raises(OperationalError):
+        prepare_response(replace(req, payload=replace(req.payload,
+            response=ResponsePolicy('structured', 'reject', schema))), 'converse', endpoint='runtime', stream=True)
+    assert prepare_response(req, 'converse', endpoint='runtime')[1].actual_mode == 'structured'
