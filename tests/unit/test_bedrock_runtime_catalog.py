@@ -351,6 +351,9 @@ def test_runtime_ui_families_preserve_geographic_route_and_exact_defaults():
 
 
 @pytest.mark.parametrize(('base', 'prefixes', 'context', 'output'), [
+    ('anthropic.claude-opus-5-5', ('us', 'eu', 'global'), 1000000, 128000),
+    ('anthropic.claude-sonnet-5-5', ('us', 'eu', 'global'), 1000000, 128000),
+    ('anthropic.claude-haiku-5-5', ('us', 'eu', 'global'), 1000000, 128000),
     ('anthropic.claude-opus-4-8', ('us', 'eu', 'au', 'jp', 'us-gov', 'global'), 1000000, 128000),
     ('anthropic.claude-opus-4-7', ('us', 'eu', 'au', 'jp', 'global'), 1000000, 128000),
     ('anthropic.claude-opus-4-1-20250805-v1:0', ('us',), 200000, 32000),
@@ -365,7 +368,8 @@ def test_additional_documented_claude_profiles(base, prefixes, context, output):
         assert row.selected_llm == identifier
         assert row.context_length == context and row.max_output_tokens == output
         assert re.fullmatch(pattern, identifier)
-        assert 'temperature' in row.features and 'reasoning_effort' not in row.features
+        assert 'temperature' in row.features and 'reasoning_effort' in row.features
+        assert set(('low', 'medium', 'high')) <= set(row.reasoning_efforts)
         assert ('structured' in row.features) == (identifier not in {
             'us.anthropic.claude-opus-4-1-20250805-v1:0'})
         assert catalog.selection(identifier, 'responses', 'runtime').selected_llm == identifier
@@ -383,9 +387,9 @@ def test_runtime_astra_and_generic_gpt_54(identifier, mode):
 
 
 @pytest.mark.parametrize('identifier', [
-    'global.anthropic.claude-opus-5-5', 'us.anthropic.claude-fable-5',
-    'global.anthropic.claude-fable-5-1', 'us.anthropic.claude-haiku-5-5',
-    'us.anthropic.claude-opus-5', 'us.anthropic.claude-sonnet-5-5',
+    'global.anthropic.claude-opus-5-7', 'us.anthropic.claude-fable-5',
+    'global.anthropic.claude-fable-5-1', 'us.anthropic.claude-haiku-5-7',
+    'us.anthropic.claude-opus-5', 'us.anthropic.claude-sonnet-5-7',
     'us.anthropic.claude-sonnet-5',
 ])
 def test_unqualified_profiles_are_discoverable_without_native_schema_claims(identifier):
@@ -423,9 +427,9 @@ def test_runtime_discovery_rejects_malformed_identity_without_model_availability
 
 
 @pytest.mark.parametrize('identifier,family,version,title', [
-    ('anthropic.claude-haiku-5-5', 'claude-haiku-direct', '5.5', 'Claude Haiku 5.5'),
-    ('us.anthropic.claude-haiku-5-5', 'claude-haiku-us', '5.5', 'Claude Haiku 5.5 [US]'),
-    ('global.anthropic.claude-haiku-5-5', 'claude-haiku-global', '5.5', 'Claude Haiku 5.5 [GLOBAL]'),
+    ('anthropic.claude-haiku-5-7', 'claude-haiku-direct', '5.7', 'Claude Haiku 5.7'),
+    ('us.anthropic.claude-haiku-5-7', 'claude-haiku-us', '5.7', 'Claude Haiku 5.7 [US]'),
+    ('global.anthropic.claude-haiku-5-7', 'claude-haiku-global', '5.7', 'Claude Haiku 5.7 [GLOBAL]'),
     ('anthropic.claude-haiku-4-5-20251001-v1:0', 'claude-haiku-direct', '4.5', 'Claude Haiku 4.5'),
     ('us.anthropic.claude-3-haiku-20240307-v1:0', 'claude-haiku-us', '3', 'Claude Haiku 3 [US]'),
     ('us.anthropic.claude-3-5-sonnet-20241022-v2:0', 'claude-sonnet-us', '3.5', 'Claude Sonnet 3.5 [US]'),

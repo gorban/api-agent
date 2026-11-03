@@ -54,7 +54,7 @@ _STATUSES = frozenset({'ok', 'success', 'error', 'failed', 'cancelled', 'pending
 _EVENTS = frozenset({'start', 'end', 'retry', 'error', 'cancel', 'stream', 'flush'})
 _COUNTS = frozenset({'input_tokens', 'output_tokens', 'total_tokens', 'token_count',
                      'retry_count', 'chunk_count', 'attempt', 'http_status',
-                     'cached_input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'cache_creation_tokens', 'reasoning_tokens'})
+                     'budget_tokens', 'cached_input_tokens', 'cache_read_tokens', 'cache_write_tokens', 'cache_creation_tokens', 'reasoning_tokens'})
 _DURATIONS = frozenset({'duration_ms', 'duration_seconds'})
 _IDS = frozenset({'correlation_id', 'request_id', 'trace_id', 'span_id', 'run_id'})
 
@@ -98,7 +98,7 @@ def _credential_key(key):
 
 def _permitted_metadata_value(key, value):
     normalized = _normalized_key(key)
-    if normalized in _GENAI_COUNT_KEYS or normalized in {'max_output_tokens', 'max_completion_tokens', 'max_tokens'}:
+    if normalized in _GENAI_COUNT_KEYS or normalized in {'max_output_tokens', 'max_completion_tokens', 'max_tokens', 'budget_tokens'}:
         return value is None or (type(value) is int and 0 <= value <= _MAX_JSON_INTEGER)
     if normalized == 'gen_ai_request_reasoning_effort':
         return value is None or (type(value) is str and value in _EFFORTS)

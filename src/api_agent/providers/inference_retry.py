@@ -39,6 +39,10 @@ def retryable(error):
     status = getattr(error, 'http_status', None)
     if type(status) is int and (status == 429 or 500 <= status <= 599):
         return True
+    if (type(status) is int and status == 424
+            and getattr(error, 'kind', None) == 'unavailable'
+            and getattr(error, 'code', None) == 'ModelStreamErrorException'):
+        return True
     from .control import OperationalError
     return (status is None or type(status) is int and status == 200) and isinstance(error, OperationalError) and error.kind == 'network'
 

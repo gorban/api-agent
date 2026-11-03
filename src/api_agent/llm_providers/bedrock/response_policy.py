@@ -16,6 +16,12 @@ def qualified_native_responses(request, api_mode, endpoint):
             and not any(tool.strict for tool in request.payload.tools))
 
 
+def converse_stream_schema_supported(identifier):
+    """Exact model-card restriction; unknown versions gain no new qualification."""
+    return identifier not in {prefix + model for prefix in ('', 'us.', 'global.')
+                              for model in ('openai.gpt-6-luna', 'openai.gpt-6-astra')}
+
+
 def prepare_response(request, api_mode, *, endpoint="mantle", stream=False):
     def supports(mode):
         if mode in ('text', 'prompted_json'):
@@ -32,6 +38,9 @@ def prepare_response(request, api_mode, *, endpoint="mantle", stream=False):
         if (not qualified_native_responses(request, api_mode, endpoint)
                 and ((endpoint == 'runtime' and stream and api_mode != 'converse')
                      or request.payload.tools or request.payload.generation.reasoning_effort)):
+            return 'unsupported_combination'
+        if (endpoint == 'runtime' and api_mode == 'converse' and stream
+                and not converse_stream_schema_supported(request.selected_llm)):
             return 'unsupported_combination'
         definition = request.payload.response.schema
         if not definition.strict or not native_schema_supported(definition):

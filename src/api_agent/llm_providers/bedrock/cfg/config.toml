@@ -149,3 +149,24 @@ override_if_present = true
 default = 960
 validation = "positive"
 help = "Setup-session IPC request deadline in seconds, including an inference turn. The default leaves room for the 900-second Bedrock inference budget; parent deadlines may shorten it."
+
+[fields.LLM_REASONING_LOW_TOKENS]
+type = "int"
+default = 1024
+validation = "positive"
+applies_when = {BEDROCK_API_MODE = "converse"}
+help = "Thinking-token budget for low effort on budget-only Claude Converse models. Adaptive native-effort models use their categorical control instead; Opus 4.5 combines native output effort with this required manual thinking budget. Presets must be monotonic and at least 1024; the effective budget is capped below the output ceiling with 1024 answer tokens reserved. This is a budget, not a promise of actual token usage."
+
+[fields.LLM_REASONING_MEDIUM_TOKENS]
+type = "int"
+default = 4096
+validation = "positive"
+applies_when = {BEDROCK_API_MODE = "converse"}
+help = "Thinking-token budget for medium effort on budget-only Claude Converse models. Adaptive native-effort models use their categorical control instead; Opus 4.5 combines native output effort with this required manual thinking budget. Presets must be monotonic and at least 1024; the effective budget is capped below the output ceiling with 1024 answer tokens reserved. This is a budget, not a promise of actual token usage."
+
+[fields.LLM_REASONING_HIGH_TOKENS]
+type = "int"
+default = 16384
+validation = "positive"
+applies_when = {BEDROCK_API_MODE = "converse"}
+help = "Thinking-token budget for high effort on budget-only Claude Converse models. Adaptive native-effort models use their categorical control instead; Opus 4.5 combines native output effort with this required manual thinking budget. Presets must be monotonic and at least 1024; the effective budget is capped below the output ceiling with 1024 answer tokens reserved. This is a budget, not a promise of actual token usage."

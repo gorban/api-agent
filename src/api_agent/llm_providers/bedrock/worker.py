@@ -46,19 +46,6 @@ def json_value(value):
     return value
 
 
-def _binary_redacted_converse(value):
-    """Find the documented binary thinking carrier before JSON conversion."""
-    if type(value) is not dict:
-        return False
-    output = value.get('output')
-    message = output.get('message') if type(output) is dict else None
-    blocks = message.get('content') if type(message) is dict else None
-    return type(blocks) is list and any(
-        type(block) is dict and type(block.get('reasoningContent')) is dict
-        and type(block['reasoningContent'].get('redactedContent')) in (bytes, bytearray)
-        for block in blocks)
-
-
 def selected_auth(auth, session_factory):
     mode = auth['mode']
     region = auth.get('region')
@@ -182,7 +169,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     or endpoint == 'mantle' and (native or prefix == '/converse')):
                 raise ValueError()
             response = operation.startswith('responses')
-            allowed = ({'modelId', 'messages', 'system', 'inferenceConfig', 'toolConfig', 'outputConfig'}
+            allowed = ({'modelId', 'messages', 'system', 'inferenceConfig', 'toolConfig', 'outputConfig', 'additionalModelRequestFields'}
                        if native else {'model', 'input', 'tools', 'temperature', 'max_output_tokens', 'store', 'reasoning', 'text', 'include'}
                        if response else {'model', 'messages', 'tools', 'temperature', 'max_tokens', 'reasoning_effort', 'response_format'})
             if (not set(arguments) <= allowed
@@ -197,6 +184,13 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                                      endpoint=endpoint)
             if endpoint == 'runtime' and not native and operation.endswith('_stream') and ('response_format' in arguments or 'text' in arguments):
                 raise ValueError()
+            if native:
+                from api_agent.llm_providers.bedrock.converse_controls import validate_fields
+                validate_fields(arguments, selected)
+                if operation.endswith('_stream') and 'outputConfig' in arguments:
+                    from api_agent.llm_providers.bedrock.response_policy import converse_stream_schema_supported
+                    if not converse_stream_schema_supported(selected.selected_llm):
+                        raise ValueError()
             if native and 'outputConfig' in arguments:
                 from api_agent.llm_providers.bedrock.runtime_worker import converse_schema
                 converse_schema(arguments['outputConfig'], selected)
@@ -236,6 +230,9 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
         if join is not None:
             secrets = set(join(sorted(secrets), arguments))
             joined = True
+        if native and operation != 'runtime_models':
+            from api_agent.llm_providers.bedrock.converse_state import sdk_messages
+            arguments['messages'] = sdk_messages(arguments.get('messages', []), secrets)
         timeout = inference_timeout(deadline - time.monotonic())
         if native:
             from api_agent.llm_providers.bedrock.runtime_worker import boto_client, catalog
@@ -263,7 +260,25 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
         if operation == 'runtime_models':
             result = catalog(client, deadline)
         elif native:
-            result = client.converse(**arguments)
+            thinking = arguments.get('additionalModelRequestFields', {}).get('thinking', {})
+            from api_agent.llm_providers.bedrock.converse_controls import kind as converse_kind
+            thinking_active = thinking.get('type') in ('enabled', 'adaptive') or (
+                converse_kind(arguments['modelId']) == 'adaptive' and thinking.get('type') != 'disabled')
+            use_stream = operation.endswith('_stream') or (thinking_active
+                and arguments.get('inferenceConfig', {}).get('maxTokens', 0) > 21333)
+            if use_stream:
+                from api_agent.llm_providers.bedrock.converse_stream import collect
+                from api_agent.llm_providers.bedrock.mantle import _require
+                stream_decoder_active = True
+                streamed = client.converse_stream(**arguments)
+                _require(type(streamed) is dict and 'stream' in streamed)
+                body = streamed['stream']
+                def observed():
+                    nonlocal inference_observed
+                    inference_observed = True
+                result = collect(body, deadline, observed)
+            else:
+                result = client.converse(**arguments)
         elif operation == 'models':
             result = client.models.list()
         elif operation.startswith('completions'):
@@ -294,21 +309,24 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 emit({'event': frame})
         else:
             inference_observed = True
-            if native and _binary_redacted_converse(result):
-                from api_agent.providers.contracts import ProviderAccessError
-                from api_agent.llm_providers.bedrock.converse import _usage
-                decode_failure = 'invalid_response'
-                failed_observation = {'version': 1, 'response_validation': 'rejected',
-                                      'validation_rule': 'reasoning_content',
-                                      'validation_path': '$.output.message.content[].reasoningContent'}
-                failure = ProviderAccessError('unknown', 'Invalid Bedrock inference response.',
-                                              code=decode_failure)
-                if type(result.get('usage')) is dict:
+            if native:
+                from api_agent.llm_providers.bedrock.converse_state import wire_response
+                try:
+                    result = wire_response(result, secrets)
+                except ValueError as error:
+                    from api_agent.providers.contracts import ProviderAccessError
+                    from api_agent.providers.credential_guard import CredentialProtectionError
+                    from api_agent.llm_providers.bedrock.converse import _usage
+                    decode_failure = 'response_safety_rejected' if isinstance(error, CredentialProtectionError) else 'invalid_response'
+                    failed_observation = {'version': 1, 'response_validation': 'rejected',
+                        'validation_rule': 'reasoning_content',
+                        'validation_path': '$.output.message.content[].reasoningContent'}
+                    failure = ProviderAccessError('unknown', 'Invalid Bedrock inference response.', code=decode_failure)
                     try:
-                        failure.usage = _usage(result['usage'])
+                        failure.usage = _usage(result.get('usage'))
                     except ProviderAccessError:
                         pass
-                raise failure
+                    raise failure from None
             value = json_value(result if native else result.model_dump(exclude_unset=True))
             if type(value) is not dict or value.get('error') is not None:
                 if type(value) is dict:
@@ -430,7 +448,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 if status is None:
                     status = candidate.get('HTTPStatusCode')
         kind = {401: 'authentication', 403: 'authorization', 429: 'rate_limited',
-                400: 'invalid_request', 404: 'invalid_request', 422: 'invalid_request',
+                424: 'unavailable', 400: 'invalid_request', 404: 'invalid_request', 422: 'invalid_request',
                 500: 'unavailable', 502: 'unavailable', 503: 'unavailable', 504: 'unavailable'}.get(status)
         if kind is None:
             kind = {'NoCredentialsError': 'authentication', 'PartialCredentialsError': 'authentication',
@@ -475,6 +493,10 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                   'http_status': status, 'maximum_output_tokens': maximum})
             return
         frame = {'error': kind, 'execution': execution}
+        if (native and status == 424 and type(getattr(error, 'response', None)) is dict
+                and type(error.response.get('Error')) is dict
+                and error.response['Error'].get('Code') == 'ModelStreamErrorException'):
+            frame['model_stream_error'] = True
         if native and joined and execution == 'possibly_executed' and decode_failure is None:
             aws_response = getattr(error, 'response', None)
             if type(aws_response) is dict and 'Error' in aws_response:

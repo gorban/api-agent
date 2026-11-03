@@ -5,8 +5,9 @@
 Expose useful reasoning choices through the existing provider catalog and Studio
 controls for supported Claude models. A disabled selector must mean that the
 selected route has no admitted controls, rather than that all Claude reasoning is
-unsupported. This is planned work; the current Converse encoder rejects reasoning
-effort and its catalog offers no efforts.
+unsupported. The [Converse implementation](implementation_plan_f4o4a.md) adds
+provider-owned controls and native continuation; final verification and human
+acceptance are tracked there. Other APIs require independent qualification.
 
 ## Requirements
 
@@ -17,7 +18,7 @@ effort and its catalog offers no efforts.
   Reuse the provider capability infrastructure; do not create UI-specific rules.
 - [ ] Prefer supported native effort controls. For budget-only routes, translate
   the shared low/medium/high intent into provider-owned, configurable token-budget
-  presets. Review the proposed numerical defaults before implementation; document
+  presets. Use the reviewed configurable defaults Low=1,024, Medium=4,096 and High=16,384 thinking tokens, with 1,024 answer tokens reserved below the effective total ceiling; document
   that presets are relative choices, not equal reasoning quality, latency, cost
   or actual token consumption across models. Native effort must not be replaced
   with an invented budget on routes that reject manual budgets.
@@ -101,3 +102,10 @@ Studio choices. Do not replace a supported native effort control with a manual
 `budget_tokens` preset. Confirm exact supported values and whether thinking may
 be disabled; family labels alone are insufficient. Budget-only mappings remain
 a separate route-specific plan requiring review of numerical defaults.
+
+## Active Converse delivery
+
+[Converse request, state and effort requirements](implementation_plan_f4o4a.md)
+track the bounded native-state repair and provider-owned control qualification.
+The reviewed budget presets apply where manual thinking budgets are required,
+including the Opus 4.5 hybrid control. Newer adaptive versions use native effort.

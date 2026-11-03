@@ -290,6 +290,13 @@ class SDKTransport:
                         detail = validate_aws_error(frame['aws_error'], authority_values)
                         message, code = detail['message'], detail.get('code')
                         request_id = detail.get('request_id')
+                    if 'model_stream_error' in frame:
+                        if (frame['model_stream_error'] is not True or kind != 'unavailable'
+                                or status != 424 or execution != 'possibly_executed'
+                                or operation not in ('converse', 'converse_stream')
+                                or code not in (None, 'ModelStreamErrorException')):
+                            raise ContractError('Invalid native stream error category')
+                        code = 'ModelStreamErrorException'
                     if 'maximum_output_tokens' in frame:
                         from api_agent.providers.output_limits import OutputLimitRejected
                         maximum = frame['maximum_output_tokens']

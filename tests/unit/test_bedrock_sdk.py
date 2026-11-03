@@ -1497,3 +1497,58 @@ async def test_stream_failure_details_reach_application_with_optional_content_di
         assert caught.value.execution == 'possibly_executed'
     finally:
         await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_redacted_native_stream_error_retains_retry_category(auth, fake_process):
+    from api_agent.providers.inference_retry import retryable
+    fake_process[0]['frames'] = [{'error': 'unavailable', 'execution': 'possibly_executed',
+        'http_status': 424, 'aws_error_rejected': True, 'model_stream_error': True}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ProviderAccessError) as caught:
+            await transport.call('converse_stream', {}, auth=auth)
+        assert caught.value.code == 'ModelStreamErrorException'
+        assert retryable(caught.value)
+        assert 'additional AWS diagnostic withheld' in str(caught.value)
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', [{'model_stream_error': False}, {'error': 'unknown'},
+    {'http_status': 400}, {'execution': 'not_started'}])
+async def test_native_stream_category_rejects_conflicting_error_facts(auth, fake_process, change):
+    fake_process[0]['frames'] = [dict(error='unavailable', execution='possibly_executed',
+        http_status=424, model_stream_error=True, **{}) | change]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ContractError, match='native stream error category'):
+            await transport.call('converse_stream', {}, auth=auth)
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_native_stream_category_cannot_be_reused_on_another_operation(auth, fake_process):
+    fake_process[0]['frames'] = [{'error': 'unavailable', 'execution': 'possibly_executed',
+                                'http_status': 424, 'model_stream_error': True}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ContractError, match='native stream error category'):
+            await transport.call('responses_stream', {}, auth=auth)
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_native_stream_category_cannot_contradict_admitted_aws_code(auth, fake_process, output_limit_join):
+    fake_process[0]['frames'] = [{'error': 'unavailable', 'execution': 'possibly_executed',
+        'http_status': 424, 'model_stream_error': True,
+        'aws_error': {'code': 'OtherException', 'message': 'Synthetic service failure'}}]
+    transport = sdk.SDKTransport()
+    try:
+        with pytest.raises(ContractError, match='native stream error category'):
+            await transport.call('converse_stream', {}, auth=auth, join=output_limit_join)
+    finally:
+        await transport.aclose()

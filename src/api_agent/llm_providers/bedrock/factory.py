@@ -183,6 +183,9 @@ class BedrockProvider:
             self._describes.discard(task)
 
     def _effective_request(self, request):
+        if self.api_mode == 'converse':
+            from .converse_controls import effective_request
+            request = effective_request(request, self.config)
         from api_agent.providers.output_limits import clamp_request
         if request.payload.generation.max_output_tokens is None:
             return request
@@ -204,7 +207,8 @@ class BedrockProvider:
                 and not qualified_native_responses(prepared, self.api_mode, self.endpoint)):
             raise OperationalError('unsupported')
         catalog.selection(prepared.selected_llm, self.api_mode, self.endpoint).validate(prepared)
-        validate_request(prepared, endpoint=self.endpoint, api_mode=self.api_mode)
+        validate_request(prepared, endpoint=self.endpoint, api_mode=self.api_mode,
+                         **({'config': self.config} if self.api_mode == 'converse' else {}))
 
     async def acomplete(self, request, *, auth=None):
         from api_agent.providers.call_authority import require_remote_admission
@@ -237,7 +241,8 @@ class BedrockProvider:
         try:
             async with component_timeout('Bedrock completion', self.inference_timeout) as budget:
                 payload = {'prefix': catalog.route(request.selected_llm, self.api_mode, self.endpoint),
-                           'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint), evidence)}
+                           'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint,
+                               **({'config': self.config} if self.api_mode == 'converse' else {})), evidence)}
                 if self.endpoint == 'runtime':
                     payload['endpoint'] = 'runtime'
                 if self.api_mode == 'completions' and reasoning_format != 'auto':
@@ -317,7 +322,8 @@ class BedrockProvider:
             decoder = ParentStream(self.api_mode, selected_llm=request.selected_llm)
             async with component_timeout('Bedrock streaming completion', self.inference_timeout) as budget:
                 payload = {'prefix': catalog.route(request.selected_llm, self.api_mode, self.endpoint),
-                           'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint), evidence)}
+                           'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint,
+                               **({'config': self.config} if self.api_mode == 'converse' else {})), evidence)}
                 if self.endpoint == 'runtime':
                     payload['endpoint'] = 'runtime'
                 if self.api_mode == 'completions' and reasoning_format != 'auto':

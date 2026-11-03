@@ -67,6 +67,9 @@ and [GLM 5 card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card
 before adding another qualified example. A native display capability is distinct
 from support for categorical reasoning effort.
 
+See [Bedrock Converse controls, budgets and replay](testing_bedrock_converse.md)
+for the native Converse route and its qualification limits.
+
 ## OpenRouter overlap
 
 See [OpenRouter routes, controls and known limitations](testing_openrouter_reasoning.md)

@@ -147,6 +147,35 @@ def converse_response(text='hello'):
             'stopReason': 'end_turn', 'usage': {'inputTokens': 2, 'outputTokens': 3, 'totalTokens': 5}}
 
 
+def native_events(raw):
+    yield {'messageStart': {'role': 'assistant'}}
+    for index, block in enumerate(raw['output']['message']['content']):
+        if 'toolUse' in block:
+            tool = block['toolUse']
+            yield {'contentBlockStart': {'contentBlockIndex': index,
+                'start': {'toolUse': {key: tool[key] for key in ('toolUseId', 'name')}}}}
+            delta = {'toolUse': {'input': json.dumps(tool['input'])}}
+            yield {'contentBlockDelta': {'contentBlockIndex': index, 'delta': delta}}
+        elif 'reasoningContent' in block:
+            reasoning = block['reasoningContent']
+            fields = reasoning.get('reasoningText', reasoning)
+            for key, value in fields.items():
+                yield {'contentBlockDelta': {'contentBlockIndex': index,
+                    'delta': {'reasoningContent': {key: value}}}}
+        else:
+            yield {'contentBlockDelta': {'contentBlockIndex': index, 'delta': block}}
+        yield {'contentBlockStop': {'contentBlockIndex': index}}
+    yield {'messageStop': {'stopReason': raw['stopReason']}}
+    yield {'metadata': {'usage': raw['usage']}}
+
+
+def native_client(raw, *, close=None, converse=None):
+    call = converse or (lambda **kwargs: raw)
+    return SimpleNamespace(converse=call,
+        converse_stream=lambda **kwargs: {'stream': native_events(call(**kwargs))},
+        close=close or (lambda: None))
+
+
 @pytest.mark.parametrize('operation', ['converse', 'converse_stream'])
 @pytest.mark.parametrize('structured', [False, True])
 def test_converse_validates_before_buffered_publication_and_closes(operation, structured):
@@ -161,6 +190,9 @@ def test_converse_validates_before_buffered_publication_and_closes(operation, st
         def converse(self, **kwargs):
             seen.append(kwargs)
             return raw
+        def converse_stream(self, **kwargs):
+            seen.append(kwargs)
+            return {'stream': native_events(raw)}
         def close(self):
             seen.append('closed')
     worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse', 'body': body}), frames.append,
@@ -182,7 +214,7 @@ def test_signed_plaintext_reasoning_is_displayed_without_signature(operation):
     frames = []
     worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse',
         'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
-        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None))
+        boto_client_factory=lambda *args: native_client(raw))
     assert len(frames) == (1 if operation == 'converse' else 3)
     if operation == 'converse':
         assert frames[0]['result'] == raw
@@ -212,23 +244,30 @@ def test_signed_plaintext_reasoning_is_displayed_without_signature(operation):
 
 @pytest.mark.parametrize('operation', ['converse', 'converse_stream'])
 @pytest.mark.parametrize('binary_type', [bytes, bytearray])
-def test_binary_redacted_reasoning_rejects_before_json_conversion_and_retains_usage(operation, binary_type):
-    raw = converse_response('answer must stay private')
+def test_binary_redacted_reasoning_is_preserved_privately_and_retains_usage(operation, binary_type):
+    import base64
+    raw = converse_response('visible answer')
     raw['output']['message']['content'].insert(0, {'reasoningContent': {
         'redactedContent': binary_type(b'private binary canary')}})
     frames = []
     worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse',
         'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
-        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None))
-    assert len(frames) == 1
-    frame = frames[0]
-    assert frame['error'] == 'unknown' and frame['execution'] == 'possibly_executed'
-    assert frame['code'] == 'invalid_response'
-    assert frame['diagnostics']['validation_rule'] == 'reasoning_content'
-    assert frame['diagnostics']['validation_path'] == '$.output.message.content[].reasoningContent'
-    assert frame['usage']['input_tokens'] == 2
-    assert 'result' not in frame and 'event' not in frame and 'provider_response' not in frame
-    assert 'private' not in str(frame)
+        boto_client_factory=lambda *args: native_client(raw))
+    if operation == 'converse':
+        wire = frames[0]['result']
+        encoded = wire['output']['message']['content'][0]['reasoningContent']['redactedContent']
+        assert base64.b64decode(encoded) == b'private binary canary'
+        from api_agent.llm_providers.bedrock.converse import decode
+        answer = decode(wire, selected_llm=CONVERSE_MODEL)
+    else:
+        from api_agent.providers.inference import result_from_wire
+        answer = result_from_wire(frames[-1]['event']['result'])
+    assert answer.payload.content[0].text == 'visible answer'
+    assert answer.reasoning_summary is None
+    assert answer.payload.continuation is not None
+    assert answer.usage.input_tokens == 2
+    from api_agent.api.chat_contract import result as browser_result
+    assert 'redactedContent' not in str(browser_result('turn', answer))
 
 
 @pytest.mark.parametrize('usage', [None, {'inputTokens': True}, 'malformed'])
@@ -240,18 +279,12 @@ def test_binary_redacted_reasoning_does_not_invent_invalid_usage(usage):
     frames = []
     worker.execute(request('converse', {'endpoint': 'runtime', 'prefix': '/converse',
         'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
-        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None))
-    assert frames[0]['code'] == 'invalid_response'
+        boto_client_factory=lambda *args: native_client(raw))
+    assert frames[0]['code'] == 'invalid_usage'
     assert 'usage' not in frames[0]
     assert 'private' not in str(frames[0])
 
 
-@pytest.mark.parametrize('value', [None, [], {'output': None}, {'output': {'message': None}},
-    {'output': {'message': {'content': None}}},
-    {'output': {'message': {'content': [None, {}, {'reasoningContent': None},
-                                                {'reasoningContent': {'redactedContent': 'not-binary'}}]}}}])
-def test_binary_redacted_guard_ignores_other_shapes(value):
-    assert worker._binary_redacted_converse(value) is False
 
 
 @pytest.mark.parametrize('operation', ['converse', 'converse_stream'])
@@ -262,7 +295,7 @@ def test_signed_reasoning_containing_selected_credential_rejects_before_publicat
     frames = []
     worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse',
         'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), frames.append,
-        boto_client_factory=lambda *args: SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None),
+        boto_client_factory=lambda *args: native_client(raw),
         join=lambda values, arguments: values)
     assert len(frames) == 1
     assert frames[0]['code'] == 'response_safety_rejected'
@@ -276,7 +309,7 @@ def test_converse_joined_credential_in_split_caller_carriers_never_publishes(ope
     raw = converse_response('synthetic-runtime-')
     raw['output']['message']['content'].append({'toolUse': {'toolUseId': 'call1', 'name': 'lookup', 'input': {'value': 'key'}}})
     raw['stopReason'] = 'tool_use'
-    client = SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: closed.append(True))
+    client = native_client(raw, close=lambda: closed.append(True))
     worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse', 'body': {'modelId': CONVERSE_MODEL, 'messages': []}}),
                    frames.append, boto_client_factory=lambda *args: client, join=lambda values, arguments: values)
     assert closed == [True]
@@ -433,7 +466,7 @@ def test_buffered_converse_tool_only_result_has_no_text_frame():
     raw = converse_response()
     raw['output']['message']['content'] = [{'toolUse': {'toolUseId': 'call1', 'name': 'lookup', 'input': {}}}]
     raw['stopReason'] = 'tool_use'
-    client = SimpleNamespace(converse=lambda **kwargs: raw, close=lambda: None)
+    client = native_client(raw)
     worker.execute(request('converse_stream', {'endpoint': 'runtime', 'prefix': '/converse', 'body': {'modelId': CONVERSE_MODEL, 'messages': []}}),
         frames.append, boto_client_factory=lambda *args: client)
     assert len(frames) == 1 and frames[0]['event']['kind'] == 'completed'
@@ -619,7 +652,7 @@ def test_unknown_operator_selected_converse_model_is_dispatched_without_a_family
     def converse(**kwargs):
         seen.append(kwargs)
         return raw
-    client = SimpleNamespace(converse=converse, close=lambda: None)
+    client = native_client(raw, converse=converse)
     worker.execute(request(operation, {'endpoint': 'runtime', 'prefix': '/converse', 'body': body}),
         frames.append, boto_client_factory=lambda *args: client)
     assert seen == [body]
@@ -1023,3 +1056,21 @@ def test_partial_sdk_without_optional_error_export_preserves_original_failure_in
         http_factory=lambda **kwargs: SimpleNamespace(close=lambda: None), join=lambda values, arguments: values)
     assert frames == [{'error': 'unavailable', 'execution': 'possibly_executed', 'http_status': 503,
         'provider_response': {'error': {'message': 'Temporary service failure'}}}]
+
+
+@pytest.mark.parametrize('opaque,code', [(b'synthetic-runtime-key', 'response_safety_rejected'),
+                                       ('not-sdk-bytes', 'invalid_response')])
+@pytest.mark.parametrize('valid_usage', [True, False])
+def test_native_binary_conversion_failure_retains_only_valid_usage(opaque, code, valid_usage):
+    raw = converse_response()
+    raw['output']['message']['content'].insert(0, {'reasoningContent': {'redactedContent': opaque}})
+    if not valid_usage:
+        raw['usage'] = {'inputTokens': -1}
+    output = []
+    worker.execute(request('converse', {'endpoint': 'runtime', 'prefix': '/converse',
+        'body': {'modelId': CONVERSE_MODEL, 'messages': []}}), output.append,
+        boto_client_factory=lambda *args: native_client(raw), join=lambda values, arguments: values)
+    assert len(output) == 1 and output[0]['code'] == code
+    assert ('usage' in output[0]) is valid_usage
+    assert 'synthetic-runtime-key' not in str(output)
+    assert 'provider_response' not in output[0]

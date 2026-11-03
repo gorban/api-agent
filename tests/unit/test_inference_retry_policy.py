@@ -394,3 +394,12 @@ def test_retry_delay_must_fit_inherited_deadline(monkeypatch, status, deadline, 
         finally:
             await owner.aclose()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('kind,code,expected', [('unavailable', 'ModelStreamErrorException', True),
+    ('unknown', 'ModelStreamErrorException', False), ('unavailable', 'OtherDependencyFailure', False)])
+def test_dependency_status_requires_qualified_transient_model_stream_error(kind, code, expected):
+    from api_agent.providers.contracts import ProviderAccessError
+    error = ProviderAccessError(kind, 'Synthetic failure', status=424, code=code)
+    error.http_status = 424
+    assert retry.retryable(error) is expected

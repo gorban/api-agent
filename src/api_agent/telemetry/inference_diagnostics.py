@@ -4,7 +4,7 @@ import re
 
 _COUNTS = {'output_items', 'message_items', 'reasoning_items', 'tool_items', 'other_items',
            'visible_text_characters', 'reasoning_text_characters', 'decoded_visible_text_characters',
-           'max_output_tokens', 'scrub_empty_strings', 'scrub_omitted_members', 'scrub_omitted_events', 'stream_sequence'}
+           'max_output_tokens', 'thinking_budget_tokens', 'scrub_empty_strings', 'scrub_omitted_members', 'scrub_omitted_events', 'stream_sequence'}
 _ENUMS = {
     'observation': {'sdk_decoded'},
     'stream_event': {'other', 'eof', 'response.created', 'response.in_progress',
@@ -15,6 +15,8 @@ _ENUMS = {
         'response.reasoning_summary_part.added', 'response.reasoning_summary_part.done',
         'response.reasoning_summary_text.delta', 'response.reasoning_summary_text.done',
         'response.reasoning_text.delta', 'response.reasoning_text.done'},
+    'thinking_mode': {'enabled', 'disabled', 'adaptive'},
+    'reasoning_control': {'native_effort', 'budget', 'native_effort_and_budget'},
     'api': {'responses', 'completions', 'converse', 'normalized'},
     'response_status': {'completed', 'incomplete', 'failed', 'cancelled', 'in_progress', 'queued'},
     'incomplete_reason': {'max_output_tokens', 'content_filter', 'other'},
@@ -116,10 +118,27 @@ def sdk_observation(wire, phase):
         return {}
     data = {'version': 1, 'observation': 'sdk_decoded'}
     if phase == 'request':
+        additional = raw.get('additionalModelRequestFields')
+        if type(additional) is dict:
+            raw = {**raw, **additional}
+            thinking = additional.get('thinking')
+            if type(thinking) is dict:
+                if type(thinking.get('type')) is str and thinking['type'] in _ENUMS['thinking_mode']:
+                    data['thinking_mode'] = thinking['type']
+                budget = thinking.get('budget_tokens')
+                if type(budget) is int and 0 <= budget <= 1048576:
+                    data['thinking_budget_tokens'] = budget
+            output = additional.get('output_config')
+            if type(output) is dict:
+                raw = {**raw, 'reasoning_effort': output.get('effort')}
         control = raw.get('reasoning')
         effort = control.get('effort') if type(control) is dict else raw.get('reasoning_effort')
         if type(effort) is str and effort in _ENUMS['reasoning_effort']:
             data['reasoning_effort'] = effort
+            if type(additional) is dict:
+                data['reasoning_control'] = 'native_effort_and_budget' if 'thinking_budget_tokens' in data else 'native_effort'
+        elif 'thinking_budget_tokens' in data:
+            data['reasoning_control'] = 'budget'
         inference = raw.get('inferenceConfig')
         native_maximum = inference.get('maxTokens') if type(inference) is dict else None
         maximum = raw.get('max_output_tokens', raw.get('max_completion_tokens', raw.get('max_tokens', native_maximum)))

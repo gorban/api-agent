@@ -14,9 +14,11 @@ from .catalog import selection
 from .mantle import _bounded, _fields, _require, _text
 
 
-def validate_request(request, *, endpoint='runtime', api_mode='converse'):
+def validate_request(request, *, endpoint='runtime', api_mode='converse', config=None):
     if not isinstance(request, LLMRequest):
         raise ProviderAccessError('invalid_request', 'Invalid Bedrock Converse request.')
+    from .converse_controls import effective_request
+    request = effective_request(request, config)
     selected = selection(request.selected_llm, api_mode, endpoint=endpoint)
     selected.validate(request)
     payload = request.payload
@@ -24,12 +26,13 @@ def validate_request(request, *, endpoint='runtime', api_mode='converse'):
         raise ProviderAccessError('unsupported', 'This Bedrock Converse model does not support strict tools.')
     if (payload.structured is not None and not payload.structured.strict
             or payload.generation.cache_policy is not None
-            or payload.generation.reasoning_effort not in (None, '')
             or any(message.cache_boundary is not None
                    for message in payload.messages)):
         raise ProviderAccessError('unsupported', 'Bedrock Converse request feature is unsupported.')
     if payload.generation.temperature is not None and payload.generation.temperature > 1:
         raise ProviderAccessError('invalid_request', 'Bedrock Converse temperature must be at most 1.')
+    from .converse_controls import fields
+    fields(request, config)
     for message in payload.messages:
         if message.continuation is not None:
             continuation_message(message, request.selected_llm)
@@ -55,18 +58,20 @@ def continuation_message(message, selected_llm):
         if re.fullmatch(r'bedrock\.converse(?:\.[0-9a-f]{64})?', envelope['provider']) is None or len(envelope['state']) != 1:
             raise ContractError('Invalid Converse continuation owner')
         native = envelope['state'][0]
-        parsed = decode({'output': {'message': native}, 'stopReason':'end_turn',
+        parsed = decode({'output': {'message': native}, 'stopReason':'tool_use' if message.calls else 'end_turn',
                          'usage':{'inputTokens':0,'outputTokens':0,'totalTokens':0}}, selected_llm=selected_llm)
-        if (parsed.payload.continuation is None or message.role != 'assistant' or message.calls or message.results
-                or parsed.payload.content != message.content):
+        if (parsed.payload.continuation is None or message.role != 'assistant' or message.results
+                or parsed.payload.content != message.content or parsed.payload.calls != message.calls):
             raise ContractError('Converse continuation differs from its visible message')
         return deepcopy(native)
     except (ContractError, ProviderAccessError, ValueError, TypeError):
         raise ProviderAccessError('invalid_request', 'Invalid Bedrock Converse continuation.') from None
 
 
-def encode(request, api_mode='converse', *, endpoint='runtime'):
-    validate_request(request, endpoint=endpoint, api_mode=api_mode)
+def encode(request, api_mode='converse', *, endpoint='runtime', config=None):
+    validate_request(request, endpoint=endpoint, api_mode=api_mode, config=config)
+    from .converse_controls import effective_request
+    request = effective_request(request, config)
     payload = request.payload
     system, messages = [], []
     for message in payload.messages:
@@ -99,6 +104,12 @@ def encode(request, api_mode='converse', *, endpoint='runtime'):
             **({'strict': tool.strict} if 'structured' in selection(request.selected_llm, api_mode, endpoint=endpoint).features else {}),
             'inputSchema': {'json': schema(tool.input_schema, tool.strict)}}}
             for tool in payload.tools]}
+    from .converse_controls import fields, kind
+    additional = fields(request, config)
+    if payload.structured is not None and kind(request.selected_llm) == 'gpt':
+        additional['text'] = {'format': {'strict': True}}
+    if additional:
+        body['additionalModelRequestFields'] = additional
     return body
 
 
@@ -163,6 +174,7 @@ def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
                  and len(message['content']) <= 64, rule='assistant_message', path='$.output.message')
         text, calls, seen = [], [], set()
         has_reasoning = False
+        opaque_total = 0
         display = []
         for block in message['content']:
             _require(type(block) is dict and len(block) == 1,
@@ -173,15 +185,24 @@ def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
                 # Display is separate from the exact signed replay carrier.
                 path = '$.output.message.content[].reasoningContent'
                 reasoning = block['reasoningContent']
-                _require(type(reasoning) is dict and set(reasoning) == {'reasoningText'},
+                _require(type(reasoning) is dict and set(reasoning) in ({'reasoningText'}, {'redactedContent'}),
                          rule='reasoning_content', path=path)
+                if 'redactedContent' in reasoning:
+                    from .converse_state import binary, MAX_OPAQUE_BYTES
+                    try:
+                        opaque_total += len(binary(reasoning['redactedContent']))
+                        _require(opaque_total <= MAX_OPAQUE_BYTES, rule='reasoning_content', path=path)
+                    except ContractError:
+                        _require(False, rule='reasoning_content', path=path)
+                    has_reasoning = True
+                    continue
                 value = reasoning['reasoningText']
                 _require(type(value) is dict and set(value) <= {'text', 'signature'}
-                         and type(value.get('text')) is str
-                         and ('signature' not in value or type(value['signature']) is str),
+                         and bool(value) and ('text' not in value or type(value['text']) is str)
+                         and ('signature' not in value or type(value['signature']) is str and bool(value['signature'])),
                          rule='reasoning_content', path=path + '.reasoningText')
                 has_reasoning = True
-                display.append(_text_at(value['text'], path + '.reasoningText.text'))
+                display.append(_text_at(value.get('text', ''), path + '.reasoningText.text'))
             else:
                 _require('toolUse' in block, rule='content_block', path='$.output.message.content[]')
                 tool = block['toolUse']
@@ -208,8 +229,8 @@ def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
                  rule='finish_reason', path='$.stopReason')
         _require((reason == 'tool_use') == bool(calls), 'tool_finish_mismatch',
                  rule='tool_finish_consistency', path='$.stopReason')
-        _require(not has_reasoning or (reason in ('end_turn', 'stop_sequence')
-                 and not calls and any(part.strip() for part in text)),
+        _require(not has_reasoning or (reason in ('end_turn', 'stop_sequence', 'tool_use')
+                 and (calls or any(part.strip() for part in text))),
                  rule='unsupported_continuation',
                  path='$.output.message.content[].reasoningContent')
         tier = raw.get('serviceTier')
@@ -220,7 +241,7 @@ def decode(raw, api_mode='converse', *, selected_llm, endpoint='runtime'):
         state = json.dumps({'provider':'bedrock.converse','state':[message]}, allow_nan=False, separators=(',', ':')) if has_reasoning else None
         return LLMResult(Message('assistant', (TextContent(_text_at(''.join(text), '$.output.message.content[]')),), tuple(calls), continuation=state),
                          _usage(raw.get('usage')), outcomes[reason], service_tier=tier,
-                         reasoning_summary=''.join(display) or None)
+                         reasoning_summary='\n'.join(display) or None)
     except ProviderAccessError as error:
         error.execution = 'possibly_executed'
         if type(raw) is dict and type(raw.get('usage')) is dict:
