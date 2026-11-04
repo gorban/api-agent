@@ -97,7 +97,14 @@ class ConnectionStore:
             if owned:
                 directory = self._directory()
             stage = 'open'
-            fd = os.open(path.name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            if flags & os.O_CREAT and not flags & os.O_EXCL:
+                # Separate first creation from opening an existing pinned entry.
+                try:
+                    fd = os.open(path.name, flags | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+                except FileExistsError:
+                    fd = os.open(path.name, (flags & ~os.O_CREAT) | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            else:
+                fd = os.open(path.name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
             stage = 'metadata'
             info = os.fstat(fd)
             stage = 'file_type'

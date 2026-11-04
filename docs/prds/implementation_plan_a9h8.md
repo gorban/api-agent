@@ -13,3 +13,5 @@
 - [ ] Native normal-launcher acceptance remains open. A passing local gate does not establish native acceptance or explain a previously unreproduced error.
 
 Verification: 26,887 Linux unit tests pass at 16 workers with exact 100% line and branch coverage. Independent adversarial and external source reviews pass, including actual-worker failure probes and targeted mutations. Workflow and staged public-boundary checks pass; committed metadata must pass before publication. This does not establish native acceptance.
+
+Follow-up: [concurrent lock creation and isolated clipboard controls](implementation_plan_a9h9.md).

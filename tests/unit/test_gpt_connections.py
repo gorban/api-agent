@@ -673,3 +673,207 @@ def test_pending_rotation_retains_lock_through_timeout_and_cleanup(store, record
         await second.aclose()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('existing', [False, True])
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_lock_create_or_open_avoids_nonexclusive_creation(store, monkeypatch, existing, asynchronous):
+    import errno
+    key = 'a' * 64
+    if existing:
+        store.root.mkdir(mode=0o700)
+        fd = os.open(store._path(key).with_suffix('.lock'), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+    provider_os, opened = tracked_connection_fds(monkeypatch)
+    original_open = provider_os.open
+    calls = []
+    def open_entry(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None:
+            calls.append((flags, dir_fd))
+            if flags & os.O_CREAT and not flags & os.O_EXCL:
+                raise FileNotFoundError(errno.ENOENT, 'controlled concurrent creation failure')
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+    monkeypatch.setattr(provider_os, 'open', open_entry)
+
+    if asynchronous:
+        async def acquire():
+            async with store.async_lock(key):
+                pass
+        asyncio.run(acquire())
+    else:
+        with store.lock(key):
+            pass
+
+    assert len(calls) == 1 + existing
+    assert calls[0][0] & os.O_CREAT and calls[0][0] & os.O_EXCL
+    assert all(flags & os.O_NOFOLLOW for flags, _ in calls)
+    assert len({directory for _, directory in calls}) == 1
+    if existing:
+        assert not calls[1][0] & os.O_CREAT
+    assert not opened
+
+
+@pytest.mark.parametrize('number', [2, 13, 5])
+def test_lock_creation_errors_do_not_fall_back_or_reopen_root(store, monkeypatch, number):
+    key = 'b' * 64
+    provider_os, opened = tracked_connection_fds(monkeypatch)
+    original_open = provider_os.open
+    attempts = []
+    def refuse(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None:
+            attempts.append((flags, dir_fd))
+            raise OSError(number, 'untrusted open detail')
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+    monkeypatch.setattr(provider_os, 'open', refuse)
+
+    with pytest.raises(AuthError, match='^invalid_connection') as error:
+        with store.lock(key):
+            pytest.fail('failed creation admitted a lock')
+
+    assert len(attempts) == 1
+    assert f'errno={number}' in error.value.__notes__[0]
+    assert 'untrusted' not in str(error.value.__notes__)
+    assert not opened
+
+
+@pytest.mark.parametrize('replacement', [False, True])
+def test_lock_never_reopens_an_unlinked_directory(store, monkeypatch, replacement):
+    key = 'c' * 64
+    original = store._directory
+    retained = []
+    def detached():
+        directory = original()
+        retained.append(directory)
+        store.root.rmdir()
+        if replacement:
+            store.root.mkdir(mode=0o700)
+        return directory
+    monkeypatch.setattr(store, '_directory', detached)
+
+    with pytest.raises(AuthError, match='^invalid_connection'):
+        with store.lock(key):
+            pytest.fail('detached directory admitted a lock')
+
+    assert len(retained) == 1
+    assert not store._path(key).with_suffix('.lock').exists()
+    with pytest.raises(OSError):
+        os.fstat(retained[0])
+
+
+def test_lock_removed_after_exclusive_conflict_is_not_recreated(store, monkeypatch):
+    key = 'd' * 64
+    store.root.mkdir(mode=0o700)
+    lock = store._path(key).with_suffix('.lock')
+    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    os.close(fd)
+    provider_os, opened = tracked_connection_fds(monkeypatch)
+    original_open = provider_os.open
+    calls = []
+    def remove_after_conflict(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is None:
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+        calls.append((flags, dir_fd))
+        try:
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+        except FileExistsError:
+            os.unlink(path, dir_fd=dir_fd)
+            raise
+    monkeypatch.setattr(provider_os, 'open', remove_after_conflict)
+
+    with pytest.raises(AuthError, match='^invalid_connection'):
+        with store.lock(key):
+            pytest.fail('disappeared lock was recreated')
+
+    assert len(calls) == 2 and calls[0][1] == calls[1][1]
+    assert not calls[1][0] & os.O_CREAT
+    assert not lock.exists() and not opened
+
+
+@pytest.mark.parametrize('kind', ['permissions', 'symlink', 'hardlink', 'directory', 'owner'])
+def test_existing_lock_security_checks_survive_exclusive_conflict(store, tmp_path, monkeypatch, kind):
+    key = 'e' * 64
+    store.root.mkdir(mode=0o700)
+    lock = store._path(key).with_suffix('.lock')
+    target = tmp_path / 'target'
+    target.write_text('unchanged')
+    target.chmod(0o600)
+    if kind == 'symlink':
+        lock.symlink_to(target)
+    elif kind == 'hardlink':
+        os.link(target, lock)
+    elif kind == 'directory':
+        lock.mkdir()
+    else:
+        lock.write_text('unchanged')
+        lock.chmod(0o600 if kind == 'owner' else 0o644)
+    provider_os, opened = tracked_connection_fds(monkeypatch)
+    if kind == 'owner':
+        original_fstat = provider_os.fstat
+        def foreign_owner(fd):
+            info = original_fstat(fd)
+            return (SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1, st_nlink=info.st_nlink)
+                    if stat.S_ISREG(info.st_mode) else info)
+        monkeypatch.setattr(provider_os, 'fstat', foreign_owner)
+
+    with pytest.raises(AuthError, match='^invalid_connection'):
+        with store.lock(key):
+            pytest.fail('unsafe existing lock admitted')
+
+    assert target.read_text() == 'unchanged'
+    assert not opened
+
+
+def test_concurrent_first_lock_creation_keeps_one_inode_and_serializes(store, monkeypatch):
+    import concurrent.futures
+    import threading
+    from api_agent.llm_providers.gpt import connections
+    key = 'f' * 64
+    assert not store.root.exists()
+    original_open = store._open
+    original_flock = connections.fcntl.flock
+    opened = threading.Barrier(2)
+    entered, blocked, release = threading.Event(), threading.Event(), threading.Event()
+    mutex = threading.Lock()
+    identities, attempts, active = [], [], []
+    state = {'inside': 0}
+    def open_lock(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        info = os.fstat(fd)
+        with mutex:
+            identities.append((info.st_dev, info.st_ino))
+        opened.wait(timeout=5)
+        return fd
+    def flock(fd, operation):
+        if operation == connections.fcntl.LOCK_EX:
+            with mutex:
+                attempts.append(fd)
+                second = len(attempts) == 2
+            if second:
+                assert entered.wait(5)
+                with pytest.raises(BlockingIOError):
+                    original_flock(fd, connections.fcntl.LOCK_EX | connections.fcntl.LOCK_NB)
+                blocked.set()
+        return original_flock(fd, operation)
+    monkeypatch.setattr(store, '_open', open_lock)
+    monkeypatch.setattr(connections, 'fcntl', SimpleNamespace(**(vars(connections.fcntl) | {'flock': flock})))
+    def acquire():
+        with store.lock(key):
+            with mutex:
+                state['inside'] += 1
+                active.append(state['inside'])
+            entered.set()
+            try:
+                assert release.wait(10)
+            finally:
+                with mutex:
+                    state['inside'] -= 1
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        jobs = [pool.submit(acquire) for _ in range(2)]
+        try:
+            assert blocked.wait(5)
+            assert len(identities) == 2 and identities[0] == identities[1]
+        finally:
+            release.set()
+        for job in jobs:
+            job.result(timeout=5)
+    assert active == [1, 1]
