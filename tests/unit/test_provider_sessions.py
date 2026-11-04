@@ -707,6 +707,9 @@ def test_binding_and_resistant_auth_disposal_retry():
         assert not driver.stop.called
         release.set()
         await llm._resource_task
+        # The short deadline targets the cancellation-resistant auth phase.
+        # Retry after it settles with the normal cleanup budget.
+        llm._timeout = 5
         await llm.aclose()
         finalizer.assert_awaited_once()
         assert auth.closed
