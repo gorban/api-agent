@@ -9,6 +9,22 @@ import pytest
 
 from api_agent.runtime.compose import (ComposeError, local_development_environment,
     plan_compose, selected_profiles, validate_compose, validate_document)
+from api_agent.telemetry.genai_metrics import MetricConfigurationError
+from api_agent.telemetry.tracing_providers import TracingProviderError
+
+
+def bundled_trace_config(**values):
+    """Configure the bundled provider explicitly for controlled Compose tests."""
+    provider = Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/provider.py'
+    defaults = {'TRACE_PROVIDER': str(provider) + ':create_tracing_provider', 'TRACE_MODE': ''}
+    mode = values.get('TRACE_MODE', '')
+    if mode == 'LangFuse':
+        defaults.update(TRACE_EXPORT_ENDPOINT='http://localhost:3000/api/public/otel/v1/traces',
+                        TRACE_VIEWER_URL='http://localhost:3000')
+    elif mode == 'OTEL':
+        defaults.update(TRACE_EXPORT_ENDPOINT='http://localhost:4318/v1/traces',
+                        TRACE_VIEWER_URL='http://localhost:16686', JAEGER_VIEWER_PORT=16686)
+    return defaults | values
 
 
 @dataclass
@@ -29,15 +45,18 @@ class Scope:
     ('LangFuse', 'https://remote.example:3000', ()),
     ('OTEL', 'http://localhost:4319/v1/traces', ()),
     ('OTEL', 'http://localhost:4318/other', ()),
-    ('OTEL', 'http://localhost:4318/v1/traces?x=1', ())])
+])
 def test_profile_selection(mode, target, expected):
-    assert selected_profiles({'TRACE_MODE': mode, 'TRACE_TARGET': target}) == expected
+    config = bundled_trace_config(TRACE_MODE=mode)
+    if target is not None:
+        config['TRACE_EXPORT_ENDPOINT'] = target
+    assert selected_profiles(config) == expected
 
 
 @pytest.mark.parametrize('mode,localstack', list(itertools.product(('', 'LangFuse', 'OTEL'), (False, True))))
 def test_every_profile_combination_has_dependencies_and_scope(mode, localstack):
     scope = Scope()
-    plan = plan_compose({'TRACE_MODE': mode, 'ALLURE_S3_USE_LOCALSTACK': localstack, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566' if localstack else ''}, scope)
+    plan = plan_compose(bundled_trace_config(**{'TRACE_MODE': mode, 'ALLURE_S3_USE_LOCALSTACK': localstack, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566' if localstack else ''}), scope)
     doc = json.loads((plan.directory / 'compose.json').read_text())
     active = set(plan.services)
     assert ('localstack' in active) == localstack
@@ -57,7 +76,7 @@ def test_command_is_explicit_and_environment_is_isolated(monkeypatch):
     monkeypatch.setenv('SA_POSTGRES_PASSWORD', 'private-env-value')
     monkeypatch.setenv('COMPOSE_FILE', '/private/compose.yml')
     monkeypatch.setenv('AWS_SECRET_ACCESS_KEY', 'private-key')
-    plan = plan_compose({'TRACE_MODE': 'LangFuse', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'}, Scope())
+    plan = plan_compose(bundled_trace_config(**{'TRACE_MODE': 'LangFuse', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'}), Scope())
     assert plan.command == ('docker', 'compose', '--project-name', Scope().project,
         '--project-directory', str(plan.directory), '-f', str(plan.directory / 'compose.json'),
         '--env-file', str(plan.directory / 'empty.env'), '--profile', 'langfuse', '--profile', 'localstack')
@@ -65,17 +84,23 @@ def test_command_is_explicit_and_environment_is_isolated(monkeypatch):
     assert 'private-env-value' not in plan.environment.values()
     assert 'COMPOSE_FILE' not in plan.environment and 'AWS_SECRET_ACCESS_KEY' not in plan.environment
     assert 'SA_POSTGRES_PASSWORD' not in repr(plan)
-    assert plan.environment == plan_compose({'TRACE_MODE': 'LangFuse'}, Scope()).environment
+    assert plan.environment == plan_compose(bundled_trace_config(**{'TRACE_MODE': 'LangFuse'}), Scope()).environment
     assert local_development_environment(Scope('fedcba9876543210', 'sa-fedcba9876543210')) != plan.environment
 
 
-@pytest.mark.parametrize('config', [{'TRACE_MODE': 'invalid'}, {'TRACE_MODE': []}, {'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': ''}, {'TRACE_MODE': 'OTEL', 'TRACE_TARGET': 7},
-    {'TRACE_MODE': 'OTEL', 'TRACE_TARGET': 'file:///tmp/a'},
-    {'ALLURE_S3_ENDPOINT': 'http://user:password@localhost:4566'},
-    {'ALLURE_S3_ENDPOINT': 'http://localhost:invalid'}, {'ALLURE_S3_ENDPOINT': 'http://localhost:4566/#x'}])
-def test_invalid_config(config):
-    with pytest.raises(ComposeError):
-        plan_compose(config, Scope())
+@pytest.mark.parametrize('config,error', [
+    ({'TRACE_MODE': 'invalid'}, TracingProviderError),
+    ({'TRACE_MODE': []}, TracingProviderError),
+    ({'TRACE_MODE': 'LangFuse', 'TRACE_EXPORT_ENDPOINT': ''}, MetricConfigurationError),
+    ({'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': 7}, MetricConfigurationError),
+    ({'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': 'file:///tmp/a'}, MetricConfigurationError),
+    ({'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces?x=1'}, MetricConfigurationError),
+    ({'ALLURE_S3_ENDPOINT': 'http://user:password@localhost:4566'}, ComposeError),
+    ({'ALLURE_S3_ENDPOINT': 'http://localhost:invalid'}, ComposeError),
+    ({'ALLURE_S3_ENDPOINT': 'http://localhost:4566/#x'}, ComposeError)])
+def test_invalid_config(config, error):
+    with pytest.raises(error):
+        plan_compose(bundled_trace_config(**config), Scope())
 
 
 def test_remote_s3_does_not_request_stack():
@@ -129,7 +154,7 @@ def test_missing_and_dirty_controlled_files(tmp_path):
 
 
 def test_validation_never_starts_engine_and_discards_secrets():
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, Scope())
+    plan = plan_compose(bundled_trace_config(**{'TRACE_MODE': 'OTEL'}), Scope())
     calls = []
     def run(command, **kwargs):
         calls.append((command, kwargs))
@@ -149,7 +174,7 @@ def test_validation_never_starts_engine_and_discards_secrets():
 def test_validation_unavailable(failure):
     def run(*args, **kwargs): raise failure
     with pytest.raises(ComposeError, match='unavailable'):
-        validate_compose(plan_compose({'TRACE_MODE': 'OTEL'}, Scope()), runner=run)
+        validate_compose(plan_compose(bundled_trace_config(**{'TRACE_MODE': 'OTEL'}), Scope()), runner=run)
 
 
 def test_installed_compose_assets_are_found_without_cwd(tmp_path, monkeypatch):
@@ -167,7 +192,7 @@ def test_installed_compose_assets_are_found_without_cwd(tmp_path, monkeypatch):
     unrelated.mkdir()
     monkeypatch.chdir(unrelated)
     monkeypatch.setattr(compose, '__file__', str(module))
-    plan = compose.plan_compose({'TRACE_MODE': 'OTEL'}, Scope())
+    plan = compose.plan_compose(bundled_trace_config(TRACE_MODE='OTEL'), Scope())
     assert plan.directory == assets
     assert plan.services == ('jaeger',)
     assert str(assets / 'compose.json') in plan.command
@@ -187,7 +212,7 @@ def test_incomplete_source_assets_fall_back_to_package(tmp_path, monkeypatch):
 
 def test_langfuse_v3_storage_and_headless_contract():
     """Assert upstream-consumed names and usable values, not just valid Compose."""
-    plan = plan_compose({'TRACE_MODE': 'LangFuse'}, Scope())
+    plan = plan_compose(bundled_trace_config(**{'TRACE_MODE': 'LangFuse'}), Scope())
     document = json.loads((plan.directory / 'compose.json').read_text())
     required_storage_suffixes = ('BUCKET', 'REGION', 'ACCESS_KEY_ID',
         'SECRET_ACCESS_KEY', 'ENDPOINT', 'FORCE_PATH_STYLE', 'PREFIX')
@@ -226,7 +251,7 @@ def test_ipv6_s3_requires_user_managed_endpoint():
 
 def test_explicit_engine_transport_paths_are_preserved_without_user_environment(monkeypatch):
     monkeypatch.setenv('DOCKER_HOST', 'unix:///not-selected.sock')
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), engine_environment={
+    plan = plan_compose(bundled_trace_config(**{'TRACE_MODE': 'OTEL'}), Scope(), engine_environment={
         'PATH': '/usr/local/bin:/usr/bin', 'DOCKER_HOST': 'unix:///chosen.sock',
         'HOME': '/tmp/public-home', 'DOCKER_CONFIG': '/tmp/public-engine-config',
         'CONTAINER_HOST': 'unix:///chosen-podman.sock', 'XDG_RUNTIME_DIR': '/run/user/1000'})
@@ -242,8 +267,8 @@ def test_engine_environment_rejects_unapproved_keys_or_values(environment):
 
 
 def test_local_headless_keys_match_explicit_reviewed_configuration():
-    plan = plan_compose({'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': 'pk-lf-reviewed-local',
-                         'LANGFUSE_SECRET_KEY': 'sk-lf-reviewed-local'}, Scope())
+    plan = plan_compose(bundled_trace_config(**{'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': 'pk-lf-reviewed-local',
+                         'LANGFUSE_SECRET_KEY': 'sk-lf-reviewed-local'}), Scope())
     assert plan.environment['SA_LANGFUSE_PUBLIC_KEY'] == 'pk-lf-reviewed-local'
     assert plan.environment['SA_LANGFUSE_SECRET_KEY'] == 'sk-lf-reviewed-local'
     assert 'sk-lf-reviewed-local' not in repr(plan)
@@ -252,10 +277,10 @@ def test_local_headless_keys_match_explicit_reviewed_configuration():
 @pytest.mark.parametrize('key', [None, '', ' ', 7, 'bad\x00key', ' key '])
 def test_local_project_key_validation(key):
     if key is None:
-        assert plan_compose({'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': key}, Scope()).environment['SA_LANGFUSE_PUBLIC_KEY'].startswith('pk-lf-local-')
+        assert plan_compose(bundled_trace_config(**{'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': key}), Scope()).environment['SA_LANGFUSE_PUBLIC_KEY'].startswith('pk-lf-local-')
     else:
         with pytest.raises(ComposeError, match='project keys'):
-            plan_compose({'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': key}, Scope())
+            plan_compose(bundled_trace_config(**{'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': key}), Scope())
 
 
 @pytest.mark.parametrize('explicit_keys', [False, True])
@@ -271,13 +296,20 @@ def test_resolved_configuration_headless_readiness_and_tracing_keys_match_across
                    'LANGFUSE_ADMIN_PASSWORD': 'synthetic-dashboard-password'}
     if explicit_keys:
         environment.update(LANGFUSE_PUBLIC_KEY='pk-lf-explicit-local', LANGFUSE_SECRET_KEY='sk-lf-explicit-local')
-    result = resolve_config(load_shared_schema(), environ=environment, dotenv={})
+    from api_agent.providers.loading import bootstrap_schema
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    schema = bootstrap_schema(load_shared_schema(), (), environment, {}, owner_root=root)
+    result = resolve_config(schema, environ=environment, dotenv={}, anchors={'base_root': root, 'owner_root': root})
     assert not result.errors and not result.missing
     expected = (result.values['LANGFUSE_PUBLIC_KEY'] + ':' + result.values['LANGFUSE_SECRET_KEY']).encode()
     scopes = [StackScope.from_roots(tmp_path / 'base', tmp_path / name) for name in ('one', 'two')]
     assert scopes[0].id != scopes[1].id
     for scope in scopes:
-        plan = plan_compose(result.values, scope)
+        from api_agent.telemetry.tracing_selection import effective_selection
+        selection = effective_selection(result, environ={})
+        assert selection is not None
+        plan = plan_compose(dict(selection.values), scope)
         assert (plan.environment['SA_LANGFUSE_PUBLIC_KEY'] + ':' + plan.environment['SA_LANGFUSE_SECRET_KEY']).encode() == expected
         document = json.loads((plan.directory / 'compose.json').read_text())
         headless = prerequisites._interpolate(document['services']['langfuse-web']['environment'], plan.environment)
@@ -295,11 +327,16 @@ def test_resolved_configuration_headless_readiness_and_tracing_keys_match_across
         assert prerequisites._readiness('langfuse', .1, plan.environment)
         assert base64.b64decode(requests[0].headers['Authorization'].split()[1]) == expected
         exports = []
-        def factory(endpoint, headers, resource):
+        def factory(endpoint, headers, resource, **options):
             exports.append((endpoint, headers))
-            return SimpleNamespace(), SimpleNamespace()
+            provider = SimpleNamespace(force_flush=lambda **kwargs: True, shutdown=lambda: None)
+            tracer = SimpleNamespace(start_span=lambda *args, **kwargs: None)
+            return provider, tracer
         runtime = TraceRuntime(result, factory=factory)
-        asyncio.run(runtime.astart())
+        async def export():
+            await runtime.astart()
+            await runtime.aclose()
+        asyncio.run(export())
         assert exports[0][0] == 'http://localhost:3000/api/public/otel/v1/traces'
         assert base64.b64decode(exports[0][1]['Authorization'].split()[1]) == expected
 
@@ -400,9 +437,11 @@ def test_resolved_localstack_toggle_and_selected_bucket_feed_provisioning_plan(e
     environment = {'TUI_MODE': 'integration', 'ALLURE_S3_USE_LOCALSTACK': 'True'}
     if explicit:
         environment.update(ALLURE_S3_BUCKET='explicit-results', ALLURE_S3_REGION='eu-west-1')
-    result = resolve_config(load_shared_schema(), environ=environment, dotenv={}, anchors={'owner_root': tmp_path})
+    from api_agent.providers.loading import bootstrap_schema
+    schema = bootstrap_schema(load_shared_schema(), (), environment, {}, owner_root=tmp_path)
+    result = resolve_config(schema, environ=environment, dotenv={}, anchors={'owner_root': tmp_path})
     assert not result.errors and not result.missing
-    plan = plan_compose(result.values, Scope())
+    plan = plan_compose(result, Scope())
     assert plan.profiles == ('localstack',)
     assert plan.environment['SA_ALLURE_S3_BUCKET'] == ('explicit-results' if explicit else 'allure-results')
     assert plan.environment['SA_ALLURE_S3_REGION'] == ('eu-west-1' if explicit else 'us-east-1')
@@ -413,7 +452,7 @@ def test_validation_consumes_snapshot_after_source_changes(tmp_path):
     original = plan_compose({}, Scope())
     for name, content in original.assets.items():
         (tmp_path / name).write_bytes(content)
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=tmp_path)
+    plan = plan_compose(bundled_trace_config(**{'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=tmp_path)
     for name in plan.assets:
         (tmp_path / name).write_bytes(b'changed after review')
     consumed = []
@@ -455,7 +494,7 @@ def test_planning_rejects_unsnapshotted_external_asset_features(tmp_path, level,
         (tmp_path / name).write_bytes(content)
     (tmp_path / 'compose.json').write_text(json.dumps(document))
     with pytest.raises(ComposeError, match='unsupported|Unsupported|only labels'):
-        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=tmp_path)
+        plan_compose(bundled_trace_config(**{'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=tmp_path)
 
 
 def test_nonmapping_named_volume_is_rejected():
@@ -475,8 +514,8 @@ def test_named_volume_labels_are_fixed_controlled_ownership(labels):
 
 
 def test_dashboard_admin_provisioning_uses_selected_account():
-    plan=plan_compose({'TRACE_MODE':'LangFuse','LANGFUSE_ADMIN_EMAIL':'operator@example.invalid',
-        'LANGFUSE_ADMIN_PASSWORD':'synthetic-dashboard-password'},Scope())
+    plan=plan_compose(bundled_trace_config(**{'TRACE_MODE':'LangFuse','LANGFUSE_ADMIN_EMAIL':'operator@example.invalid',
+        'LANGFUSE_ADMIN_PASSWORD':'synthetic-dashboard-password'}),Scope())
     assert plan.environment['SA_USER_EMAIL']=='operator@example.invalid'
     assert plan.environment['SA_USER_PASSWORD']=='synthetic-dashboard-password'
     import json
@@ -487,4 +526,35 @@ def test_dashboard_admin_provisioning_uses_selected_account():
 @pytest.mark.parametrize('key,value',[('LANGFUSE_ADMIN_EMAIL',''),('LANGFUSE_ADMIN_PASSWORD',None),('LANGFUSE_ADMIN_PASSWORD','\x00')])
 def test_dashboard_admin_provisioning_rejects_invalid_configured_account(key,value):
     if value is None: value=17
-    with pytest.raises(ComposeError): plan_compose({'TRACE_MODE':'LangFuse',key:value},Scope())
+    with pytest.raises(ComposeError): plan_compose(bundled_trace_config(**{'TRACE_MODE':'LangFuse',key:value}),Scope())
+
+
+@pytest.mark.parametrize('endpoint', [17, 'ftp://localhost:4566'])
+def test_reporting_endpoint_rejects_unusable_url_before_compose_execution(endpoint):
+    with pytest.raises(ComposeError, match='endpoint'):
+        plan_compose({'ALLURE_S3_USE_LOCALSTACK': False, 'ALLURE_S3_ENDPOINT': endpoint}, Scope())
+
+
+@pytest.mark.parametrize('port', [0, 65536, True, '16686'])
+def test_controlled_viewer_environment_requires_a_valid_integer_port(port):
+    with pytest.raises(ComposeError, match='JAEGER_VIEWER_PORT'):
+        plan_compose({'JAEGER_VIEWER_PORT': port}, Scope())
+
+
+@pytest.mark.parametrize('profiles', [['otel'], ('otel', 'langfuse'), (17,), ('Invalid',)])
+def test_admitted_tracing_profiles_require_one_well_formed_identifier(profiles):
+    with pytest.raises(ComposeError, match='Invalid admitted tracing Compose profile'):
+        selected_profiles({}, tracing_profiles=profiles)
+
+
+def test_provider_cannot_name_an_unknown_controlled_resource_profile(tmp_path):
+    source = Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters'
+    factory = tmp_path / 'factory.py'
+    factory.write_text('raise AssertionError("Planning must not import the factory")\n')
+    descriptor = (source / 'tracing-provider.toml').read_text().replace(
+        'managed_compose_profile = "otel"', 'managed_compose_profile = "unregistered"')
+    (tmp_path / 'tracing-provider.toml').write_text(descriptor)
+    config = bundled_trace_config(TRACE_MODE='OTEL', TRACE_PROVIDER=str(factory) + ':factory')
+
+    with pytest.raises(ComposeError, match='controlled resource contract'):
+        selected_profiles(config)

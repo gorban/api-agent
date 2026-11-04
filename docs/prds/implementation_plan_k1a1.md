@@ -81,3 +81,47 @@ Public bases: [GenAI conventions](https://github.com/open-telemetry/semantic-con
 [error recording](https://opentelemetry.io/docs/specs/semconv/general/recording-errors/)
 and [AI monitoring](https://docs.newrelic.com/docs/ai-monitoring/opentelemetry-ai-monitoring/).
 Pin supported revisions when implementing rather than following moving heads.
+
+[Integration and retained manual extension](implementation_plan_k1a1b.md) owns the
+normal bridge, authenticated propagation and separate manual lifetime requirements.
+
+[Core checkpoint and pinned field matrix](implementation_plan_k1a1a.md) records
+its implemented scope and remaining qualification gates.
+
+## Version 1 implementation contract
+
+`telemetry.outcomes.ExecutionOutcome` carries a schema version, final state,
+bounded cause category and optional canonical cause identity. Final states are
+`success`, `failure`, `cancelled`, `partial` and `unknown`; transition observations
+`retrying`, `recovered` and `fallback` never replace an already reported final
+failure. Producers explicitly report returned failures at their typed boundaries;
+HTTP status, assistant prose and arbitrary output dictionaries cannot establish
+application success. A returned failure is retained at its originating scope and
+the open operation owner before either span ends. Post-graph validation remains
+inside the operation. Ordinary cancellation and client disconnect leave SDK
+status unset; timeout and genuine terminal failure set ERROR with a bounded
+`error.type`. Successful recovery leaves the request status unset, retaining
+failed leaf attempts independently. No exception message or traceback is structural.
+
+Each operation owns an explicit parent, inherited by its tasks through a scoped
+context binding restricted to the same runtime. Graph observation adapters attach
+to that owner and preserve the journal's wall-clock boundaries. Named tools use
+the existing tool lifecycle, not deterministic-call inference. Admitted provider
+capture is mapped to native generation/tool input and output attributes before
+SDK queuing; it never enters an ungated shared payload cache. Content controls,
+credential registration and opaque-state exclusions remain mandatory.
+
+This contract does not by itself close the provider declaration, metrics,
+remote continuation or dashboard acceptance requirements. Those remain explicit
+unchecked gates until implemented and verified.
+
+## Terminal stream delivery
+
+- [x] Once Studio has emitted its validated final result and its generator resumes after the terminal completion frame is sent, retain the completed application outcome when the client normally closes that stream. Use an explicit request-owned completion signal, never infer success from HTTP status or payload text. Disconnects before completion remain cancelled; cancellation or failure while sending the terminal frame stays cancelled or failed. Genuine post-completion errors remain failures, and completion cannot erase a prior failure or partial result. Record send cancellation before a framework can consume it. Verify the ordering through the actual Django streaming response and retained collector data.
+
+## Human acceptance
+
+- [x] Run local tool tracing, including executed tool calls and their input/output: human-approved November 3, 2026.
+
+Manually constructed integration-fixture tracing remains pending under
+[integration operation ownership](implementation_plan_k1a1b.md).

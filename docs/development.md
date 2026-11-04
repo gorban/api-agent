@@ -152,6 +152,12 @@ viewer uses `ALLURE_VIEWER_PORT` (default 5252); an occupied port fails clearly.
 Leaving the viewer closes its browser, listener and temporary reports; stored
 results remain intact.
 
+For terminal use, run `./launch.sh --tui-mode allure --no-std-in`. The launcher
+prints the history URL and browser CDP endpoint, keeps the managed viewer and
+reporting resources alive, and closes owned resources on Ctrl+C. Repeated
+Ctrl+C waits for disposal acknowledgement. Startup and cleanup errors appear
+on stderr with credentials scrubbed.
+
 In live or completed test results, highlight one completed test and press
 **a View in Allure** for that exact attempt. Pending/running tests, groups, units
 and multi-row selections have no shortcut. A live preview labels pending

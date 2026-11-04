@@ -159,6 +159,7 @@ class LocalLLM(_Owner):
         self.shared = SharedSetupOwner(self._operation_id, self._operation_id, owner_factory,
             credentials=credentials, describe=getattr(implementation, 'adescribe', None),
             complete=complete, validate_request=lambda request: validate_provider_request(implementation, request),
+            telemetry_provider_name=getattr(implementation, 'telemetry_provider_name', None),
             captures_effective_payload=getattr(implementation, 'captures_effective_payload', False) is True,
             timeout=self._timeout, catalog_ttl=self.config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600),
             max_attempts=self.config.get('LLM_MAX_ATTEMPTS', 5),

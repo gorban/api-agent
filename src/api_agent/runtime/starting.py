@@ -38,5 +38,7 @@ def start_configuration_errors(result):
         message = 'START=False conflicts with automatic execution using NO_STD_IN=True; omit START or set START=True'
         if mode in {'unit', 'integration', 'e2e'}:
             message += '; collection-only is still allowed via --collect-only'
+        if mode in {'integration', 'e2e'}:
+            message = 'Obtain explicit human approval before execution. Only after approval: ' + message
         return (message + '.',)
     return ()

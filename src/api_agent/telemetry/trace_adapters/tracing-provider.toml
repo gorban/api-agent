@@ -1,0 +1,32 @@
+version = 2
+id = "bundled-tracing"
+selector = "TRACE_MODE"
+disabled_value = ""
+
+[[profiles]]
+value = "OTEL"
+signals = ["traces", "metrics"]
+input_attribute = "langfuse.observation.input"
+output_attribute = "langfuse.observation.output"
+metrics_from_base = false
+managed_compose_profile = "otel"
+managed_endpoints = {trace_endpoint = "http://localhost:4318/v1/traces", dashboard_url = "http://localhost:16686", dashboard_port_field = "JAEGER_VIEWER_PORT", trace_endpoint_aliases = ["http://127.0.0.1:4318/v1/traces"]}
+[profiles.dashboard]
+url_field = "TRACE_VIEWER_URL"
+
+[[profiles]]
+value = "LangFuse"
+signals = ["traces"]
+input_attribute = "langfuse.observation.input"
+output_attribute = "langfuse.observation.output"
+secret_fields = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"]
+otlp_environment = false
+managed_compose_profile = "langfuse"
+managed_endpoints = {trace_endpoint = "http://localhost:3000/api/public/otel/v1/traces", dashboard_url = "http://localhost:3000", trace_endpoint_aliases = ["http://127.0.0.1:3000/api/public/otel/v1/traces"]}
+[profiles.dashboard]
+url_field = "TRACE_VIEWER_URL"
+readiness_path = "/auth/sign-in"
+managed_config_fields = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"]
+username_field = "LANGFUSE_ADMIN_EMAIL"
+password_field = "LANGFUSE_ADMIN_PASSWORD"
+login = "provider"

@@ -76,12 +76,16 @@ class UsefulDemoApplication:
                 return result
 
             services['llm'] = selected
+            from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeState
+            services['execution_outcome'] = lambda: result_store.get('tool_outcome', ExecutionOutcome(OutcomeState.SUCCESS))
             workflow = Workflow(self.definition, self.registry, config=self.config, services=services)
             values = await workflow.arun({'messages': messages})
             rendered = result_store.get('rendered_result', services.get('rendered_result'))
             if (rendered is None or values.get('render', {}).get('selected_model') != request.selected_llm
                     or values['render'].get('response_text') != ''.join(part.text for part in rendered.payload.content)):
                 raise WorkflowError('Useful demo did not render through its selected model')
+            from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState
+            report_outcome(result_store.get('tool_outcome', ExecutionOutcome(OutcomeState.SUCCESS)), runtime=getattr(factory, 'trace', None))
             return rendered
         finally:
             if observations is not None:

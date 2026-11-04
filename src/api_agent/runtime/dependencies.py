@@ -37,22 +37,39 @@ def _parsed_requirement(raw):
 
 
 def requirements(context, *, collect=False, groups=(), selected_provider_manifests=()):
+    from .pack_admission import declaration_bodies, verify_composition
+    verify_composition(context)
+    bodies = declaration_bodies(context)
+    immutable = bool(getattr(context, 'pack_contributions', ()))
     dependencies = []
     library_root = getattr(context, 'workflow_base_root', None)
     projects = {}
     roots = (context.base_root, context.pack_root, library_root,
              *(layer.pack_root for layer in getattr(context, 'pack_layers', ())))
-    for root in dict.fromkeys(Path(root).resolve() for root in roots if root is not None):
+    for root in dict.fromkeys(Path(root) if immutable else Path(root).resolve()
+                              for root in roots if root is not None):
         manifest = root / 'pyproject.toml'
-        if manifest.is_file():
-            with manifest.open('rb') as handle:
-                projects[root] = tomllib.load(handle).get('project', {})
-    library_project = (projects.get(Path(library_root).resolve(), {})
+        admitted = next((item for item in (*getattr(context, 'pack_contributions', ()),
+                                          *getattr(context, 'project_contributions', ()))
+                         if item.pack_root == root), None)
+        if immutable and admitted is None:
+            from .resource_pack import ResourcePackError
+            raise ResourcePackError('Dependency owner is absent from admitted composition')
+        if admitted is not None and 'pyproject.toml' in admitted.absent_declarations:
+            continue
+        if immutable or manifest.is_file():
+            if immutable:
+                projects[root] = tomllib.loads(bodies[manifest].decode()).get('project', {})
+            else:
+                with manifest.open('rb') as handle:
+                    projects[root] = tomllib.load(handle).get('project', {})
+    library_project = (projects.get(Path(library_root) if immutable else Path(library_root).resolve(), {})
                        if library_root is not None and getattr(context, 'workflow_library_files', None) is None
                        else {})
     normalize = lambda value: re.sub(r'[-_.]+', '-', value).lower()
     local_projects = {normalize(library_project['name']): library_project} if library_project.get('name') else {}
-    local_roots = {name: Path(library_root).resolve() for name in local_projects}
+    local_roots = {name: Path(library_root) if immutable else Path(library_root).resolve()
+                   for name in local_projects}
     for layer in getattr(context, 'pack_layers', ()):
         project = projects.get(layer.pack_root, {})
         if project.get('name'):
@@ -191,6 +208,8 @@ def active_environment(environment):
 
 def ensure_environment(context, argv, *, collect=False, groups=(), selected_provider_manifests=(), replace_process=False):
     """Prepare the venv; CLI owners may replace their process on handoff."""
+    from .pack_admission import composition_identity, verify_composition
+    verify_composition(context)
     root = context.pack_root if context.external_pack else context.base_root
     environment = root / '.venv'
     python = environment / 'bin/python'
@@ -214,7 +233,9 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
         return _relaunch(context, python, argv, replace_process=replace_process)
     wanted = requirements(context, collect=collect, groups=groups,
                           selected_provider_manifests=selected_provider_manifests)
-    fingerprint = hashlib.sha256(json.dumps(wanted).encode()).hexdigest()
+    fingerprint_input = ({'requirements': wanted, 'composition': composition_identity(context)}
+                         if getattr(context, 'pack_contributions', ()) else wanted)
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_input).encode()).hexdigest()
     marker = environment / '.api-agent-dependencies'
     missing = _installed_requirements(python, wanted) if python.is_file() and wanted else wanted
     ready = python.is_file() and not missing
@@ -238,6 +259,9 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
 
 def _relaunch(context, python, argv, *, replace_process=False):
     """Preserve the library subprocess contract unless the CLI owns this process."""
+    from .pack_admission import composition_identity, verify_composition
+    verify_composition(context)
+    identity = composition_identity(context) if getattr(context, 'pack_contributions', ()) else None
     pack_arguments = [] if getattr(context, 'show_pack_bootstrap', False) else [
         value for layer in (getattr(context, 'pack_layers', ()) or (context,))
         for value in ('--resource-pack-dir', str(layer.pack_root))]
@@ -248,7 +272,7 @@ def _relaunch(context, python, argv, *, replace_process=False):
         "base = Path(sys.argv[1]).resolve().parent; "
         "sys.path.insert(0, str(base / 'src')); "
         "from api_agent.runtime.bootstrap import main; "
-        f"raise SystemExit(main(sys.argv[2:], base_root=base, _worktrees_verified=True, _replace_process={replace_process!r}))"
+        f"raise SystemExit(main(sys.argv[2:], base_root=base, _worktrees_verified=True, _replace_process={replace_process!r}, _composition_identity={identity!r}))"
     )
     command = [str(python), '-c', handoff, str(context.base_root / 'launch.sh'),
                *pack_arguments,

@@ -32,6 +32,9 @@ def export_content(boundary, request, result=None):
 
 
 def publish_content(rows, call_id):
+    from api_agent.workflows.run_context import test_evidence_allowed
+    if not test_evidence_allowed():
+        return None
     path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
     node = os.environ.get('PYTEST_CURRENT_TEST')
     if not path or not node or call_id is None:

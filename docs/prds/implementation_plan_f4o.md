@@ -12,6 +12,10 @@ endpoint, API, model, account and region settings; do not rewrite dotenv files.
 The bundled full-ID default-model regex selects the OSS 20B Mantle ID or its
 Runtime `-1:0` ID when present in the selected catalog. It must not admit other
 OSS sizes, profile aliases or extra suffixes. Explicit model overrides remain authoritative.
+Expose the shipped model regexes and optional US/global selectors in configuration
+help. Preserve explicit routing scope and warn that geographic profiles can cost
+more than corresponding supported global profiles; link current AWS model/source-Region
+pricing in the [Bedrock guide](../bedrock.md). Never infer global routing from a bare ID.
 Historical Mantle test profiles apply only when Mantle is selected. Runtime tests
 retain the operator's effective application and test-specific settings.
 

@@ -549,6 +549,8 @@ def test_resistant_finalizer_and_resource_cleanup_are_retryable():
         assert not auth.closed and not driver.stop.called
         release.set()
         await llm._finalizing
+        # The pending proof uses 20 ms; ordinary disposal must tolerate xdist scheduling.
+        llm._timeout = 1
         await llm.aclose()
         assert auth.closed
         inspection = InspectionOwner(timeout=.02)
@@ -567,6 +569,7 @@ def test_resistant_finalizer_and_resource_cleanup_are_retryable():
         assert inspection._resources and inspection._resource_task is not None
         release.set()
         await inspection._resource_task
+        inspection._timeout = 1
         await inspection.aclose()
         assert not inspection._resources
     run(scenario())

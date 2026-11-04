@@ -717,7 +717,7 @@ def test_shared_defaults_review_before_mode_and_saved_next_launch(tmp_path):
             await pilot.pause()
             assert relaunched.screen.kind == 'defaults'
             table = relaunched.screen.query_one(DataTable)
-            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['ALLURE_S3_USE_LOCALSTACK', 'ALLURE_SECONDARY_DIR', 'TOKEN_USAGE_CSV', 'TRACE_MODE']
+            assert [table.get_row_at(i)[0] for i in range(table.row_count)] == ['ALLURE_S3_USE_LOCALSTACK', 'ALLURE_SECONDARY_DIR', 'TOKEN_USAGE_CSV']
     asyncio.run(scenario())
 
 
@@ -771,12 +771,13 @@ def test_conditional_only_default_with_no_matching_branch_keeps_required_row(tmp
 
 def test_optional_trace_rows_and_conditional_target_review(tmp_path):
     from api_agent.config.declarations import load_shared_schema
-    declarations = load_shared_schema().fields
+    from api_agent.providers.loading import bootstrap_schema
+    declarations = bootstrap_schema(load_shared_schema(), (), {}, {}).fields
     fields = {name: {'type': declarations[name].type,
                      'enum': list(declarations[name].enum),
                      'conditional_defaults': list(declarations[name].conditional_defaults),
                      'review_optional': True}
-              for name in ('TRACE_MODE', 'TRACE_TARGET')}
+              for name in ('TRACE_MODE', 'TRACE_EXPORT_ENDPOINT')}
 
     async def scenario():
         app = fixture(tmp_path, fields=fields)
@@ -784,8 +785,9 @@ def test_optional_trace_rows_and_conditional_target_review(tmp_path):
             await pilot.pause()
             assert app.screen.kind == 'defaults'
             table = app.screen.query_one(DataTable)
-            assert table.get_row_at(0) == ['TRACE_MODE', '', 'Not provided']
-            assert list(map(str, table.get_row_at(1))) == ['TRACE_TARGET', '', 'Not provided']
+            assert table.get_row_at(1) == ['TRACE_MODE', '', 'Not provided']
+            table.move_cursor(row=1)
+            assert list(map(str, table.get_row_at(0))) == ['TRACE_EXPORT_ENDPOINT', '', 'Not provided']
             assert not app.focused_default()
             await pilot.press('a')
             assert not (tmp_path / '.env').exists()
@@ -796,26 +798,26 @@ def test_optional_trace_rows_and_conditional_target_review(tmp_path):
             await pilot.click('#submit')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
-            assert list(map(str, table.get_row_at(1))) == ['TRACE_TARGET', 'http://localhost:3000', 'shared_default']
+            assert list(map(str, table.get_row_at(0))) == ['TRACE_EXPORT_ENDPOINT', 'http://localhost:3000/api/public/otel/v1/traces', 'shared_default']
             app.session.set_value('TRACE_MODE', 'OTEL')
             app.show_configuration()
             await pilot.pause()
             table = app.screen.query_one(DataTable)
-            assert list(map(str, table.get_row_at(1))) == ['TRACE_TARGET', 'http://localhost:4318/v1/traces', 'shared_default']
-            table.move_cursor(row=1)
+            assert list(map(str, table.get_row_at(0))) == ['TRACE_EXPORT_ENDPOINT', 'http://localhost:4318/v1/traces', 'shared_default']
+            table.move_cursor(row=0)
             assert app.focused_default()
             await pilot.press('a')
             await pilot.pause()
             app.session.set_value('TRACE_MODE', 'LangFuse')
             app.show_configuration()
             await pilot.pause()
-            assert str(app.screen.query_one(DataTable).get_row_at(1)[1]) == 'http://localhost:4318/v1/traces'
+            assert str(app.screen.query_one(DataTable).get_row_at(0)[1]) == 'http://localhost:4318/v1/traces'
     asyncio.run(scenario())
 
 
 def test_optional_trace_review_does_not_block_mode_or_repeat_explicit_settings(tmp_path):
     fields = {'TRACE_MODE': {'type': 'str', 'review_optional': True},
-              'TRACE_TARGET': {'type': 'str', 'review_optional': True}}
+              'TRACE_EXPORT_ENDPOINT': {'type': 'str', 'review_optional': True}}
     async def scenario():
         app = fixture(tmp_path, fields=fields)
         async with app.run_test(size=(100, 40)) as pilot:
@@ -828,7 +830,7 @@ def test_optional_trace_review_does_not_block_mode_or_repeat_explicit_settings(t
             assert app.screen.kind == 'unavailable'
         configured = fixture(tmp_path, fields=fields)
         configured.session.set_value('TRACE_MODE', '', persist=True)
-        configured.session.set_value('TRACE_TARGET', '', persist=True)
+        configured.session.set_value('TRACE_EXPORT_ENDPOINT', '', persist=True)
         async with configured.run_test(size=(100, 40)) as pilot:
             await pilot.pause()
             assert configured.screen.kind == 'menu'
@@ -839,10 +841,12 @@ def test_enum_edit_dropdown_saves_blank_and_trace_mode(tmp_path):
     async def scenario():
         app = fixture(tmp_path, fields={
             'TRACE_MODE': {'type': 'str', 'enum': ['', 'LangFuse', 'OTEL'], 'review_optional': True},
-            'TRACE_TARGET': {'type': 'str', 'review_optional': True, 'conditional_defaults': [
-                {'when': {'TRACE_MODE': 'LangFuse'}, 'value': 'http://localhost:3000'}]}})
+            'TRACE_EXPORT_ENDPOINT': {'type': 'str', 'review_optional': True, 'conditional_defaults': [
+                {'when': {'TRACE_MODE': 'LangFuse'}, 'value': 'http://localhost:3000/api/public/otel/v1/traces'}]}})
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            table.move_cursor(row=[row.key.value for row in table.ordered_rows].index('TRACE_MODE'))
             await pilot.press('e')
             await pilot.pause()
             picker = app.screen.query_one('#config-value', Select)
@@ -855,7 +859,9 @@ def test_enum_edit_dropdown_saves_blank_and_trace_mode(tmp_path):
             await pilot.click('#submit')
             await pilot.pause()
             assert app.session.result(_review=True).values['TRACE_MODE'] == 'LangFuse'
-            assert app.session.result(_review=True).values['TRACE_TARGET'] == 'http://localhost:3000'
+            assert app.session.result(_review=True).values['TRACE_EXPORT_ENDPOINT'] == 'http://localhost:3000/api/public/otel/v1/traces'
+            table = app.screen.query_one(DataTable)
+            table.move_cursor(row=[row.key.value for row in table.ordered_rows].index('TRACE_MODE'))
             await pilot.press('e')
             await pilot.pause()
             picker = app.screen.query_one('#config-value', Select)
@@ -864,6 +870,8 @@ def test_enum_edit_dropdown_saves_blank_and_trace_mode(tmp_path):
             await pilot.click('#submit')
             await pilot.pause()
             assert app.session.result(_review=True).values['TRACE_MODE'] == 'OTEL'
+            table = app.screen.query_one(DataTable)
+            table.move_cursor(row=[row.key.value for row in table.ordered_rows].index('TRACE_MODE'))
             await pilot.press('e')
             await pilot.pause()
             app.screen.query_one('#config-value', Select).value = ''

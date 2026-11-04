@@ -404,6 +404,9 @@ def test_terminal_signal_owner_cancels_once_reports_repeat_and_restores(monkeypa
     from api_agent.runtime import local_terminal as module
     installed, diagnostics = [], []
     task = NS(cancel=Mock())
+    scheduled = []
+    loop = NS(call_soon_threadsafe=Mock(side_effect=scheduled.append))
+    monkeypatch.setattr(module.asyncio, 'get_running_loop', lambda: loop)
     original = object()
     monkeypatch.setattr(module.asyncio, 'current_task', lambda: task)
     monkeypatch.setattr(module.signal, 'getsignal', lambda signum: original)
@@ -414,6 +417,9 @@ def test_terminal_signal_owner_cancels_once_reports_repeat_and_restores(monkeypa
         handler(None, None)
         handler(None, None)
         assert state['requested']
+        loop.call_soon_threadsafe.assert_called_once_with(task.cancel)
+        task.cancel.assert_not_called()
+        scheduled[0]()
         task.cancel.assert_called_once_with()
     assert diagnostics == ['Cleanup pending; waiting for owned components to stop.']
     assert installed[-1] is original

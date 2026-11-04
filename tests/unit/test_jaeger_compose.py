@@ -9,10 +9,12 @@ import pytest
 from api_agent.runtime.compose import (ComposeError, plan_compose, snapshot_compose,
                                        validate_document, rebind_reporting_plan)
 from test_compose import Scope
+from test_prerequisites import trace_fixture_config
+from api_agent.telemetry.tracing_providers import TracingProviderError
 
 
 def test_jaeger_uses_persistent_badger_and_reviewed_port(tmp_path):
-    plan = plan_compose({'TRACE_MODE': 'OTEL', 'JAEGER_VIEWER_PORT': 17686}, Scope())
+    plan = plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL', 'JAEGER_VIEWER_PORT': 17686}), Scope())
     document = json.loads(plan.assets['compose.json'])
     jaeger = document['services']['jaeger']
     storage = json.loads(plan.assets['jaeger-config.json'])
@@ -34,8 +36,8 @@ def test_jaeger_uses_persistent_badger_and_reviewed_port(tmp_path):
 
 @pytest.mark.parametrize('port', [0, 65536, True, '16686', -1])
 def test_jaeger_viewer_port_rejects_invalid_values(port):
-    with pytest.raises(ComposeError, match='JAEGER_VIEWER_PORT'):
-        plan_compose({'TRACE_MODE': 'OTEL', 'JAEGER_VIEWER_PORT': port}, Scope())
+    with pytest.raises((ComposeError, TracingProviderError), match='JAEGER_VIEWER_PORT|valid configured port'):
+        plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL', 'JAEGER_VIEWER_PORT': port}), Scope())
 
 
 @pytest.mark.parametrize('config', [
@@ -45,17 +47,17 @@ def test_jaeger_viewer_port_rejects_invalid_values(port):
 ])
 def test_selected_host_port_collisions_are_rejected_before_compose(config):
     with pytest.raises(ComposeError, match='host ports must not conflict'):
-        plan_compose(config, Scope())
+        plan_compose(trace_fixture_config(config), Scope())
 
 
 def test_unselected_localstack_port_does_not_conflict_with_jaeger():
-    plan = plan_compose({'TRACE_MODE': 'OTEL', 'ALLURE_LOCALSTACK_PORT': 4318}, Scope())
+    plan = plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL', 'ALLURE_LOCALSTACK_PORT': 4318}), Scope())
     assert plan.services == ('jaeger',)
 
 
 @pytest.mark.parametrize('mutation', ['volume', 'config_mount', 'config_command'])
 def test_jaeger_rejects_missing_persistence_contract(mutation):
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, Scope())
+    plan = plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope())
     document = json.loads(plan.assets['compose.json'])
     if mutation == 'volume':
         document['services']['jaeger']['volumes'].pop(0)
@@ -71,7 +73,7 @@ def test_jaeger_rejects_missing_persistence_contract(mutation):
 @pytest.mark.parametrize('mutation', ['viewer_destination', 'ingest_destination',
                                      'extra_mapping', 'reordered_mappings'])
 def test_jaeger_rejects_port_mapping_drift_before_start(tmp_path, mutation):
-    source = plan_compose({}, Scope()).directory
+    source = plan_compose(trace_fixture_config({}), Scope()).directory
     directory = tmp_path / 'compose'
     shutil.copytree(source, directory)
     path = directory / 'compose.json'
@@ -87,14 +89,14 @@ def test_jaeger_rejects_port_mapping_drift_before_start(tmp_path, mutation):
         ports.reverse()
     path.write_text(json.dumps(document))
 
-    with pytest.raises(ComposeError, match='controlled persistent storage, configuration and ports'):
-        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+    with pytest.raises(ComposeError, match='controlled persistent storage, configuration and ports|Controlled tracing published ports differ'):
+        plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=directory)
 
 
 @pytest.mark.parametrize('mutation', ['ephemeral', 'path', 'query', 'exporter',
                                      'pipeline_debug_only', 'pipeline_exporters_wrong_type'])
 def test_jaeger_rejects_nonpersistent_or_disconnected_storage(tmp_path, mutation):
-    source = plan_compose({}, Scope()).directory
+    source = plan_compose(trace_fixture_config({}), Scope()).directory
     directory = tmp_path / 'compose'
     shutil.copytree(source, directory)
     config = directory / 'jaeger-config.json'
@@ -115,7 +117,7 @@ def test_jaeger_rejects_nonpersistent_or_disconnected_storage(tmp_path, mutation
     config.write_text(json.dumps(document))
 
     with pytest.raises(ComposeError, match='storage must be persistent'):
-        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+        plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=directory)
 
 
 @pytest.mark.parametrize(('section', 'replacement'), [
@@ -129,7 +131,7 @@ def test_jaeger_rejects_nonpersistent_or_disconnected_storage(tmp_path, mutation
     pytest.param('connectors', {'unreviewed': {}}, id='other_section'),
 ])
 def test_jaeger_rejects_storage_exporter_option_drift(tmp_path, section, replacement):
-    source = plan_compose({}, Scope()).directory
+    source = plan_compose(trace_fixture_config({}), Scope()).directory
     directory = tmp_path / 'compose'
     shutil.copytree(source, directory)
     config = directory / 'jaeger-config.json'
@@ -138,12 +140,12 @@ def test_jaeger_rejects_storage_exporter_option_drift(tmp_path, section, replace
     config.write_text(json.dumps(document))
 
     with pytest.raises(ComposeError, match='storage must be persistent'):
-        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+        plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=directory)
 
 
 @pytest.mark.parametrize('damage', ['missing', 'symlink', 'malformed', 'wrong_type'])
 def test_controlled_jaeger_config_must_be_real_valid_file(tmp_path, damage):
-    source = plan_compose({}, Scope()).directory
+    source = plan_compose(trace_fixture_config({}), Scope()).directory
     directory = tmp_path / 'compose'
     shutil.copytree(source, directory)
     config = directory / 'jaeger-config.json'
@@ -160,13 +162,13 @@ def test_controlled_jaeger_config_must_be_real_valid_file(tmp_path, damage):
         config.write_text('[]')
 
     with pytest.raises(ComposeError, match='Jaeger configuration'):
-        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+        plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=directory)
 
 
 @pytest.mark.parametrize('mutation', ['unpublished_receiver', 'missing_storage_extension',
                                      'listener_drift', 'processor_drift'])
 def test_published_jaeger_receiver_must_reach_persistent_storage(tmp_path, mutation):
-    source = plan_compose({}, Scope()).directory
+    source = plan_compose(trace_fixture_config({}), Scope()).directory
     directory = tmp_path / 'compose'
     shutil.copytree(source, directory)
     config = directory / 'jaeger-config.json'
@@ -187,7 +189,7 @@ def test_published_jaeger_receiver_must_reach_persistent_storage(tmp_path, mutat
     config.write_text(json.dumps(document))
 
     with pytest.raises(ComposeError, match='storage must be persistent'):
-        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+        plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=directory)
 
 
 @pytest.mark.parametrize(('key', 'value'), [
@@ -199,7 +201,7 @@ def test_published_jaeger_receiver_must_reach_persistent_storage(tmp_path, mutat
     ('profiles', ['langfuse']),
 ])
 def test_jaeger_requires_the_reviewed_service_identity(key, value):
-    document = json.loads(plan_compose({}, Scope()).assets['compose.json'])
+    document = json.loads(plan_compose(trace_fixture_config({}), Scope()).assets['compose.json'])
     document['services']['jaeger'][key] = value
 
     with pytest.raises(ComposeError, match='controlled persistent storage'):
@@ -216,7 +218,7 @@ def test_jaeger_requires_the_reviewed_service_identity(key, value):
         'ephemeral': False, 'ttl': {'spans': '1h'}}}}}),
 ])
 def test_jaeger_requires_reviewed_query_binding_and_retention(tmp_path, section, value):
-    source = plan_compose({}, Scope()).directory
+    source = plan_compose(trace_fixture_config({}), Scope()).directory
     directory = tmp_path / 'compose'
     shutil.copytree(source, directory)
     path = directory / 'jaeger-config.json'
@@ -225,11 +227,11 @@ def test_jaeger_requires_reviewed_query_binding_and_retention(tmp_path, section,
     path.write_text(json.dumps(document))
 
     with pytest.raises(ComposeError, match='storage must be persistent'):
-        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+        plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=directory)
 
 
 def test_rebinding_ownership_preserves_reviewed_jaeger_assets():
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, Scope())
+    plan = plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope())
     other = Scope(id='fedcba9876543210', project='sa-fedcba9876543210')
 
     rebound = rebind_reporting_plan(plan, other)
@@ -242,7 +244,7 @@ def test_rebinding_ownership_preserves_reviewed_jaeger_assets():
 
 @pytest.mark.parametrize('ephemeral', [0, 0.0])
 def test_jaeger_ephemeral_requires_json_false(tmp_path, ephemeral):
-    source = plan_compose({}, Scope()).directory
+    source = plan_compose(trace_fixture_config({}), Scope()).directory
     directory = tmp_path / 'compose'
     shutil.copytree(source, directory)
     path = directory / 'jaeger-config.json'
@@ -251,4 +253,4 @@ def test_jaeger_ephemeral_requires_json_false(tmp_path, ephemeral):
     path.write_text(json.dumps(document))
 
     with pytest.raises(ComposeError, match='storage must be persistent'):
-        plan_compose({'TRACE_MODE': 'OTEL'}, Scope(), compose_directory=directory)
+        plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), Scope(), compose_directory=directory)

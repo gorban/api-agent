@@ -83,6 +83,29 @@ def test_verified_query_executes_after_review_and_renderer_gets_partial_result()
     assert 'optional field failed' in ''.join(part.text for part in llm.requests[-1].payload.messages[-1].content)
 
 
+def test_reviewer_receives_selected_tool_and_successful_preflight_before_execution():
+    owner = Owner()
+    plan = {'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}
+    class ObservingLLM(LLM):
+        async def complete(self, incoming, *, context):
+            if len(self.requests) == 1:
+                assert owner.events == ['describe', 'validate']
+            return await super().complete(incoming, context=context)
+    llm = ObservingLLM([json.dumps(plan), verdict(), 'Ada'])
+
+    result = asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
+
+    planner_context = json.loads(llm.requests[0].payload.messages[1].content[0].text)
+    reviewer_context = json.loads(llm.requests[1].payload.messages[1].content[0].text)
+    reviewer_candidate = json.loads(llm.requests[1].payload.messages[-1].content[0].text)
+    expected_tool = {'name': 'lookup', 'description': 'Read data', 'input_schema': INPUT_SCHEMA}
+    assert planner_context['tool'] == reviewer_context['tool'] == expected_tool
+    assert reviewer_context['messages'] == planner_context['messages']
+    assert reviewer_candidate == {'candidate': plan, 'tool_validation': {'status': 'passed', 'executed': False}}
+    assert result.payload.content[0].text == 'Ada'
+    assert owner.events == ['describe', 'validate', 'invoke']
+
+
 def test_completed_node_reasoning_is_delivered_while_next_node_is_still_blocked():
     from api_agent.providers.presentation import summary_delivery
 
@@ -231,6 +254,10 @@ def test_optional_chat_skips_tool_without_skipping_grounding_review():
     assert ''.join(part.text for part in result.payload.content) == 'Hello'
     assert owner.events == ['describe']
     assert len(llm.requests) == 3
+    reviewer_context = json.loads(llm.requests[1].payload.messages[1].content[0].text)
+    reviewer_candidate = json.loads(llm.requests[1].payload.messages[-1].content[0].text)
+    assert set(reviewer_context) == {'messages'}
+    assert set(reviewer_candidate) == {'candidate'}
 
 
 @pytest.mark.parametrize('length', [100, 101, 200])
@@ -249,18 +276,26 @@ def test_wire_valid_request_identity_completes_no_tool_turn(length):
     assert owner.events == ['describe']
 
 
-def test_grounding_failure_blocks_both_passes_and_execution():
+@pytest.mark.parametrize('failed_check', ['correct', 'grounded', 'relevant'])
+def test_review_failure_blocks_both_passes_and_execution(failed_check):
     owner = Owner()
     plan = json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''})
     details = 'The proposed query invents a field.\nUse a field from the supplied schema.'
-    llm = LLM([plan, verdict(grounded=False, details=details), plan, verdict(grounded=False, details=details)])
+    rejected = verdict(**{failed_check: False}, details=details)
+    llm = LLM([plan, rejected, plan, rejected])
     with pytest.raises(WorkflowError, match='exhausted'):
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert owner.events == ['describe', 'validate', 'validate']
     retry = json.loads(llm.requests[2].payload.messages[-1].content[0].text)
     assert retry['feedback']['previous_candidate'] == json.loads(plan)
-    assert retry['feedback']['failed_checks'] == ['grounded']
+    assert retry['feedback']['failed_checks'] == [failed_check]
     assert retry['feedback']['details'] == details
+    first_review = llm.requests[1].payload.messages
+    second_review = llm.requests[3].payload.messages
+    assert second_review[:len(first_review)] == first_review
+    assert json.loads(first_review[1].content[0].text)['tool']['input_schema'] == INPUT_SCHEMA
+    assert json.loads(second_review[-1].content[0].text)['tool_validation'] == {
+        'status': 'passed', 'executed': False}
 
 
 def test_preference_relaxes_only_final_pass():

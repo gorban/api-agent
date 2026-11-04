@@ -17,7 +17,7 @@ These requirements join the tracing backend to local-run browser ownership. Expo
 - [ ] Open dashboard/service tabs only after this invocation has started or acquired a verified managed component. Include the selected UI and agent when started; include enabled LangFuse after its integration establishes readiness. A configured upstream API endpoint stays visible in status but receives no startup tab solely because it is configured. Add its tab if this invocation actually manages and starts that API.
 - [x] When TRACE_MODE=LangFuse, automatically open the resolved dashboard address and sign in through the observed login UI using shared Playwright helpers and the explicitly configured dashboard admin email/username and password. Verify authenticated project/dashboard state before claiming login success. LangFuse disabled starts no stack, tab or login attempt. OTEL viewer and ingestion URLs remain distinct.
 - [x] Declare dashboard credentials through normal TOML discovery, applicability, review, persistence and base/pack/provider precedence. Local headless provisioning and browser sign-in use the same resolved credentials; remote dashboards require their own explicit credentials and start no local containers. Project public/secret ingestion keys are distinct from dashboard login credentials. Reused installations must validate the account rather than assume new initialization values replace existing users.
-- [x] The original interactive credential display was delivered. The revised [terminal-only display requirement](implementation_plan_k2b.md) supersedes that presentation: omit it from the TUI and show it only in NO_STD_IN terminal status. Structured diagnostic/event privacy remains separate.
+- [x] Show applicable dashboard login credentials in both interactive Run local and NO_STD_IN status under the [startup summary requirement](implementation_plan_k2b.md). Structured diagnostic/event privacy remains separate.
 - [x] Bound login/navigation with shared timing, detect browser closure promptly and preserve operation/browser/component ownership through failure, cancellation and Stop/Exit. Failed or absent dashboard login remains actionable and must not be labelled authenticated. Closing component logs returns to the same browser and latest status.
 - [x] Use origin-bound observed selectors and verify TLS; do not send dashboard credentials to arbitrary redirects or reuse LLM provider cookies/session state. Validate against the selected pinned LangFuse release when implemented.
 
@@ -47,7 +47,7 @@ broader combined requirements and human acceptance remain open.
 The local operation now has a bounded dashboard owner, distinct viewer addresses,
 configured admin provisioning, origin-bound login and the ordered optional tracing
 tab. Dashboard credentials stay outside status snapshots/events; literal terminal
-status follows the [noninteractive-only policy](implementation_plan_k2b.md). Local stacks retain prerequisite lease
+status follows the [presentation-only policy](implementation_plan_k2b.md). Local stacks retain prerequisite lease
 ownership; a dashboard owner never stops containers. Missing remote OTEL viewer
 configuration does not invent a browser address. No-browser startup leaves dashboard
 authentication unattempted.
@@ -64,7 +64,7 @@ and combined human acceptance retain their open gates above.
 ## Startup cookie policy
 
 - [x] Retain the shared startup browser context; separate contexts or cookie hostnames are not required merely to prevent cookie sharing across local ports. Use distinct names for application-owned cookies where names could collide with dashboard cookies. Prefer HttpOnly for session cookies and Secure on HTTPS where the owning backend supports it; do not rewrite third-party cookies or force Secure onto supported HTTP-only development endpoints in a way that breaks login. No application-owned HTTP cookie is introduced by this tracing join. LLM provider authentication remains in its existing separate provider-owned session.
-- [x] Verify that shared-cookie behavior cannot bypass the credential exclusions for logs, traces, Allure, status snapshots or inspection descriptors. Literal dashboard credential presentation follows the explicit terminal-status exception in [local-output follow-through](implementation_plan_k2b.md). This policy permits browser cookie sharing, not exporting authentication state.
+- [x] Verify that shared-cookie behavior cannot bypass the credential exclusions for logs, traces, Allure, status snapshots or inspection descriptors. Literal dashboard credential presentation follows the explicit presentation-status exception in [local-output follow-through](implementation_plan_k2b.md). This policy permits browser cookie sharing, not exporting authentication state.
 
 ## Startup and configuration follow-through
 

@@ -34,6 +34,12 @@ def resolve_capture_services(explicit, *, inherited=None):
     inherited = inherited or {}
     selected = (explicit if _CAPTURE_KEYS.intersection(explicit) else
                 inherited if _CAPTURE_KEYS.intersection(inherited) else (_BOUND.get() or {}))
+    if ('observation_factory' in selected and 'emissions' not in selected
+            and 'capture_authority' not in selected):
+        factory = selected['observation_factory']
+        boundary = getattr(factory, 'boundary', None)
+        if type(boundary) is EmissionBoundary:
+            selected = {**selected, 'emissions': boundary}
     ordinary = {key: value for key, value in {**inherited, **explicit}.items()
                 if key not in _CAPTURE_KEYS}
     return MappingProxyType({**ordinary,
@@ -54,6 +60,13 @@ async def capture_node(journal, services, *, visit_id, direction, values, schema
         return None
     tool_fields = ({'tool_invocation_id': tool_invocation_id, 'attempt_id': attempt_id}
                    if tool_invocation_id is not None else {})
+    if plain_fields is not ...:
+        # Public declaration/type/budget checks need no credential lease.
+        from .observations import _plain_capture_unavailable
+        unavailable = _plain_capture_unavailable(values, schema, plain_fields)
+        if unavailable is not None:
+            return journal.observe(dict(event='capture', visit_id=visit_id,
+                direction=direction, reason=unavailable))
     capability = services.get('capture_authority')
     emissions = services.get('emissions')
     if capability is None and type(emissions) is EmissionBoundary:
@@ -89,13 +102,42 @@ async def capture_node(journal, services, *, visit_id, direction, values, schema
                 result = journal.capture_json(visit_id=visit_id, direction=direction,
                     values={}, schema=schema, capture_reason='unavailable', **tool_fields)
             else:
-                report = set()
-                safe = project_values(values, schema, boundary, report=report)
-                reason = capture_reason(safe, report)
-                if plain_fields is not ... and reason == 'captured':
-                    result = journal.capture(visit_id=visit_id, direction=direction,
-                        values=safe, schema=schema, plain_fields=plain_fields)
+                if plain_fields is not ...:
+                    # Explicit plain contracts keep their scalar admission and
+                    # per-field bounds. Unrelated state is never JSON-projected.
+                    from .journal import _plain_values, CaptureUnavailable
+                    selected = {key: values[key] for key in (plain_fields or ()) if key in values}
+                    # Apply the complete authority to original scalar keys and
+                    # values, including booleans, numbers and null.
+                    try:
+                        safe = boundary.content_export(selected)
+                    except ValueError:
+                        safe = None
+                    projected_reason = (_plain_capture_unavailable(safe, schema, plain_fields)
+                                        if type(safe) is dict else None)
+                    if type(safe) is not dict or set(safe) != set(selected):
+                        result = journal.observe(dict(event='capture', visit_id=visit_id,
+                            direction=direction, reason='privacy_withheld'))
+                    elif projected_reason is not None:
+                        result = journal.observe(dict(event='capture', visit_id=visit_id,
+                            direction=direction, reason=projected_reason))
+                    else:
+                        # The original mapping has passed the source authority.
+                        # Preview carriers must not reapply its registrations.
+                        preview = EmissionBoundary(ContentPolicy(True))
+                        try:
+                            safe, _ = (_plain_values(safe, schema, plain_fields, preview, limit=65536)
+                                       if plain_fields else ({}, ()))
+                        except CaptureUnavailable:
+                            result = journal.observe(dict(event='capture', visit_id=visit_id,
+                                direction=direction, reason='privacy_withheld'))
+                        else:
+                            result = journal.capture(visit_id=visit_id, direction=direction,
+                                values=safe, schema=schema, plain_fields=plain_fields)
                 else:
+                    report = set()
+                    safe = project_values(values, schema, boundary, report=report)
+                    reason = capture_reason(safe, report)
                     result = journal.capture_json(visit_id=visit_id, direction=direction,
                         values=safe, schema=schema, capture_reason=reason, **tool_fields)
     for callback, row in callbacks:

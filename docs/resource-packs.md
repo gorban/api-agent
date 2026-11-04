@@ -64,6 +64,13 @@ Core orchestration consumes these interfaces rather than hardcoding a pack's
 services. See [provider architecture](architecture/provider_architecture.md) and
 [versioned contracts](architecture/provider_contracts_v1.md) for extension details.
 
+## Tracing providers
+
+Packs can select export-only or dashboard-capable tracing implementations through
+the [tracing-provider guide](tracing-providers.md), using the same typed nested
+configuration and lazy factory discovery as other providers. Optional local
+collectors reuse shared infrastructure dependencies and leases.
+
 ## Output-token ceilings
 
 `LLM_MAX_OUTPUT_TOKENS` defaults to 200,000 per LLM call, including reasoning

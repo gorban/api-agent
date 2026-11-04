@@ -15,7 +15,9 @@ _BEARER = re.compile(r'bearer\s+[^\s,;]+', flags=re.IGNORECASE)
 
 
 def _safe_text(value, token, *, limit=512):
-    if type(value) is not str:
+    from .router_reasoning import safe_error_text
+    value = safe_error_text(value)
+    if value is None:
         return None
     # Mask before normalization consumes control whitespace separating a Bearer.
     value = _BEARER.sub('Bearer [redacted]', value)
@@ -109,7 +111,14 @@ def _catalog(data, subscription, token, *, base_url=None):
             cache_features = ()
         else:
             cache_features = ('cache_policy',)
-        features = (('reasoning_effort',) if efforts else ()) + (('max_output_tokens',) if limit_supported else ()) + cache_features
+        from .reasoning import native_reasoning
+        tools_supported = (not subscription
+            and native_reasoning(identifier, base_url=base_url, api_mode='responses')
+            and type(supported) is list and len(supported) <= 128
+            and all(type(parameter) is str and re.fullmatch(r'[a-z][a-z0-9_]{0,99}', parameter) is not None for parameter in supported)
+            and len(set(supported)) == len(supported)
+            and 'tools' in supported and 'tool_choice' in supported)
+        features = (('tools',) if tools_supported else ()) + (('reasoning_effort',) if efforts else ()) + (('max_output_tokens',) if limit_supported else ()) + cache_features
         selections.append(AvailableSelection(identifier, description, display_name=name,
                           version=version if version is not None else inferred_version,
                           max_output_tokens=maximum, context_length=context, family=family,

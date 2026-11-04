@@ -31,7 +31,7 @@ def authenticated_child():
 @pytest.mark.parametrize('effective_payload', [False, True])
 def test_parsed_useful_demo_captures_nodes_and_actual_llm_messages_without_custom_wiring(log, trace, mode, effective_payload):
     with collector() as (endpoint, received):
-        resolved = config(log, trace, mode, TRACE_TARGET=endpoint,
+        resolved = config(log, trace, mode, TRACE_EXPORT_ENDPOINT=endpoint + ('/api/public/otel/v1/traces' if mode == 'LangFuse' else ''),
             LANGFUSE_PUBLIC_KEY='synthetic-public', LANGFUSE_SECRET_KEY='synthetic-secret')
         boundary = EmissionBoundary(ContentPolicy(True))
         boundary.register_secret('registered-sensitive-value')

@@ -165,7 +165,7 @@ def test_graph_capture_preserves_plain_contract_after_credential_admission():
         def capture(self,**kwargs):rows.append(kwargs)
         def capture_json(self,**kwargs):pytest.fail('Plain capture contract was lost')
     asyncio.run(capture_node(Journal(),{'capture_authority':capability},visit_id='visit',direction='input',
-        values={'text':'visible synthetic-source-secret'},schema={'type':'object'},plain_fields=['text']))
+        values={'text':'visible synthetic-source-secret'},schema={'type':'object','properties':{'text':{'type':'string'}}},plain_fields=['text']))
     assert rows[0]['plain_fields']==['text']
     assert rows[0]['values']=={'text':'visible [REDACTED]'}
 

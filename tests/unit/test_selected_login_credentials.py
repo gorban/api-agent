@@ -379,3 +379,16 @@ def test_parent_budget_clips_recovery_without_restarting_private_budget(adapter_
     monkeypatch.setattr(recovery, 'recover', recover)
     assert not invoke(interaction=SimpleNamespace(cancel_event=None)).available
     assert recover.call_args.args[-1] == 2
+
+
+def test_selected_recovery_without_probe_does_not_recover_private_read(adapter_case, monkeypatch):
+    from api_agent.auth import recovery
+    adapter, _, runner, invoke = adapter_case
+    del adapter.login_probe
+    runner.side_effect = c.CredentialLoginRequiredError('locked')
+    recover = Mock()
+    monkeypatch.setattr(recovery, 'recover', recover)
+    with pytest.raises(c.CredentialRecoveryError, match='safe login probe is unavailable'):
+        invoke(interaction=SimpleNamespace(cancel_event=None))
+    recover.assert_not_called()
+    runner.assert_called_once()

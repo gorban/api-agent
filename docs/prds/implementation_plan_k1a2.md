@@ -2,9 +2,15 @@
 
 [GenAI conformance](implementation_plan_k1a.md) · [Resource packs](../resource-packs.md) · [Complete execution traces](implementation_plan_k1a1.md)
 
-This is future work within GenAI tracing conformance. Current tracing recognizes
-OTEL and LangFuse explicitly; standalone managed viewing recognizes Jaeger and
-LangFuse. An arbitrary pack-defined backend is not yet a supported extension.
+The version-1 candidate implements captured pack-selected providers, builtin
+compatibility adapters, optional dashboards and managed infrastructure, and
+GenAI metrics. Qualification and independent review remain open below; this does
+not complete the broader signal conformance requirements.
+The [version-1 contract](implementation_plan_k1a2a.md) defines the implementation
+interface and its remaining acceptance gates.
+
+[Provider-owned configuration and progressive discovery](implementation_plan_k1a2c.md)
+tracks the default-provider and canonical export-endpoint follow-up.
 
 ## Contract and configuration
 
@@ -24,3 +30,6 @@ LangFuse. An arbitrary pack-defined backend is not yet a supported extension.
 - [ ] Extend the existing progressive documentation: README → resource-pack overview → tracing-provider guide → contract/examples. Keep tools, LLM providers, UI providers and nested configuration discoverable from the same overview. Explain export versus dashboard capabilities, configuration contributions, optional recursive local services, remote-only operation and cleanup ownership. Distinguish delivered behavior from planned extensions.
 - [ ] Supply independently authored pack examples and tests proving a third backend can be selected without core edits. Include export-only, dashboard-only/no-login, authenticated dashboard and managed recursive-infrastructure capabilities, plus missing optional capabilities and remote destinations. Verify disabled/lazy admission, precedence, concurrency, failure/cancellation, flush, retained data, literal authorized login display and no exporter-token disclosure.
 - [ ] Verify serialized GenAI fields/native panels and all four content-flag combinations through the generic capture path, including both parsed-flow executors and named tools. Complete causal controls, exact applicable coverage, source/installed/relocated resources, documentation links, boundary/license checks, independent/external review and separate human acceptance. Real authenticated backend qualification requires its normal authorization.
+
+[Captured Studio/test collector requirements](implementation_plan_k1a2b.md) define
+the protected snapshot follow-up and its independent acceptance gates.

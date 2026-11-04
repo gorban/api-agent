@@ -48,6 +48,11 @@ class SelectableOutput(TextArea):
                 break
 
 
+class SummaryScroll(VerticalScroll):
+    """Tab reaches summary scrolling; selecting its text keeps log focus."""
+    FOCUS_ON_CLICK = False
+
+
 class LocalRunScreen(Screen):
     kind = "local-run"
     BINDINGS = [Binding('b', 'browsers', 'Browser destinations'),
@@ -59,16 +64,21 @@ class LocalRunScreen(Screen):
                 Binding('q', 'quit', 'Quit'),
                 Binding('ctrl+c', 'copy_choice', 'Copy selection', priority=True)]
     DEFAULT_CSS = '''
-    #local-output, #local-choices { height: 1fr; }
+    LocalRunScreen { overflow-y: hidden; }
+    #local-summary { height: auto; min-height: 1; max-height: 30%; }
+    #local-status { height: auto; }
+    #local-output, #local-choices { height: 1fr; min-height: 3; }
+    #local-output { min-height: 4; }
+    #local-hint { height: auto; }
     #local-choices { display: none; }
     .local-choice-grid { height: auto; layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: 4; }
     .local-choice-grid.browsers { grid-rows: 5; }
     #local-choices Button { width: 100%; height: 3; min-width: 0; text-wrap: nowrap; text-overflow: ellipsis; margin: 0 1 1 0; }
     #local-choices .local-choice-grid.browsers Button { height: 4; text-wrap: nowrap; text-align: left; content-align: left top; }
     #local-choices Button:focus { border: heavy $accent; }
-    #local-error { display: none; height: auto; min-height: 1; color: $error; }
+    #local-error { display: none; height: auto; min-height: 3; max-height: 25%; color: $error; }
     '''
-    VIEW_HINT = '^C Copy selected text  b Browser destinations  l Log sources  * All logs  s Stop  q Quit'
+    VIEW_HINT = 'Tab Summary/logs  ^C Copy  b Browsers  l Log sources  * All logs  s Stop  q Quit'
     MENU_HINT = 'Arrows/hjkl Move  1–9,0 or Enter Open\n^C Copy  Esc/c Back  s Stop  q Quit'
 
     def __init__(self, context, resolve, *, argv=(), schema=None, owner_factory=None):
@@ -77,6 +87,7 @@ class LocalRunScreen(Screen):
         self.owner_factory = owner_factory
         self.config_schema = schema
         self.owner = None
+        self._dashboard_credentials = None
         self.run_task = None
         from copy import deepcopy
         self.configuration_snapshot = deepcopy(resolve().values)
@@ -112,7 +123,8 @@ class LocalRunScreen(Screen):
         self._updating_output = False
 
     def compose(self):
-        yield Static('Starting local operation…', id='local-status', markup=False)
+        with SummaryScroll(id='local-summary'):
+            yield Static('Starting local operation…', id='local-status', markup=False)
         yield SelectableOutput('', id='local-output', read_only=True, soft_wrap=False)
         yield VerticalScroll(id='local-choices')
         yield Static(self.VIEW_HINT, id='local-hint', markup=False)
@@ -167,6 +179,12 @@ class LocalRunScreen(Screen):
             phase = 'failed'
         components = ', '.join(f'{item.name}: {item.state}' for item in self.snapshot.components)
         status = f'Run local: {phase} — logs: {self.source}\n{components}'
+        for destination in self.snapshot.destinations:
+            status += f'\n{destination.name}: {destination.url}'
+        if self._dashboard_credentials is not None:
+            account, password = self._dashboard_credentials
+            status += f'\nLangFuse dashboard account: {account}'
+            status += f'\nLangFuse dashboard password: {password}'
         if self.inspection_endpoint():
             status += f'\nBrowser CDP: {self.inspection_endpoint()}'
         if phase == 'starting':
@@ -203,6 +221,8 @@ class LocalRunScreen(Screen):
             self.owner = factory(self.context, self.resolve, argv=self.argv, on_event=self.receive, **options)
             self._unclaimed_interaction = None
             self.snapshot = await self.owner.start()
+            self._dashboard_credentials = getattr(
+                self.owner, 'interactive_dashboard_credentials', lambda: None)()
             self.reconcile_menu()
             self.refresh_view()
             self.status = await self.owner.wait()

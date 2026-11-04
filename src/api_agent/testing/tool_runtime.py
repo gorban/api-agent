@@ -160,16 +160,19 @@ class PreparedTestTools:
         contributions = selected_contributions(plan)
         # Independent reporting/tracing profiles are not tool prerequisites.
         infrastructure_values = {name: value for name, value in config.values.items()
-                                 if not name.startswith('ALLURE_') and name not in {'TRACE_MODE', 'TRACE_TARGET'}}
+                                 if not name.startswith('ALLURE_')}
+        infrastructure_values['TRACE_PROVIDER'] = ''
         try:
             selected = plan_infrastructure(infrastructure_values, plan.schema, contributions, scope,
-                                           engine_environment=environment, inventory=self.inventory)
+                                           engine_environment=environment, inventory=self.inventory,
+                                           tracing_profiles=())
         except MissingEngineTransport:
             from api_agent.runtime.reporting_engine import verified_engine_binding
             _, transport = await offload(verified_engine_binding, environment)
             environment = {**environment, 'DOCKER_HOST': transport}
             selected = plan_infrastructure(infrastructure_values, plan.schema, contributions, scope,
-                                           engine_environment=environment, inventory=self.inventory)
+                                           engine_environment=environment, inventory=self.inventory,
+                                           tracing_profiles=())
         cancelled = Event()
         factory = self.manager_factory or PrerequisiteManager
         manager = factory(selected, scope, Path(self.data['owner_root']) / 'artifacts' / 'prerequisites',

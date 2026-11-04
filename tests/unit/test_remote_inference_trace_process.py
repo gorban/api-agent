@@ -20,7 +20,9 @@ def recorded_trace(synthetic_sdk, tmp_path, monkeypatch):
         results, events = [], []
         with collector() as (endpoint, received):
             def recording(context, tests, config, **kwargs):
-                config = dict(config, TRACE_MODE=mode, TRACE_TARGET=endpoint,
+                from pathlib import Path
+                provider = Path(__file__).resolve().parents[2]/'src/api_agent/telemetry/trace_adapters/provider.py'
+                config = dict(config, TRACE_PROVIDER=str(provider)+':create_tracing_provider', JAEGER_VIEWER_PORT=16686, TRACE_MODE=mode, TRACE_EXPORT_ENDPOINT=endpoint + ('/api/public/otel/v1/traces' if mode == 'LangFuse' else ''),
                               LANGFUSE_PUBLIC_KEY='synthetic-public', LANGFUSE_SECRET_KEY='synthetic-export-secret')
                 fields = {} if provenance is None else {
                     name: ResolvedValue(config[name], provenance, provenance != 'default')
@@ -157,7 +159,8 @@ def test_remote_trace_keeps_worker_withholding_for_secret_bearing_retry_error(re
 
 
 @pytest.mark.parametrize('disconnect', [False, True])
-def test_remote_interruption_ends_spans_without_projecting_active_payloads(disconnect):
+@pytest.mark.parametrize('log,trace_content', [(False,False),(False,True),(True,False),(True,True)])
+def test_remote_interruption_ends_spans_without_projecting_active_payloads(disconnect,log,trace_content):
     import asyncio
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -177,7 +180,7 @@ def test_remote_interruption_ends_spans_without_projecting_active_payloads(disco
     with collector() as (endpoint, received):
         async def run():
             boundary = EmissionBoundary(ContentPolicy(False))
-            trace = RemoteInferenceTrace(config(False, True, TRACE_TARGET=endpoint), boundary)
+            trace = RemoteInferenceTrace(config(log, trace_content, TRACE_EXPORT_ENDPOINT=endpoint), boundary)
             entered = asyncio.Event()
             async def complete(request):
                 capture.bind_boundary(boundary)
@@ -220,5 +223,26 @@ def test_remote_interruption_ends_spans_without_projecting_active_payloads(disco
     child, = [span for span in spans if span.name == 'transport attempt']
     assert root.end_time_unix_nano and child.end_time_unix_nano
     assert child.parent_span_id == root.span_id
-    assert call_id in str(spans) and 'unavailable' in str(spans)
+    def attributes(span):
+        return {item.key: item.value for item in span.attributes}
+    root_attrs, child_attrs = attributes(root), attributes(child)
+    assert root_attrs['api_agent.call_id'].string_value == call_id
+    assert root.trace_id == child.trace_id
+    assert root_attrs['api_agent.trace.complete'].bool_value is False
+    assert child_attrs['api_agent.trace.complete'].bool_value is False
+    assert child_attrs['api_agent.transport.terminal_known'].bool_value is False
+    assert root_attrs['api_agent.trace.loss_count'].int_value == 1
+    assert any(item.key == 'api_agent.capture.reason' and item.value.string_value == 'unavailable'
+               for event in root.events for item in event.attributes)
+    # Authenticated setup-protocol EOF is a transport failure; administrative cancellation is UNSET.
+    assert root.status.code == (2 if disconnect else 0)
+    assert child.status.code == 0  # The unfinished physical attempt has no fabricated terminal status.
+    assert 'error.type' not in root_attrs and 'error.type' not in child_attrs
     assert 'active-payload-must-not-export' not in str(spans)
+
+
+@pytest.mark.parametrize('reason',['arbitrary-provider-text','Bearer synthetic-secret-reason',{},True])
+def test_terminal_reason_structural_vocabulary_rejects_unadmitted_values(reason):
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.telemetry.tracing import _structural
+    assert _structural(EmissionBoundary(), {'api_agent.capture.reason':reason}) == {}

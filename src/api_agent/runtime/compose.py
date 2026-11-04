@@ -87,24 +87,49 @@ def _local_s3_endpoint(parsed, port, expected=4566):
             and port == expected and not parsed.path.rstrip('/') and not parsed.query)
 
 
-def selected_profiles(config):
+def _tracing_destination(selection):
+    dashboard = selection.declaration.dashboard
+    return (selection.values.get(selection.declaration.endpoint_field),
+            selection.values.get(dashboard.url_field) if dashboard is not None else None)
+
+
+def _validate_tracing_destination(profile, destination, config, document=None):
+    """Bind admitted destinations to the existing controlled local resources."""
+    contracts = {
+        'otel': (4318, '/v1/traces', f'http://localhost:{_jaeger_viewer_port(config)}', 'jaeger',
+                 ['127.0.0.1:4318:4318', '127.0.0.1:${SA_JAEGER_VIEWER_PORT:?controlled local development value required}:16686']),
+        'langfuse': (3000, '/api/public/otel/v1/traces', 'http://localhost:3000', 'langfuse-web',
+                     ['127.0.0.1:3000:3000']),
+    }
+    contract = contracts.get(profile)
+    if contract is None:
+        raise ComposeError('Tracing profile is absent from the controlled resource contract.')
+    port, path, dashboard, service, ports = contract
+    endpoints = {f'http://{host}:{port}{path}' for host in ('localhost', '127.0.0.1')}
+    if (type(destination) is not tuple or len(destination) != 2
+            or destination[0] not in endpoints or destination[1] != dashboard):
+        raise ComposeError('Tracing destinations differ from the controlled local resource endpoints.')
+    if document is not None and document.get('services', {}).get(service, {}).get('ports') != ports:
+        raise ComposeError('Controlled tracing published ports differ from their endpoint contract.')
+
+
+def selected_profiles(config, *, tracing_profiles=None):
     """Only conventional loopback endpoints request managed local dependencies."""
-    mode = config.get('TRACE_MODE', '')
-    if not isinstance(mode, str) or mode not in {'', 'LangFuse', 'OTEL'}:
-        raise ComposeError('Unsupported TRACE_MODE.')
     profiles = []
-    if mode:
-        default = 'http://localhost:3000' if mode == 'LangFuse' else 'http://localhost:4318/v1/traces'
-        target = config.get('TRACE_TARGET')
-        target = default if target is None else target
-        parsed, port = _endpoint(target)
-        if mode == 'LangFuse':
-            if target in {'http://localhost:3000', 'http://127.0.0.1:3000',
-                          'http://localhost:3000/', 'http://127.0.0.1:3000/'}:
-                profiles.append('langfuse')
-        elif (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1'}
-                and port == 4318 and parsed.path.rstrip('/') == '/v1/traces' and not parsed.query):
-            profiles.append('otel')
+    resolved = config
+    config = config.values if hasattr(config, 'fields') else config
+    if tracing_profiles is None:
+        from api_agent.telemetry.tracing_providers import effective_selection
+        selection = effective_selection(resolved)
+        profile = selection.declaration.managed_compose_profile if selection is not None else None
+        tracing_profiles = (profile,) if profile else ()
+        if profile:
+            _validate_tracing_destination(profile, _tracing_destination(selection), selection.values)
+    if (type(tracing_profiles) is not tuple or len(tracing_profiles) > 1
+            or any(type(profile) is not str or not re.fullmatch('[a-z][a-z0-9_-]{0,63}', profile)
+                   for profile in tracing_profiles)):
+        raise ComposeError('Invalid admitted tracing Compose profile.')
+    profiles.extend(tracing_profiles)
     localstack = config.get('ALLURE_S3_USE_LOCALSTACK', False)
     localstack_port = _localstack_port(config)
     if type(localstack) is not bool:
@@ -230,24 +255,46 @@ def controlled_engine_environment(environment):
     return result
 
 
-def plan_compose(config, scope: Scope, *, compose_directory=None, executable='docker', engine_environment=None):
+def plan_compose(config, scope: Scope, *, compose_directory=None, executable='docker', engine_environment=None, captured_assets=None,
+                 tracing_profiles=None, tracing_destination=None):
     """Return reviewable arguments and a complete isolated child environment."""
+    resolved = config
+    config = config.values if hasattr(config, 'fields') else config
     if not re.fullmatch('[0-9a-f]{16}', scope.id) or scope.project != 'sa-' + scope.id:
         raise ComposeError('Invalid Compose ownership scope.')
     if not isinstance(executable, str) or not executable or executable.startswith('-'):
         raise ComposeError('Invalid Compose executable.')
-    directory = (Path(compose_directory) if compose_directory else default_compose_directory()).resolve()
-    profiles = selected_profiles(config)
+    directory = Path(compose_directory) if compose_directory else default_compose_directory()
+    directory = directory.resolve() if captured_assets is None else directory.absolute()
+    if captured_assets is not None and (set(captured_assets) != {'compose.json', 'empty.env', 'localstack-ready.sh', 'jaeger-config.json'}
+            or any(type(body) is not bytes or len(body) > 1024 * 1024 for body in captured_assets.values())):
+        raise ComposeError('Invalid captured controlled Compose assets.')
+    def read_asset(name):
+        return (directory / name).read_bytes() if captured_assets is None else captured_assets[name]
+    profiles = selected_profiles(resolved, tracing_profiles=tracing_profiles)
     viewer_port = _jaeger_viewer_port(config)
     localstack_port = _localstack_port(config)
     if 'otel' in profiles and (viewer_port == 4318 or
             ('localstack' in profiles and localstack_port in {4318, viewer_port})):
         raise ComposeError('Managed Jaeger and LocalStack host ports must not conflict.')
     try:
-        compose_bytes = (directory / 'compose.json').read_bytes()
+        compose_bytes = read_asset('compose.json')
         document = json.loads(compose_bytes)
+        if tracing_profiles is not None:
+            available = {profile for service in document.get('services', {}).values()
+                         for profile in service.get('profiles', ())}
+            if set(tracing_profiles) - available or 'localstack' in tracing_profiles:
+                raise ComposeError('Tracing profile is absent from the controlled Compose inventory.')
+        trace_profiles = tuple(profile for profile in profiles if profile != 'localstack')
+        if trace_profiles:
+            if tracing_destination is None:
+                from api_agent.telemetry.tracing_providers import effective_selection
+                selection = effective_selection(resolved)
+                tracing_destination = _tracing_destination(selection) if selection is not None else None
+            for profile in trace_profiles:
+                _validate_tracing_destination(profile, tracing_destination, config, document)
         empty_env = directory / 'empty.env'
-        empty_bytes = empty_env.read_bytes()
+        empty_bytes = read_asset('empty.env')
         if any(line.strip() and not line.lstrip().startswith('#') for line in empty_bytes.decode().splitlines()):
             raise ComposeError('Controlled Compose env file must be empty.')
         services = validate_document(document, scope, profiles)
@@ -265,18 +312,18 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
     environment['SA_JAEGER_VIEWER_PORT'] = str(viewer_port)
     hook = directory / 'localstack-ready.sh'
     try:
-        if hook.is_symlink() or not hook.is_file():
+        if captured_assets is None and (hook.is_symlink() or not hook.is_file()):
             raise ComposeError('Controlled LocalStack ready hook is missing or symlinked.')
-        environment['SA_LOCALSTACK_READY_HOOK'] = str(hook.resolve())
-        hook_bytes = hook.read_bytes()
+        environment['SA_LOCALSTACK_READY_HOOK'] = str(hook.resolve() if captured_assets is None else hook)
+        hook_bytes = read_asset('localstack-ready.sh')
         environment['SA_LOCALSTACK_READY_DIGEST'] = sha256(hook_bytes).hexdigest()
     except OSError as error:
         raise ComposeError('Cannot read controlled LocalStack ready hook.') from error
     jaeger_config = directory / 'jaeger-config.json'
     try:
-        if jaeger_config.is_symlink() or not jaeger_config.is_file():
+        if captured_assets is None and (jaeger_config.is_symlink() or not jaeger_config.is_file()):
             raise ComposeError('Controlled Jaeger configuration is missing or symlinked.')
-        jaeger_bytes = jaeger_config.read_bytes()
+        jaeger_bytes = read_asset('jaeger-config.json')
         parsed_jaeger = json.loads(jaeger_bytes)
         if not isinstance(parsed_jaeger, dict):
             raise TypeError('Invalid Jaeger configuration')
@@ -305,7 +352,7 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         if isinstance(error, ComposeError):
             raise
         raise ComposeError('Invalid or missing controlled Jaeger configuration.') from error
-    environment['SA_JAEGER_CONFIG'] = str(jaeger_config.resolve())
+    environment['SA_JAEGER_CONFIG'] = str(jaeger_config.resolve() if captured_assets is None else jaeger_config)
     bucket = config.get('ALLURE_S3_BUCKET')
     region = config.get('ALLURE_S3_REGION')
     bucket = 'allure-results' if bucket is None else bucket

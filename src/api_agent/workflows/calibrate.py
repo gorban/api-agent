@@ -30,6 +30,7 @@ def configuration(root, argv):
     from api_agent.config import compose_schema, load_declarations, load_shared_schema, read_dotenv, resolve_config
     from api_agent.config.declarations import ConfigSchema
     from api_agent.config.resolve import retain_runtime_directory, runtime_directory_overrides
+    from api_agent.runtime.pack_admission import configuration_inputs
     from api_agent.providers.loading import bootstrap_schema
     from api_agent.runtime.bootstrap import _bind_runtime_directory
     from api_agent.runtime.resource_pack import load_launch_context
@@ -56,7 +57,7 @@ def configuration(root, argv):
                               context.dotenv_path)):
         dotenv.update(read_dotenv(path))
     schema = bootstrap_schema(schema, argv, os.environ, dotenv, owner_root=context.owner_root,
-                              configuration_paths=context.provider_config_paths)
+                              configuration_paths=context.provider_config_paths, **configuration_inputs(context))
     overrides = dict(runtime_directory_overrides(context), TUI_MODE='workflow-calibration')
     result = retain_runtime_directory(resolve_config(schema, argv=argv, environ=os.environ, dotenv=dotenv,
         anchors=context.anchors, pack_launcher=context.external_pack, overrides=overrides), context)

@@ -11,8 +11,8 @@ from test_tui import fixture
 
 @pytest.mark.parametrize('saved', [False, True], ids=['fresh', 'saved-jaeger'])
 def test_trace_mode_review_transitions_and_saved_cleanup(tmp_path, saved):
-    source = tomllib.loads((Path(__file__).resolve().parents[2] / 'cfg/config.toml').read_text())
-    names = ('TRACE_MODE', 'TRACE_TARGET', 'JAEGER_VIEWER_PORT', 'TRACE_VIEWER_URL',
+    source = tomllib.loads((Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/cfg/config.toml').read_text())
+    names = ('TRACE_MODE', 'TRACE_EXPORT_ENDPOINT', 'JAEGER_VIEWER_PORT', 'TRACE_VIEWER_URL',
              'LANGFUSE_ADMIN_EMAIL', 'LANGFUSE_ADMIN_PASSWORD', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY')
     fields = {name: source['fields'][name] for name in names}
     fields['COLLECT_ONLY'] = {'type': 'bool', 'default': False, 'acknowledge_default': False}
@@ -32,7 +32,7 @@ def test_trace_mode_review_transitions_and_saved_cleanup(tmp_path, saved):
                         for i in range(app.screen.query_one(DataTable).row_count))}
                 pending = app.configuration_pending()
                 assert ('JAEGER_VIEWER_PORT' in rows) is (mode == 'OTEL')
-                assert ('TRACE_VIEWER_URL' in rows) is (mode == 'OTEL')
+                assert ('TRACE_VIEWER_URL' in rows) is bool(mode)
                 assert ('JAEGER_VIEWER_PORT' in pending) is (mode == 'OTEL' and not saved)
                 for name in names[4:]:
                     assert (name in rows) is (mode == 'LangFuse')

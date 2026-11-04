@@ -45,6 +45,8 @@ class LaunchContext:
     tool_catalog_path: Path | None = None
     inventory_sources: tuple = ()
     pack_layers: tuple = ()
+    pack_contributions: tuple = ()
+    project_contributions: tuple = ()
     composition_replacements: tuple[str, ...] = ()
     workflow_pack_root: Path | None = None
     identity_pack_root: Path | None = None
@@ -82,6 +84,7 @@ def load_launch_context(
     base_root: Path,
     resource_pack_dir: Path | None = None,
     launcher_root: Path | None = None,
+    *, _manifest_body: bytes | None = None,
 ) -> LaunchContext:
     if isinstance(resource_pack_dir, (list, tuple)):
         from .pack_composition import load_ordered_context
@@ -102,8 +105,11 @@ def load_launch_context(
             packaged_demo = True
     manifest = pack / "pack.toml"
     try:
-        with manifest.open("rb") as stream:
-            data = tomllib.load(stream)
+        if _manifest_body is None:
+            with manifest.open("rb") as stream:
+                data = tomllib.load(stream)
+        else:
+            data = tomllib.loads(_manifest_body.decode('utf-8'))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
     allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure", "tooling", "composition"}

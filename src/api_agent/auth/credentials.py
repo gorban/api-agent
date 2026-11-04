@@ -238,25 +238,41 @@ def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeou
     if not math.isfinite(timeout) or timeout <= 0:
         raise CredentialError('Credential CLI timeout must be positive.')
     started = time.monotonic()
+    spent = 0.0
+    def private_read():
+        nonlocal spent
+        remaining = timeout - spent
+        if remaining <= 0:
+            raise CredentialError('Credential retrieval deadline expired.')
+        before = time.monotonic()
+        try:
+            with report_timeout_sync('Password-manager retrieval', remaining) as budget:
+                remaining = budget.remaining
+                if remaining == 0:
+                    raise CredentialRecoveryError('Password manager recovery deadline expired.')
+                if interaction is not None:
+                    return _run(argv, remaining, classify_login=classify,
+                                cancel_event=getattr(interaction, 'cancel_event', None))
+                return _run(argv, remaining, classify_login=classify) if classify is not None else _run(argv, remaining)
+        finally:
+            spent += time.monotonic() - before
     try:
-        with report_timeout_sync('Password-manager retrieval', timeout) as budget:
-            remaining = budget.remaining
-            if remaining == 0:
-                raise CredentialRecoveryError('Password manager recovery deadline expired.')
-            if interaction is not None:
-                output = _run(argv, remaining, classify_login=classify, cancel_event=getattr(interaction, 'cancel_event', None))
-            else:
-                output = _run(argv, remaining, classify_login=classify) if classify is not None else _run(argv, remaining)
+        output = private_read()
     except CredentialLoginRequiredError:
         if interaction is None:
             raise
         from .recovery import recover
+        from .login_recovery import recover_login
         remaining = None if recovery_timeout is None else recovery_timeout - (time.monotonic() - started)
         with report_timeout_sync('Password-manager recovery', None) as budget:
             inherited = budget.remaining
             if inherited is not None:
                 remaining = inherited if remaining is None else min(remaining, inherited)
-            output = recover(argv, interaction, source._registry.get(source.manager).label, remaining)
+            login_only = recover_login(adapter, source, cli, interaction, remaining)
+            if not login_only:
+                output = recover(argv, interaction, source._registry.get(source.manager).label, remaining)
+        if login_only:
+            output = private_read()
     if type(output) is not str:
         raise CredentialError("Credential CLI returned invalid output.")
     try:

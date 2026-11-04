@@ -17,3 +17,7 @@
   independent/external review and explicit human acceptance before claiming support.
 
 This follow-up does not change the currently implemented cache behavior.
+
+## OpenRouter tool-continuation cache boundary
+
+- [ ] Support enabled prompt-cache presets when Responses input ends with a function-call output rather than a text message. Preserve ordered native tool/continuation items and the explicit cache policy; do not reject a valid tool continuation solely because the final item has no `content` member. Qualify the backend-supported breakpoint placement with deterministic rejection controls and live named-tool replay. Provider-default caching is a diagnostic comparison, not acceptance of the enabled preset.

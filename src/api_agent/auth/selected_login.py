@@ -64,22 +64,13 @@ def retrieve(source, request, timeout, *, interaction=None, recovery_timeout=Non
             if interaction is None or recovered:
                 raise
         recovered = True
-        try:
-            probe = command(adapter.login_probe(source, cli))
-        except c.CredentialError:
-            raise
-        except Exception:
-            raise c.CredentialRecoveryError('Password manager safe login probe failed.') from None
-        # This optional capability only recovers authentication through a safe
-        # session probe. Unmasked reads are always retried via owned capture.
-        if probe != [cli, 'whoami']:
-            raise c.CredentialRecoveryError('Password manager returned an unsafe login probe.')
         remaining = None if recovery_timeout is None else recovery_timeout - (time.monotonic() - started)
         with report_timeout_sync('Password-manager recovery', None) as budget:
             if budget.remaining is not None:
                 remaining = budget.remaining if remaining is None else min(remaining, budget.remaining)
-            from .recovery import recover
-            recover(probe, interaction, source._registry.get(source.manager).label, remaining)
+            from .login_recovery import recover_login
+            if not recover_login(adapter, source, cli, interaction, remaining):
+                raise c.CredentialRecoveryError('Password manager safe login probe is unavailable.')
         return run()
     try:
         result = retrieve_login(source, cli, request.expected_username, request.relying_party_id, private_read)

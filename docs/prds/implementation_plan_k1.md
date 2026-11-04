@@ -4,7 +4,7 @@
 
 ## Agreed routing
 
-- [x] Select tracing using existing `TRACE_MODE` and one `TRACE_TARGET` URL. OTEL takes the OTLP collector traces endpoint; LangFuse takes its server address, from which its exporter derives the documented ingest path. No reporting UUID, registry handshake or additional managed/external selection field is required.
+- [x] Select tracing using provider-contributed `TRACE_MODE` and one complete `TRACE_EXPORT_ENDPOINT` ingestion URL. Both OTEL and LangFuse consume that URL unchanged. No reporting UUID, registry handshake or additional managed/external selection field is required.
 - [ ] Preserve conditional local defaults and explicit configuration precedence. A custom or Kubernetes service endpoint starts no local tracer stack and is never stopped by local cleanup. Keep collector ingestion separate from the viewer address; do not substitute a browser UI URL for an exporter endpoint. Verify path derivation, TLS and protocol handling without double-appending ingest paths.
 - [ ] Local defaults may start/reuse verified locally managed services. Process/session leases and container/volume ownership are internal management mechanisms, not required reporting configuration. Endpoint availability alone never authorizes adoption or deletion.
 

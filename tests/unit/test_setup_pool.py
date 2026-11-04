@@ -86,3 +86,29 @@ def test_pool_keeps_first_error_when_multiple_owners_need_cleanup():
         pool.close()
     assert caught.value is failures[0]
     assert calls == [0, 1]
+
+
+def test_invalid_optional_trace_selection_does_not_block_backend_partition(monkeypatch, tmp_path):
+    from api_agent.testing import setup_backend
+    config = {'TRACE_PROVIDER': str(tmp_path / 'missing-trace.py') + ':factory'}
+    made = []
+    class Backend:
+        def __init__(self, values, root, **services):
+            self.values, self.services, self.closed = values, services, False
+            made.append(self)
+        def start(self):
+            return {'version': 1, 'port': 32123}
+        def close(self):
+            self.closed = True
+    monkeypatch.setattr(setup_backend, 'SetupBackend', Backend)
+    pool = SetupPool({'case': {'config': config, 'provenance': {}}}, tmp_path)
+
+    try:
+        result = pool.start()
+        assert result['case']['setup_backend']['port'] == 32123
+        assert made[0].values == config
+        assert 'trace_context' not in made[0].services
+    finally:
+        pool.close()
+
+    assert made[0].closed

@@ -184,7 +184,8 @@ def bind_inference_trace(owner):
     if (collector is None or collector.get('authority_conflict') or collector['trace_owner'] is not None
             or type(collector.get('boundary')) is not EmissionBoundary):
         return
-    call = owner.begin(collector['call_id'])
+    from api_agent.telemetry.trace_ownership import begin_remote
+    call = begin_remote(owner, collector['call_id'])
     if call is None:
         return
     boundary = collector['boundary'].for_policy(call.boundary.policy)
@@ -193,6 +194,21 @@ def bind_inference_trace(owner):
     with collect_inference(boundary, collector['call_id'], retain_raw=collector['retain_raw']) as trace:
         collector['trace_collector'] = trace
     collector['trace_owner'] = call
+
+
+def record_provider_fields(cause_id, transport_id, request, result, *, provider_name=None):
+    """Route source-validated facts to the one already admitted trace owner."""
+    visit = current_workflow_visit()
+    collector = _COLLECTOR.get()
+    owner = collector.get('trace_owner') if collector is not None else None
+    if owner is not None:
+        owner.runtime.losses.run(lambda: owner.provider_fields(cause_id, transport_id, request, result,
+                                                              provider_name=provider_name))
+    elif visit is not None:
+        callback = getattr(visit[0], 'provider_fields', None)
+        if callable(callback):
+            visit[0].trace_losses.run(lambda: callback(cause_id, transport_id, request, result,
+                                                       provider_name=provider_name))
 
 
 def select_capture_rows(rows):
@@ -280,6 +296,9 @@ def capture_rows(rows, call_id):
         name = 'llm_request' if direction == 'input' else 'llm_response'
         omitted = row['content'] == {} and row.get('reason') in ('truncated', 'unavailable')
         try:
+            callback = getattr(journal, 'provider_diagnostics', None)
+            if callable(callback) and 'diagnostics' in row:
+                callback(call_id, row.get('transport_attempt_id'), row['diagnostics'])
             journal.capture_json(visit_id=visit_id, direction=direction, cause_id=call_id,
                 values={} if omitted else {name: row['content']}, schema={'type': 'object', 'properties': {name: {'type': 'object'}}},
                 capture_reason=row.get('reason'),

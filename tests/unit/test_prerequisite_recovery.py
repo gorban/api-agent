@@ -7,13 +7,13 @@ from api_agent.runtime.compose import plan_compose
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.prerequisites import PrerequisiteManager, PrerequisiteError, _interpolate
 from api_agent.runtime.prerequisite_diagnostics import initialization_changes, incompatible_stack_message
-from test_prerequisites import Clock, Engine
+from test_prerequisites import Clock, Engine, trace_fixture_config
 
 
 def manager(tmp_path, engine, config):
     scope = StackScope.from_roots(tmp_path / 'base', tmp_path / 'pack')
     clock = Clock()
-    result = PrerequisiteManager(plan_compose(config, scope), scope, tmp_path / 'ownership',
+    result = PrerequisiteManager(plan_compose(trace_fixture_config(config), scope), scope, tmp_path / 'ownership',
         command_runner=engine.run, readiness_probe=lambda *args: True,
         now=clock.now, sleep=clock.sleep, identity=lambda pid: 'boot:start')
     engine.owner = result

@@ -37,3 +37,32 @@ This is a proposed contract, not implemented launcher syntax. Existing single-pa
 - [ ] Add independently authored two-pack and three-pack fixtures covering inherited behavior, explicit replacement, duplicate IDs, path ownership, schema weakening, environment/CLI precedence, absent-API failure, cancellation and failed cleanup.
 - [ ] Prove bundled-demo `.env` exclusion and single-pack read order, launcher-default save ownership, explicit target switching, overlapping-key moves and rollback remain equivalent. Prove proposed multi-pack additional/launcher/root read order, aliases, read-only inputs, explicit target/move choices and effective-value diagnostics. Prove exact ordered resolution from an unrelated working directory, source checkout and relocated installed artifacts, including interpreter relaunch. Mutate ordering, owner binding and serialization independently to establish causal rejection tests.
 - [ ] Run applicable unit tests with exact line/branch coverage, installed/lifecycle tests, boundary checks and independent contract/runtime review. Human acceptance and publication remain separate. No implementation or runtime-review gate is complete in this proposal.
+
+## Declaration admission implementation slice
+
+- [ ] For multiple selected packs, retain immutable owner/contribution carriers with captured manifest, main/auxiliary configuration and dependency declaration identities. Require bounded regular files without symlink traversal; reject changed declarations, changed ownership and newly introduced dependency declarations at verification boundaries.
+- [ ] Expose a versioned report containing ordered IDs, roots, owner roots and declaration digests only. Do not include configuration defaults, dotenv contents or credentials; do not import executable resources to build it.
+- [ ] Pass the admitted ordered composition identity through interpreter handoff and verify it in the child before hook assurance, configuration resolution or dependency preparation. Parent dependency preparation and relaunch must reject mutated admitted declarations.
+
+This slice preserves existing runtime configuration and persistence behavior.
+The PoC's multi-pack dotenv order and write authority do not yet implement the
+read/save policy above. Verified installed distribution ownership, complete
+executable inventories and broader lifecycle verification remain separate gates.
+The existing PoC evidence in [ordered composition](pack_composition.md) remains
+valid within its documented scope; it does not complete this proposal.
+
+
+The declaration report and handoff identity cover selected-pack declarations
+and explicitly owned runtime/workflow-library project declarations. Independently
+selected provider dependency descriptors retain their existing separate admission
+and requirements behavior. Their complete byte-snapshot/fingerprint protocol
+remains open; this digest does not prove later provider inputs are unchanged.
+Selected manifest, configuration and project declarations are consumed from
+captured bytes through the existing declaration parser, preserving source-path
+provenance. A later filesystem change cannot supply new consumed declarations.
+
+Captured declarations retain their admitted owner paths during parsing, default
+rooting and provenance reporting. Temporary filesystem aliases cannot redirect
+those paths. Multi-pack dependency parsing uses admitted owner inventories
+exclusively, including explicit absent manifests; an unknown owner fails closed
+instead of reading an uncaptured project file.

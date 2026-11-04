@@ -31,6 +31,28 @@ def _plan(config, schema, context, scope, *, engine_environment=None, requires_a
     contributions = ()
     if getattr(context, 'infrastructure_paths', ()) or locations:
         contributions = load_infrastructure_contributions(context, selected_provider_locations=locations)
+    tracing_profiles = None
+    tracing_destination = None
+    trace_values = config.values
+    if config.values.get('TRACE_PROVIDER'):
+        from api_agent.telemetry.tracing_providers import effective_selection
+        selection = effective_selection(config if hasattr(config, 'fields') else config.values,
+                                        owner_root=context.owner_root)
+        tracing_profiles = ((selection.declaration.managed_compose_profile,)
+                            if selection is not None and selection.declaration.managed_compose_profile else ())
+        trace_values = selection.values if selection is not None else config.values
+        if selection is not None:
+            from api_agent.runtime.compose import _tracing_destination
+            tracing_destination = _tracing_destination(selection)
+        if selection is not None:
+            from api_agent.runtime.tracing_services import selected_tracing_infrastructure
+            tracing, context = selected_tracing_infrastructure(context, trace_values, selection=selection)
+            merged = {item.id: item for item in contributions}
+            for item in tracing:
+                if item.id in merged and merged[item.id] != item:
+                    raise ValueError('Conflicting selected infrastructure identity')
+                merged[item.id] = item
+            contributions = tuple(merged.values())
     tool_plan = getattr(config, 'tool_plan', None)
     if tool_plan is not None and tool_plan.tools:
         from api_agent.tooling.services import selected_contributions
@@ -42,20 +64,25 @@ def _plan(config, schema, context, scope, *, engine_environment=None, requires_a
         contributions = tuple(merged.values())
     from api_agent.runtime.inventory import capture_inventory
     inventory = capture_inventory(context, tool_plan)
+    planning = dict(trace_values) if config.values.get('TRACE_PROVIDER') else config
     if contributions:
         if schema is None:
             raise ValueError('Selected infrastructure requires the resolved configuration schema.')
         try:
-            return plan_infrastructure(config, schema, contributions, scope,
-                                       engine_environment=engine_environment, inventory=inventory)
+            return plan_infrastructure(planning, schema, contributions, scope,
+                                       engine_environment=engine_environment, inventory=inventory,
+                                       tracing_profiles=tracing_profiles, tracing_destination=tracing_destination)
         except MissingEngineTransport:
             from api_agent.runtime.reporting_engine import verified_engine_binding
             _, transport = verified_engine_binding(engine_environment, cancelled=cancelled)
             pinned = {**dict(engine_environment or {}), 'DOCKER_HOST': transport}
-            return plan_infrastructure(config, schema, contributions, scope,
-                                       engine_environment=pinned, inventory=inventory)
+            return plan_infrastructure(planning, schema, contributions, scope,
+                                       engine_environment=pinned, inventory=inventory,
+                                       tracing_profiles=tracing_profiles, tracing_destination=tracing_destination)
     from dataclasses import replace
-    return replace(plan_compose(config.values, scope, engine_environment=engine_environment), inventory=inventory)
+    return replace(plan_compose(planning if isinstance(planning, dict) else config.values, scope,
+                                engine_environment=engine_environment, tracing_profiles=tracing_profiles,
+                                tracing_destination=tracing_destination), inventory=inventory)
 
 
 class LocalCleanup:
@@ -357,8 +384,9 @@ class LocalRunOwner:
                     raise
                 from api_agent.runtime.local_tracing import LocalTracing
                 self._startup_stage('tracing')
-                self._tracing_dashboard = LocalTracing(self._config.values,
-                    emissions=self._session.runtime.emissions)
+                self._tracing_dashboard = LocalTracing(self._config,
+                    emissions=self._session.runtime.emissions,
+                    **({'owner_root': self.context.owner_root} if self._config.values.get('TRACE_PROVIDER') else {}))
                 self._stack.push(self._tracing_dashboard.aclose)
                 await self._tracing_dashboard.start()
                 if self._tracing_dashboard.diagnostic:
@@ -482,7 +510,7 @@ class LocalRunOwner:
         self._log('agent', format_exception(error, 'Local execution failed').rstrip('\n') + '\n')
 
     def interactive_dashboard_credentials(self):
-        """Literal terminal status only; excluded from snapshots and events."""
+        """Literal presentation status only; excluded from snapshots and events."""
         return (self._tracing_dashboard.interactive_credentials()
                 if self._tracing_dashboard is not None else None)
 

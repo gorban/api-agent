@@ -229,3 +229,23 @@ sys.stdin.read()
         process.wait(timeout=2)
         process.stdin.close()
         process.stderr.close()
+
+
+@pytest.mark.parametrize('flags',[{}, {'_nontrace_settled':True},
+    {'_nontrace_settled':True,'_trace_cleanup_failed':False},
+    {'_nontrace_settled':1,'_trace_cleanup_failed':True},
+    {'_nontrace_settled':True,'_trace_cleanup_failed':'true'},
+    {'_nontrace_settled':[],'_trace_cleanup_failed':{}}])
+def test_unsettled_setup_owner_cannot_claim_optional_trace_cleanup(tmp_path,monkeypatch,flags):
+    from types import SimpleNamespace
+    from api_agent.testing.trace_cleanup import OptionalTraceCleanupPending
+    class Owner:pass
+    monkeypatch.setattr(setup_backend,'_SetupOwner',Owner)
+    backend=setup_backend.SetupBackend({},tmp_path)
+    source=Owner()
+    for name,value in flags.items():setattr(source,name,value)
+    backend.registry=SimpleNamespace(_owner=source)
+    receipt=backend._receipt(trace_only=True)
+    assert type(receipt) is CleanupPendingError
+    assert not isinstance(receipt,OptionalTraceCleanupPending)
+    assert receipt.owners==(backend,)

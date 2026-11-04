@@ -34,7 +34,7 @@ class StudioBackend:
     """
     def __init__(self, *, owner, describe, complete, policy, origin, nonce,
                  scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None,
-                 on_error=None, max_output_tokens=200000):
+                 on_error=None, max_output_tokens=200000, trace_owner=None):
         parts = urlsplit(origin)
         if (parts.scheme not in ('http', 'https') or parts.hostname not in ('localhost', '127.0.0.1', '::1')
                 or parts.path or parts.query or parts.fragment or parts.username or parts.password
@@ -45,6 +45,7 @@ class StudioBackend:
             raise ValueError('Invalid Studio bridge configuration')
         if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= chat_contract.MAX_OUTPUT_TOKENS:
             raise ValueError('Invalid output-token ceiling')
+        self.trace_owner = trace_owner
         self.max_output_tokens = max_output_tokens
         self.owner, self.describe, self.complete, self.policy = owner, describe, complete, policy
         self.origin, self._nonce, self.scrub = origin, nonce, scrub
@@ -99,6 +100,11 @@ class StudioBackend:
         return (self._local(request) and request.headers.get('Origin') == self.origin and
                 hmac.compare_digest(request.headers.get('X-API-Agent-Session', '').encode(), self._nonce.encode()))
 
+    def _trace_runtime(self):
+        if self.trace_owner is not None:
+            return self.trace_owner.current()
+        return getattr(self.owner, 'trace', None)
+
     def _response(self, value, status=200):
         if len(json.dumps(value).encode()) > 131072:
             raise ContractError('Application response exceeds byte limit')
@@ -109,6 +115,12 @@ class StudioBackend:
     def _error(self, error, *, turn=None):
         # The local diagnostic owner admits and scrubs exceptions separately
         # from the deliberately small public HTTP/stream error response.
+        from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState, OutcomeCause
+        report_outcome(ExecutionOutcome(OutcomeState.FAILURE,
+            OutcomeCause.TIMEOUT if isinstance(error, TimeoutError) or
+                isinstance(error, OperationalError) and error.kind == 'deadline' else
+            OutcomeCause.VALIDATION if isinstance(error, (ContractError, ValueError, UnicodeError)) else
+            OutcomeCause.PROVIDER), runtime=self._trace_runtime())
         self.lifecycle.report_error(error, turn=turn)
         if isinstance(error, ProviderAccessError):
             try:
@@ -347,8 +359,12 @@ class StudioBackend:
                 try:
                     terminal = await self.lifecycle.wait_turn(self._owner_id, turn)
                     if terminal.state == 'completed':
+                        from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState
+                        report_outcome(ExecutionOutcome(OutcomeState.SUCCESS), runtime=self._trace_runtime())
                         return self._response(terminal.result)
                     if terminal.state == 'cancelled':
+                        from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState, OutcomeCause
+                        report_outcome(ExecutionOutcome(OutcomeState.CANCELLED, OutcomeCause.CANCELLED), runtime=self._trace_runtime())
                         return self._response({'session_id': session_id, 'code': 'cancelled'}, 409)
                     raise terminal.error
                 except asyncio.CancelledError:
@@ -372,6 +388,8 @@ class StudioBackend:
                 count += 1
                 # Reserve a bounded terminal error within the shared stream cap.
                 if total > chat_contract.STREAM_BYTES - 1024 or count >= chat_contract.STREAM_EVENTS:
+                    from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState, OutcomeCause
+                    report_outcome(ExecutionOutcome(OutcomeState.FAILURE, OutcomeCause.VALIDATION), runtime=self._trace_runtime())
                     yield chat_contract.frame('error', {'session_id': session_id, 'code': 'invalid_request'})
                     return
                 yield body
@@ -409,6 +427,8 @@ class StudioBackend:
             terminal = await waiter
             settled = True
             if terminal.state == 'cancelled':
+                from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState, OutcomeCause
+                report_outcome(ExecutionOutcome(OutcomeState.CANCELLED, OutcomeCause.CANCELLED), runtime=self._trace_runtime())
                 yield chat_contract.frame('cancelled', {'session_id': session_id})
                 return
             if terminal.state != 'completed':
@@ -419,7 +439,11 @@ class StudioBackend:
                 yield chat_contract.frame('token', {'content': terminal.result['response_text']})
             yield chat_contract.frame('response_complete', {'session_id': session_id})
             yield chat_contract.frame('result', terminal.result)
+            from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState
+            report_outcome(ExecutionOutcome(OutcomeState.SUCCESS), runtime=self._trace_runtime())
             yield chat_contract.frame('done', {'session_id': session_id})
+            from api_agent.telemetry.outcomes import report_response_complete
+            report_response_complete(runtime=self._trace_runtime())
         except asyncio.CancelledError:
             raise
         except Exception as error:

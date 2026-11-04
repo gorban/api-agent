@@ -4,6 +4,7 @@ from dataclasses import replace
 from contextvars import ContextVar
 from copy import deepcopy
 import math
+import asyncio
 import time
 from uuid import uuid4
 
@@ -172,7 +173,7 @@ class TransportAttemptLedger:
         row['outcome'] = 'completed' if result is not None else 'failed'
         status = getattr(error, 'http_status', None)
         row['status'] = status if type(status) is int and 100 <= status <= 599 else None
-        kind = getattr(error, 'kind', None)
+        kind = 'cancelled' if isinstance(error, asyncio.CancelledError) else getattr(error, 'kind', None)
         row['error_kind'] = kind if kind in ('unknown', 'deadline', 'unavailable', 'network', 'rate_limit', 'authentication', 'authorization', 'invalid_request', 'server', 'cancelled') else ('unknown' if error is not None else None)
         validate_transport_attempts(dict(version=1, complete=False, attempts=[*self._rows[:-1], row]))
         self._rows[-1] = row

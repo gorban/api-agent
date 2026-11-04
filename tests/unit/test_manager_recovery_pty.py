@@ -115,7 +115,8 @@ def test_keeper_classification_and_username_preserves_type(tmp_path):
 def test_original_retrieval_after_logged_out_failure(tmp_path):
     from api_agent.auth.credentials import get_password
     path = tmp_path / 'keeper'
-    path.write_text(f'#!{sys.executable}\nimport sys,os,getpass\nassert sys.argv[1:] == ["find-password", "vault/user"]\nif not sys.stdin.isatty():\n print("Persistent login failed", file=sys.stderr);sys.exit(1)\nassert getpass.getpass("Password: ") == "master-secret"\nprint("credential-secret")\n')
+    marker = tmp_path / 'authenticated'
+    path.write_text(f'#!{sys.executable}\nimport sys,getpass,pathlib\np=pathlib.Path({str(marker)!r})\nif sys.argv[1:] == ["whoami"]:\n assert getpass.getpass("Password: ") == "master-secret"\n p.touch()\nelse:\n assert sys.argv[1:] == ["find-password", "vault/user"]\n if not p.exists():\n  print("Persistent login failed", file=sys.stderr);sys.exit(1)\n print("credential-secret")\n')
     path.chmod(0o700)
     interaction = Interaction([Reply('input', 'master-secret')])
     assert get_password(dict(manager='keeper', cli_path=str(path), vault='vault', user='user'),
@@ -317,12 +318,14 @@ def test_shared_scope_does_not_carry_short_limit_into_human_recovery(tmp_path, m
     # The short budget measures retrieval, not interpreter startup. Force the
     # known logged-out precondition, then exercise actual PTY recovery beyond it.
     from api_agent.auth.credentials import CredentialLoginRequiredError
-    def logged_out(*args, **kwargs):
-        raise CredentialLoginRequiredError('Keeper login required.')
-    monkeypatch.setattr('api_agent.auth.credentials._run', logged_out)
+    from unittest.mock import Mock
+    private_run = Mock(side_effect=[CredentialLoginRequiredError('Keeper login required.'), 'value\n'])
+    monkeypatch.setattr('api_agent.auth.credentials._run', private_run)
     records = []
     with progress_sink(records.append), report_timeout_sync('Enclosing operation', 2):
         assert get_password(source, timeout=.08, interaction=Interaction([Reply('input', 'master-secret')])) == 'value'
+    assert private_run.call_count == 2
+    assert all(call.args[0][1:] == ['find-password', 'vault/user'] for call in private_run.call_args_list)
     starts = [record for record in records if record.active]
     retrieval = next(record for record in starts if record.name == 'Password-manager retrieval')
     recovery = next(record for record in starts if record.name == 'Password-manager recovery')

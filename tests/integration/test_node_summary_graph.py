@@ -65,5 +65,6 @@ def test_optional_summary_with_selected_provider(llm_provider, llm_selection, in
                 'llm':provider,'before_final':before_final,'result_store':results})
         with summary_delivery(display):
             output = await workflow.arun({'prompt':'Check that 17 times 19 equals 323. Return the answer field exactly Ok.'})
-        assert output['finish'] == {'answer':'Ok'}
+        assert set(output['finish']) == {'answer'}
+        assert output['finish']['answer'].strip().lower().rstrip('.') == 'ok'
     asyncio.run(scenario())

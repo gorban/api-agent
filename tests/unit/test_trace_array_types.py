@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from api_agent.config.resolve import ConfigResult, ResolvedValue
 from api_agent.telemetry.tracing import TraceRuntime
+from test_workflow_observations import config as trace_config
 
 
 @pytest.fixture
@@ -21,8 +21,7 @@ def test_serialized_arrays_respect_content_policy_and_keep_native_types(content,
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    config = ConfigResult({'TRACE_MODE': 'OTEL', 'TRACELOOP_TRACE_CONTENT': content},
-        {'TRACELOOP_TRACE_CONTENT': ResolvedValue(content, 'cli', True)}, (), (), ())
+    config = trace_config(trace=content)
     runtime = TraceRuntime(config, factory=lambda *args: (provider, provider.get_tracer('test')))
     asyncio.run(runtime.astart())
     with runtime.span({'reasons': ['stop', 'length'], 'counts': [1, 2],
@@ -53,8 +52,7 @@ def test_invalid_utf8_array_is_json_encoded_without_sdk_diagnostic(caplog, trace
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    config = ConfigResult({'TRACE_MODE': 'OTEL', 'TRACELOOP_TRACE_CONTENT': True},
-        {'TRACELOOP_TRACE_CONTENT': ResolvedValue(True, 'cli', True)}, (), (), ())
+    config = trace_config(trace=True)
     runtime = TraceRuntime(config, factory=lambda *args: (provider, provider.get_tracer('test')))
     asyncio.run(runtime.astart())
 
@@ -73,8 +71,7 @@ def test_registered_secret_in_array_is_redacted_before_serialization(trace_sdk):
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    config = ConfigResult({'TRACE_MODE': 'OTEL', 'TRACELOOP_TRACE_CONTENT': True},
-        {'TRACELOOP_TRACE_CONTENT': ResolvedValue(True, 'cli', True)}, (), (), ())
+    config = trace_config(trace=True)
     runtime = TraceRuntime(config, factory=lambda *args: (provider, provider.get_tracer('test')))
     asyncio.run(runtime.astart())
     runtime.boundary.register_secret('hidden-value')
@@ -94,8 +91,7 @@ def test_encrypted_reasoning_carrier_is_removed_from_array_before_serialization(
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    config = ConfigResult({'TRACE_MODE': 'OTEL', 'TRACELOOP_TRACE_CONTENT': True},
-        {'TRACELOOP_TRACE_CONTENT': ResolvedValue(True, 'cli', True)}, (), (), ())
+    config = trace_config(trace=True)
     runtime = TraceRuntime(config, factory=lambda *args: (provider, provider.get_tracer('test')))
     asyncio.run(runtime.astart())
 

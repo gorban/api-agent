@@ -38,3 +38,28 @@ tracing requirements or authorize trace-only data to enter log/evidence stores.
 ## Complete test evidence follow-through
 
 - [ ] Deliver [complete flow-aligned test evidence](implementation_plan_b1c1a2.md) for logs and Allure before accepting historical input/output overlays. Shared node capture and its current 512-character retained previews establish a capture seam, not full durable payload storage. Keep this requirement separate from remote tracing export and preserve the shared destination gates.
+
+Explicit plain capture admission must precede generic JSON projection under a
+borrowed credential authority. Preserve immutable scalar contracts, original
+65,536-character per-field admission, unsupported/payload-limit reasons, live
+versus journal preview bounds and independent destination permissions. Ignore
+unclassified state objects without changing node execution. Retain schema and
+privacy validation; an authority omission emits safe unavailable evidence.
+The original stateful frozen-contract matrix and shared-authority tests cover
+this requirement; complete coverage and independent review remain required.
+
+Plain-contract declaration, runtime scalar type and original size admission must
+finish before credential borrowing, including when that authority is unavailable.
+Only selected original scalar keys/values cross the borrowed credential boundary.
+Boolean, numeric and null credentials require the same rejection as strings,
+with independent destination flags and fresh authority on subsequent captures.
+
+After the original selected mapping passes its borrowed credential authority,
+plain previews use a neutral authority. Never reapply source registrations to
+invented preview carriers. Actual destination credential checks remain mandatory.
+Verify structured credentials absent from the original mapping remain permitted,
+while genuine original mapping credentials are withheld.
+
+Recheck the existing scalar size budget after source redaction, since masking
+can expand a permitted original value. Record safe overflow without affecting
+node execution or applying source credentials to preview wrappers.

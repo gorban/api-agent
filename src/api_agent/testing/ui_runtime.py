@@ -44,6 +44,7 @@ class UIIntegrationOwner:
         self.extra_services = dict(services or {})
         self.backend_factory, self.backend = backend, None
         self._backend_cleanup = None
+        self._nontrace_settled = False
         mode = 'e2e' if self.config.get('TUI_MODE') == 'e2e' else 'integration'
         headless = ui_session_policy(mode, debug=self.config.get('DEBUG', False),
             e2e_debug=self.config.get('E2E_DEBUG', False))
@@ -197,6 +198,8 @@ class UIIntegrationOwner:
 
     async def aclose(self):
         self.closed = True
+        self._nontrace_settled = False
+        trace_pending = None
         with independent_timeout_scope():
             async with report_timeout('UI fixture disposal', 20) as budget:
                 if self.interaction is not None:
@@ -219,8 +222,12 @@ class UIIntegrationOwner:
                             await self.backend.__aexit__(None, None, None)
                     except CleanupPendingError as error:
                         self._backend_cleanup = error
-                        raise
-                    self.backend = self._backend_cleanup = None
+                        from .studio_http import studio_trace_pending
+                        if not studio_trace_pending(error):
+                            raise
+                        trace_pending = error
+                    else:
+                        self.backend = self._backend_cleanup = None
                 tasks = set(self.pending_tasks)
                 if self._tls_task is not None:
                     tasks.add(self._tls_task)
@@ -233,6 +240,9 @@ class UIIntegrationOwner:
                             task.exception()
                 if self.interaction is not None:
                     self.interaction.close()
+                self._nontrace_settled = True
+                if trace_pending is not None:
+                    raise trace_pending
 
 
 def _validate_backend_binding(binding):

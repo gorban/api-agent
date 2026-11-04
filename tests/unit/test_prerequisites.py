@@ -17,6 +17,17 @@ from api_agent.runtime.ownership import StackScope
 import api_agent.runtime.prerequisites as p
 
 
+from test_compose import bundled_trace_config
+
+
+def trace_fixture_config(config):
+    """Supply ordinary bundled declarations explicitly to synthetic ownership plans."""
+    result = bundled_trace_config(**config)
+    if config.get('TRACE_MODE') == 'OTEL' and 'TRACE_VIEWER_URL' not in config:
+        result['TRACE_VIEWER_URL'] = 'http://localhost:' + str(config.get('JAEGER_VIEWER_PORT',16686))
+    return result
+
+
 class Clock:
     def __init__(self): self.value = 0
     def now(self): return self.value
@@ -107,7 +118,7 @@ def setup(tmp_path):
     scope = StackScope.from_roots(tmp_path / 'base', tmp_path / 'pack')
     clock, engine = Clock(), Engine()
     def create(config=None, **kwargs):
-        manager = p.PrerequisiteManager(plan_compose(config or {'TRACE_MODE': 'OTEL'}, scope), scope,
+        manager = p.PrerequisiteManager(plan_compose(trace_fixture_config(config or {'TRACE_MODE': 'OTEL'}), scope), scope,
             tmp_path / 'artifacts' / 'prerequisites', command_runner=engine.run,
             cancelled=lambda: engine.cancel, readiness_probe=lambda *args: True,
             now=clock.now, sleep=clock.sleep, identity=lambda pid: 'boot:start',
@@ -292,13 +303,13 @@ def test_jaeger_storage_rejects_unsafe_owned_ancestor(setup, unsafe_level):
 
 def test_jaeger_fingerprint_uses_captured_content_independent_of_source_path(setup, tmp_path):
     _, engine, clock, scope, _ = setup
-    source = plan_compose({}, scope).directory
+    source = plan_compose(trace_fixture_config({}), scope).directory
     copies = [tmp_path / name for name in ('first', 'second')]
     for directory in copies:
         shutil.copytree(source, directory)
 
     def manager(directory):
-        plan = plan_compose({'TRACE_MODE': 'OTEL'}, scope, compose_directory=directory)
+        plan = plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), scope, compose_directory=directory)
         return p.PrerequisiteManager(plan, scope, tmp_path / 'ownership', command_runner=engine.run,
             readiness_probe=lambda *args: True, now=clock.now, sleep=clock.sleep,
             identity=lambda pid: 'boot:start')
@@ -659,7 +670,7 @@ def test_initialization_identity_and_deadline_checks(setup):
     create, _, _, scope, tmp_path = setup
     with pytest.raises(p.PrerequisiteError, match='deadline'): create(deadline_seconds=0)
     with pytest.raises(p.PrerequisiteError, match='ownership'):
-        p.PrerequisiteManager(plan_compose({}, scope), StackScope('f' * 16), tmp_path)
+        p.PrerequisiteManager(plan_compose(trace_fixture_config({}), scope), StackScope('f' * 16), tmp_path)
 
 
 def test_missing_invocation_identity_fails_before_engine_query(setup):
@@ -912,7 +923,7 @@ else:
 '''.replace('STATE_PATH', repr(str(state_path))).replace('METADATA_PATH', repr(str(metadata_path)))
     executable.write_text('#!' + sys.executable + '\n' + script)
     executable.chmod(0o755)
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, scope, executable=str(executable))
+    plan = plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL'}), scope, executable=str(executable))
     ownership = tmp_path / 'artifacts' / 'prerequisites'
     manager = p.PrerequisiteManager(plan, scope, ownership, readiness_probe=lambda *args: True)
     metadata_path.write_text(json.dumps({name: {'Image': spec['image'], 'Labels': {
@@ -927,7 +938,7 @@ from api_agent.runtime.compose import plan_compose
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.prerequisites import PrerequisiteManager
 scope=StackScope(sys.argv[1])
-manager=PrerequisiteManager(plan_compose({'TRACE_MODE':'OTEL'},scope,executable=sys.argv[2]),scope,
+manager=PrerequisiteManager(plan_compose({'TRACE_PROVIDER':sys.argv[7],'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'http://localhost:4318/v1/traces','TRACE_VIEWER_URL':'http://localhost:16686','JAEGER_VIEWER_PORT':16686},scope,executable=sys.argv[2]),scope,
                            sys.argv[3],readiness_probe=lambda *args:True)
 lease=manager.acquire()
 Path(sys.argv[4]).write_text(str(os.getpid()))
@@ -939,7 +950,7 @@ while not Path(sys.argv[5]).exists():
 manager.release()
 '''
     child = subprocess.Popen((sys.executable, '-c', child_code, scope.id, str(executable),
-        str(ownership), str(ready), str(release), 'crash' if child_exits_without_release else 'release'),
+        str(ownership), str(ready), str(release), 'crash' if child_exits_without_release else 'release', trace_fixture_config({'TRACE_MODE':'OTEL'})['TRACE_PROVIDER']),
         env={'PYTHONPATH': str(Path(p.__file__).resolve().parents[2]), 'PATH': '/usr/bin'},
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
@@ -1166,7 +1177,7 @@ if 'create-bucket' in args:
 sys.exit(9)
 '''.replace('STATE', repr(str(state))).replace('LOG', repr(str(log))).replace('FAILURE', repr(failure)))
     fake.chmod(0o755)
-    hook = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True}, StackScope('a' * 16)).directory / 'localstack-ready.sh'
+    hook = plan_compose(trace_fixture_config({'ALLURE_S3_USE_LOCALSTACK': True}), StackScope('a' * 16)).directory / 'localstack-ready.sh'
     environment = {'PATH': str(tmp_path) + ':/usr/bin:/bin', 'SA_ALLURE_S3_BUCKET': 'chosen-results',
                    'SA_ALLURE_S3_REGION': region, 'AWS_ACCESS_KEY_ID': 'ambient', 'AWS_SECRET_ACCESS_KEY': 'ambient',
                    'AWS_SESSION_TOKEN': 'ambient'}
@@ -1248,11 +1259,11 @@ def test_failed_journal_write_rolls_back_only_new_invocation(setup, monkeypatch,
 @pytest.mark.parametrize('change_at', ['plan', 'manager'])
 def test_execution_uses_reviewed_compose_and_hook_snapshot(setup, tmp_path, change_at):
     create, engine, clock, scope, _ = setup
-    source = plan_compose({}, scope)
+    source = plan_compose(trace_fixture_config({}), scope)
     assets = tmp_path / 'assets'; assets.mkdir()
     for name, content in source.assets.items():
         (assets / name).write_bytes(content)
-    plan = plan_compose({'ALLURE_S3_USE_LOCALSTACK': True, 'TRACE_MODE': 'OTEL'}, scope,
+    plan = plan_compose(trace_fixture_config({'ALLURE_S3_USE_LOCALSTACK': True, 'TRACE_MODE': 'OTEL'}), scope,
                         compose_directory=assets)
     def mutate():
         document = json.loads((assets / 'compose.json').read_text())

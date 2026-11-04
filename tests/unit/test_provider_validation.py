@@ -65,6 +65,8 @@ def test_missing_import_loader_is_rejected(tmp_path, monkeypatch, spec):
       for hook in ('authenticate', 'astart', 'aclose', 'setup_routes')],
 ])
 def test_invalid_factories_do_not_leave_imports_or_expose_details(tmp_path, body):
+    # Core cleanup guards are lazy framework imports, not leaked provider modules.
+    from api_agent.providers import credential_guard, scrubbed_response
     location = factory(tmp_path, body)
     before = set(sys.modules)
     with pytest.raises(loading.ProviderError) as caught:
@@ -165,7 +167,8 @@ def test_bootstrap_selection_obeys_each_precedence_layer(tmp_path):
     assert 'falls back to attended' not in help_text
     assert 'GPT_PROFILE' not in bundled.fields
     # Higher-precedence explicit empty selections disable the lower selection.
-    schema = type(schema)({**schema.fields, 'UI_PROVIDER': replace(schema.fields['UI_PROVIDER'], default='')})
+    schema = type(schema)({**schema.fields, 'UI_PROVIDER': replace(schema.fields['UI_PROVIDER'], default=''),
+        'TRACE_PROVIDER': replace(schema.fields['TRACE_PROVIDER'], default='')})
     assert loading.bootstrap_schema(schema, [], {'LLM_PROVIDER': ''}, {'LLM_PROVIDER': '/missing.py:create'}) is schema
     assert loading.bootstrap_schema(schema, ['--llm-provider='], {}, {'LLM_PROVIDER': '/missing.py:create'}) is schema
     assert loading.bootstrap_schema(schema, [], {}, {'LLM_PROVIDER': location}, {'LLM_PROVIDER': ''}) is schema

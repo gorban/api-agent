@@ -46,3 +46,20 @@ def test_attended_key_help_describes_prompt_and_index_binding():
     assert 'prompt' in fields['UNATTENDED_USER_INDEX']['help']
     assert 'no fallback' in fields['UNATTENDED_USER_INDEX']['help']
     assert 'prompt' in fields['BEDROCK_AUTH_MODE']['help']
+
+
+def test_model_help_preserves_defaults_and_explains_routing_cost():
+    fields = declarations()
+    allowed = fields['LLM_ALLOWED_MODELS']
+    default = fields['LLM_DEFAULT_MODEL']
+    assert allowed['default'] == '.+'
+    assert default['default'] == r'openai\.gpt-oss-20b(?:-1:0)?'
+    assert 'Non-exhaustive' in allowed['help']
+    assert 'GPT Luna/Terra/Sol and Claude Haiku/Sonnet/Opus' in allowed['help']
+    assert 'add other families intentionally' in allowed['help']
+    assert 'us[.]' in allowed['help']
+    assert '[0-9]+(?:-[0-9]+)*-(?:haiku|sonnet|opus)' in allowed['help']
+    assert 'global[.]' in allowed['help']
+    assert 'openai[.]gpt-oss-20b(?:-1:0)?' in default['help']
+    assert 'cost more' in allowed['help']
+    assert 'worldwide' in default['help']

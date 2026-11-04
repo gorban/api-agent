@@ -284,11 +284,15 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
         selected_groups = list(groups)
         if config.values.get('TUI_MODE') in {'integration', 'e2e'}:
             selected_groups.append('reports')
-        if config.values.get('TRACE_MODE'):
-            selected_groups.append('tracing')
         from api_agent.api.composition import activation_kinds
-        from api_agent.providers.distribution import selected_manifests
         active = activation_kinds(config.values, required_kinds)
+        from api_agent.runtime.tracing_services import tracing_requested
+        trace_active = bool(active) and tracing_requested(config, owner_root=context.owner_root)
+        if trace_active:
+            selected_groups.append('tracing')
+        from api_agent.providers.distribution import selected_manifests
+        if active and trace_active and config.values.get('TRACE_PROVIDER'):
+            active = active | {'tracing'}
         manifests = selected_manifests(config.values, owner_root=getattr(context, 'owner_root', context.base_root),
                                        active_kinds=active)
         tool_plan = getattr(config, 'tool_plan', None)
@@ -306,7 +310,16 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
                                    interactive=not config.values.get('NO_STD_IN', False))
 
     def plan(config):
-        return prepared_plan if prepared_plan is not None else plan_compose(config.values, scope, engine_environment=engine_environment)
+        if prepared_plan is not None:
+            return prepared_plan
+        from api_agent.telemetry.tracing_providers import effective_selection
+        from api_agent.runtime.compose import _tracing_destination
+        selected = effective_selection(config, owner_root=context.owner_root)
+        profile = selected.declaration.managed_compose_profile if selected is not None else None
+        values = selected.values if selected is not None else config.values
+        return plan_compose(values, scope, engine_environment=engine_environment,
+                            tracing_profiles=(profile,) if profile else (),
+                            tracing_destination=_tracing_destination(selected) if selected is not None else None)
 
     def manager(selected_plan, cancelled):
         return PrerequisiteManager(selected_plan, scope, ownership_directory,

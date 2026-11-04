@@ -16,3 +16,9 @@
 - [ ] Complete external and human acceptance of the normal launch interaction.
 
 Private inputs follow the [clipboard-origin and paste requirements](implementation_plan_a9k2.md).
+
+## Prompt repainting
+
+- [x] Paint newly received authentication output immediately, including a PIN prompt without a newline that fills an existing blank line. Do not require another keypress or reply to reveal it. Preserve masked input, private transcripts and existing channel cleanup.
+- [x] Verify actual rendered updates without keyboard-driven refresh, including fragmented prompts and a causal rejection check, then obtain independent review.
+- [ ] Human acceptance: choose a security-key method once and see its PIN prompt without another keypress or reply; completing login is unnecessary for this check.

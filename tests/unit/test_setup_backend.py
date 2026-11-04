@@ -702,3 +702,24 @@ def test_owner_cleanup_interrupt_preserves_live_loop_and_disposes_sibling(fake_h
     backend.server.aclose = original
     backend.close()
     assert backend.closed and backend.loop.is_closed()
+
+
+def test_invalid_optional_trace_selection_keeps_shared_provider_available(fake_host, tmp_path, monkeypatch, capsys):
+    from api_agent.telemetry.privacy import EmissionBoundary
+    monkeypatch.setattr(provider_setup.IntegrationLLM, 'emissions', EmissionBoundary(), raising=False)
+    config = {'LLM_PROVIDER': 'synthetic',
+              'TRACE_PROVIDER': str(tmp_path / 'missing-trace.py') + ':factory'}
+    backend = setup_backend.SetupBackend(config, tmp_path, trace_prerequisites_factory=lambda values: None)
+    assert backend.cleanup_timeout == 5
+
+    try:
+        assert backend.start()['port'] == 32123
+        checkpoint(backend)
+        assert fake_host.events.count('ready') == 1
+        assert 'Continuing without tracing.' in backend.diagnostic_stderr
+        assert 'Continuing without tracing.' in capsys.readouterr().err
+    finally:
+        backend.close()
+
+    assert backend.closed and not backend.pending
+    assert not backend.thread.is_alive()

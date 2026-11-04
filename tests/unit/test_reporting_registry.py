@@ -11,6 +11,8 @@ from types import MappingProxyType
 
 import pytest
 
+from api_agent.config import load_shared_schema
+
 from api_agent.runtime.compose import plan_compose, rebind_reporting_plan
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime import prerequisites as p
@@ -463,7 +465,7 @@ def test_original_directory_dotdot_is_not_lock_authority(storage):
 
 def test_selected_jaeger_requires_its_captured_config_asset(tmp_path):
     scope = StackScope.from_roots(tmp_path / 'checkout', tmp_path / 'pack')
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, scope)
+    plan = plan_compose({'TRACE_MODE': 'OTEL', 'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default, 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces', 'JAEGER_VIEWER_PORT': 16686}, scope)
     assets = dict(plan.assets)
     assets.pop('jaeger-config.json')
 

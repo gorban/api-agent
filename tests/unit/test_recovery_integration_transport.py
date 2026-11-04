@@ -162,14 +162,21 @@ def test_debug_bridge_real_synthetic_keeper_recovery(tmp_path, capsys):
     import sys
     from api_agent.testing.provider_setup import IntegrationLLM
     cli = tmp_path / 'synthetic-keeper'
+    marker = tmp_path / 'authenticated'
     cli.write_text('#!' + sys.executable + '\n'
-        'import os,sys\n'
-        'if not os.isatty(0):\n'
-        ' sys.stderr.write("Keeper login required\\n"); sys.exit(1)\n'
-        'sys.stderr.write("Login transcript Password: "); sys.stderr.flush()\n'
-        'value=sys.stdin.readline().strip()\n'
-        'if value != "secret": sys.exit(2)\n'
-        'sys.stdout.write("retrieved-only\\n")\n')
+        'import os,sys,pathlib\n'
+        f'marker=pathlib.Path({str(marker)!r})\n'
+        'if sys.argv[1:] == ["whoami"]:\n'
+        ' assert os.isatty(0) and os.isatty(2) and not os.isatty(1)\n'
+        ' print("Touch your security key", flush=True)\n'
+        ' sys.stderr.write("Login transcript Password: "); sys.stderr.flush()\n'
+        ' value=sys.stdin.readline().strip()\n'
+        ' if value != "secret": sys.exit(2)\n'
+        ' marker.touch()\n'
+        'elif marker.exists():\n'
+        ' sys.stdout.write("retrieved-only\\n")\n'
+        'else:\n'
+        ' sys.stderr.write("Keeper login required\\n"); sys.exit(1)\n')
     cli.chmod(0o700)
     interaction = Interaction()
     server = InteractionServer(interaction)
@@ -179,6 +186,7 @@ def test_debug_bridge_real_synthetic_keeper_recovery(tmp_path, capsys):
         tmp_path, interaction=InteractionClient(server.descriptor))
     try:
         assert provider.loop.run_until_complete(provider._credentials(0)(0, 'password')) == 'retrieved-only'
+        assert 'Touch your security key' in ''.join(interaction.channel.output)
         assert 'Login transcript' in ''.join(interaction.channel.output)
         assert 'retrieved-only' not in ''.join(interaction.channel.output)
         assert capsys.readouterr() == ('', '')

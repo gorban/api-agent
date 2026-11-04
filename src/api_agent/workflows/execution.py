@@ -1,4 +1,5 @@
 """LangGraph compilation, owned nested pass budgets and strict node contracts."""
+from .run_context import recording_enabled
 from .run_context import current_structural_scope, structural_scope
 import asyncio
 from contextlib import asynccontextmanager
@@ -473,6 +474,14 @@ class Workflow:
             canonical_uuid(turn_id)
         turn_id = turn_id if turn_id is not None else current_turn_id()
         journal = self._run_services().get('journal')
+        automatic_observations = None
+        factory = self._run_services().get('observation_factory')
+        if journal is None and factory is not None and self.definition is not None and not recording_enabled():
+            from .identity import workflow_identity
+            journal = automatic_observations = factory.create(self.definition, turn_id=turn_id,
+                component_passes=self.component_passes,
+                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
+                    component_passes=self.component_passes))
         if turn_id is not None and journal is not None and turn_id != journal.turn_id:
             raise ValueError('explicit turn identity disagrees with the active journal')
         if journal is not None and self.definition is not None:
@@ -491,7 +500,7 @@ class Workflow:
             admit_identity = getattr(journal, 'admit_semantic_identity', None)
             if self.definition is not None and admit_identity is not None:
                 admit_identity(identity)
-        if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1':
+        if recording_enabled():
             if self.definition is None:
                 raise WorkflowError('Reporting requires an admitted workflow definition')
             from .provenance import verified_documents
@@ -528,10 +537,21 @@ class Workflow:
                     result = await self.graph.ainvoke(dict(values={'START': deepcopy(inputs)}, ancestry=(), feedback={}, previous={}, prompts=prompts,
                                                          visit_id=None, attempt_id=None),
                                                      {'recursion_limit': len(self.layout.steps) + 1})
+                    terminal = self._run_services().get('execution_outcome')
+                    if terminal is not None:
+                        from api_agent.telemetry.outcomes import ExecutionOutcome, report_outcome
+                        final = terminal()
+                        if type(final) is not ExecutionOutcome:
+                            raise WorkflowError('Invalid explicit execution outcome')
+                        report_outcome(final, runtime=getattr(journal, 'trace', None))
+                        if journal is not None and hasattr(journal, 'report_outcome'):
+                            journal.report_outcome(current_structural_scope(), final)
             return result['values']
         finally:
             _CURRENT_JOURNAL.reset(token)
-            if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1' and journal is not None:
+            if automatic_observations is not None:
+                automatic_observations.close()
+            if recording_enabled() and journal is not None:
                 from .evidence import publish
                 publish(journal.finalize())
 

@@ -180,7 +180,8 @@ def test_provider_capture_oversized_has_explicit_omission():
     from api_agent.workflows.inference_capture import capture_inference
     with collect_inference(EmissionBoundary(ContentPolicy(True))) as collector:
         capture_inference('input', {'messages': [{'text': 'é' * (2 * 1024 * 1024)}]}, str(uuid4()), auth=SECRET)
-    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'truncated'}]
+    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'truncated',
+        'diagnostics': {'version': 1, 'observation': 'sdk_decoded'}}]
 
 
 def test_provider_capture_admits_large_container_after_late_secret_registration():
@@ -205,7 +206,8 @@ def test_provider_capture_total_item_overflow_is_omitted():
     from api_agent.workflows.inference_capture import capture_inference
     with collect_inference(EmissionBoundary(ContentPolicy(True))) as collector:
         capture_inference('input', {'messages': [None] * 2048}, str(uuid4()))
-    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'truncated'}]
+    assert collector['rows'] == [{'phase': 'request', 'content': {}, 'reason': 'truncated',
+        'diagnostics': {'version': 1, 'observation': 'sdk_decoded'}}]
 
 
 def test_rejected_raw_wire_is_not_serialized_for_dedup(monkeypatch):

@@ -7,6 +7,8 @@ from types import MappingProxyType
 
 import pytest
 
+from api_agent.config import load_shared_schema
+
 from api_agent.config.declarations import ConfigSchema, FieldDeclaration
 from api_agent.runtime.compose import ComposeError, snapshot_compose
 from api_agent.runtime.infrastructure_contract import (
@@ -178,7 +180,7 @@ def test_active_fixed_profile_port_collision():
     item = service(compose=MappingProxyType(fragment),
         endpoints=(EndpointOutput('api', 'http://127.0.0.1:4318', 'http://self:8090'),))
     with pytest.raises(ComposeError, match='port'):
-        plan((item,), values={'USE_DATA': True, 'TRACE_MODE': 'OTEL'})
+        plan((item,), values={'USE_DATA': True, 'TRACE_MODE': 'OTEL', 'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default, 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces', 'JAEGER_VIEWER_PORT': 16686})
 
 
 def test_health_and_unconditional_activation():
@@ -358,7 +360,7 @@ def test_nonstring_endpoint_and_fixed_variable_ports():
         plan((service(endpoints=(EndpointOutput('api', None, 'http://self:8090'),)),))
     item = service(compose=MappingProxyType({'image': IMAGE, 'ports': ('127.0.0.1:58090:8090',)}),
         readiness=Readiness('health'), seed=None)
-    both = plan((item,), values={'USE_DATA': True, 'TRACE_MODE': 'OTEL',
+    both = plan((item,), values={'USE_DATA': True, 'TRACE_MODE': 'OTEL', 'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default, 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces', 'JAEGER_VIEWER_PORT': 16686,
         'ALLURE_S3_USE_LOCALSTACK': True})
     assert set(both.profiles) >= {'otel', 'localstack'}
 
@@ -389,4 +391,4 @@ def test_collision_guards_are_causal(monkeypatch):
         patch.setattr(planner, '_name', lambda prefix, identifier:
             'jaeger-badger' if ':data' in identifier else original(prefix, identifier))
         with pytest.raises(ComposeError, match='volume collision'):
-            plan(values={'USE_DATA': True, 'TRACE_MODE': 'OTEL'})
+            plan(values={'USE_DATA': True, 'TRACE_MODE': 'OTEL', 'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default, 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces', 'JAEGER_VIEWER_PORT': 16686})

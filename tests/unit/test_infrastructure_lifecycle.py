@@ -467,7 +467,9 @@ def test_synthetic_modes_use_fresh_composed_configuration(synthetic, argv, expec
     from api_agent.config import compose_schema, load_declarations, load_shared_schema, resolve_config
     manager, _, _, pack, captured = synthetic
     schema = compose_schema(load_shared_schema(), load_declarations(pack / 'config.toml'))
-    config = resolve_config(schema, argv=argv, environ={}, dotenv={})
+    from api_agent.providers.loading import bootstrap_schema
+    schema = bootstrap_schema(schema, argv, {}, {}, owner_root=pack)
+    config = resolve_config(schema, argv=argv, environ={}, dotenv={}, anchors={'owner_root': pack})
     assert not config.errors
     plan = plan_infrastructure(config, schema, captured, manager.scope, engine_environment=TRANSPORT)
     assert tuple(item.id for item in plan.conditional) == expected

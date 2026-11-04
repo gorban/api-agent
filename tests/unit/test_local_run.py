@@ -17,7 +17,10 @@ from api_agent.runtime.listener import ListenerError
 @pytest.fixture
 def local(tmp_path):
     events, calls = [], []
-    config = SimpleNamespace(errors=(), missing=(), values={'RUN_UI': False, 'TRACE_MODE': '', 'UI_LISTENER_URL': 'https://localhost:9443'})
+    from pathlib import Path
+    provider = str(Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/provider.py') + ':create_tracing_provider'
+    config = SimpleNamespace(errors=(), missing=(), values={'RUN_UI': False, 'TRACE_PROVIDER':provider,
+        'TRACE_MODE': '', 'JAEGER_VIEWER_PORT':16686, 'UI_LISTENER_URL': 'https://localhost:9443'})
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
     definition = SimpleNamespace(definition_id='selected-definition')
     prepared = (definition, object(), False, object(), {})
@@ -849,7 +852,7 @@ def test_pure_infrastructure_planning_requires_authoritative_schema(local, monke
     with pytest.raises(ValueError, match='schema'): _plan(local.config, None, context, 'scope')
     schema = object()
     assert _plan(local.config, schema, context, 'scope') == 'frozen-plan'
-    planner.assert_called_once_with(local.config, schema, ('captured',), 'scope', engine_environment=None, inventory=token)
+    planner.assert_called_once_with(local.config.values, schema, ('captured',), 'scope', engine_environment=None, inventory=token, tracing_profiles=(), tracing_destination=None)
     capture.return_value = ()
     from api_agent.runtime.ownership import StackScope
     from dataclasses import replace
@@ -1024,14 +1027,15 @@ def test_repeated_diagnostics_preserve_latest_boundary_without_registration_grow
 def test_enabled_tracing_joins_verified_dashboard_before_owned_browser(local, monkeypatch):
     from api_agent.runtime import local_tracing
     local.config.values['TRACE_MODE'] = 'OTEL'
-    local.config.values['TRACE_TARGET'] = 'https://collector.example/v1/traces'
+    local.config.values['TRACE_EXPORT_ENDPOINT'] = 'https://collector.example/v1/traces'
     dashboard = SimpleNamespace(state='ready', viewer_url='https://viewer.example', diagnostic=None,
         start=AsyncMock(), aclose=AsyncMock(), interactive_credentials=Mock(return_value=None))
     factory = Mock(return_value=dashboard)
     monkeypatch.setattr(local_tracing, 'LocalTracing', factory)
     async def run():
         snapshot = await local.owner.start()
-        factory.assert_called_once_with(local.config.values, emissions=local.session.runtime.emissions)
+        factory.assert_called_once_with(local.config, emissions=local.session.runtime.emissions,
+                                        owner_root=local.owner.context.owner_root)
         dashboard.start.assert_awaited_once()
         assert local.browser_factory.call_args.kwargs['tracing'] is dashboard
         assert [item.name for item in snapshot.destinations] == ['agent', 'tracing', 'flow']
@@ -1109,15 +1113,15 @@ def test_unencodable_execution_error_is_withheld_by_credential_boundary(local):
 @pytest.mark.parametrize('ready', [True, False])
 def test_managed_jaeger_startup_destination_matches_verified_nondefault_viewer(local, monkeypatch, ready):
     from api_agent.runtime import local_tracing
-    local.config.values.update(TRACE_MODE='OTEL', TRACE_TARGET='http://127.0.0.1:4318/v1/traces',
-                               TRACE_VIEWER_URL='', JAEGER_VIEWER_PORT=17686, RUN_UI=True)
+    local.config.values.update(TRACE_MODE='OTEL', TRACE_EXPORT_ENDPOINT='http://127.0.0.1:4318/v1/traces',
+                               JAEGER_VIEWER_PORT=17686, RUN_UI=True)
     monkeypatch.setattr(local_tracing, '_probe', Mock(return_value=ready))
     async def run():
         snapshot = await local.owner.start()
         names = [item.name for item in snapshot.destinations]
         assert names == (['agent', 'tracing', 'flow', 'ui'] if ready else ['agent', 'flow', 'ui'])
         assert next(item.state for item in snapshot.components if item.name == 'tracing') == ('ready' if ready else 'unavailable')
-        diagnostic_events = [event.text for event in local.events if 'Tracing viewer readiness failed' in event.text]
+        diagnostic_events = [event.text for event in local.events if 'selected tracing dashboard is not ready' in event.text]
         assert len(diagnostic_events) == (0 if ready else 1)
         if ready:
             assert snapshot.destinations[1].url == 'http://localhost:17686'
@@ -1126,16 +1130,16 @@ def test_managed_jaeger_startup_destination_matches_verified_nondefault_viewer(l
 
 
 def test_custom_otel_missing_viewer_logs_action_and_has_no_destination(local):
-    local.config.values.update(TRACE_MODE='OTEL', TRACE_TARGET='http://localhost:3000', TRACE_VIEWER_URL='')
+    local.config.values.update(TRACE_MODE='OTEL', TRACE_EXPORT_ENDPOINT='http://localhost:3000/api/public/otel/v1/traces', TRACE_VIEWER_URL='')
     async def run():
         snapshot = await local.owner.start()
         assert [item.name for item in snapshot.destinations] == ['agent', 'flow']
-        warning = next(event for event in local.events if 'set TRACE_VIEWER_URL' in event.text)
+        warning = next(event for event in local.events if 'no dashboard capability' in event.text)
         assert warning.text.endswith('\n')
         output = ''.join(event.text for event in local.events if event.kind == 'log')
         assert warning.text + 'Local startup: browser.' in output
         assert next(item.state for item in snapshot.components if item.name == 'tracing') == 'unavailable'
-        assert local.config.values['TRACE_TARGET'] == 'http://localhost:3000'
+        assert local.config.values['TRACE_EXPORT_ENDPOINT'] == 'http://localhost:3000/api/public/otel/v1/traces'
         await local.owner.aclose()
     asyncio.run(run())
 
@@ -1585,3 +1589,55 @@ def test_process_log_full_setting_preserves_scrubbing_and_controls_tail_limit(lo
         assert emitted == local.owner._logs['agent']
         await local.owner.aclose()
     asyncio.run(run())
+
+
+def test_direct_operation_plan_preserves_provider_default_provenance(tmp_path, monkeypatch):
+    from api_agent.config import load_shared_schema, resolve_config
+    from api_agent.providers.loading import bootstrap_schema
+    from api_agent.runtime.operation import local_operation
+    from api_agent.runtime.ownership import StackScope
+    from api_agent.runtime.compose import selected_profiles
+    root = Path(__file__).resolve().parents[2]
+    environment = {'TRACE_MODE':'OTEL'}
+    schema = bootstrap_schema(load_shared_schema(root),(),environment,{},owner_root=root)
+    config = resolve_config(schema,environ=environment,dotenv={},anchors={'base_root':root,'owner_root':root},interactive=True)
+    assert not config.errors
+    assert config.fields['TRACE_VIEWER_URL'].explicit is False
+    assert config.values['TRACE_VIEWER_URL'] == ''
+    assert selected_profiles(config) == ('otel',)
+    context = SimpleNamespace(base_root=root,pack_root=root,owner_root=root)
+    scope = StackScope.from_roots(root,tmp_path)
+    forbidden = Mock(side_effect=AssertionError('pure fallback plan contacted engine'))
+    monkeypatch.setattr('api_agent.runtime.prerequisites.PrerequisiteManager',forbidden)
+    monkeypatch.setattr('api_agent.runtime.compose.subprocess.run',forbidden)
+    runner = local_operation(context,resolve=lambda:config,argv=(),scope=scope,ownership_directory=tmp_path)
+    plan = runner.plan(config)
+    assert plan.profiles == ('otel',)
+    assert plan.services == ('jaeger',)
+    assert plan.environment['SA_JAEGER_VIEWER_PORT'] == '16686'
+    forbidden.assert_not_called()
+
+
+def test_direct_operation_resolves_relative_tracing_provider_under_owner_root(tmp_path,monkeypatch):
+    from api_agent.config.resolve import ConfigResult,ResolvedValue
+    from api_agent.runtime.operation import local_operation
+    from api_agent.runtime.ownership import StackScope
+    root=Path(__file__).resolve().parents[2]
+    from api_agent.config import load_shared_schema,resolve_config
+    from api_agent.providers.loading import bootstrap_schema
+    schema=bootstrap_schema(load_shared_schema(root),(),{'TRACE_MODE':'OTEL'},{},owner_root=root)
+    resolved=resolve_config(schema,environ={'TRACE_MODE':'OTEL'},dotenv={},anchors={'base_root':root,'owner_root':root},interactive=True)
+    relative='src/api_agent/telemetry/trace_adapters/provider.py:create_tracing_provider'
+    config=ConfigResult({**resolved.values,'TRACE_PROVIDER':relative},
+        {**resolved.fields,'TRACE_PROVIDER':ResolvedValue(relative,'environment',True)},(),(),())
+    context=SimpleNamespace(base_root=tmp_path,pack_root=tmp_path,owner_root=root)
+    scope=StackScope.from_roots(root,tmp_path)
+    forbidden=Mock(side_effect=AssertionError('pure relative plan contacted engine'))
+    monkeypatch.setattr('api_agent.runtime.prerequisites.PrerequisiteManager',forbidden)
+    monkeypatch.setattr('api_agent.runtime.compose.subprocess.run',forbidden)
+    monkeypatch.chdir(tmp_path)
+    runner=local_operation(context,resolve=lambda:config,argv=(),scope=scope,ownership_directory=tmp_path)
+    plan=runner.plan(config)
+    assert plan.profiles==('otel',)
+    assert plan.services==('jaeger',)
+    forbidden.assert_not_called()

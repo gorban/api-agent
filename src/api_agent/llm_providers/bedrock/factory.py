@@ -15,6 +15,7 @@ from .worker import DEFAULT_INFERENCE_TIMEOUT, inference_timeout
 
 
 class BedrockProvider:
+    telemetry_provider_name = 'aws.bedrock'
     credential_protection_version = 1
     captures_effective_payload = True
     version = 1

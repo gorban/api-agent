@@ -161,6 +161,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     chunks, results = [], {}
     inspections = []
     backend = None
+    from .trace_cleanup import optional_trace_cleanup
     tool_plan_ready = False
     interaction_server = None
     interruption = None
@@ -777,14 +778,17 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 backend.close()
             except BaseException as error:
                 inspections.extend(backend.owners)
-                publication_error = error
-                if not isinstance(error, Exception) and interruption is None:
-                    interruption = error
-                if interruption is not None:
-                    interruption.inspections = tuple(inspections)
-                record_local('Integration shared setup backend cleanup', error)
-                chunks.append('Shared setup backend cleanup pending; retry required.\n')
-                failed = True
+                if optional_trace_cleanup(error):
+                    raw('', 'Tracing cleanup remains pending; resources are retained for retry.\n')
+                else:
+                    publication_error = error
+                    if not isinstance(error, Exception) and interruption is None:
+                        interruption = error
+                    if interruption is not None:
+                        interruption.inspections = tuple(inspections)
+                    record_local('Integration shared setup backend cleanup', error)
+                    chunks.append('Shared setup backend cleanup pending; retry required.\n')
+                    failed = True
         try:
             check_cancellation()
             for test in tests:
@@ -794,12 +798,13 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 try:
                     backend.prepare_publication()
                 except Exception as error:
-                    chunks.append('Shared setup execution cleanup pending; retry required.\n')
-                    # Per-test diagnostics already went to on_result. Final
-                    # immutable accounting cannot be published while setup
-                    # still owns work that can emit observations.
-                    publication_error = error
-                    failed = True
+                    if optional_trace_cleanup(error):
+                        raw('', 'Tracing cleanup remains pending; resources are retained for retry.\n')
+                    else:
+                        chunks.append('Shared setup execution cleanup pending; retry required.\n')
+                        # Provider work must stop before immutable accounting.
+                        publication_error = error
+                        failed = True
             failed |= callback_failed or any(reader_diagnostics.values()) or any(
                 test.status not in {'passed', 'skipped'} for test in results.values())
             result = IntegrationRunResult(130 if cancelled else int(failed),
@@ -811,8 +816,13 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             # lose a worker whose handle has not yet returned to the caller.
             call('after_run', after_run, result)
             if backend is not None and config is not None and config.get('DEBUG'):
-                for endpoint in backend.finish_run():
-                    emit(RunnerEvent('inspection_open', text=endpoint))
+                try:
+                    for endpoint in backend.finish_run():
+                        emit(RunnerEvent('inspection_open', text=endpoint))
+                except Exception as error:
+                    if not optional_trace_cleanup(error):
+                        raise
+                    raw('', 'Tracing cleanup remains pending; resources are retained for retry.\n')
                 backend.watch_inspection(lambda kind: emit(RunnerEvent(kind)))
             check_cancellation()
             if after_run is not None and not callback_failed and not cancelled:

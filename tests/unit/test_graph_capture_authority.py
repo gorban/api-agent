@@ -115,8 +115,9 @@ def test_unavailable_authority_never_reaches_journal():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('plain',[False,True])
 @pytest.mark.parametrize('log,trace',[(False,False),(False,True),(True,False),(True,True)])
-def test_graph_admission_preserves_independent_destination_flags(log,trace):
+def test_graph_admission_preserves_independent_destination_flags(log,trace,plain):
     from api_agent.config.resolve import ConfigResult, ResolvedValue
     from api_agent.workflows.observations import WorkflowObservationFactory
     async def run():
@@ -142,14 +143,19 @@ def test_graph_admission_preserves_independent_destination_flags(log,trace):
             finally:
                 lease.release()
         await capture_node(record,{'capture_authority':capability},visit_id='visit',direction='input',
-            values={'text':'visible synthetic-credential'},schema={'type':'object'})
+            values={'text':'visible synthetic-credential', 'unrelated':object()},
+            schema={'type':'object','properties':{'text':{'type':'string'}}},
+            **({'plain_fields':('text',)} if plain else {}))
         retained=next(row for row in record.finalize()['events'] if row['event']=='capture')
         live=next(row for row in rows if row['event']=='capture')
         assert ('values' in retained) is log
         assert ('values' in live) is log
-        assert len(events) == 1
-        if not trace:
-            assert events[0] == {'values': {}}
+        if plain and not trace:
+            assert events == []
+        else:
+            assert len(events) == 1
+            if not trace:
+                assert events[0] == {'values': {}}
         assert 'synthetic-credential' not in str((retained,rows,events))
         if trace:
             assert events[0]['values']['text']=='visible [REDACTED]'
@@ -455,3 +461,266 @@ def read(state, context):
     assert len(admitted)==8
     assert 'counter' not in workflow.services
     assert workflow.services['capture_authority'] is capability
+
+
+@pytest.mark.parametrize('plain_fields',[None,()])
+def test_explicit_unclassified_contract_remains_withheld(plain_fields):
+    record = journal(EmissionBoundary(ContentPolicy(True)))
+    @asynccontextmanager
+    async def capability():
+        yield EmissionBoundary(ContentPolicy(True))
+    result = asyncio.run(capture_node(record, {'capture_authority':capability},
+        visit_id='visit', direction='input', values={'text':'private-sentinel'},
+        schema={'type':'object'}, plain_fields=plain_fields))
+    assert result['reason'] == 'unclassified'
+    assert 'values' not in result
+
+
+def test_plain_authority_privacy_omission_does_not_interrupt_execution(monkeypatch):
+    record = journal(EmissionBoundary(ContentPolicy(True)))
+    authority = EmissionBoundary(ContentPolicy(True))
+    calls = []
+    def export(value):
+        calls.append(value)
+        return {}
+    monkeypatch.setattr(authority, 'content_export', export)
+    @asynccontextmanager
+    async def capability():
+        yield authority
+    result = asyncio.run(capture_node(record, {'capture_authority':capability},
+        visit_id='visit', direction='output', values={'text':'private-sentinel'},
+        schema={'type':'object','properties':{'text':{'type':'string'}}}, plain_fields=('text',)))
+    assert result['reason'] == 'privacy_withheld'
+    assert 'private-sentinel' not in str(record.finalize())
+
+
+@pytest.mark.parametrize('value',[object(), ['private-sentinel'], {'nested':'private-sentinel'}])
+def test_plain_runtime_type_mismatch_is_observational(value):
+    record = journal(EmissionBoundary(ContentPolicy(True)))
+    @asynccontextmanager
+    async def capability():
+        yield EmissionBoundary()
+    result = asyncio.run(capture_node(record, {'capture_authority':capability},
+        visit_id='visit', direction='output', values={'text':value},
+        schema={'type':'object','properties':{'text':{'type':'string'}}}, plain_fields=('text',)))
+    assert result['reason'] == 'unsupported'
+    assert 'values' not in result
+    assert 'private-sentinel' not in str(record.finalize())
+
+
+def test_plain_invalid_rule_is_rejected_before_unavailable_classification():
+    record = journal(EmissionBoundary(ContentPolicy(True)))
+    @asynccontextmanager
+    async def capability():
+        yield EmissionBoundary()
+    with pytest.raises(ValueError, match='Invalid plain workflow capture schema'):
+        asyncio.run(capture_node(record, {'capture_authority':capability},
+            visit_id='visit', direction='input', values={'text':'x'*65537},
+            schema={'type':'object','properties':{'text':False}}, plain_fields=('text',)))
+
+
+@pytest.mark.parametrize('value,rule,reason', [
+    ([], {'type':'array'}, 'unsupported'),
+    ('x'*65537, {'type':'string'}, 'payload_limit'),
+    (object(), {'type':'string'}, 'unsupported'),
+    ('safe', False, 'invalid'),
+])
+@pytest.mark.parametrize('available', [False, True])
+def test_plain_preflight_finishes_before_authority_acquisition(value, rule, reason, available):
+    record = journal(EmissionBoundary(ContentPolicy(True)))
+    borrowed = []
+    @asynccontextmanager
+    async def capability():
+        borrowed.append(True)
+        if not available:
+            raise RuntimeError('unavailable authority')
+        yield EmissionBoundary()
+    operation = capture_node(record, {'capture_authority':capability}, visit_id='visit',
+        direction='input', values={'text':value},
+        schema={'type':'object','properties':{'text':rule}}, plain_fields=('text',))
+    if reason == 'invalid':
+        with pytest.raises(ValueError, match='Invalid plain workflow capture schema'):
+            asyncio.run(operation)
+    else:
+        result = asyncio.run(operation)
+        assert result['reason'] == reason and 'values' not in result
+    assert borrowed == []
+
+
+@pytest.mark.parametrize('log,trace', [(False,False),(False,True),(True,False),(True,True)])
+@pytest.mark.parametrize('kind,value', [('integer',7),('boolean',True),('number',1.5),('null',None)])
+@pytest.mark.parametrize('registered_key', [False,True])
+def test_plain_borrowed_authority_covers_original_scalar_keys_and_values(log,trace,kind,value,registered_key):
+    import json
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    async def run():
+        rows, events = [], []
+        local = EmissionBoundary(ContentPolicy(log))
+        source = EmissionBoundary(secrets=['field' if registered_key else json.dumps(value)])
+        assert 'field' not in source.content_export({'field':value})
+        class Span:
+            def event(self,row): events.append(row)
+            def attributes(self,row): pass
+            def end(self,**kwargs): pass
+        tracer = SimpleNamespace(boundary=local.for_policy(ContentPolicy(trace)),
+            is_model_identity=lambda _:False, begin=lambda *args,**kwargs:Span())
+        flags = {'LOG_CONTENT':log,'TRACELOOP_TRACE_CONTENT':trace}
+        config = ConfigResult(flags,{key:ResolvedValue(setting,'cli',True)
+            for key,setting in flags.items()},(),(),())
+        record = WorkflowObservationFactory(config,boundary=local,sink=rows.append,trace=tracer).create(definition())
+        record.observe(dict(event='scope_start',scope_id='visit',owner='Make',kind='node'))
+        @asynccontextmanager
+        async def capability():
+            lease = source.begin_evidence_lease()
+            try:
+                yield source
+            finally:
+                lease.release()
+        schema = {'type':'object','properties':{'field':{'type':kind}}}
+        denied = await capture_node(record,{'capture_authority':capability},visit_id='visit',
+            direction='input',values={'field':value,'unrelated':object()},schema=schema,plain_fields=('field',))
+        assert denied['reason'] == 'privacy_withheld' and 'values' not in denied
+        assert all('field' not in item.get('values',{}) for item in rows + events)
+        assert source._authority.evidence_leases == 0
+        # Every capture resolves the current authority; no cached redaction view.
+        source = EmissionBoundary()
+        permitted = await capture_node(record,{'capture_authority':capability},visit_id='visit',
+            direction='output',values={'field':value},schema=schema,plain_fields=('field',))
+        assert source._authority.evidence_leases == 0
+        assert ('values' in permitted) is log
+        if log:
+            assert type(permitted['values']['field']) is type(value)
+            assert permitted['values']['field'] == value
+            assert rows[-1]['values'] == permitted['values']
+        if trace:
+            assert type(events[-1]['values']['field']) is type(value)
+            assert events[-1]['values']['field'] == value
+        else:
+            assert all('field' not in item.get('values',{}) for item in events)
+        retained = [row for row in record.finalize()['events'] if row['event']=='capture']
+        assert 'values' not in retained[0]
+        assert ('values' in retained[1]) is log
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('values,reason', [(object(),'unsupported'),({},'captured')])
+def test_plain_preflight_distinguishes_nonobject_from_absent_optional_field(values,reason):
+    record = journal(EmissionBoundary(ContentPolicy(True)))
+    @asynccontextmanager
+    async def capability():
+        yield EmissionBoundary()
+    result = asyncio.run(capture_node(record,{'capture_authority':capability},visit_id='visit',
+        direction='input',values=values,schema={'type':'object','properties':{'text':{'type':'string'}}},
+        plain_fields=('text',)))
+    assert result['reason'] == reason
+    assert result.get('values',{}) == {}
+
+
+@pytest.mark.parametrize('credential',['{"value":"harmless"}', 'value'])
+@pytest.mark.parametrize('original_matches',[False,True])
+def test_plain_preview_respects_original_mapping_credential_context(credential,original_matches,monkeypatch):
+    field = 'value' if original_matches else 'field'
+    original = {field:'harmless'}
+    source = EmissionBoundary(secrets=[credential])
+    source_projection = source.content_export(original)
+    assert (set(source_projection) != set(original)) is original_matches
+    projected = []
+    export = source.content_export
+    def observe_export(values):
+        projected.append(values)
+        return export(values)
+    monkeypatch.setattr(source,'content_export',observe_export)
+    record = journal(EmissionBoundary(ContentPolicy(True)))
+    @asynccontextmanager
+    async def capability():
+        lease = source.begin_evidence_lease()
+        try:
+            yield source
+        finally:
+            lease.release()
+    result = asyncio.run(capture_node(record,{'capture_authority':capability},visit_id='visit',
+        direction='input',values={**original,'unrelated':object()},
+        schema={'type':'object','properties':{field:{'type':'string'}}},plain_fields=(field,)))
+    assert projected == [original]
+    assert source._authority.evidence_leases == 0
+    assert result['reason'] == ('privacy_withheld' if original_matches else 'captured')
+    assert result.get('values',{}) == ({} if original_matches else original)
+
+
+def test_plain_preview_failure_is_observational_after_source_admission(monkeypatch):
+    from api_agent.workflows import journal as journal_module
+    source = EmissionBoundary()
+    record = journal(EmissionBoundary(ContentPolicy(True)))
+    @asynccontextmanager
+    async def capability():
+        yield source
+    def unavailable_preview(*args,**kwargs):
+        raise journal_module.CaptureUnavailable('preview omitted')
+    monkeypatch.setattr(journal_module,'_plain_values',unavailable_preview)
+    result = asyncio.run(capture_node(record,{'capture_authority':capability},visit_id='visit',
+        direction='input',values={'text':'harmless'},
+        schema={'type':'object','properties':{'text':{'type':'string'}}},plain_fields=('text',)))
+    assert result['reason'] == 'privacy_withheld'
+    assert 'values' not in result
+
+
+
+from test_workflow_stateful import fixture_graph
+
+
+@pytest.mark.parametrize('log,trace',[(False,False),(False,True),(True,False),(True,True)])
+@pytest.mark.parametrize('projection',['expanded','omitted','failed','invalid'])
+def test_plain_source_projection_loss_preserves_actual_stateful_business_result(
+        fixture_graph,log,trace,projection,monkeypatch):
+    from langgraph.graph.message import add_messages
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    root, entry = fixture_graph
+    native = root/'native.py'
+    native.write_text(native.read_text().replace('    visits: int','    visits: int\n    text: str').replace(
+        "'visits': state['visits'] + 1}","'visits': state['visits'] + 1, 'text': state['text']}"))
+    monkeypatch.delenv('API_AGENT_ALLURE_REPORTING',raising=False)
+    declared = load_stateful_definition(entry,base_root=root,pack_root=root)
+    source = EmissionBoundary(secrets=['a'])
+    original = 'a b '*8192
+    assert len(original) < 65536 and len(source.content_export({'text':original})['text']) > 65536
+    if projection != 'expanded':
+        def export(values):
+            if projection == 'failed':
+                raise ValueError('source projection unavailable')
+            return {} if projection == 'omitted' else None
+        monkeypatch.setattr(source,'content_export',export)
+    rows, events = [], []
+    class Span:
+        def event(self,row): events.append(row)
+        def attributes(self,row): pass
+        def end(self,**kwargs): pass
+    local = EmissionBoundary(ContentPolicy(log))
+    tracer = SimpleNamespace(boundary=local.for_policy(ContentPolicy(trace)),
+        is_model_identity=lambda _:False,begin=lambda *args,**kwargs:Span())
+    flags = {'LOG_CONTENT':log,'TRACELOOP_TRACE_CONTENT':trace}
+    config = ConfigResult(flags,{key:ResolvedValue(value,'cli',True) for key,value in flags.items()},(),(),())
+    factory = WorkflowObservationFactory(config,boundary=local,sink=rows.append,trace=tracer)
+    @asynccontextmanager
+    async def capability():
+        lease = source.begin_evidence_lease()
+        try:
+            yield source
+        finally:
+            lease.release()
+    contract = {'schema':{'type':'object','properties':{'text':{'type':'string'}}},'plain_fields':('text',)}
+    workflow = StatefulWorkflow(declared,catalog=load_stateful_catalog(declared),reducers={'messages':add_messages},
+        config=flags,services={'observation_factory':factory,'capture_authority':capability,
+        'plain_io_contracts':{'intake':{'input':contract,'output':contract},
+                              'finish':{'input':contract,'output':contract}}})
+    record = factory.create(declared)
+    result = asyncio.run(workflow.arun({'messages':[],'pending':False,'visits':0,'text':original},
+        thread_id='source-projection-loss',journal=record))
+    assert result['visits'] == 1 and result['pending'] is True and result['text'] == original
+    captures = [row for row in record.finalize()['events'] if row['event']=='capture'][:2]
+    assert [row['reason'] for row in captures] == ['payload_limit' if projection=='expanded' else 'privacy_withheld']*2
+    assert all('values' not in row for row in captures)
+    assert all('text' not in row.get('values',{}) for row in rows+events)
+    assert source._authority.evidence_leases == 0

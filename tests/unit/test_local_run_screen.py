@@ -1060,31 +1060,43 @@ def test_diagnostic_display_limits_are_independent_of_full_output():
     assert screen._event_bytes == sum(len(event.text.encode()) for event in screen.events)
 
 
-def test_dashboard_credentials_are_never_requested_or_shown_in_interactive_status():
+@pytest.mark.parametrize('credentials', [None, ('admin@example.test', '[red]literal-password[/red]:lock:')])
+def test_ready_summary_shows_destinations_and_only_applicable_dashboard_login(credentials):
     from unittest.mock import Mock
+    from api_agent.runtime.local_contracts import LocalComponent
 
     async def exercise():
         stop = asyncio.Event()
         class Owner:
             def __init__(self, *args, **kwargs): pass
-            async def start(self): return LocalSnapshot('ready')
+            async def start(self):
+                return LocalSnapshot('ready', components=(LocalComponent('agent', 'ready'),), destinations=(
+                    LocalDestination('Agent', 'http://localhost:8100'),
+                    LocalDestination('Flow', 'http://localhost:8101/flow.md.html')))
             async def wait(self):
                 await stop.wait()
                 return 0
             def request_stop(self): stop.set()
             async def aclose(self): pass
-            interactive_dashboard_credentials = Mock(return_value=('admin@example.test', '[red]literal-password[/red]'))
+            interactive_dashboard_credentials = Mock(return_value=credentials)
         screen = LocalRunScreen(None, lambda: NS(values={'RUN_LOG_SOURCE': 'agent'}), owner_factory=Owner)
         app = Harness(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
             text = screen.query_one('#local-status').render().plain
-            Owner.interactive_dashboard_credentials.assert_not_called()
+            Owner.interactive_dashboard_credentials.assert_called_once_with()
             assert screen.failure == ''
-            assert 'dashboard account' not in text
-            assert 'dashboard password' not in text
-            assert 'admin@example.test' not in text
-            assert 'literal-password' not in text
+            assert 'agent: ready' in text
+            assert 'Agent: http://localhost:8100' in text
+            assert 'Flow: http://localhost:8101/flow.md.html' in text
+            if credentials is None:
+                assert 'dashboard account' not in text
+                assert 'dashboard password' not in text
+            else:
+                assert 'LangFuse dashboard account: admin@example.test' in text
+                assert 'LangFuse dashboard password: [red]literal-password[/red]:lock:' in text
+            screen.refresh_status()
+            Owner.interactive_dashboard_credentials.assert_called_once_with()
             assert not screen.events
             assert 'literal-password' not in repr(screen.snapshot)
             await screen.close_owned()

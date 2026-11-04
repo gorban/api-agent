@@ -2,6 +2,8 @@
 
 [Optional passkey authenticator follow-up](implementation_plan_a2a1.md).
 
+[Login-only recovery guidance](implementation_plan_a2a4.md).
+
 ## Checklist
 
 - [x] Define a common password-manager interface for retrieving username, password and TOTP independently. API-key authentication requests only the password; subscription login requests the fields needed by its current page. Consumers depend on this interface rather than manager-specific functions.

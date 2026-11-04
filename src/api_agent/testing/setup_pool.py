@@ -22,8 +22,20 @@ class SetupPool:
                 from .setup_backend import SetupBackend
                 from .workflow_capture import capture_sources
                 sources = capture_sources(row['config'], self.config_fields)
+                from api_agent.config.resolve import ConfigResult
+                from api_agent.telemetry.tracing_providers import effective_selection
+                from api_agent.runtime.tracing_context import capture_trace_context
+                try:
+                    selection = effective_selection(ConfigResult(row['config'], self.config_fields or {}, (), (), ()),
+                                                    owner_root=self.owner_root)
+                except (ValueError, OSError):
+                    selection = None
+                trace_options = {}
+                if selection is not None:
+                    row['config'] = dict(selection.values)
+                    trace_options['trace_context'] = capture_trace_context(selection)
                 owner = SetupBackend(row['config'], self.owner_root, **self.services,
-                                     **({'capture_sources': sources} if sources else {}))
+                                     **({'capture_sources': sources} if sources else {}), **trace_options)
                 self.owners.append(owner)
                 owners_by_key[key] = owner
                 retain_suite_cleanup(owner)
@@ -46,7 +58,8 @@ class SetupPool:
                 if value:
                     result.extend(value)
             except BaseException as error:
-                if first is None:
+                from .trace_cleanup import optional_trace_cleanup
+                if first is None or optional_trace_cleanup(first) and not optional_trace_cleanup(error):
                     first = error
         if first is not None:
             raise first

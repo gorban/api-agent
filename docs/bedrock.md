@@ -78,11 +78,31 @@ Messages and InvokeModel are not implemented by this adapter. Check the exact
 [AWS API/model matrix](https://docs.aws.amazon.com/bedrock/latest/userguide/models-api-compatibility.html)
 before expanding your filter.
 
-For US GPT and Claude families, including older Claude version-first IDs:
+For selected US GPT families (Luna, Terra and Sol) and Claude families (Haiku,
+Sonnet and Opus), including older Claude version-first IDs. This non-exhaustive
+example preserves the current family list; add other families intentionally:
 
 ```text
 LLM_ALLOWED_MODELS=us[.](?:anthropic[.]claude-(?:(?:haiku|sonnet|opus)-.+|[0-9]+(?:-[0-9]+)*-(?:haiku|sonnet|opus)-.+)|openai[.]gpt-[0-9]+(?:[.][0-9]+)*-(?:luna|terra|sol)(?:-[0-9]{4}-[0-9]{2}-[0-9]{2})?)
 ```
+
+The shipped allowed-model filter is `.+`; the shipped default-model regex is
+`openai[.]gpt-oss-20b(?:-1:0)?`. The US-family expression above is an optional
+filter, not the shipped default. Explicit saved filters remain authoritative.
+For supported global profiles, replace its leading `us[.]` with `global[.]` and
+choose an exact matching global default. A bare foundation-model ID does not
+mean global routing. `BEDROCK_REGION` selects the source Region; a profile's
+`us.` or `global.` prefix selects its routing scope.
+
+Geographic routing can increase token cost compared with the corresponding
+global profile. AWS currently describes approximately 10% input/output token
+savings for global versus geographic cross-Region inference, with prices based
+on the source Region. This applies to supported global profiles, not every
+Bedrock model or endpoint; compare the exact model, source Region and pricing
+tier before changing scope. Global routing permits processing worldwide, so
+select it only when that scope is acceptable. See
+[AWS global inference guidance](https://docs.aws.amazon.com/bedrock/latest/userguide/global-cross-region-inference.html)
+and [model pricing](https://aws.amazon.com/bedrock/pricing/).
 
 Choose a compatible exact default separately. A broad filter can expose models
 that do not support your selected API. Studio preserves exact execution IDs;

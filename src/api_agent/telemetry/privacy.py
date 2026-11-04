@@ -72,9 +72,13 @@ _EXCLUDED_FIELDS = frozenset({'hidden_reasoning',
 _HIDDEN_TYPES = frozenset({'redacted_thinking',
     'continuation', 'compaction'})
 _EFFORTS = frozenset({'', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'auto', 'off'})
-_EFFORT_KEYS = frozenset({'reasoning_effort', 'gen_ai_request_reasoning_effort'})
-_GENAI_COUNT_KEYS = frozenset('gen_ai_usage_' + key for key in _COUNTS if 'tokens' in key)
-_COUNT_KEYS = _COUNTS | _GENAI_COUNT_KEYS | frozenset({'max_output_tokens', 'max_completion_tokens', 'max_tokens'})
+_EFFORT_KEYS = frozenset({'reasoning_effort', 'gen_ai_request_reasoning_effort', 'gen_ai_request_reasoning_level'})
+_GENAI_COUNT_KEYS = (frozenset('gen_ai_usage_' + key for key in _COUNTS if 'tokens' in key) |
+    frozenset({'gen_ai_usage_cache_read_input_tokens', 'gen_ai_usage_cache_write_input_tokens',
+               'gen_ai_usage_reasoning_output_tokens', 'gen_ai_request_max_tokens'}))
+_TRANSPORT_COUNT_KEYS = frozenset('api_agent_transport_usage_' + key for key in
+    ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_write_input_tokens', 'reasoning_output_tokens'))
+_COUNT_KEYS = _COUNTS | _GENAI_COUNT_KEYS | _TRANSPORT_COUNT_KEYS | frozenset({'max_output_tokens', 'max_completion_tokens', 'max_tokens'})
 
 
 def _normalized_key(key):
@@ -98,9 +102,9 @@ def _credential_key(key):
 
 def _permitted_metadata_value(key, value):
     normalized = _normalized_key(key)
-    if normalized in _GENAI_COUNT_KEYS or normalized in {'max_output_tokens', 'max_completion_tokens', 'max_tokens', 'budget_tokens'}:
+    if normalized in _GENAI_COUNT_KEYS | _TRANSPORT_COUNT_KEYS or normalized in {'max_output_tokens', 'max_completion_tokens', 'max_tokens', 'budget_tokens'}:
         return value is None or (type(value) is int and 0 <= value <= _MAX_JSON_INTEGER)
-    if normalized == 'gen_ai_request_reasoning_effort':
+    if normalized in ('gen_ai_request_reasoning_effort', 'gen_ai_request_reasoning_level'):
         return value is None or (type(value) is str and value in _EFFORTS)
     return True
 
@@ -621,6 +625,8 @@ class EmissionBoundary:
     def _metadata(self, key, value):
         normalized = _normalized_key(key)
         if normalized in _EFFORT_KEYS and type(value) is str and value in _EFFORTS:
+            return value
+        if normalized in _GENAI_COUNT_KEYS | _TRANSPORT_COUNT_KEYS and type(value) is int and 0 <= value <= _MAX_JSON_INTEGER:
             return value
         if normalized in _COUNT_KEYS:
             key = normalized.removeprefix('gen_ai_usage_')

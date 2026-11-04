@@ -6,6 +6,8 @@ Linked requirements: [E2E confirmations and retry history](implementation_plan_d
 
 Planned exception to mandatory integration/E2E reporting: [explicit reporting skip](implementation_plan_d3.md). Reporting otherwise requires committed graph-hash inputs under [historical source identity](implementation_plan_b1c3.md); an explicit skip permits uncommitted inputs by disabling Allure, not by weakening its provenance.
 
+[Terminal history viewer](implementation_plan_d7.md).
+
 ## Current backend boundary
 
 - [x] Verify the real LocalStack S3 API using synthetic recording artifacts: manifest-last publication, byte digest retrieval and history listing succeed with scoped ownership. Fix the controlled hook mount to exact short `ro,z` syntax so SELinux labeling works through Podman-backed Compose. Managed loopback LocalStack clients use synthetic SDK credentials without requiring AWS credentials.
