@@ -36,11 +36,13 @@ Operations share compatible selected services through locked leases. If a creato
 Removing ignored prerequisite artifacts (for example with `git clean -xdf`)
 while container definitions remain can delete their captured read-only bind
 sources. A later launch refuses adoption and prints an ACTION REQUIRED section
-identifying the affected container. Stop other operations using that stack,
-then use the same engine/context to stop and remove only the identified
-container. Retain all named volumes and rerun the launcher to recapture files
-and recreate the container. Repeat for any other affected container; stopping
-alone leaves its old bind definition intact. Existing unsafe or altered assets
+listing every affected compatible container in the selected prerequisite plan.
+Stop other operations using that stack, then use the same engine/context to stop and remove only the identified
+containers. Retain all named volumes and rerun the launcher to recapture files
+and recreate the containers. The read-only preflight collects missing captures
+before any startup or adoption; unselected services, other stacks and engines
+are outside this diagnosis. Stopping
+alone leaves old bind definitions intact. Existing unsafe or altered assets
 remain validation failures, rather than being silently replaced.
 
 ## Recursive dependencies and Docker profiles

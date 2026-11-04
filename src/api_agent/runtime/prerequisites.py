@@ -45,6 +45,10 @@ class PrerequisiteError(RuntimeError):
         self.local_details = local_details
 
 
+class MissingCapturedAssetsError(PrerequisiteError):
+    """Verified retained containers need their deleted host captures recreated."""
+
+
 class PrerequisiteCancelled(PrerequisiteError):
     pass
 
@@ -841,6 +845,7 @@ class PrerequisiteManager:
             expected = self.specs[name].get('volumes', [])
             if len(mounts) != len(expected):
                 raise ValueError()
+            missing_capture = None
             for index, volume in enumerate(expected):
                 template = self.document['services'][name]['volumes'][index]
                 source, target, *options = volume.rsplit(':', 2)
@@ -868,9 +873,7 @@ class PrerequisiteManager:
                                     != specification.asset_digests[asset_key]):
                                 raise ValueError()
                     except FileNotFoundError as error:
-                        from .prerequisite_diagnostics import missing_captured_assets_message
-                        raise PrerequisiteError(missing_captured_assets_message(identifier,
-                            executable=self.plan.command[0], project=self.scope.project)) from error
+                        missing_capture = error
                 else:
                     volume_name = self.scope.project + '_' + source
                     if actual['Type'] != 'volume' or actual.get('Name') != volume_name:
@@ -881,6 +884,10 @@ class PrerequisiteManager:
                     if (owned['Name'] != volume_name or any(owned['Labels'].get(key) != value
                             for key, value in labels.items())):
                         raise ValueError()
+            if missing_capture is not None:
+                from .prerequisite_diagnostics import missing_captured_assets_message
+                raise MissingCapturedAssetsError(missing_captured_assets_message((identifier,),
+                    executable=self.plan.command[0], project=self.scope.project)) from missing_capture
         except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
             raise PrerequisiteError('Prerequisite storage or captured assets could not be verified.') from error
 
@@ -1099,9 +1106,13 @@ class PrerequisiteManager:
                     or (reporting_directory is None and any(not item.running for item in initial.values()))):
                 raise PrerequisiteError('Registered reporting container changed or stopped; no restart was attempted.')
             compatible = self._compatible(initial, deadline, allow_stopped=True)
+            missing_captures = []
             for name, item in compatible.items():
                 if name in self.conditional:
-                    self.verify_conditional_storage(name, item.id, deadline)
+                    try:
+                        self.verify_conditional_storage(name, item.id, deadline)
+                    except MissingCapturedAssetsError as error:
+                        missing_captures.append((item.id, error))
             if 'jaeger' in compatible:
                 self.verify_jaeger_storage(compatible['jaeger'].id, deadline)
             if reporting_directory is not None:
@@ -1109,6 +1120,11 @@ class PrerequisiteManager:
                     raise PrerequisiteError('Registered reporting service changed; no restart was attempted.')
                 for identifier in expected_ids:
                     self.verify_reporting_storage(identifier, reporting_directory, deadline)
+            if missing_captures:
+                from .prerequisite_diagnostics import missing_captured_assets_message
+                identifiers = tuple(sorted(identifier for identifier, _ in missing_captures))
+                raise MissingCapturedAssetsError(missing_captured_assets_message(identifiers,
+                    executable=self.plan.command[0], project=self.scope.project)) from missing_captures[0][1].__cause__
             existing = {name: item for name, item in compatible.items() if item.running}
             restarted = {item.id for item in compatible.values() if not item.running}
             protected = _leased_ids(journal)
