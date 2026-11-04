@@ -1329,7 +1329,7 @@ def test_fifo_renderer_artifact_is_rejected_without_blocking(tmp_path, operation
               "from api_agent.workflows.viewer_render import PlantUMLRenderer\n"
               f"PlantUMLRenderer(Path({str(artifact_path)!r}), timeout=0.2).render(b'@startuml\\nA\\n@enduml\\n')\n")
 
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=2)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=10)
 
     assert result.returncode != 0
     assert "bounded regular file" in result.stderr
@@ -1342,7 +1342,7 @@ def test_fifo_diagram_output_is_rejected_without_blocking(tmp_path):
               "from api_agent.workflows.viewer_build import _owned_orphan\n"
               f"_owned_orphan(Path({str(diagram)!r}))\n")
 
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=2)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=10)
 
     assert result.returncode != 0
     assert "bounded regular file" in result.stderr
@@ -1828,13 +1828,32 @@ def test_renderer_owns_and_kills_dedicated_process_group(tmp_path):
     java = tmp_path / "java"
     java.write_text(f"#!/bin/sh\n/bin/ps -o pgid= -p $$ > {shlex.quote(str(pgid))}\nexec sleep 10\n")
     java.chmod(0o755)
-    script = ("import os\n"
+    script = ("import os, time, subprocess\n"
+              "from types import SimpleNamespace\n"
               "from hashlib import sha256\n"
               "from pathlib import Path\n"
               "from api_agent.workflows import viewer_render\n"
               f"jar = Path({str(jar)!r})\n"
               f"pgid = Path({str(pgid)!r})\n"
               "viewer_render.PLANTUML_SHA256 = sha256(jar.read_bytes()).hexdigest()\n"
+              "original_popen = subprocess.Popen\n"
+              "def ready_popen(*args, **kwargs):\n"
+              "    process = original_popen(*args, **kwargs)\n"
+              "    deadline = time.monotonic() + 10\n"
+              "    try:\n"
+              "        while not pgid.exists() or not pgid.read_text().strip():\n"
+              "            assert time.monotonic() < deadline, 'renderer helper did not become ready'\n"
+              "            time.sleep(.01)\n"
+              "    except BaseException:\n"
+              "        try:\n"
+              "            viewer_render.kill_owned_group(process.pid)\n"
+              "        finally:\n"
+              "            process.wait(timeout=5)\n"
+              "            process.stdout.close()\n"
+              "            process.stderr.close()\n"
+              "        raise\n"
+              "    return process\n"
+              "viewer_render.subprocess = SimpleNamespace(**(vars(subprocess) | {'Popen': ready_popen}))\n"
               "renderer = viewer_render.PlantUMLRenderer(jar, " + repr(str(java)) + ", timeout=3.0)\n"
               "try:\n"
               "    renderer.render(b'@startuml\\nA\\n@enduml\\n')\n"
@@ -1844,7 +1863,7 @@ def test_renderer_owns_and_kills_dedicated_process_group(tmp_path):
               "    raise AssertionError('expected renderer timeout')\n"
               "assert int(pgid.read_text()) != os.getpgrp()\n")
 
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=15)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=25)
 
     assert result.returncode == 0, result.stderr
 

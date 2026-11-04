@@ -138,20 +138,39 @@ def test_worker_rejects_output_over_limit_without_emitting(monkeypatch):
     assert output.getvalue() == b''
 
 
-@pytest.mark.parametrize('valid', [False, True])
-def test_darwin_resident_measurement_checks_kernel_result(monkeypatch, valid):
+@pytest.mark.parametrize('returned, error_number', [(96, 0), (0, 1), (95, 22), (97, 0)])
+def test_darwin_resident_measurement_checks_native_abi_and_kernel_result(monkeypatch, returned, error_number):
     import ctypes
     from api_agent.providers import evidence_watchdog as watchdog
+    calls = []
     class Query:
-        def __call__(self, _pid, _kind, _arg, info, size):
+        def __call__(self, pid, kind, argument, info, size):
+            assert ctypes.get_errno() == 0
+            assert (pid, kind, argument, size) == (42, 4, 0, 96)
+            calls.append(size)
             ctypes.cast(info, ctypes.POINTER(ctypes.c_uint64))[1] = 1234
-            return size if valid else 0
-    monkeypatch.setattr(watchdog.ctypes, 'CDLL', lambda *_args, **_kwargs: SimpleNamespace(proc_pidinfo=Query()))
-    if valid:
+            ctypes.set_errno(error_number)
+            return returned
+    query = Query()
+    def library(path, *, use_errno):
+        assert path == '/usr/lib/libproc.dylib' and use_errno is True
+        return SimpleNamespace(proc_pidinfo=query)
+    native = SimpleNamespace(CDLL=library, c_int=ctypes.c_int, c_uint64=ctypes.c_uint64,
+                             c_void_p=ctypes.c_void_p, byref=ctypes.byref, sizeof=ctypes.sizeof,
+                             get_errno=ctypes.get_errno, set_errno=ctypes.set_errno)
+    monkeypatch.setattr(watchdog, 'ctypes', native)
+    ctypes.set_errno(13)
+
+    if returned == 96:
         assert watchdog._darwin_resident_bytes(42) == 1234
     else:
-        with pytest.raises(OSError, match='measurement unavailable'):
+        with pytest.raises(OSError, match='measurement unavailable') as caught:
             watchdog._darwin_resident_bytes(42)
+        assert caught.value.errno == error_number
+
+    assert calls == [96]
+    assert query.argtypes == (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
+    assert query.restype == ctypes.c_int
 
 
 def test_child_exited_when_already_reaped(monkeypatch):

@@ -1,7 +1,9 @@
 """Final command diagnostics use current authority after the cleanup attempt."""
+from types import SimpleNamespace
 import asyncio
 import os
 import sys
+import subprocess
 import time
 from unittest.mock import AsyncMock
 
@@ -10,6 +12,21 @@ import pytest
 from api_agent.runtime import prerequisites
 from api_agent.testing.diagnostics import CredentialScrubber
 from api_agent.testing.processes import disposal_complete
+
+
+@pytest.fixture(autouse=True, params=['native', 'system-ps'])
+def process_inspection_backend(request, monkeypatch):
+    """Exercise native process inspection even on a host with procfs."""
+    observed = []
+    if request.param == 'system-ps':
+        from api_agent.testing import processes
+        original_run = subprocess.run
+        def probe(argv, **kwargs):
+            observed.append(argv)
+            return original_run(argv, **kwargs)
+        monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
+        monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(subprocess) | {'run': probe})))
+    return request.param, observed
 
 
 def command(tmp_path, exit_code=7, *, wait=False):
@@ -50,7 +67,7 @@ def test_finalized_failure_renders_once_with_late_secret_registration(tmp_path, 
 @pytest.mark.parametrize('stage', ['selector', 'stdout', 'stderr'])
 @pytest.mark.parametrize('exit_code', [0, 7])
 def test_close_failure_keeps_one_final_diagnostic_on_primary_and_escaping_error(
-        tmp_path, monkeypatch, stage, exit_code):
+        tmp_path, monkeypatch, stage, exit_code, process_inspection_backend):
     secret = 'synthetic-close-failure-credential'
     scrubber = CredentialScrubber(secret_values=(secret,))
     original_capture = scrubber.capture
@@ -90,7 +107,8 @@ def test_close_failure_keeps_one_final_diagnostic_on_primary_and_escaping_error(
         assert closed == [stage]
         captures.append(len(data))
         return original_capture(data)
-    monkeypatch.setattr(prerequisites.subprocess, 'Popen', popen)
+    monkeypatch.setattr(prerequisites, 'subprocess', SimpleNamespace(**(vars(prerequisites.subprocess) | {'Popen': popen})))
+    assert subprocess.Popen is original_popen, 'command mock escaped into system process inspection'
     monkeypatch.setattr(prerequisites.selectors, 'DefaultSelector', selector)
     monkeypatch.setattr(scrubber, 'capture', capture)
 
@@ -116,6 +134,10 @@ def test_close_failure_keeps_one_final_diagnostic_on_primary_and_escaping_error(
             pipe.close()
         for process in processes:
             original_finalize(process)
+        backend, probes = process_inspection_backend
+        if backend == 'system-ps':
+            assert probes and all(argv[0] == '/bin/ps' for argv in probes)
+        assert len(processes) == 1
 
 
 @pytest.mark.parametrize('cleanup_failure', [False, True])

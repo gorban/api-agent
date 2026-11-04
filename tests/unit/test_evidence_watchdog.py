@@ -1,9 +1,15 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
 from api_agent.providers import evidence_watchdog as watchdog
 from api_agent.providers.contracts import ContractError
+
+
+def patch_projector_spawn(monkeypatch, operation):
+    """Replace only the projector's launcher, preserving system process probes."""
+    monkeypatch.setattr(watchdog, 'subprocess', SimpleNamespace(Popen=operation))
 
 
 async def _sleeping_child():
@@ -308,7 +314,7 @@ def test_direct_owned_spawn_cancellation_retains_and_disposes_created_child(monk
             entered.set()
             assert release.wait(5)
             return process
-        monkeypatch.setattr(watchdog.subprocess, 'Popen', delayed)
+        patch_projector_spawn(monkeypatch, delayed)
         task = asyncio.create_task(watchdog.spawn(
             sys.executable, '-c', 'import time; time.sleep(30)',
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -426,7 +432,7 @@ def test_shutdown_cancelling_all_tasks_retains_spawn_result_and_disposes_child(m
             assert release.wait(5)
             returned.set()
             return child
-        monkeypatch.setattr(watchdog.subprocess, 'Popen', gated)
+        patch_projector_spawn(monkeypatch, gated)
         spawning = asyncio.create_task(watchdog.spawn(
             sys.executable, '-c', 'import time; time.sleep(30)',
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -500,4 +506,40 @@ def test_shutdown_cancelling_all_tasks_waits_for_owned_pipe_thread(monkeypatch, 
             await asyncio.gather(*cancelled, return_exceptions=True)
             await asyncio.gather(exchange, return_exceptions=True)
             await child.dispose()
+    asyncio.run(scenario())
+
+
+
+def test_projector_spawn_fixture_leaves_system_process_inspection_real(monkeypatch):
+    import os
+    import subprocess
+    from unittest.mock import Mock
+    replacement = Mock(side_effect=AssertionError('system inspector reached projector launcher'))
+    patch_projector_spawn(monkeypatch, replacement)
+
+    report = subprocess.run(['/bin/ps', '-p', str(os.getpid()), '-o', 'pid='],
+                            capture_output=True, text=True, check=True, timeout=5)
+
+    assert report.stdout.strip() == str(os.getpid())
+    replacement.assert_not_called()
+
+
+@pytest.mark.parametrize('number', [1, 3])
+def test_live_worker_measurement_failure_reports_only_numeric_errno(monkeypatch, number):
+    async def scenario():
+        child = await _sleeping_child()
+        calls = []
+        def unavailable(pid):
+            calls.append(pid)
+            raise OSError(number, 'untrusted-private-detail')
+        monkeypatch.setattr(watchdog.sys, 'platform', 'darwin')
+        monkeypatch.setattr(watchdog, '_POLL_SECONDS', .01)
+        monkeypatch.setattr(watchdog, '_darwin_resident_bytes', unavailable)
+
+        with pytest.raises(ContractError, match=rf'measurement unavailable \(errno {number}\)') as caught:
+            await watchdog.communicate(child, b'')
+
+        assert calls == [child.pid]
+        assert 'untrusted-private-detail' not in str(caught.value)
+        assert child.returncode is not None
     asyncio.run(scenario())

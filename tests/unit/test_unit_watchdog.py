@@ -261,6 +261,7 @@ def test_active_cancellation_remains_130_and_preserves_earlier_failure(controlle
 @pytest.mark.skipif(os.name != 'posix', reason='Owned process groups require POSIX')
 @pytest.mark.parametrize('use_ps', [False, True])
 def test_real_owned_group_timeout_reaps_descendant_and_cannot_accept_late_pass(tmp_path, monkeypatch, use_ps):
+    import time
     import subprocess
     import sys
     import textwrap
@@ -279,10 +280,11 @@ def test_real_owned_group_timeout_reaps_descendant_and_cannot_accept_late_pass(t
     original_stop = runner._stop_execution
     processes, stops = [], []
     pid_file, late_file = tmp_path / 'owned-pids.json', tmp_path / 'late-teardown'
+    ready_file = tmp_path / 'worker-ready'
     worker = textwrap.dedent('''
         import json, os, signal, subprocess, sys, time
         from pathlib import Path
-        events, pids, late = map(Path, sys.argv[1:])
+        events, pids, late, ready = map(Path, sys.argv[1:])
         child = subprocess.Popen([sys.executable, '-c',
             'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])
         pids.write_text(json.dumps([os.getpid(), child.pid]))
@@ -301,12 +303,22 @@ def test_real_owned_group_timeout_reaps_descendant_and_cannot_accept_late_pass(t
         for phase in ('setup', 'call', 'teardown'):
             report('test.py::first', phase)
         send(kind='test_started', node='test.py::second')
+        ready.touch()
         while True:
             time.sleep(.01)
     ''')
     def launch(args, **kwargs):
-        process = original_popen([sys.executable, '-u', '-c', worker, args[3], str(pid_file), str(late_file)], **kwargs)
+        process = original_popen([sys.executable, '-u', '-c', worker, args[3], str(pid_file), str(late_file), str(ready_file)], **kwargs)
         processes.append(process)
+        # Bound helper startup separately from the deliberate one-second test.
+        ready_deadline = time.monotonic() + 10
+        try:
+            while not ready_file.is_file():
+                assert time.monotonic() < ready_deadline, 'watchdog worker did not become ready'
+                time.sleep(.01)
+        except BaseException:
+            original_stop(process)
+            raise
         return process
     def stop(process):
         stops.append(process)

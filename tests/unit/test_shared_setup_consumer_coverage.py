@@ -45,7 +45,7 @@ def test_fresh_cleanup_interrupt_retains_original_and_backend(tmp_path, monkeypa
         from pathlib import Path
         Path(args[3]).write_text(''.join(json.dumps(row) + '\n' for row in rows))
         return SimpleNamespace(stdout=StringIO(), returncode=0, poll=lambda: 0)
-    monkeypatch.setattr(integration.subprocess, 'Popen', child)
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': child})))
     monkeypatch.setattr(integration, 'finalize', Mock())
     publications, diagnostics = [], []
     def publish(result):

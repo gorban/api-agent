@@ -80,7 +80,7 @@ def worker_harness(tmp_path, monkeypatch):
     def finalize(process):
         state.finalized.append(process)
         process.returncode = 0
-    monkeypatch.setattr(integration.subprocess, 'Popen', popen)
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': popen})))
     monkeypatch.setattr(integration, 'finalize', finalize)
     monkeypatch.setattr(inspection, 'finalize', finalize)
     state.run = lambda **kwargs: integration.run_integration_tests(context, (identity,),
@@ -229,7 +229,7 @@ def test_start_failure_closes_both_liveness_fds(worker_harness, monkeypatch, err
         descriptors.extend(pair)
         return pair
     monkeypatch.setattr(integration.os, 'pipe', pipe)
-    monkeypatch.setattr(integration.subprocess, 'Popen', lambda *args, **kwargs: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': lambda *args, **kwargs: (_ for _ in ()).throw(error)})))
     if isinstance(error, OSError):
         result = state.run()
         assert result.exit_code == 1 and 'private start' not in result.output
@@ -350,7 +350,7 @@ def test_nonposix_failure_cleanup_never_closes_foreign_fd(worker_harness, monkey
         monkeypatch.setattr(integration.threading, 'Thread', FailedReader)
     else:
         error = OSError('spawn unavailable') if failure == 'oserror' else KeyboardInterrupt()
-        monkeypatch.setattr(integration.subprocess, 'Popen', lambda *a, **k: (_ for _ in ()).throw(error))
+        monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': lambda *a, **k: (_ for _ in ()).throw(error)})))
     if failure == 'interrupt':
         with pytest.raises(KeyboardInterrupt):
             state.run()
@@ -378,7 +378,7 @@ def test_event_directory_disappearance_respects_transferred_ownership(worker_har
             process = original(*args, **kwargs)
             process.event_file.unlink()
             return process
-        monkeypatch.setattr(integration.subprocess, 'Popen', disappeared)
+        monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': disappeared})))
     result = state.run()
     assert result.exit_code == (0 if retained else 1)
     if retained:

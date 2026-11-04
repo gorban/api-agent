@@ -98,8 +98,9 @@ def _darwin_resident_bytes(pid):
     query.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
     query.restype = ctypes.c_int
     info = (ctypes.c_uint64 * 12)()
+    ctypes.set_errno(0)
     if query(pid, 4, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info):
-        raise OSError('Process memory measurement unavailable')
+        raise OSError(ctypes.get_errno(), 'Process memory measurement unavailable')
     return info[1]
 
 
@@ -137,7 +138,7 @@ async def communicate(process, payload):
                         sample = getattr(process, 'resident_bytes', None)
                         resident = (await sample() if sample is not None
                                     else _darwin_resident_bytes(process.pid))
-                    except (OSError, AttributeError, TypeError, ValueError):
+                    except (OSError, AttributeError, TypeError, ValueError) as error:
                         # A non-consuming kernel child-status check avoids
                         # depending on event-loop reaping latency.
                         try:
@@ -146,7 +147,9 @@ async def communicate(process, payload):
                             exited = False
                         if exited or process.returncode is not None or exchange.done():
                             continue
-                        raise ContractError('Evidence projection memory measurement unavailable') from None
+                        number = getattr(error, 'errno', None)
+                        detail = f' (errno {number})' if type(number) is int else ''
+                        raise ContractError('Evidence projection memory measurement unavailable' + detail) from None
                     if budget.remaining <= 0:
                         raise ContractError('Evidence projection timed out')
                     if resident is None:

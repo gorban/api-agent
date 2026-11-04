@@ -57,7 +57,7 @@ def test_invalid_timeout(kwargs):
 def test_listener_rejected_before_spawn(host, port_value, scheme, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail('spawn before listener validation')
-    monkeypatch.setattr(process.subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': forbidden})))
     with pytest.raises(ValueError):
         asyncio.run(launcher().start(('node',), cwd='.', host=host, port=port_value, scheme=scheme, env={}))
 
@@ -137,7 +137,7 @@ class Client:
 @pytest.mark.parametrize('response', [httpx.Response(200, headers={'X-UI-Launch-Token': 'wrong'}), httpx.Response(503, headers={'X-UI-Launch-Token': 'a' * 43}), httpx.ConnectError('safe')])
 def test_wrong_readiness_or_connection_failure_times_out_and_drains(response, monkeypatch):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
     client = Client(response)
     monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
@@ -152,7 +152,7 @@ def test_wrong_readiness_or_connection_failure_times_out_and_drains(response, mo
 def test_spawn_failure_is_safe(monkeypatch):
     def spawn(*args, **kwargs):
         raise OSError('secret')
-    monkeypatch.setattr(process.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': spawn})))
     with pytest.raises(SetupPrerequisiteError, match='Studio could not start Node.js'):
         asyncio.run(launcher().start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={}))
 
@@ -160,7 +160,7 @@ def test_spawn_failure_is_safe(monkeypatch):
 def test_early_process_exit_rejects_readiness(monkeypatch):
     child = Child()
     child.code = 1
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     with pytest.raises(SetupPrerequisiteError, match='exited'):
         asyncio.run(launcher().start(('node',), cwd='.', host='localhost', port=8000, scheme='http', env={}))
 
@@ -169,7 +169,7 @@ def test_early_process_exit_rejects_readiness(monkeypatch):
 def test_failed_start_retains_pending_disposal(cancel, monkeypatch):
     async def run():
         child = Child(exit_on='never')
-        monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+        monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
         client = Client(httpx.Response(200))
         monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: client)
         task = asyncio.create_task(launcher(timeout=.04, cleanup_timeout=.04).start(
@@ -207,7 +207,7 @@ def test_actual_http_wrong_identity_never_admits_foreign_server(monkeypatch):
         child = popen(*args, **kwargs)
         children.append(child)
         return child
-    monkeypatch.setattr(process.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': spawn})))
     async def run():
         async with actual_client(trust_env=False) as real:
             class VerifiedForeign(Client):
@@ -248,7 +248,7 @@ def test_readiness_cancellation_drains_real_owned_child(monkeypatch):
         child = popen(*args, **kwargs)
         children.append(child)
         return child
-    monkeypatch.setattr(process.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': spawn})))
     async def run():
         task = asyncio.create_task(launcher().start((sys.executable, '-c', 'import time; time.sleep(30)'),
             cwd='.', host='127.0.0.1', port=port(), scheme='http', env={}))
@@ -345,7 +345,7 @@ def test_actual_node_parent_pipe_eof_stops_listener_without_signal():
 @pytest.mark.parametrize('matching', [False, True])
 def test_consumed_probe_deadline_cannot_retry_or_admit_a_late_response(monkeypatch, matching):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
     class Consumed(Client):
         def __init__(self):
@@ -379,7 +379,7 @@ def test_consumed_probe_deadline_cannot_retry_or_admit_a_late_response(monkeypat
 
 def test_budget_expired_during_client_entry_prevents_any_probe(monkeypatch):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     class ConsumedEntry(Client):
         async def __aenter__(self):
             try:
@@ -424,7 +424,7 @@ def test_consumed_deadline_with_actual_foreign_http_and_owned_child(monkeypatch,
         child = popen(*args, **kwargs)
         children.append(child)
         return child
-    monkeypatch.setattr(process.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': spawn})))
     async def run():
         async with actual_client(trust_env=False) as real:
             class Consumed(Client):
@@ -472,7 +472,7 @@ def test_consumed_deadline_with_actual_foreign_http_and_owned_child(monkeypatch,
 def test_probe_deadline_uses_clipped_parent_budget_and_retains_exact_cleanup(monkeypatch):
     from api_agent.providers.progress import component_timeout
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
     class Consumed(Client):
         async def head(self, url):
@@ -504,7 +504,7 @@ def test_probe_deadline_uses_clipped_parent_budget_and_retains_exact_cleanup(mon
 
 def test_probe_http_error_after_consumed_deadline_remains_timeout(monkeypatch):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     class Consumed(Client):
         async def head(self, url):
             self.urls.append(url)
@@ -522,7 +522,7 @@ def test_probe_http_error_after_consumed_deadline_remains_timeout(monkeypatch):
 
 
 def test_successful_probe_client_exit_cannot_consume_startup_deadline(monkeypatch):
-    child=Child();monkeypatch.setattr(process.subprocess,'Popen',lambda *a,**kw:child)
+    child=Child();monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *a,**kw:child})))
     monkeypatch.setattr(process,'token_urlsafe',lambda _:'a'*43)
     class ConsumedExit(Client):
         async def __aexit__(self,*args):
@@ -542,7 +542,7 @@ def test_successful_probe_client_exit_cannot_consume_startup_deadline(monkeypatc
 
 
 def test_consumed_exit_deadline_http_error_keeps_timeout_classification(monkeypatch):
-    child=Child();monkeypatch.setattr(process.subprocess,'Popen',lambda *a,**kw:child)
+    child=Child();monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *a,**kw:child})))
     monkeypatch.setattr(process,'token_urlsafe',lambda _:'a'*43)
     class ConsumedExit(Client):
         async def __aexit__(self,*args):
@@ -559,7 +559,7 @@ def test_consumed_exit_deadline_http_error_keeps_timeout_classification(monkeypa
 
 def test_pre_deadline_client_exit_error_preserves_failure_and_owned_disposal(monkeypatch):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
     failure = httpx.ReadError('Controlled pre-deadline client exit failure')
     class FailedExit(Client):
@@ -575,7 +575,7 @@ def test_pre_deadline_client_exit_error_preserves_failure_and_owned_disposal(mon
 
 def test_external_cancellation_during_client_exit_retains_cancellation(monkeypatch):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
     async def run():
         entered = asyncio.Event()
@@ -595,7 +595,7 @@ def test_external_cancellation_during_client_exit_retains_cancellation(monkeypat
 
 
 def test_original_external_cancel_survives_later_expiry_during_client_disposal(monkeypatch):
-    child=Child();monkeypatch.setattr(process.subprocess,'Popen',lambda *a,**kw:child)
+    child=Child();monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *a,**kw:child})))
     async def run():
         entered=asyncio.Event()
         class SlowExit(Client):
@@ -617,7 +617,7 @@ def test_original_external_cancel_survives_later_expiry_during_client_disposal(m
 @pytest.mark.parametrize('kind', [KeyboardInterrupt, SystemExit, GeneratorExit])
 def test_expired_client_disposal_preserves_process_interruption(monkeypatch, kind):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
     failure = kind('controlled process interruption')
     class InterruptedExit(Client):
@@ -640,7 +640,7 @@ def test_expired_client_disposal_preserves_process_interruption(monkeypatch, kin
 @pytest.mark.parametrize('translate_error', [False, True])
 def test_consumed_external_cancel_never_admits_readiness(monkeypatch, stage, translate_error):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
     async def run():
         entered = asyncio.Event()
@@ -677,7 +677,7 @@ def test_consumed_external_cancel_never_admits_readiness(monkeypatch, stage, tra
 
 def test_consumed_external_cancel_retains_exact_failed_cleanup(monkeypatch):
     child = Child(exit_on='never')
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     async def run():
         entered = asyncio.Event()
         class Consumed(Client):
@@ -702,7 +702,7 @@ def test_consumed_external_cancel_retains_exact_failed_cleanup(monkeypatch):
 
 def test_preexisting_cancellation_count_does_not_reject_new_start(monkeypatch):
     child = Child()
-    monkeypatch.setattr(process.subprocess, 'Popen', lambda *args, **kwargs: child)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': lambda *args, **kwargs: child})))
     monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
     monkeypatch.setattr(process.httpx, 'AsyncClient', lambda **kwargs: Client(httpx.Response(200, headers={'X-UI-Launch-Token': 'a' * 43})))
     async def run():

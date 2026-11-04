@@ -40,3 +40,13 @@
 - [ ] Human acceptance: pull and run the ordinary unit command on a checkout containing an older managed hook.
 
 Verification: 26,704 full Linux unit tests pass at exact 100% line and branch coverage. Independent review closes the moved-file and published-file races; causal mutations reject omitted hash or identity checks. Native Mac acceptance remains open.
+
+## Native process-inspection isolation
+
+- [x] Scope synthetic subprocess factories to their owning consumer. Native process inspection must use the real system subprocess path, and helper cleanup must not add inspection children to a collection being retired. Exercise the system-ps backend on Linux as well as the native backend, with meaningful rejection controls.
+- [x] Separate bounded helper readiness from intentionally short watchdog or renderer deadlines. Non-timeout selection and rejection tests use sufficient bounded setup time; retain production deadlines, actual timeout rejection and owned-group disposal.
+- [x] Preserve safe native memory-query errno and verify the documented ABI. A live child with unavailable memory measurement remains rejected; do not infer a native permission failure is solved by a passing Linux fixture.
+- [x] Complete independent and external review, full applicable coverage and public-boundary checks.
+- [ ] Human acceptance: normal macOS full unit suite. Native memory-query unavailability followed by signal denial remains unresolved until a fresh native run; diagnostics now preserve the numeric query errno.
+
+Verification: 26,719 full Linux unit tests pass at exact 100% line and branch coverage. Forced system-process inspection and readiness-only rejection controls pass. Native execution is a separate acceptance gate.

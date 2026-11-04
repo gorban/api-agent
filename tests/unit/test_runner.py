@@ -323,7 +323,7 @@ def test_large_selection_uses_file_instead_of_os_argument_budget(tmp_path, monke
         launches.append(selected)
         return SimpleNamespace(stdout=io.StringIO(), returncode=1, poll=lambda: 1,
                                _api_agent_disposal_complete=True)
-    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
+    monkeypatch.setattr(runner, 'subprocess', SimpleNamespace(**(vars(runner.subprocess) | {'Popen': launch})))
     monkeypatch.setattr(runner, '_stop_execution', lambda process: None)
     result = run_unit_tests(ctx, tests)
     assert len(result.tests) == len(nodes)

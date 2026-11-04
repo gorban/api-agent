@@ -70,7 +70,7 @@ def test_launch_registers_token_before_first_output(monkeypatch):
         options.append(kwargs)
         os.write(child.writer, b'launch-token output\n')
         return child
-    monkeypatch.setattr(process.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(process, 'subprocess', SimpleNamespace(**(vars(process.subprocess) | {'Popen': spawn})))
     class Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
