@@ -244,3 +244,72 @@ def test_owner_preserves_housekeeping_fault_when_acknowledgment_fails(monkeypatc
     with pytest.raises(InterruptedError) as failure:
         owned.OwnedProcess(['synthetic'])
     assert str(failure.value.cleanup_error) == 'guardian acknowledgment failed'
+
+
+@pytest.mark.parametrize('code', [0, 7, -9])
+def test_guard_preserves_exit_status_for_permission_denied_zombie_group(monkeypatch, code):
+    from api_agent.auth import owned_process as owned
+    from types import SimpleNamespace
+    events = []
+    monkeypatch.setattr(owned, '_enable_subreaper', lambda: None)
+    monkeypatch.setattr(owned, '_reap_descendants', lambda: events.append('descendants'))
+    monkeypatch.setattr(owned.os, 'close', lambda fd: events.append(('close', fd)))
+    monkeypatch.setattr(owned.os, 'waitid', lambda *args: object())
+    monkeypatch.setattr(owned.subprocess, 'Popen', lambda *args, **kwargs:
+                        SimpleNamespace(pid=123, wait=lambda: events.append('reap') or code))
+    def denied(*args):
+        events.append('signal')
+        raise PermissionError('controlled zombie group')
+    monkeypatch.setattr(owned.os, 'killpg', denied)
+    def snapshot(*args, **kwargs):
+        events.append('inspect')
+        return SimpleNamespace(stdout='123 123 Z\n456 123 Z\n')
+    monkeypatch.setattr(owned.subprocess, 'run', snapshot)
+    class Selector:
+        def register(self, *args): pass
+        def close(self): events.append('selector close')
+    monkeypatch.setattr(owned.selectors, 'DefaultSelector', Selector)
+
+    assert owned._guard(44, ['synthetic']) == (code if code >= 0 else 128 - code)
+    assert events.index('signal') < events.index('inspect') < events.index('reap')
+    assert events[-3:] == ['descendants', 'selector close', ('close', 44)]
+
+
+@pytest.mark.parametrize('failure', ['malformed', 'inspection', 'timeout'])
+def test_owned_group_permission_denial_fails_closed_when_inspection_fails(monkeypatch, failure):
+    from api_agent.auth import owned_process as owned
+    from types import SimpleNamespace
+    def denied(*args):
+        raise PermissionError('controlled denial')
+    monkeypatch.setattr(owned.os, 'killpg', denied)
+    def snapshot(*args, **kwargs):
+        if failure == 'inspection':
+            raise subprocess.CalledProcessError(2, 'ps')
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired('ps', 1)
+        return SimpleNamespace(stdout='invalid snapshot')
+    monkeypatch.setattr(owned.subprocess, 'run', snapshot)
+    with pytest.raises((ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+        owned.kill_owned_group(123)
+
+
+def test_guard_inspects_real_zombie_after_closing_standard_streams(tmp_path):
+    marker = tmp_path / 'exit-status'
+    reader, writer = os.pipe()
+    script = (
+        'import sys\n'
+        'from pathlib import Path\n'
+        'from api_agent.auth import owned_process as owned\n'
+        'def denied(*args): raise PermissionError("controlled zombie signaling")\n'
+        'owned.os.killpg = denied\n'
+        'code = owned._guard(int(sys.argv[1]), [sys.executable, "-c", "raise SystemExit(7)"])\n'
+        'Path(sys.argv[2]).write_text(str(code))\n'
+    )
+    try:
+        result = subprocess.run([sys.executable, '-c', script, str(reader), str(marker)],
+                                pass_fds=(reader,), timeout=10)
+    finally:
+        os.close(reader)
+        os.close(writer)
+    assert result.returncode == 0
+    assert marker.read_text() == '7'

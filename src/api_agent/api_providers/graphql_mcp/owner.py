@@ -150,7 +150,7 @@ class GraphQLMcpOwner:
         managed_default = node is None and os.environ.get('API_AGENT_MISE') == '1'
         if resolved_node is None and not managed_default:
             raise GraphQLMcpError("node_missing")
-        self._node = str(Path(resolved_node).resolve()) if resolved_node is not None else None
+        self._node = str(Path(resolved_node).absolute()) if resolved_node is not None else None
         self._default_node = node is None
         self._timeout = float(timeout)
         self._assets_dir = Path(assets_dir).resolve() if assets_dir is not None else _ASSETS
@@ -177,7 +177,7 @@ class GraphQLMcpOwner:
             resolved = shutil.which('node')
             if resolved is None:
                 raise GraphQLMcpError('node_missing')
-            self._node = str(Path(resolved).resolve())
+            self._node = str(Path(resolved).absolute())
         from .assets import installed_script
         script = installed_script(self._assets_dir)
         env = {k: v for k, v in os.environ.items() if k not in {"ENDPOINT", "HEADERS", "SCHEMA", "ALLOW_MUTATIONS"}}

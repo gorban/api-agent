@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import runpy
 import subprocess
 import sys
+import shlex
 
 import pytest
 
@@ -877,7 +878,7 @@ def fake_renderer(tmp_path, monkeypatch):
     jar.write_bytes(b"fixture jar")
     monkeypatch.setattr(viewer_render, "PLANTUML_SHA256", sha256(jar.read_bytes()).hexdigest())
 
-    def make(script: str, *, timeout: float = 1.0):
+    def make(script: str, *, timeout: float = 5.0):
         java = tmp_path / "java"
         java.write_text("#!/bin/sh\n" + script + "\n")
         java.chmod(0o755)
@@ -934,11 +935,13 @@ def test_renderer_timeout_kills_owned_process_group(fake_renderer):
 def _assert_child_stopped(pid):
     deadline = time.monotonic() + 1.0
     while True:
-        stat_path = Path(f"/proc/{pid}/stat")
-        try:
-            state = stat_path.read_text().split()[2]
-        except (FileNotFoundError, ProcessLookupError):
-            state = "gone"
+        report = subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "stat="], capture_output=True,
+            text=True, timeout=2,
+        )
+        if report.returncode not in (0, 1):
+            raise RuntimeError("cannot inspect renderer descendant")
+        state = report.stdout.strip()[:1] or "gone"
         if state in {"Z", "X", "gone"}:
             return
         if time.monotonic() >= deadline:
@@ -948,7 +951,7 @@ def _assert_child_stopped(pid):
 
 def test_renderer_timeout_kills_descendant_after_leader_exits(fake_renderer, tmp_path):
     child_pid = tmp_path / "child.pid"
-    renderer = fake_renderer(f"sleep 10 & echo $! > {child_pid}; exit 0", timeout=0.3)
+    renderer = fake_renderer(f"sleep 10 & echo $! > {shlex.quote(str(child_pid))}; exit 0", timeout=3.0)
 
     with pytest.raises(RenderError, match="renderer timed out"):
         renderer.render(b"@startuml\nA\n@enduml\n")
@@ -957,36 +960,31 @@ def test_renderer_timeout_kills_descendant_after_leader_exits(fake_renderer, tmp
     _assert_child_stopped(pid)
 
 
-@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
-def test_child_stopped_helper_accepts_disappearance_during_proc_read(monkeypatch, error):
-    def vanished(path):
-        raise error("controlled process disappeared")
-    monkeypatch.setattr(Path, "read_text", vanished)
-
+def test_child_stopped_helper_accepts_disappearance(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=1, stdout=""))
     _assert_child_stopped(123)
 
 
 def test_child_stopped_helper_still_rejects_live_descendant(monkeypatch):
     moments = iter((0.0, 2.0))
     monkeypatch.setattr(time, "monotonic", lambda: next(moments))
-    monkeypatch.setattr(Path, "read_text", lambda path: "123 child S")
-
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="S"))
     with pytest.raises(pytest.fail.Exception, match=r"remained active \(S\)"):
         _assert_child_stopped(123)
 
 
-def test_child_stopped_helper_propagates_unrelated_proc_error(monkeypatch):
-    def denied(path):
-        raise PermissionError("controlled unrelated error")
-    monkeypatch.setattr(Path, "read_text", denied)
-
-    with pytest.raises(PermissionError, match="controlled unrelated error"):
+def test_child_stopped_helper_propagates_unrelated_inspection_error(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=2, stdout=""))
+    with pytest.raises(RuntimeError, match="cannot inspect"):
         _assert_child_stopped(123)
 
 
 def test_renderer_successful_leader_exit_still_kills_owned_descendant(fake_renderer, tmp_path):
     child_pid = tmp_path / "child.pid"
-    renderer = fake_renderer(f"sleep 10 >/dev/null 2>&1 & echo $! > {child_pid}; exit 0", timeout=2)
+    renderer = fake_renderer(f"sleep 10 >/dev/null 2>&1 & echo $! > {shlex.quote(str(child_pid))}; exit 0", timeout=5)
 
     with pytest.raises(RenderError, match="output missing"):
         renderer.render(b"@startuml\nA\n@enduml\n")
@@ -1812,7 +1810,7 @@ def test_renderer_owns_and_kills_dedicated_process_group(tmp_path):
     jar.write_bytes(b"controlled renderer bytes")
     pgid = tmp_path / "java-pgid.txt"
     java = tmp_path / "java"
-    java.write_text(f"#!/bin/sh\nps -o pgid= -p $$ > {pgid}\nexec sleep 10\n")
+    java.write_text(f"#!/bin/sh\n/bin/ps -o pgid= -p $$ > {shlex.quote(str(pgid))}\nexec sleep 10\n")
     java.chmod(0o755)
     script = ("import os\n"
               "from hashlib import sha256\n"
@@ -1821,7 +1819,7 @@ def test_renderer_owns_and_kills_dedicated_process_group(tmp_path):
               f"jar = Path({str(jar)!r})\n"
               f"pgid = Path({str(pgid)!r})\n"
               "viewer_render.PLANTUML_SHA256 = sha256(jar.read_bytes()).hexdigest()\n"
-              "renderer = viewer_render.PlantUMLRenderer(jar, " + repr(str(java)) + ", timeout=0.4)\n"
+              "renderer = viewer_render.PlantUMLRenderer(jar, " + repr(str(java)) + ", timeout=3.0)\n"
               "try:\n"
               "    renderer.render(b'@startuml\\nA\\n@enduml\\n')\n"
               "except viewer_render.RenderError as exc:\n"
@@ -1830,7 +1828,7 @@ def test_renderer_owns_and_kills_dedicated_process_group(tmp_path):
               "    raise AssertionError('expected renderer timeout')\n"
               "assert int(pgid.read_text()) != os.getpgrp()\n")
 
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=3)
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=15)
 
     assert result.returncode == 0, result.stderr
 
@@ -1851,3 +1849,46 @@ def test_native_only_projection_preserves_its_source_link():
                                content_bytes=b'print("source")', sha256=sha256(b'print("source")').hexdigest())
     projection = SimpleNamespace(documents=(document,), resources=(resource,), references=(), tool_bindings=())
     assert _annotate_hosted_resources(projection, document, [source]) == source
+
+
+@pytest.mark.parametrize("snapshot, accepted", [
+    ("123 123 Z\n456 123 Z+\n789 789 S\n", True),
+    ("123 123 Z\n456 123 S\n", False),
+    ("123 123 S\n", False),
+    ("456 123 Z\n", False),
+    ("", False),
+])
+def test_renderer_permission_error_requires_reserved_zombie_only_group(monkeypatch, snapshot, accepted):
+    def denied(*args):
+        raise PermissionError("controlled signal denial")
+    monkeypatch.setattr(viewer_render.os, "killpg", denied)
+    monkeypatch.setattr(viewer_render.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(stdout=snapshot))
+    if accepted:
+        viewer_render.kill_owned_group(123)
+    else:
+        with pytest.raises(PermissionError, match="controlled signal denial"):
+            viewer_render.kill_owned_group(123)
+
+
+
+def test_drain_rejects_result_when_zombie_inspection_exhausts_deadline(monkeypatch):
+    process = subprocess.Popen(
+        ["/bin/sh", "-c", "exit 0"], stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, start_new_session=True,
+    )
+    clock = [0.0]
+    monkeypatch.setattr(viewer_render.time, "monotonic", lambda: clock[0])
+    def denied(*args):
+        raise PermissionError("controlled zombie signal denial")
+    monkeypatch.setattr(viewer_render.os, "killpg", denied)
+    def late_snapshot(*args, **kwargs):
+        clock[0] = 2.0
+        return SimpleNamespace(stdout=f"{process.pid} {process.pid} Z\n")
+    monkeypatch.setattr(viewer_render.subprocess, "run", late_snapshot)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        viewer_render._drain(process, timeout=1.0)
+
+    assert process.returncode == 0
+    assert process.stdout.closed and process.stderr.closed

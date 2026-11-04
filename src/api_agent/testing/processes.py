@@ -6,12 +6,12 @@ import subprocess
 import time
 
 
-def _group_running(group):
+def _group_running(group, *, timeout=5):
     """Return whether a POSIX group has live members, excluding zombies."""
     if not Path('/proc').is_dir():
         try:
-            report = subprocess.run(['ps', '-A', '-o', 'pgid=', '-o', 'state='],
-                                    capture_output=True, text=True, check=True, timeout=.5)
+            report = subprocess.run(['/bin/ps', '-A', '-o', 'pgid=', '-o', 'state='],
+                                    capture_output=True, text=True, check=True, timeout=timeout)
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             raise RuntimeError(f'Cannot verify owned pytest process group {group}: ps failed') from exc
         for line in report.stdout.splitlines():
@@ -71,11 +71,14 @@ def finalize(process, *, communicate=False):
             if os.name == 'posix':
                 # The leader may already have exited while a child ignored TERM.
                 send(force=True)
-                deadline = time.monotonic() + 2
-                while _group_running(process.pid):
-                    if time.monotonic() >= deadline:
+                deadline = time.monotonic() + 5
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
                         raise TimeoutError(f'Owned pytest process group {process.pid} did not stop after SIGKILL')
-                    time.sleep(.01)
+                    if not _group_running(process.pid, timeout=remaining):
+                        break
+                    time.sleep(min(.01, remaining))
         except BaseException as error:
             if primary is None:
                 raise

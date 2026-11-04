@@ -99,7 +99,8 @@ async def prepare_assets(directory: Path, *, npm: str | None = None, timeout: fl
         shutil.copy2(source / filename, directory / filename)
     try:
         process = await asyncio.create_subprocess_exec(
-            str(Path(npm_path).resolve()), "ci", "--ignore-scripts", "--no-audit", "--no-fund",
+            # Preserve shim dispatch by executable name (for example, npm).
+            str(Path(npm_path).absolute()), "ci", "--ignore-scripts", "--no-audit", "--no-fund",
             cwd=directory, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             limit=65536)
         try:

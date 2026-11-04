@@ -197,6 +197,9 @@ def test_peer_uid_and_snapshot_limits(monkeypatch):
     import os
     import struct
     from api_agent.providers.authority_channel import _check_peer, _credentials
+    # Exercise the Linux peer-credential branch independently of the host.
+    import socket
+    monkeypatch.setattr(socket, 'SO_PEERCRED', 17, raising=False)
     class Socket:
         def getsockopt(self, *_):
             return struct.pack('3i', 1, os.geteuid() + 1, 1)

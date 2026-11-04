@@ -57,3 +57,11 @@ The user confirms another full unit launch passed at exact 100% coverage and acc
 - [x] Native lease tests use OS-issued reaped PIDs. Linux-specific uncertainty fixtures explicitly select their mocked proc filesystem on every host; do not interpret arbitrary out-of-range PID arguments or missing macOS proc files as evidence of process death.
 - [x] Terminal unit execution prints credential-protected captured assertion/setup failures after runner finalization, even if pytest was aborted before its own summary. Reuse existing failure diagnostics and retain successful-stream levels. Omit per-test boilerplate for unstarted/incomplete tests without a captured failure.
 - [ ] Rerun the actual macOS full suite to qualify these repairs and inspect any additional captured failures; passing Linux tests does not establish native macOS completion.
+
+## Fresh native checkout and subprocess portability
+
+- [x] Real GraphQL MCP unit proofs prepare locked child assets in their disposable fixture directory instead of depending on retained source `node_modules`. Preserve selected npm/node shim entry names when invoking managed executables. Packaging proofs separately verify current runtime bytes, source archive bytes, rebuilds and unsafe-input rejection without combining multiple builds into one watchdog body.
+- [x] Process disposal uses the trusted system process inspector even under a helper-specific PATH, with bounded verification. A denied signal may be treated as exhausted only when the reserved unreaped child is visibly a zombie and every member of its group is a zombie; live, missing or uncertain evidence still rejects cleanup. Credential guardians preserve the helper exit code.
+- [x] Canonicalize launcher-created Bedrock scratch directories before secure descriptor-relative writes. Retain no-follow validation for configuration, credentials and their parents; test a symlinked system temporary root through refresh, publication and cleanup.
+- [x] Synthetic platform-specific credential tests explicitly select their intended branch. Allow bounded startup readiness independently of intentionally short validation deadlines.
+- [ ] Human acceptance: fresh macOS full suite after these repairs. Prior interrupted results do not establish the status of tests that never ran.

@@ -10,6 +10,21 @@ from api_agent.api_providers.graphql_mcp import GraphQLMcpOwner, GraphQLMcpError
 from api_agent.providers.tools import PreparedCall
 
 
+@pytest_asyncio.fixture(scope='module', loop_scope='module')
+async def prepared_mcp_assets(tmp_path_factory):
+    """Prepare the locked real child explicitly, independent of checkout caches."""
+    from api_agent.api_providers.graphql_mcp import prepare_assets
+    directory = tmp_path_factory.mktemp('graphql-mcp-assets')
+    await prepare_assets(directory)
+    return directory
+
+
+@pytest.fixture(autouse=True)
+def default_mcp_assets(prepared_mcp_assets, monkeypatch):
+    from api_agent.api_providers.graphql_mcp import owner
+    monkeypatch.setattr(owner, '_ASSETS', prepared_mcp_assets)
+
+
 @pytest_asyncio.fixture
 async def endpoint():
     schema = build_schema('type Query { hello: String! broken: String echo: String echoToken: String remoteFailure: String }')
@@ -111,7 +126,7 @@ def test_endpoint_and_header_secrets_rejected():
         GraphQLMcpOwner('http://example.test/graphql', headers={'Authorization': 'x\nInjected: y'})
 
 @pytest.mark.asyncio
-async def test_locked_assets_prepare_offline(tmp_path):
+async def test_locked_assets_prepare_from_lock(tmp_path):
     from api_agent.api_providers.graphql_mcp import prepare_assets, installed_script
     script = await prepare_assets(tmp_path, npm='npm', timeout=20)
     assert script == installed_script(tmp_path)
@@ -371,6 +386,72 @@ async def test_asset_preparation_fails_closed(tmp_path, script, code):
     command.chmod(0o755)
     with pytest.raises(GraphQLMcpError, match=code):
         await prepare_assets(tmp_path / 'assets', npm=str(command), timeout=0.05 if code == 'asset_timeout' else 3)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('selection', ['explicit', 'path'])
+async def test_asset_preparation_preserves_npm_shim_name(tmp_path, monkeypatch, selection):
+    import os
+    from api_agent.api_providers.graphql_mcp import prepare_assets
+
+    dispatcher = tmp_path / 'tool-dispatcher'
+    dispatcher.write_text(
+        '#!/bin/sh\n'
+        'case "$0" in */npm) ;; *) exit 7 ;; esac\n'
+        'printf "%s\\n" "$0" "$@" > shim-arguments\n')
+    dispatcher.chmod(0o755)
+    shim = tmp_path / 'npm'
+    shim.symlink_to(dispatcher)
+    monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
+    directory = tmp_path / 'assets'
+
+    # The controlled shim succeeds without creating an installation. Reaching
+    # asset validation proves dispatch used npm, rather than the target name.
+    with pytest.raises(GraphQLMcpError, match='assets_missing'):
+        await prepare_assets(directory, npm=str(shim) if selection == 'explicit' else 'npm')
+
+    assert (directory / 'shim-arguments').read_text().splitlines() == [
+        str(shim), 'ci', '--ignore-scripts', '--no-audit', '--no-fund']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('selection', ['explicit', 'path', 'managed'])
+async def test_real_mcp_preserves_node_shim_name(endpoint, tmp_path, monkeypatch,
+                                                  prepared_mcp_assets, selection):
+    import os
+    from pathlib import Path
+    import shlex
+    import shutil
+    from api_agent.runtime import mise_tools
+
+    node = Path(shutil.which('node')).absolute()
+    arguments = tmp_path / 'node-arguments'
+    dispatcher = tmp_path / 'tool-dispatcher'
+    dispatcher.write_text(
+        '#!/bin/sh\n'
+        'case "$0" in */node) ;; *) exit 7 ;; esac\n'
+        'printf "%s\\n" "$0" "$@" > ' + shlex.quote(str(arguments)) + '\n'
+        'exec ' + shlex.quote(str(node)) + ' "$@"\n')
+    dispatcher.chmod(0o755)
+    shim = tmp_path / 'node'
+    shim.symlink_to(dispatcher)
+    monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
+    if selection == 'managed':
+        monkeypatch.setenv('API_AGENT_MISE', '1')
+        monkeypatch.setattr(mise_tools, 'ensure_tools', lambda *args, **kwargs: None)
+    url, calls = endpoint
+    owner = GraphQLMcpOwner(url, node=str(shim) if selection == 'explicit' else None)
+
+    try:
+        spec = await owner.describe()
+        result = await owner.invoke(prepared(spec, '{ hello }'))
+        assert result.data == {'hello': 'world'}
+        assert len(calls) == 2
+        assert arguments.read_text().splitlines() == [
+            str(shim), '--max-old-space-size=128',
+            str(prepared_mcp_assets / 'node_modules/mcp-graphql/dist/index.js')]
+    finally:
+        await owner.aclose()
+
 
 class _Emissions:
     def __init__(self):
@@ -902,10 +983,10 @@ async def test_locked_asset_integrity_rejects_tampered_dist_dependency_and_lock(
     assert installed_script(tmp_path).is_file()
 
 
-def test_retained_notices_cover_installed_license_files():
+def test_retained_notices_cover_installed_license_files(prepared_mcp_assets):
     from pathlib import Path
     package = Path(__file__).resolve().parents[3] / 'src/api_agent/api_providers/graphql_mcp'
-    installed = package / 'node_modules'
+    installed = prepared_mcp_assets / 'node_modules'
     notices = package / 'licenses/third-party'
     missing = []
     for path in installed.rglob('*'):

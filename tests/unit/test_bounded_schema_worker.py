@@ -161,7 +161,7 @@ def async_worker(tmp_path,monkeypatch,body):
 def test_async_worker_protocol_has_bounded_output_and_reaps(tmp_path,monkeypatch,answer):
     import asyncio
     processes=async_worker(tmp_path,monkeypatch,'import sys;sys.stdout.buffer.write('+repr(answer[:1])+');sys.stdout.buffer.flush();sys.stdin.buffer.read();sys.stdout.buffer.write('+repr(answer[1:])+');sys.stdout.buffer.flush()')
-    monkeypatch.setattr(subject,'_STARTUP_SECONDS',0.1)
+    monkeypatch.setattr(subject,'_STARTUP_SECONDS',5)
     assert asyncio.run(subject.async_isolated_valid_schema({},{})) == (answer == b'R1')
     process,args,kwargs=processes[0]
     assert process.returncode is not None

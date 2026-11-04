@@ -10,6 +10,8 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping
 from types import MappingProxyType
 
+from api_agent.auth.owned_process import kill_owned_group
+
 from .viewer_repository import RepositoryIdentity, CONFIG_PATH, read_repository_identity
 from .definition import _MAX_RESOURCE_BYTES
 from urllib.parse import quote, unquote, urlsplit
@@ -20,7 +22,6 @@ import os
 import posixpath
 import re
 import selectors
-import signal
 import stat
 import subprocess
 import tempfile
@@ -748,10 +749,7 @@ def _drain(process: subprocess.Popen[bytes], *, timeout: float) -> tuple[bytes, 
             time.sleep(min(0.01, remaining))
         # Keep the exited leader unreaped until its entire process group has
         # been stopped, including descendants that closed our pipes early.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        kill_owned_group(process.pid)
         process.wait(timeout=max(0.001, deadline - time.monotonic()))
     except BaseException:
         if process.returncode is None:
@@ -762,16 +760,17 @@ def _drain(process: subprocess.Popen[bytes], *, timeout: float) -> tuple[bytes, 
             except ChildProcessError:
                 pass
             else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                kill_owned_group(process.pid)
         process.wait()
         raise
     finally:
         selector.close()
         for pipe in buffers:
             pipe.close()
+    # Disposal may take its bounded verification allowance after execution's
+    # budget expires, but that cannot make a late result admissible.
+    if time.monotonic() >= deadline:
+        raise subprocess.TimeoutExpired(process.args, timeout)
     if process.returncode:
         raise RenderError("renderer failed")
     return bytes(buffers[process.stdout]), bytes(buffers[process.stderr])
