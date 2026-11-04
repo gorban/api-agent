@@ -31,3 +31,12 @@
 - [x] Descriptor leak assertions check actual owned descriptors rather than Linux procfs. Engine mocks intercept only engine commands; native boot/process probes remain real. Canonicalize fixture roots, assert platform-appropriate cache paths, and separate bounded startup readiness from intentionally short execution deadlines.
 - [x] Full Linux unit gate: 26,691 tests pass at exact 100% line and branch coverage. Independent source reviews, causal rejection controls and staged public-boundary checks pass; publication retains committed-tree and metadata checks.
 - [ ] Human acceptance: actual native macOS full suite, including terminal recovery, process teardown and installed packaging. Linux results and synthetic native branches do not establish that acceptance.
+
+## Automatic managed-hook maintenance
+
+- [x] Ordinary launcher commands upgrade exact known historical managed hooks automatically after validating the current template. No manual refresh or diagram-generation repair flags are prerequisites for unit execution.
+- [x] Preserve custom, edited, symlinked and shared hooks. Reverify moved bytes and identity, publish exclusively into a vacant hook slot, and verify the published inode and bytes before releasing recovery data or reporting success. Restore or retain changed files on races and failure. Unknown hook markers never establish ownership.
+- [x] Verify upgrades, idempotence, malformed/current-template rejection, concurrent edits and installations, rollback, full coverage and public boundaries.
+- [ ] Human acceptance: pull and run the ordinary unit command on a checkout containing an older managed hook.
+
+Verification: 26,704 full Linux unit tests pass at exact 100% line and branch coverage. Independent review closes the moved-file and published-file races; causal mutations reject omitted hash or identity checks. Native Mac acceptance remains open.

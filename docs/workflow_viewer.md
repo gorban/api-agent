@@ -155,15 +155,13 @@ without replacing the hook. Existing user hooks, custom hook locations and share
 worktree hooks are preserved; the launcher explains manual integration when
 needed. Without Git or checkout metadata, launch continues without installation.
 
-An older managed copy needs a one-time manual refresh when the reviewed
-dispatcher template changes. Earlier versions may lack locked npm asset
-delivery or portable process-disposal handling. First verify that the existing hook is the exact older
-managed copy you own, and back it up outside the hook directory. Remove only
-that confirmed owned copy, then run `./launch.sh --view-flow` to install the new
-reviewed dispatcher in the vacant slot. Preserve unfamiliar, custom and shared
-hooks and integrate the dispatcher manually instead. The launcher does not
-automatically replace an older copy. The refreshed hook verifies original npm
-assets against the staged lock and manifest; it never runs npm or fetches.
+Normal launcher invocations automatically update exact known older managed
+copies to the verified current dispatcher. No preliminary command or manual
+refresh is needed before running unit tests. Recognition requires the complete
+known bytes of an executable regular file; a marker alone is insufficient.
+Custom, edited, symlinked and shared hooks remain owned by the user. An upgrade
+preserves a concurrently installed hook and retains recoverable bytes if a
+concurrent edit prevents automatic restoration.
 
 The hook checks an isolated index snapshot and compares its workflow inputs and
 generated views with the working files. Stage the relevant changes together;
