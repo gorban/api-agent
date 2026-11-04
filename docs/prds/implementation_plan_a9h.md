@@ -50,3 +50,10 @@ The user confirms another full unit launch passed at exact 100% coverage and acc
 - [x] Prepare the synthetic credential worker/helper before starting the short inference timeout, using bounded semantic readiness and a stdin admission handshake. Exercise delayed startup, timeout cleanup and an already-exiting worker without relaxing the production timeout or group-disposal assertions. Verify group liveness through the shared Linux/macOS process probe rather than treating absent Linux `/proc` files as macOS exit evidence.
 - [x] Print the exact timed-out collected identity alongside its ordinal, elapsed time and limit. Credential-scrub that identity before console delivery; preserve deadline/status/coverage failure semantics.
 - [ ] Human acceptance: rerun the full macOS base unit suite and the composed all-unit invocation. Separate outdated resource-pack fixture failures from the base deadline failure.
+
+## macOS fixture follow-up and aborted-run evidence
+
+- [x] Arm nested cleanup timeout injection only after its retained child signals readiness. Keep the real context, disposal receipt, authentication retention and retry assertions; isolate the scheduler hook to the owned control module and use bounded readiness, including delayed setup. Production deadlines remain unchanged.
+- [x] Native lease tests use OS-issued reaped PIDs. Linux-specific uncertainty fixtures explicitly select their mocked proc filesystem on every host; do not interpret arbitrary out-of-range PID arguments or missing macOS proc files as evidence of process death.
+- [x] Terminal unit execution prints credential-protected captured assertion/setup failures after runner finalization, even if pytest was aborted before its own summary. Reuse existing failure diagnostics and retain successful-stream levels. Omit per-test boilerplate for unstarted/incomplete tests without a captured failure.
+- [ ] Rerun the actual macOS full suite to qualify these repairs and inspect any additional captured failures; passing Linux tests does not establish native macOS completion.

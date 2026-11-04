@@ -150,6 +150,8 @@ def test_timeout_is_sticky_after_late_pass_reports_and_keeps_prior_verdicts(cont
     assert result.exit_code == 1 and not result.cancelled
     assert [row.status for row in result.tests] == ['passed', 'failed', 'error']
     assert 'original failure' in result.tests[1].traceback
+    assert 'original failure' in result.tests[1].local_diagnostic
+    assert result.tests[2].local_diagnostic == ''
     assert 'Selected unit #3' in result.tests[2].traceback
     assert 'Timed out unit: ' + third.id in result.output
     assert 'Timed out unit: ' + third.id in result.tests[2].traceback

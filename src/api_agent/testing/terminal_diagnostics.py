@@ -35,3 +35,11 @@ def write_successful_diagnostics(tests, write, *, scrubber, level='warning'):
             except ResponseValidationError:
                 text = 'Test diagnostics withheld: credential protection.'
             write(text)
+
+
+def write_unit_failure_diagnostics(tests, write, *, scrubber):
+    """Disclose captured failures even when pytest aborts before its summary."""
+    from .diagnostics import result_diagnostics
+    captured = (test for test in tests if getattr(test, 'local_diagnostic', ''))
+    for detail in result_diagnostics(captured):
+        write(scrubber(detail))

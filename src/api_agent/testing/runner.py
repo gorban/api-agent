@@ -431,8 +431,9 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                         stdout = ''.join(row.get('stdout', '') if type(row.get('stdout', '')) is str
                                          else 'stdout unavailable: invalid capture.\n' for row in rows)
                         stdout = bounded_stdout(stderr_scrub(stdout)) if stdout and status == 'passed' else ''
+                        diagnostic = stderr_scrub('\n'.join(details)) if any(row['status'] == 'failed' for row in rows) else ''
                         result = TestResult(identity, status, sum(row['duration'] for row in rows), '\n'.join(details),
-                                            local_stderr=stderr, local_stdout=stdout)
+                                            local_diagnostic=diagnostic, local_stderr=stderr, local_stdout=stdout)
                         results[identity.id] = result
                         emit(RunnerEvent('test_finished', repo, identity, status, result.duration, result.traceback))
                     while process.poll() is None:
