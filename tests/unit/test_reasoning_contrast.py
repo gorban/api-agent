@@ -151,7 +151,7 @@ def test_ordinary_integration_real_http_native_effort_scoring_and_cleanup(config
             return asyncio.run(invoke())
         def close(self):closed.append(True)
     provider=Provider();module=integration_module()
-    module.reasoning_ready.__wrapped__(IntegrationRequirements(config | {'LLM_REASONING_TEST_MODEL':c.MODEL, 'LLM_REASONING_TEST_LOW_EFFORT':'low', 'LLM_REASONING_TEST_HIGH_EFFORT':'high'}, owner_root=Path.cwd()))
+    module.reasoning_ready.__wrapped__(IntegrationRequirements(config | {'LLM_REASONING_TEST_MODEL':c.MODEL, 'LLM_REASONING_TEST_LOW_EFFORT':'low', 'LLM_REASONING_TEST_HIGH_EFFORT':'high'}, owner_root=Path.cwd()), request=None)
     module.test_reasoning_contrast((c.MODEL, ('low','high'), limit, 150),SimpleNamespace(getfixturevalue=lambda name:provider),lambda name,value:properties.append((name,value)))
     # The ordinary test's scoring assertion executes before any wire assertions.
     assert len(native)==6
@@ -290,7 +290,7 @@ def test_reasoning_configuration_rejects_invalid_or_reversed_controls(efforts):
     values = {'LLM_REASONING_TEST_MODEL':'synthetic', 'LLM_REASONING_TEST_TOKEN_REPORTING':True,
         'LLM_REASONING_TEST_LOW_EFFORT':efforts[0], 'LLM_REASONING_TEST_HIGH_EFFORT':efforts[1]}
     with pytest.raises(ValueError, match='two distinct'):
-        integration_module().reasoning_ready.__wrapped__(IntegrationRequirements(values))
+        integration_module().reasoning_ready.__wrapped__(IntegrationRequirements(values), request=None)
 
 
 def test_non_gpt_off_high_pair_uses_exact_configured_model():
@@ -322,7 +322,7 @@ def test_scope_rejects_unqualified_counter_reporting(config, value):
 def test_unqualified_counter_route_skips_at_the_integration_preflight(config, value):
     requirements = IntegrationRequirements(config | {'LLM_REASONING_TEST_TOKEN_REPORTING': value})
     with pytest.raises(pytest.skip.Exception, match='qualified for reasoning-token reporting'):
-        integration_module().reasoning_ready.__wrapped__(requirements)
+        integration_module().reasoning_ready.__wrapped__(requirements, request=None)
 
 
 
@@ -332,7 +332,7 @@ def test_unqualified_route_does_not_hide_malformed_model(config, reporting, mode
     requirements = IntegrationRequirements(config | {
         'LLM_REASONING_TEST_TOKEN_REPORTING': reporting, 'LLM_REASONING_TEST_MODEL': model})
     with pytest.raises(ValueError, match='qualified exact model ID'):
-        integration_module().reasoning_ready.__wrapped__(requirements)
+        integration_module().reasoning_ready.__wrapped__(requirements, request=None)
 
 
 @pytest.mark.parametrize('reporting', ['true', 1, ''])
@@ -340,13 +340,13 @@ def test_missing_model_does_not_hide_malformed_counter_qualification(config, rep
     requirements = IntegrationRequirements(config | {
         'LLM_REASONING_TEST_TOKEN_REPORTING': reporting, 'LLM_REASONING_TEST_MODEL': None})
     with pytest.raises(ValueError, match='qualified for reasoning-token reporting'):
-        integration_module().reasoning_ready.__wrapped__(requirements)
+        integration_module().reasoning_ready.__wrapped__(requirements, request=None)
 
 
 def test_missing_reasoning_model_skips_before_provider_acquisition(config):
     requirements = IntegrationRequirements(config | {'LLM_REASONING_TEST_MODEL': ''})
     with pytest.raises(pytest.skip.Exception, match='Missing required configuration: LLM_REASONING_TEST_MODEL'):
-        integration_module().reasoning_ready.__wrapped__(requirements)
+        integration_module().reasoning_ready.__wrapped__(requirements, request=None)
 
 
 @pytest.mark.parametrize('value', ['true', 1, ''])
@@ -354,7 +354,7 @@ def test_malformed_counter_qualification_remains_a_failure(config, value):
     requirements = IntegrationRequirements(config | {'LLM_REASONING_TEST_TOKEN_REPORTING': value,
                                                     'LLM_REASONING_TEST_MODEL': 'synthetic'})
     with pytest.raises(ValueError, match='qualified for reasoning-token reporting'):
-        integration_module().reasoning_ready.__wrapped__(requirements)
+        integration_module().reasoning_ready.__wrapped__(requirements, request=None)
 
 
 @pytest.mark.parametrize('limit', [0, -1, True, '', '4096', 1048577])
@@ -362,14 +362,14 @@ def test_reasoning_configuration_rejects_invalid_output_cap(config, limit):
     values = config | {'LLM_REASONING_TEST_MODEL':c.MODEL, 'LLM_REASONING_TEST_LOW_EFFORT':'low',
         'LLM_REASONING_TEST_HIGH_EFFORT':'high', 'LLM_REASONING_TEST_MAX_OUTPUT_TOKENS':limit}
     with pytest.raises(ValueError, match='positive integer'):
-        integration_module().reasoning_ready.__wrapped__(IntegrationRequirements(values))
+        integration_module().reasoning_ready.__wrapped__(IntegrationRequirements(values), request=None)
 
 
 @pytest.mark.parametrize('maximum', [4096, 4097, 16000, 16384])
 def test_reasoning_configuration_preserves_explicit_cap(config, maximum):
     values = config | {'LLM_REASONING_TEST_MODEL':c.MODEL, 'LLM_REASONING_TEST_LOW_EFFORT':'low',
         'LLM_REASONING_TEST_HIGH_EFFORT':'high', 'LLM_REASONING_TEST_MAX_OUTPUT_TOKENS':maximum}
-    assert integration_module().reasoning_ready.__wrapped__(IntegrationRequirements(values)) == (c.MODEL, ('low','high'), maximum, 150)
+    assert integration_module().reasoning_ready.__wrapped__(IntegrationRequirements(values), request=None) == (c.MODEL, ('low','high'), maximum, 150)
 
 
 @pytest.mark.parametrize('features, message', [(('max_output_tokens',), 'advertised model limit'), ((), 'advertised model support')])
@@ -522,7 +522,7 @@ def test_real_bedrock_catalog_and_native_encoder_preserve_16000_through_applicat
 def test_reasoning_timeout_rejected_before_provider_access(config, value):
     values = config | {'LLM_REASONING_TEST_TIMEOUT_SECONDS': value}
     with pytest.raises(ValueError, match='positive finite'):
-        integration_module().reasoning_ready.__wrapped__(IntegrationRequirements(values))
+        integration_module().reasoning_ready.__wrapped__(IntegrationRequirements(values), request=None)
 
 
 @pytest.mark.parametrize('value', [150, 300, .05])

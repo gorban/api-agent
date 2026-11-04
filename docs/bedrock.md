@@ -203,3 +203,29 @@ The [qualification checklist](prds/implementation_plan_f4o4b.md) separates live
 proofs from controlled tests and remaining combinations: GPT tool/reasoning/schema
 matrices, Claude hybrid/adaptive effort with tools, and streamed schema behavior.
 There is no claim that every cataloged version or regional profile has been live-tested.
+
+## Integration selections and reasoning counters
+
+With no test-specific model override, workflow coverage resolves
+`LLM_DEFAULT_MODEL` against `LLM_ALLOWED_MODELS` using the application policy.
+Studio selection uses that default and a distinct allowed alternate, ordered by
+the default's catalog family first and then exact ID, with two distinct advertised
+reasoning effort choices. It skips when
+no eligible pair exists. Exact `LLM_WORKFLOW_TEST_MODEL` and
+`LLM_STUDIO_TEST_*` overrides remain available; they do not change the endpoint,
+identity or saved application settings.
+
+For reasoning contrast, leave `LLM_REASONING_TEST_TOKEN_REPORTING` unset to
+perform one bounded, accounted probe of the resolved model and lower effort.
+The probe only establishes availability of separate reasoning-token counters;
+the subsequent six puzzle calls still have to pass the original signed contrast
+checks. Missing counters produce a skip. Provider errors or incomplete responses
+fail and remain in normal attempt/accounting evidence. Set the flag to `False`
+to skip without probing, or `True` for an already-qualified counter route.
+Explicit model, effort and output-limit overrides retain authority.
+
+Converse can return reasoning content without separate reasoning-token counts.
+The normalized [AWS TokenUsage contract](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_TokenUsage.html)
+does not define such a counter. Seeing thinking in Studio therefore does not
+qualify the token-contrast test. Responses must be tested for the exact selected
+model/route; another account's successful route is not permission to switch yours.
