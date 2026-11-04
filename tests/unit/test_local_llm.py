@@ -780,3 +780,95 @@ def test_provider_with_one_shot_authority_binding_starts_and_authenticates(tmp_p
         assert implementation.started and implementation.binds == 1
         await owner.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('value', [False, 123, 'factory'])
+def test_session_owner_factory_must_be_a_trusted_callable(tmp_path, value):
+    with pytest.raises(ValueError, match='Invalid session owner factory'):
+        LocalLLM({}, tmp_path, session_owner_factory=value)
+
+
+def test_injected_session_owner_preserves_normal_inference_accounting(selected, tmp_path):
+    from api_agent.runtime.local_llm import _RegisteredSession
+    _, implementation, loaded, loader, events = selected
+    created = []
+    def factory(provider, **options):
+        assert provider is implementation
+        assert options['credentials'] is None and options['user_index'] is None
+        assert callable(options['on_authentication_failure'])
+        session = _RegisteredSession(provider, **options)
+        created.append((session, options['emissions']))
+        return session
+    owner = LocalLLM({'LLM_PROVIDER': 'synthetic', 'LLM_ALLOWED_MODELS': 'sample'},
+        tmp_path, loader=loader, session_owner_factory=factory)
+    async def run():
+        result = await owner.complete(request())
+        assert result.payload.content == (TextContent('answer'),)
+        assert result.usage == Usage(2, 3)
+        assert owner.usage
+        assert len(created) == 1 and owner.session is created[0][0]
+        assert created[0][1] is owner.emissions
+        await owner.aclose()
+        assert 'auth-close' in events
+        loaded.aclose.assert_awaited_once()
+    asyncio.run(run())
+
+
+def test_failed_session_owner_construction_retains_provider_cleanup(selected, tmp_path):
+    _, _, loaded, loader, _ = selected
+    from unittest.mock import Mock
+    factory = Mock(side_effect=RuntimeError('synthetic session construction failure'))
+    owner = LocalLLM({'LLM_PROVIDER': 'synthetic'}, tmp_path, loader=loader,
+                     session_owner_factory=factory)
+    async def run():
+        with pytest.raises(OperationalError, match='unknown'):
+            await owner.describe()
+        factory.assert_called_once()
+        await owner.aclose()
+        loaded.aclose.assert_awaited_once()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('object_factory', [False, True])
+def test_async_session_owner_factory_is_rejected_before_allocation(tmp_path, object_factory):
+    async def factory(*args, **kwargs):
+        raise AssertionError('Must never run async factory')
+    class AsyncFactory:
+        async def __call__(self, *args, **kwargs):
+            return await factory(*args, **kwargs)
+    with pytest.raises(ValueError, match='Invalid session owner factory'):
+        LocalLLM({}, tmp_path, session_owner_factory=AsyncFactory() if object_factory else factory)
+
+
+@pytest.mark.parametrize('invalid', ['closeable', 'pending', 'no_cleanup', 'no_close', 'coroutine'])
+def test_invalid_session_owner_remains_owned_until_cleanup(selected, tmp_path, invalid):
+    from api_agent.providers.contracts import ContractError
+    _, _, loaded, loader, _ = selected
+    async def unexpected():
+        raise AssertionError('Invalid factory coroutine must not execute')
+    partial = SimpleNamespace(aclose=AsyncMock(side_effect=[RuntimeError('pending'), None]
+                                               if invalid == 'pending' else None))
+    if invalid == 'no_cleanup':
+        partial = object()
+    elif invalid == 'no_close':
+        partial = SimpleNamespace(call=AsyncMock())
+    elif invalid == 'coroutine':
+        partial = unexpected()
+    owner = LocalLLM({'LLM_PROVIDER': 'synthetic'}, tmp_path, loader=loader,
+                     session_owner_factory=lambda *a, **kw: partial)
+    async def run():
+        with pytest.raises(ContractError, match='Invalid shared session owner'):
+            await owner.describe()
+        if invalid == 'pending':
+            with pytest.raises(CleanupPendingError):
+                await owner.aclose()
+            loaded.aclose.assert_not_awaited()
+            assert partial in [resource for resource, _ in owner._resources]
+        await owner.aclose()
+        loaded.aclose.assert_awaited_once()
+        if invalid in ('closeable', 'pending'):
+            assert partial.aclose.await_count == (2 if invalid == 'pending' else 1)
+        elif invalid == 'coroutine':
+            assert inspect.getcoroutinestate(partial) == inspect.CORO_CLOSED
+    import inspect
+    asyncio.run(run())

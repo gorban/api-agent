@@ -411,3 +411,24 @@ def test_explicit_retained_setup_failure_is_captured_before_disposal(resources):
         await caught.value.retained_owners[0].aclose()
         r.provider.aclose.assert_awaited_once()
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('declared', [False, True])
+def test_session_inference_ownership_comes_only_from_provider_capability(resources, declared):
+    r = resources
+    features = ('session_owned_inference',) if declared else ()
+    r.implementation.capabilities = ProviderCapabilities('ui', ('launch',), features=features)
+    validate_capabilities(r.implementation, expected_kind='ui')
+    async def run():
+        assert r.owner.owns_llm_sessions is False
+        await r.owner.start()
+        assert r.owner.owns_llm_sessions is declared
+        await r.owner.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('kind', ['llm', 'api', 'access', 'upstream'])
+def test_ui_session_inference_feature_is_not_valid_for_other_provider_kinds(kind):
+    implementation = SimpleNamespace(capabilities=ProviderCapabilities(kind, (), features=('session_owned_inference',)))
+    with pytest.raises(ProviderError, match='provider_capability_invalid'):
+        validate_capabilities(implementation)

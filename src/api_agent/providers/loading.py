@@ -494,10 +494,10 @@ def validate_capabilities(adapter, expected_kind=None):
         raise ProviderError('provider_capability_invalid')
     if len(set(capabilities.credential_roles)) != len(capabilities.credential_roles) or capabilities.llm_role is not None and (capabilities.kind != 'llm' or capabilities.llm_role not in capabilities.credential_roles):
         raise ProviderError('provider_capability_invalid')
+    allowed_features = {'llm': LLM_FEATURES, 'ui': ('session_owned_inference',)}.get(capabilities.kind, ())
     if (not isinstance(capabilities.features, tuple)
-            or any(type(feature) is not str or feature not in LLM_FEATURES for feature in capabilities.features)
-            or len(set(capabilities.features)) != len(capabilities.features)
-            or capabilities.features and capabilities.kind != 'llm'):
+            or any(type(feature) is not str or feature not in allowed_features for feature in capabilities.features)
+            or len(set(capabilities.features)) != len(capabilities.features)):
         raise ProviderError('provider_capability_invalid')
     for operation in capabilities.operations:
         if operation not in methods:

@@ -32,6 +32,7 @@ class PreparedUISession:
         self.provider = self.session = None
         self.closed = False
         self._ready = False
+        self.owns_llm_sessions = False
         self._lock = asyncio.Lock()
         self._cleanup_lock = asyncio.Lock()
         self._starting = None
@@ -57,6 +58,7 @@ class PreparedUISession:
                 listener_plan(origin)
                 self.provider = await self.loader(location, self.config, self.services, kind='ui')
                 implementation = self.provider.require('ui', 'launch')
+                self.owns_llm_sessions = 'session_owned_inference' in implementation.capabilities.features
                 roles = implementation.capabilities.credential_roles
                 if self.user_index is not None and roles:
                     if self.credentials is not None and self.credentials_for is not None:

@@ -229,8 +229,10 @@ class LocalRunOwner:
             sink=self._workflow_event, trace=runtime.tracing)
         async def describe(*, auth):
             return await self._llm.describe()
+        async def workflow_complete(request, *, llm, context):
+            return await self._graph.complete(request, llm=llm, context=context)
         async def complete(request, *, auth, context):
-            return await self._graph.complete(request, llm=self._llm, context=context)
+            return await workflow_complete(request, llm=self._llm, context=context)
         nonce = token_urlsafe(32)
         backend = StudioBackend(owner=self._llm, describe=describe, complete=complete,
             policy=ModelSelectionPolicy(config.values),
@@ -242,6 +244,7 @@ class LocalRunOwner:
             reasoning_default=config.values.get('LLM_REASONING_EFFORT') or None,
             max_output_tokens=config.values.get('LLM_MAX_OUTPUT_TOKENS', 200000))
         services = {**runtime.services, 'studio_backend': backend, 'ui_access_token': nonce,
+                    'workflow_complete': workflow_complete,
                     'ensure_llm_ready': self._llm.ensure_ready,
                     'ui_processes': StudioProcesses(ssl_context=verified_client_context(str(material.ca_file)),
                         log_callback=lambda text: self._log('ui', text), emissions=runtime.emissions)}
@@ -263,7 +266,8 @@ class LocalRunOwner:
         # Register before preparation so partial setup remains owned.
         self._stack.push(owner.aclose)
         await owner.start()
-        await self._llm.ensure_ready()
+        if getattr(owner, 'owns_llm_sessions', False) is not True:
+            await self._llm.ensure_ready()
         return owner
 
     async def start(self):

@@ -89,3 +89,12 @@ Human review reconfirmed the automated Studio `Ok` request and the previously ac
 ## Failure-dialog appearance
 
 - [x] Apply the selected dark appearance to the error dialog, its close button and backdrop, preserving readable text. Capture the existing error state before changing catalog or theme-test acceptance behavior. Preserve explicit error dismissal via the close button or Escape.
+
+## Trusted selected-workflow service
+
+- [x] Local UI-provider services include `workflow_complete(request, *, llm, context)`, bound to the same admitted application graph as the included backend. A trusted provider may build a separate authenticated session backend using its own owned LLM facade, while preserving graph execution, observations and deadline handling. The included backend retains its original owner and callback behavior.
+- [x] Keep this callable inside injected runtime services; do not expose it as a browser/API route, serialize it to frontend configuration, mutate the default backend or accept an LLM owner from untrusted request data. The alternate provider owns authenticated admission, per-session owner lifecycle, cancellation and safe response projection.
+
+- [x] Permit trusted construction of `LocalLLM(..., session_owner_factory=...)` to supply a separate authenticated session lifecycle. Preserve the existing registered-session default and normal configuration, shared setup/retries, physical attempts, usage, credential authority, tracing and provider cleanup. The factory is synchronous, receives the selected implementation and existing owner options, and must return a conforming session without acquiring resources before ownership is returned. It is not a configuration value or untrusted frontend control.
+
+- [x] A UI provider may explicitly declare the validated `session_owned_inference` feature when it owns authenticated session-specific inference. Only this capability suppresses Run local's eager preparation of the unused default local LLM; it never authorizes a request or bypasses that provider's admission. Other UIs retain existing default readiness. A constructor factory that returns an invalid closeable owner retains cleanup/retry ownership, and async factories are rejected.
