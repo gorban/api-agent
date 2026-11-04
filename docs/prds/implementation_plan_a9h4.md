@@ -12,3 +12,5 @@
 Verification: 26,814 unit tests pass on Linux with exact 100% line and branch coverage. Independent and external reviews pass, including targeted metadata and owned-path rejection mutations.
 
 - [ ] Human acceptance on macOS using the normal unit launcher.
+
+[Concurrency qualification and fixture ownership](implementation_plan_a9h5.md).

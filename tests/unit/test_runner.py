@@ -15,6 +15,7 @@ from api_agent.testing.runner import CoverageArea, run_unit_tests, unit_parallel
     ({'TEST_PARALLEL_JOBS': 11, 'UNIT_TEST_PARALLEL_JOBS': None}, 11),
     ({'TEST_PARALLEL_JOBS': 11, 'UNIT_TEST_PARALLEL_JOBS': 0}, 0),
     ({'TEST_PARALLEL_JOBS': 11, 'UNIT_TEST_PARALLEL_JOBS': 12}, 12),
+    ({'TEST_PARALLEL_JOBS': 8, 'UNIT_TEST_PARALLEL_JOBS': 32}, 32),
 ])
 def test_unit_worker_override_preserves_empty_inheritance_and_serial_zero(config, expected):
     assert unit_parallel_jobs(config) == expected

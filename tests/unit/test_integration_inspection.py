@@ -1,4 +1,5 @@
 """Retained worker ownership failures remain recoverable by the caller."""
+import os
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,8 @@ def test_disposed_group_is_never_signalled_again_after_later_cleanup_failure(tmp
     assert temporary.cleanup.call_count == (2 if failure == 'directory' else 1)
 
 
+@pytest.mark.unit_platform('linux', 'darwin')
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX retained child identity')
 @pytest.mark.parametrize('retry', ['end_inspection', 'abort'])
 @pytest.mark.parametrize('handoff_interrupted', [False, True])
 def test_real_interrupt_grace_wait_records_disposal_before_retry(tmp_path, monkeypatch, retry, handoff_interrupted):
@@ -55,6 +58,9 @@ def test_real_interrupt_grace_wait_records_disposal_before_retry(tmp_path, monke
     monkeypatch.setattr(processes, '_group_running', group_checks)
     process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(.02)'],
                                stdout=subprocess.PIPE, text=True, start_new_session=True)
+    # Establish the reserved exit before testing interrupted cleanup bookkeeping.
+    assert processes.wait_owned(process, timeout=5) == 0
+    assert process.returncode is None
     original_wait = process._wait
     waits = []
     interruption = KeyboardInterrupt('controlled interrupt')

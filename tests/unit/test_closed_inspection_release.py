@@ -1,5 +1,6 @@
 """Real inspection monitors transfer pending release ownership to every consumer."""
 import asyncio
+import queue
 import subprocess
 import sys
 import tempfile
@@ -27,12 +28,17 @@ def closed_pending_inspection(tmp_path, monkeypatch):
     from pathlib import Path
     event_file = Path(directory.name) / 'events.jsonl'
     event_file.write_text('{"kind":"inspection_closed"}\n')
-    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read(1)'],
+    process = subprocess.Popen([sys.executable, '-c', 'import sys; print("ready", flush=True); sys.stdin.buffer.read(1)'],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True)
-    reader = threading.Thread(target=lambda: list(process.stdout), daemon=True)
-    reader.start()
+    ready = queue.Queue()
+    def drain():
+        ready.put(process.stdout.readline())
+        list(process.stdout)
+    reader = threading.Thread(target=drain, daemon=True)
     handle = None
     try:
+        reader.start()
+        assert ready.get(timeout=5) == 'ready\n'
         with locks.suite_lock():
             lease = locks._CURRENT.get()
             handle = IntegrationInspection(process, InspectionDirectory(directory), event_file, reader)
@@ -40,21 +46,22 @@ def closed_pending_inspection(tmp_path, monkeypatch):
             failure.setattr(locks, 'start_new_thread', unavailable)
             process.stdin.write('x')
             process.stdin.flush()
-            process.wait(timeout=2)
-            handle._monitor.join(timeout=2)
+            # The monitor retains exclusive reap ownership until cleanup finishes.
+            handle._monitor.join(timeout=5)
         assert not handle._monitor.is_alive()
         assert handle.closed and handle.pending and len(handle._cleanup_callbacks) == 1
         assert lease.fd is not None and lease.closing is None
         assert_competing_suite_blocked()
         yield SimpleNamespace(handle=handle, lease=lease)
     finally:
-        if process.poll() is None:
-            process.stdin.close()
-        process.wait(timeout=2)
         if handle is not None:
             handle.abort()
             handle._monitor.join(timeout=2)
-        reader.join(timeout=2)
+        else:
+            process.stdin.close()
+            process.wait(timeout=2)
+        if reader.ident is not None:
+            reader.join(timeout=2)
         process.stdin.close()
         process.stdout.close()
         directory.cleanup()

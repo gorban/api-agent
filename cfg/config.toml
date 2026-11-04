@@ -224,9 +224,9 @@ COLLECT_ONLY = false
 [fields.UNIT_TEST_PARALLEL_JOBS]
 type = "int"
 allow_empty = true
-default = 32
+default = 16
 validation = "nonnegative"
-help = "Unit-test worker override. Empty inherits TEST_PARALLEL_JOBS; 0 runs units serially. Integration/E2E continue to use TEST_PARALLEL_JOBS."
+help = "Unit-test worker override (default 16). Larger counts can contend with isolated subprocess checks. Empty inherits TEST_PARALLEL_JOBS; 0 runs units serially. Integration/E2E continue to use TEST_PARALLEL_JOBS."
 [fields.UNIT_TEST_PARALLEL_JOBS.applies_when]
 TUI_MODE = "unit"
 COLLECT_ONLY = false
