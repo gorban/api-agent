@@ -677,3 +677,42 @@ def test_timeout_identity_is_scrubbed_before_console_delivery(controlled_runner,
 
     assert 'Timed out unit: base::test.py::[REDACTED]' in result.output
     assert 'third' not in result.output
+
+
+@pytest.mark.parametrize('case', ['call', 'setup_passed', 'teardown_skipped', 'missing_metadata', 'timeout', 'cancelled'])
+def test_platform_exclusion_cannot_hide_incomplete_or_conflicting_reports(controlled_runner, monkeypatch, case):
+    from dataclasses import replace
+    from api_agent.testing.applicability import declaration
+    context, original, clock, state = controlled_runner
+    host = __import__('sys').platform
+    other = 'win32' if host != 'win32' else 'linux'
+    test = replace(original[0], platforms=(other,))
+    monkeypatch.setattr(runner, 'collect_tests', lambda *a, **k: [test])
+    state.rows = [phase(test.node_id, 'setup', 'skipped'), phase(test.node_id, 'teardown')]
+    for row in state.rows:
+        row['applicability'] = declaration(test.platforms, host)
+    cancel = None
+    if case == 'call':
+        state.rows.insert(1, dict(phase(test.node_id, 'call'), applicability=declaration(test.platforms, host)))
+    elif case == 'setup_passed':
+        state.rows[0]['status'] = 'passed'
+        state.rows.insert(1, dict(phase(test.node_id, 'call'), applicability=declaration(test.platforms, host)))
+    elif case == 'teardown_skipped':
+        state.rows[1]['status'] = 'skipped'
+    elif case == 'missing_metadata':
+        state.rows[1].pop('applicability')
+    else:
+        terminal = state.rows.pop()
+        if case == 'timeout':
+            state.late = [terminal]
+        if case == 'cancelled':
+            import threading
+            cancel = threading.Event()
+            cancel.set()
+    result = runner.run_unit_tests(context, [test], cancel_event=cancel, require_full_coverage=False)
+    assert result.exit_code != 0
+    assert result.tests[0].status == ('cancelled' if case == 'cancelled' else 'error')
+    assert result.tests[0].status != 'not_applicable'
+    if case == 'timeout':
+        assert 'deadline' in result.tests[0].traceback
+        assert 'incomplete' not in result.tests[0].traceback

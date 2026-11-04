@@ -43,6 +43,7 @@ def worker_subreaper():
         assert library.prctl(36, previous.value, 0, 0, 0) == 0
 
 
+@pytest.mark.unit_platform('linux')
 @pytest.mark.parametrize('mode', ['retrieval', 'recovery'])
 @pytest.mark.parametrize('force', [False, True])
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux disposable test subreaper")

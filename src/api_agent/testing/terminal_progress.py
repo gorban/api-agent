@@ -29,9 +29,11 @@ class TerminalTestProgress:
             if identity not in self._selected or identity in self._completed:
                 return
             self._completed.add(identity)
-            status = event.status if event.status in {'passed', 'failed', 'skipped', 'error', 'cancelled'} else 'error'
+            status = event.status if event.status in {'passed', 'failed', 'skipped', 'error', 'cancelled', 'not_applicable'} else 'error'
+            detail = (f' — {json.dumps(event.traceback, ensure_ascii=True)}'
+                      if status == 'not_applicable' and event.traceback else '')
             line = self._scrub(f'Test progress: {len(self._completed)}/{len(self._selected)} completed '
-                               f'— {status} {json.dumps(identity, ensure_ascii=True)}')
+                               f'— {status} {json.dumps(identity, ensure_ascii=True)}{detail}')
             if len(line) > _MAX_LINE_LENGTH:
                 line = line[:_MAX_LINE_LENGTH - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
             self._write(line)

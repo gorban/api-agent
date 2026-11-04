@@ -245,6 +245,7 @@ def test_darwin_getpeereid_authenticates_effective_uid(monkeypatch, uid_delta, r
             channel._check_peer(Writer())
 
 
+@pytest.mark.unit_platform('linux')
 def test_peer_identity_uses_effective_not_real_uid(monkeypatch):
     import os
     import socket
@@ -493,6 +494,7 @@ def test_authority_cleanup_error_does_not_replace_start_error(monkeypatch):
     asyncio.run(run())
 
 
+@pytest.mark.unit_platform('linux')
 def test_authority_cancel_after_real_listener_registration_drains_owner(tmp_path, monkeypatch):
     from pathlib import Path
     import tempfile

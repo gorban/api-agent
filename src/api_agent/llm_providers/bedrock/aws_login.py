@@ -78,7 +78,7 @@ class AwsLoginAcquirer:
             raise ContractError('AWS sign-in identity binding changed')
         self._request_binding = binding
         if self._root is None:
-            self._root = Path(tempfile.mkdtemp(prefix='api-agent-login-'))
+            self._root = Path(tempfile.mkdtemp(prefix='api-agent-login-')).resolve()
             aws = self._root / '.aws'
             aws.mkdir(mode=0o700)
             login = aws / 'login' / 'cache'

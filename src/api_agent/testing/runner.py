@@ -143,6 +143,7 @@ _PLUGIN = r'''
 import json, os, sys, time
 import pytest
 from api_agent.providers.diagnostic_output import bounded_stderr, bounded_stdout
+from api_agent.testing.applicability import report_declaration
 event_path = sys.argv[1]
 class Events:
     def send(self, **row):
@@ -153,7 +154,7 @@ class Events:
         self.send(kind='test_started', node=nodeid)
     def pytest_runtest_logreport(self, report):
         self.send(kind='report', node=report.nodeid, phase=report.when,
-                  status=report.outcome, duration=report.duration,
+                  status=report.outcome, duration=report.duration, applicability=report_declaration(report),
                   stderr=bounded_stderr(''.join(text for title, text in report.sections
                                      if title == 'Captured stderr ' + report.when)),
                   stdout=(bounded_stdout(''.join(text for title, text in report.sections
@@ -168,6 +169,9 @@ from pathlib import Path
 selection_plugin = Path(os.environ['API_AGENT_UNIT_SELECTION']).parent / 'api_agent_unit_selection.py'
 selection_plugin.write_text("""import json, os, pytest
 from pathlib import Path
+from api_agent.testing.applicability import unit_platform_plugin
+def pytest_configure(config):
+    config.pluginmanager.register(unit_platform_plugin(), "unit_platform")
 with open(os.environ['API_AGENT_UNIT_SELECTION'], encoding='utf-8') as stream:
     selected_nodes = list(dict.fromkeys(json.load(stream)))
 selected_files = {Path(os.path.abspath(node.split('::', 1)[0])) for node in selected_nodes}
@@ -231,7 +235,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     """Run selected collected identities once; preserve owner configs and coverage scope.
 
     Callbacks run on the calling thread. Cancellation terminates and reaps only
-    owned process groups. Nonzero also signals skipped/incomplete selected tests.
+    owned process groups. Ordinary skips and incomplete selected tests remain nonpassing.
     """
     started_at = time.monotonic()
     if successful_test_diagnostics_level not in ('warning', 'info'):
@@ -421,6 +425,18 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                                   'skipped' if any(row['status'] == 'skipped' for row in rows) else
                                   'passed' if any(row['phase'] == 'call' for row in rows) else 'error')
                         details = [row['traceback'] for row in rows if row['traceback']]
+                        from .applicability import reports_match, explanation
+                        if status not in {'failed', 'cancelled', 'error'}:
+                            if not reports_match(identity.platforms, rows, sys.platform):
+                                status = 'error'
+                                details.append('Unit platform declaration changed after discovery or report metadata was invalid.')
+                            elif identity.platforms and sys.platform not in identity.platforms:
+                                if status == 'skipped' and phases['setup']['status'] == 'skipped' and 'call' not in phases and phases['teardown']['status'] == 'passed':
+                                    status = 'not_applicable'
+                                    details.append(explanation(identity.platforms, sys.platform))
+                                else:
+                                    status = 'error'
+                                    details.append('Unit platform exclusion did not produce a complete applicability report.')
                         if identity.id in timeout_details:
                             details.append(timeout_details[identity.id])
                         elif not complete:
@@ -532,7 +548,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             raw(repo, f'Coverage report unavailable for unselected owner: {exc}\n')
     for test in tests:
         results.setdefault(test.id, TestResult(test, 'cancelled' if cancelled else 'error'))
-    failed |= cancelled or any(r.status != 'passed' for r in results.values()) or (require_full_coverage and any(not a.complete for a in areas))
+    failed |= cancelled or any(r.status not in {'passed', 'not_applicable'} for r in results.values()) or (require_full_coverage and any(not a.complete for a in areas))
     result = UnitRunResult(130 if cancelled else int(failed), tuple(results[t.id] for t in tests), tuple(areas), ''.join(chunks), cancelled, require_full_coverage, time.monotonic() - started_at,
                            tuple(retained), coverage_full)
     emit(RunnerEvent('finished', status='failed' if result.exit_code else 'passed'))
@@ -541,11 +557,13 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
 
 def format_unit_summary(result, *, include_elapsed=True):
     """The same precise final accounting for terminal and interactive views."""
-    passed = sum(test.status == 'passed' for test in result.tests)
-    coverage_only_failure = (bool(result.tests) and passed == len(result.tests)
+    eligible = all(test.status in {'passed', 'not_applicable'} for test in result.tests)
+    coverage_only_failure = (bool(result.tests) and eligible
                              and result.require_full_coverage
                              and any(not area.complete for area in result.coverage))
-    state = ('CANCELLED' if result.cancelled else 'PASS' if result.exit_code == 0
+    state = ('CANCELLED' if result.cancelled else
+             'NOT APPLICABLE' if result.exit_code == 0 and result.tests and all(test.status == 'not_applicable' for test in result.tests) else
+             'PASS' if result.exit_code == 0
              else 'Coverage FAIL' if coverage_only_failure else 'FAIL')
     lines = [format_test_summary('unit', result.tests, state=state,
                                elapsed=result.elapsed if include_elapsed else None)]

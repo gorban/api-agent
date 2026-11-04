@@ -109,6 +109,7 @@ def test_real_process_both_streams_split_and_escaped_credentials(tmp_path, monke
     assert 'stdout' in text and 'stderr' in text and len(text.encode())<=65536
 
 
+@pytest.mark.unit_platform('linux')
 def test_real_process_cancel_reaps_reader_and_its_child(tmp_path, monkeypatch):
     if not sys.platform.startswith('linux'):
         pytest.skip('Controlled /proc process-group proof is Linux-specific')

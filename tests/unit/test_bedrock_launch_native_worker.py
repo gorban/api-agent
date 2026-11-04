@@ -181,3 +181,42 @@ async def test_selected_native_setup_preserves_post_login_outcome(native_launch,
     assert interaction.channel.replied and interaction.channel.closed
     assert interaction.channel.output == ['Complete synthetic handoff\n']
     assert len(launches) == 1 and launches[0].returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_owned_login_home_under_alias_parent_reaches_real_worker(native_launch, monkeypatch, tmp_path):
+    from api_agent.llm_providers.bedrock import aws_login
+    from api_agent.llm_providers.bedrock.acquisition import SessionRequest
+    import tempfile
+    physical = tmp_path / 'physical-temporary-root'
+    physical.mkdir()
+    alias = tmp_path / 'temporary-root-alias'
+    alias.symlink_to(physical, target_is_directory=True)
+    allocate = tempfile.mkdtemp
+    def mkdtemp(**kwargs):
+        return allocate(dir=alias, **kwargs)
+    monkeypatch.setattr(aws_login, 'tempfile', SimpleNamespace(mkdtemp=mkdtemp))
+    owner = aws_login.AwsLoginAcquirer(configuration())
+    request = SessionRequest('default', 'us-east-1', None, True)
+    config, environment = owner._prepare(request)
+    sent = False
+    async def ready(): pass
+    async def write(text):
+        assert text == 'Complete synthetic handoff\n'
+    async def read():
+        nonlocal sent
+        if not sent:
+            sent = True
+            return 'syntheticconfirmation'
+        await asyncio.sleep(.01)
+    interaction = SimpleNamespace(check_ready=ready, write=write, read=read)
+    try:
+        result = await owner._transport.acquire(config, environment, interaction)
+        assert result['AccessKeyId'] == 'synthetic-key'
+        assert Path(environment['HOME']).parent == physical
+        assert all(str(alias) not in environment[key] for key in (
+            'HOME', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_LOGIN_CACHE_DIRECTORY'))
+    finally:
+        await owner.aclose()
+    assert not Path(environment['HOME']).exists()
+    assert native_launch[2][0].returncode == 0

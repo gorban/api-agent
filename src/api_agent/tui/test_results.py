@@ -31,7 +31,8 @@ def test_details(result, usage, cost, *, historical_tokens=False, accounting_pen
     local_diagnostic = getattr(result, 'local_diagnostic', '')
     details = local_diagnostic or result.traceback or (
         'ERROR — No failure diagnostic was captured for this test.'
-        if result.status == 'error' else result.status.upper())
+        if result.status == 'error' else 'NOT APPLICABLE'
+        if result.status == 'not_applicable' else result.status.upper())
     failure = bool(local_diagnostic) or result.status in {'failed', 'error', 'broken'}
     lines = [result.identity.id, '']
     if failure:
@@ -58,7 +59,7 @@ def test_details(result, usage, cost, *, historical_tokens=False, accounting_pen
     text = Text('\n'.join(lines))
     if not (local_diagnostic or result.traceback):
         text.stylize('green' if result.status == 'passed' else 'dark_orange'
-                     if result.status == 'skipped' else 'red',
+                     if result.status == 'skipped' else '' if result.status == 'not_applicable' else 'red',
                      len(result.identity.id) + 2 if failure else len(text) - len(details),
                      len(result.identity.id) + 2 + len(details) if failure else len(text))
     return text
@@ -107,6 +108,7 @@ def progress_summary(mode, rows):
                          (f'{passed} passed', 'green'), ' / ',
                          (f'{failed} failed', 'red' if failed else ''), ' / ',
                          (f"{statuses.count('SKIPPED')} skipped", 'dark_orange' if 'SKIPPED' in statuses else ''), ' / ',
+                         *((f"{statuses.count('NOT_APPLICABLE')} not applicable / ",) if mode == 'unit' and 'NOT_APPLICABLE' in statuses else ()),
                          f"{statuses.count('RUNNING')} running / {statuses.count('PENDING')} pending")
 
 
@@ -114,7 +116,7 @@ def ordered_result_rows(rows, *, completed):
     result = list(rows.items())
     if completed:
         result.sort(key=lambda row: 0 if row[1][0] in {'FAILED', 'ERROR'}
-                    else 1 if row[1][0] == 'SKIPPED' else 2)
+                    else 1 if row[1][0] == 'SKIPPED' else 2 if row[1][0] == 'NOT_APPLICABLE' else 3)
     return result
 
 
@@ -141,7 +143,7 @@ def reconcile_results_table(table, rows, *, completed):
     table.results_completed = completed
 
 
-def styled_summary(content, *, failed, skipped=False, neutral_details=False, green_prefixes=(), red_prefixes=()):
+def styled_summary(content, *, failed, skipped=False, neutral=False, neutral_details=False, green_prefixes=(), red_prefixes=()):
     """Mode-specific accounting supplies text; shared rendering applies colors."""
     summary = Text()
     plain = content.plain if isinstance(content, Text) else content
@@ -151,7 +153,7 @@ def styled_summary(content, *, failed, skipped=False, neutral_details=False, gre
         style = ('green' if any(line.startswith(prefix) for prefix in green_prefixes)
                  else 'red' if any(line.startswith(prefix) for prefix in red_prefixes)
                  else '' if neutral_details and index > 0
-                 else 'red' if failed else 'dark_orange' if skipped else 'green')
+                 else 'red' if failed else '' if neutral else 'dark_orange' if skipped else 'green')
         append_usage_line(summary, line, style=style)
     return summary
 

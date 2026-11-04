@@ -38,12 +38,19 @@ def format_test_summary(mode, tests, *, state=None, elapsed=None):
     total = len(tests)
     passed = sum(test.status == 'passed' for test in tests)
     skipped = sum(test.status == 'skipped' for test in tests)
+    not_applicable = sum(test.status == 'not_applicable' for test in tests) if mode == 'unit' else 0
+    applicable = total - not_applicable
     if state is None:
-        state = 'PASS' if total and all(test.status in {'passed', 'skipped'} for test in tests) else 'FAIL'
-    summary = f'{mode.capitalize()} results: {state} — {passed}/{total} passed'
+        accepted = {'passed', 'not_applicable'} if mode == 'unit' else {'passed', 'skipped'}
+        state = ('NOT APPLICABLE' if not_applicable and not applicable else
+                 'PASS' if applicable and all(test.status in accepted for test in tests) else 'FAIL')
+    counts = '0 applicable' if not_applicable and not applicable else f'{passed}/{applicable} passed'
+    summary = f'{mode.capitalize()} results: {state} — {counts}'
     if mode == 'unit':
-        if total != passed:
-            summary += f'; {total - passed} did not pass'
+        if applicable != passed:
+            summary += f'; {applicable - passed} did not pass'
+        if not_applicable:
+            summary += f'; {not_applicable} not applicable'
     else:
         summary += f' ({100 * passed / total if total else 0:.2f}%)'
         if skipped:
