@@ -23,7 +23,9 @@ MATERIAL = dict(AccessKeyId='key', SecretAccessKey='secret', SessionToken=None, 
 
 @pytest.fixture(autouse=True)
 def forbid_subprocess(monkeypatch):
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', AsyncMock(side_effect=AssertionError('No real AWS/SDK subprocess')))
+    forbidden = AsyncMock(side_effect=AssertionError('No real AWS/SDK subprocess'))
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.sdk.spawn_worker', forbidden)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', forbidden)
 
 
 @pytest.fixture
@@ -407,7 +409,7 @@ async def test_pre_cancelled_ambient_never_admits_worker(monkeypatch):
     from api_agent.llm_providers.bedrock.login_transport import LoginTransport
     owner=LoginTransport()
     launch=AsyncMock(side_effect=AssertionError('No worker after cancellation'))
-    monkeypatch.setattr(asyncio,'create_subprocess_exec',launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker',launch)
     async def cancelled():
         asyncio.current_task().cancel()
         await owner.acquire(dict(method='ambient',login=False),{})
@@ -424,7 +426,7 @@ async def test_close_during_admission_never_starts_ambient_worker(monkeypatch):
     from api_agent.llm_providers.bedrock.login_transport import LoginTransport
     owner=LoginTransport()
     launch=AsyncMock(side_effect=AssertionError('No worker after close'))
-    monkeypatch.setattr(asyncio,'create_subprocess_exec',launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker',launch)
     original=asyncio.create_task
     def close_before_launch(work,*args,**kwargs):
         if work.cr_code.co_name == 'launch':

@@ -20,7 +20,8 @@ SCHEMA = '{"type":"object","properties":{},"required":[],"additionalProperties":
 def no_real_sdk(monkeypatch):
     async def forbidden(*args, **kwargs):
         raise AssertionError('Offline integration cannot launch an SDK worker')
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', forbidden)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.sdk.spawn_worker', forbidden)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', forbidden)
 
 
 def configuration(mode='completions', auth='session'):

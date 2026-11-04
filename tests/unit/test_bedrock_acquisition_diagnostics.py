@@ -127,7 +127,7 @@ async def test_native_handoff_preserves_structured_failure_and_stops_once(monkey
         stopped.append(child)
         transport._processes.discard(child)
     transport = LoginTransport()
-    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.asyncio.create_subprocess_exec', launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch)
     monkeypatch.setattr(transport, '_stop', stop)
 
     with pytest.raises(ProviderAccessError) as caught:

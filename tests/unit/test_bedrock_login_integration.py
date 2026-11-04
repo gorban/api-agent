@@ -78,7 +78,8 @@ async def test_bundled_native_acquirer_reaches_real_parsed_flow(monkeypatch, met
     async def forbidden(*args, **kwargs):
         pytest.fail('Offline join cannot launch any AWS/SDK helper')
 
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', forbidden)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.sdk.spawn_worker', forbidden)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', forbidden)
     private = PrivateInteraction()
     borrowed = OwnedInteraction(private)
     temporary_roots = []

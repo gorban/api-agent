@@ -108,7 +108,7 @@ async def test_actual_native_transport_rechecks_cancellation_before_launch(monke
     await bridge.open()
     root.cancel()
     launch = AsyncMock(side_effect=AssertionError('native process must not start'))
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch)
     transport = LoginTransport()
     with pytest.raises(InteractionRequiredError):
         await transport.acquire({'login': True}, {}, bridge)
@@ -121,7 +121,7 @@ async def test_actual_native_transport_rechecks_cancellation_before_launch(monke
 @pytest.mark.parametrize('bridge', [None, object(), SimpleNamespace(check_ready=False)])
 async def test_native_login_requires_readiness_contract_before_launch(monkeypatch, bridge):
     launch = AsyncMock(side_effect=AssertionError('native process must not start'))
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch)
     transport = LoginTransport()
     with pytest.raises(InteractionRequiredError):
         await transport.acquire({'login': True}, {}, bridge)
@@ -323,7 +323,7 @@ async def test_readiness_preserves_pending_private_authorization_reply(remote):
 @pytest.mark.parametrize('checker', [lambda: None, AsyncMock(side_effect=RuntimeError('synthetic private failure'))])
 async def test_native_readiness_contract_failure_is_fixed_before_launch(monkeypatch, checker):
     launch = AsyncMock(side_effect=AssertionError('native process must not start'))
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch)
     transport = LoginTransport()
     with pytest.raises(InteractionRequiredError, match='^AWS sign-in interaction is unavailable[.]$'):
         await transport.acquire({'login': True}, {}, SimpleNamespace(check_ready=checker))
@@ -355,7 +355,7 @@ async def test_caller_cancelled_during_readiness_cannot_start_native_helper(monk
         entered.set()
         await release.wait()
     launch = AsyncMock(side_effect=AssertionError('native process must not start'))
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch)
     transport = LoginTransport()
     operation = asyncio.create_task(transport.acquire({'login': True}, {}, SimpleNamespace(check_ready=ready)))
     await entered.wait()

@@ -1,5 +1,6 @@
 """Selected native acquisition crosses the real worker and synthetic CLI offline."""
 import asyncio
+from api_agent.llm_providers.bedrock.owned_worker import spawn_worker as retained_spawn_worker
 import json
 import sys
 import time
@@ -116,7 +117,7 @@ sys.modules['boto3'] = SimpleNamespace(client=client)
 worker.main()
 ''')
     launches = []
-    real_launch = asyncio.create_subprocess_exec
+    real_launch = retained_spawn_worker
 
     async def launch(*args, **kwargs):
         assert Path(args[1]).name == 'login_worker.py'
@@ -132,7 +133,7 @@ worker.main()
 
     case = ['success']
     monkeypatch.setattr(AmbientSession, 'acquire', unavailable)
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch)
     return case, trace, launches
 
 

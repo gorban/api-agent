@@ -186,7 +186,8 @@ async def test_custom_acquirer_joins_parsed_flow_and_actual_local_llm(tmp_path, 
               'LLM_ALLOWED_MODELS': re.escape(model), 'LLM_DEFAULT_MODEL': re.escape(model)}
     async def forbidden(*args, **kwargs):
         raise AssertionError('Offline acquisition join cannot launch an AWS worker')
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', forbidden)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.sdk.spawn_worker', forbidden)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', forbidden)
     owner = LocalLLM(config, root)
     try:
         await owner.ensure_ready()

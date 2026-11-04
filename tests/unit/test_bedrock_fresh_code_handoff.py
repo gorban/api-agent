@@ -1,5 +1,6 @@
 """Synthetic fresh-code input through the masked screen and native worker."""
 import asyncio
+from api_agent.llm_providers.bedrock.owned_worker import spawn_worker as retained_spawn_worker
 import os
 import sys
 import threading
@@ -35,13 +36,13 @@ async def test_terminal_paste_preserves_complete_code(monkeypatch):
 
 
 async def handoff(monkeypatch, value, route, *, remote=False):
-    launch = asyncio.create_subprocess_exec
+    launch = retained_spawn_worker
 
     async def synthetic_worker(*command, **kwargs):
         assert command[0] == sys.executable
         return await launch(sys.executable, '-c', _WORKER, **kwargs)
 
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', synthetic_worker)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', synthetic_worker)
     app = App()
     tui = TUIInteraction(app, threading.Event())
     server = InteractionServer(tui) if remote else None

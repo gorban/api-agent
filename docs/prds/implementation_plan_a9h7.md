@@ -11,3 +11,5 @@
 Independent adversarial and external source review pass, including causal controls for file-check rejection, bounded diagnostics and client cleanup. The native concurrent connection-store cause remains unresolved; diagnostic notes identify a recurrence without weakening validation. Native acceptance remains open.
 
 Final Linux verification: 26,845 unit tests pass at 16 workers with exact 100% line and branch coverage. This supersedes the in-flight run; it does not establish native acceptance or resolve the concurrent native connection-store cause.
+
+[Remaining native cleanup and fault coverage](implementation_plan_a9h8.md).

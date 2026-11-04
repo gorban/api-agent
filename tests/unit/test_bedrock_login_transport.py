@@ -1,4 +1,5 @@
 import asyncio
+from api_agent.llm_providers.bedrock.owned_worker import spawn_worker as retained_spawn_worker
 import json
 from types import SimpleNamespace
 
@@ -67,7 +68,7 @@ def setup(monkeypatch):
     async def stop(process):
         stopped.append(process)
         transport._processes.discard(process)
-    monkeypatch.setattr(module.asyncio,'create_subprocess_exec',launch)
+    monkeypatch.setattr(module,'spawn_worker',launch)
     monkeypatch.setattr(transport,'_stop',stop)
     return transport, processes, launches, stopped
 
@@ -183,7 +184,7 @@ async def test_close_wins_launch_registration(setup, monkeypatch):
     async def launch(*args, **kwargs):
         transport._closed = True
         return process
-    monkeypatch.setattr(module.asyncio,'create_subprocess_exec',launch)
+    monkeypatch.setattr(module,'spawn_worker',launch)
     with pytest.raises(SessionClosedError):
         await transport.acquire({}, {})
     assert stopped == [process]
@@ -230,7 +231,7 @@ async def test_malformed_json_has_fixed_diagnostic(setup):
 
 @pytest.mark.asyncio
 async def test_synthetic_real_worker_private_ipc_and_group_cleanup(monkeypatch):
-    real_launch = asyncio.create_subprocess_exec
+    real_launch = retained_spawn_worker
     launches = []
     code = '''import sys,json
 config=json.loads(sys.stdin.buffer.readline())
@@ -244,7 +245,7 @@ print(json.dumps({'result':{'SessionToken':'private-token'}}),flush=True)
         process = await real_launch(module.sys.executable, '-c', code, **kwargs)
         launches.append(process)
         return process
-    monkeypatch.setattr(module.asyncio,'create_subprocess_exec',launch)
+    monkeypatch.setattr(module,'spawn_worker',launch)
     transport = module.LoginTransport(timeout=5)
     bridge = Bridge(['private-code'])
     result = await transport.acquire(dict(login=True,method='direct'),{},bridge)
@@ -257,7 +258,7 @@ print(json.dumps({'result':{'SessionToken':'private-token'}}),flush=True)
 
 @pytest.mark.asyncio
 async def test_synthetic_worker_cancellation_group_reaped(monkeypatch):
-    real_launch = asyncio.create_subprocess_exec
+    real_launch = retained_spawn_worker
     launched = asyncio.Event()
     processes=[]
     async def launch(*args,**kwargs):
@@ -265,7 +266,7 @@ async def test_synthetic_worker_cancellation_group_reaped(monkeypatch):
         processes.append(process)
         launched.set()
         return process
-    monkeypatch.setattr(module.asyncio,'create_subprocess_exec',launch)
+    monkeypatch.setattr(module,'spawn_worker',launch)
     transport = module.LoginTransport(timeout=5)
     task = asyncio.create_task(transport.acquire(dict(login=False),{}))
     await launched.wait()
@@ -291,7 +292,7 @@ async def test_worker_requires_newline_for_every_frame(setup,raw):
 @pytest.mark.asyncio
 async def test_native_cache_modes_and_descendant_inherit_private_umask(monkeypatch, tmp_path):
     import os
-    real_launch = asyncio.create_subprocess_exec
+    real_launch = retained_spawn_worker
     launches = []
     code = '''import json,os,pathlib,subprocess,sys
 json.loads(sys.stdin.buffer.readline())
@@ -304,7 +305,7 @@ print(json.dumps({'result':{}}),flush=True)
     async def launch(*args, **kwargs):
         launches.append(kwargs)
         return await real_launch(module.sys.executable,'-c',code,**kwargs)
-    monkeypatch.setattr(module.asyncio,'create_subprocess_exec',launch)
+    monkeypatch.setattr(module,'spawn_worker',launch)
     transport = module.LoginTransport(timeout=5)
     environment = {'HOME':str(tmp_path)}
     previous = os.umask(0o022)

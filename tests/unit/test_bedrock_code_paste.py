@@ -1,5 +1,6 @@
 """Native code handoff uses the real recovery screen and isolated pipe worker."""
 import asyncio
+from api_agent.llm_providers.bedrock.owned_worker import spawn_worker as retained_spawn_worker
 import os
 import sys
 import threading
@@ -46,14 +47,14 @@ async def test_native_code_ctrl_v_embedded_line_break_is_normalized(monkeypatch)
 
 
 async def paste_into_native_worker(monkeypatch, clipboard):
-    launch = asyncio.create_subprocess_exec
+    launch = retained_spawn_worker
 
     async def launch_synthetic_worker(*command, **kwargs):
         # Replace only the native command boundary; preserve real worker IPC.
         assert command[0] == sys.executable
         return await launch(sys.executable, '-c', _WORKER, **kwargs)
 
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch_synthetic_worker)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch_synthetic_worker)
     app = CodePasteApp()
     interaction = LoginInteraction(SimpleNamespace(interactive=True, interaction=app.interaction))
     transport = LoginTransport(timeout=5)

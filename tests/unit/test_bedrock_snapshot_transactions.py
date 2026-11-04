@@ -1,5 +1,6 @@
 """Synthetic cross-process readiness transactions; no SDK or network calls."""
 import asyncio
+from api_agent.llm_providers.bedrock.owned_worker import spawn_worker as retained_spawn_worker
 from contextlib import nullcontext
 import hashlib
 import json
@@ -165,13 +166,13 @@ async def test_terminated_login_worker_releases_persistent_transaction(transacti
               'with ProfileStore(config["paths"],"chosen").locked():\n'
               ' if config["phase"]=="holding": Path(config["marker"]).touch()\n'
               ' time.sleep(60)\n')
-    original = asyncio.create_subprocess_exec
+    original = retained_spawn_worker
     children = []
     async def launch(*args, **kwargs):
         process = await original(args[0], '-c', script, str(package_root), str(module_file), **kwargs)
         children.append(process)
         return process
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch)
     transport = LoginTransport(timeout=5 if termination == 'deadline' else 10)
     task = None
     peer = None
