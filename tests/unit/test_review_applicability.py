@@ -9,6 +9,77 @@ from textual.widgets import DataTable
 from test_tui import fixture
 
 
+@pytest.mark.parametrize('provider, auth_mode, visible', [
+    ('gpt', 'subscription', True),
+    ('gpt', 'api_key', False),
+    ('bedrock', 'session', False),
+])
+def test_subscription_allocation_fields_belong_to_selected_provider(tmp_path, provider, auth_mode, visible):
+    from api_agent.config import load_shared_schema, resolve_config
+    from api_agent.providers.loading import bootstrap_schema
+
+    root = Path(__file__).resolve().parents[2]
+    names = {'LLM_QUOTA_PERIOD', 'LLM_PAY_PERIOD', 'LLM_PAY_PERIOD_LIMIT'}
+    shared = load_shared_schema()
+    assert not names.intersection(shared.fields)
+    settings = {'LLM_PROVIDER': str(root / 'src/api_agent/llm_providers' / provider / 'factory.py') + ':factory',
+                ('GPT_AUTH_MODE' if provider == 'gpt' else 'BEDROCK_AUTH_MODE'): auth_mode}
+    schema = bootstrap_schema(shared, (), settings, {})
+    result = resolve_config(schema, environ=settings)
+    assert names.intersection(result.values) == (names if visible else set())
+    assert names.intersection(schema.fields) == (names if provider == 'gpt' else set())
+
+    app = fixture(tmp_path)
+    app.schema = shared
+    app.session.schema = shared
+    app.session.environ.update(settings)
+    app.context.anchors = {name: tmp_path for name in ('owner_root', 'base_root', 'pack_root')}
+
+    async def scenario():
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            app.review_names.update(names)
+            app.show_configuration()
+            await pilot.pause()
+            table = app.screen.query_one(DataTable)
+            rows = {table.get_row_at(i)[0] for i in range(table.row_count)}
+            assert names.intersection(rows) == (names if visible else set())
+            assert names.intersection(app.configuration_pending()) == (names if visible else set())
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('saved', [False, True], ids=['fresh', 'saved-path'])
+def test_csv_path_review_requires_enabled_toggle(tmp_path, saved):
+    source = tomllib.loads((Path(__file__).resolve().parents[2] / 'cfg/config.toml').read_text())
+    names = ('TOKEN_USAGE_CSV_ENABLED', 'TOKEN_USAGE_CSV', 'COLLECT_ONLY')
+    app = fixture(tmp_path, fields={name: source['fields'][name] for name in names})
+    app.context.anchors['owner_root'] = tmp_path
+    if saved:
+        (tmp_path / '.env').write_text('TOKEN_USAGE_CSV=custom.csv\n')
+
+    async def scenario():
+        async with app.run_test(size=(110, 40)) as pilot:
+            await pilot.pause()
+            for enabled in (None, 'True', 'False', 'True'):
+                if enabled is not None:
+                    app.session.set_value('TOKEN_USAGE_CSV_ENABLED', enabled)
+                app.review_names.update(app.schema.fields)
+                app.show_configuration()
+                await pilot.pause()
+                table = app.screen.query_one(DataTable)
+                rows = {table.get_row_at(i)[0] for i in range(table.row_count)}
+                assert ('TOKEN_USAGE_CSV' in rows) is (enabled == 'True')
+                assert ('TOKEN_USAGE_CSV' in app.configuration_pending()) is (enabled == 'True' and not saved)
+                if enabled == 'True':
+                    assert app.session.result(_review=True).values['TOKEN_USAGE_CSV'] == tmp_path / (
+                        'custom.csv' if saved else 'token_usage.csv')
+            if saved:
+                assert (tmp_path / '.env').read_text() == 'TOKEN_USAGE_CSV=custom.csv\n'
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('saved', [False, True], ids=['fresh', 'saved-jaeger'])
 def test_trace_mode_review_transitions_and_saved_cleanup(tmp_path, saved):
     source = tomllib.loads((Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/cfg/config.toml').read_text())
