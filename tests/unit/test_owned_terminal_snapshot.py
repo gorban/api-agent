@@ -9,9 +9,15 @@ import pytest
 from api_agent.testing import processes
 
 
+pytestmark = [
+    pytest.mark.unit_platform('linux', 'darwin'),
+    pytest.mark.skipif(os.name != 'posix', reason='POSIX retained child identity'),
+]
+
+
 @pytest.fixture
 def reserved_child():
-    child = subprocess.Popen([sys.executable, '-c', 'pass'], start_new_session=True)
+    child = subprocess.Popen(['/bin/sh', '-c', 'exit 0'], start_new_session=True)
     try:
         assert processes.wait_owned(child, timeout=5) == 0
         assert child.returncode is None

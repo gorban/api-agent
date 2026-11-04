@@ -16,9 +16,10 @@ ROOT = Path(__file__).resolve().parents[2]
 class LaunchTests(unittest.TestCase):
     def test_terminal_units_use_override_or_inherit_global_workers(self):
         from api_agent.testing.runner import UnitRunResult
-        for extra, expected in (([], 32), (['--unit-test-parallel-jobs='], 11),
+        for extra, expected in (([], 16), (['--unit-test-parallel-jobs='], 11),
                                 (['--unit-test-parallel-jobs=0'], 0),
-                                (['--unit-test-parallel-jobs=12'], 12)):
+                                (['--unit-test-parallel-jobs=12'], 12),
+                                (['--unit-test-parallel-jobs=32'], 32)):
             with self.subTest(extra=extra), patch.dict(os.environ, {}, clear=True), \
                     patch('sys.stdout', StringIO()), \
                     patch('api_agent.config.read_dotenv', return_value={}), \

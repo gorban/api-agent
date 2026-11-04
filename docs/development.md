@@ -198,8 +198,10 @@ Missing declared integration/E2E directories are errors, not successful empty
 runs. Collection starts no services, authentication or test-result publication.
 
 `TEST_PARALLEL_JOBS` defaults to 8. Units use `UNIT_TEST_PARALLEL_JOBS`,
-defaulting to 32; set it empty to inherit the global count, or 0 to run units
-serially. Both the TUI and terminal execution honor this override.
+defaulting to 16; resource packs may override this default. Set it empty to inherit the global count, or 0 to run units
+serially. Explicit values, including 32, are honored in both the TUI and
+terminal. Large counts can contend with isolated schema, authentication and
+evidence subprocesses and exhaust their existing deadlines.
 
 Only one suite can execute at a time per local user, across repositories and
 resource packs. Idle launchers and history browsing remain available. The suite

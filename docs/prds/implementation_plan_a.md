@@ -133,7 +133,7 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 
 - [ ] Before the first traced "Ok" run, apply the shared [LOG_CONTENT policy](implementation_plan_j.md) to captured/displayed diagnostic log streams, including selected-source and interleaved views. Raw log formatting and source switching must not bypass content scrubbing; preserving original log content is subject to this gate.
 
-- [ ] Use `TEST_PARALLEL_JOBS` (nonnegative integer, default `8`) for integration/E2E and as the unit fallback. Units override it with `UNIT_TEST_PARALLEL_JOBS` (default `32`, empty inherits the global count); `0` on the effective count disables parallelism and runs serially. Preserve test event identity, per-test artifacts/auth isolation, and E2E consecutive confirmation ordering when scheduling workers. Collection starts no workers.
+- [ ] Use `TEST_PARALLEL_JOBS` (nonnegative integer, default `8`) for integration/E2E and as the unit fallback. Units override it with `UNIT_TEST_PARALLEL_JOBS` (default `16`, empty inherits the global count); `0` on the effective count disables parallelism and runs serially. Preserve test event identity, per-test artifacts/auth isolation, and E2E consecutive confirmation ordering when scheduling workers. Collection starts no workers.
 
 ## B2 unit execution slice
 
@@ -222,10 +222,11 @@ The detailed shared-mode checklist below continues to track E2E work; completed 
 ## Unit worker tuning
 
 - [x] Benchmark the same combined unit/coverage suite at increasing worker counts
-  before selecting a unit default. Set UNIT_TEST_PARALLEL_JOBS=32 with optional
+  before selecting a unit default. Use UNIT_TEST_PARALLEL_JOBS=16 with optional
   empty inheritance from TEST_PARALLEL_JOBS (global default remains 8).
   Share effective-count resolution across TUI/terminal routes; verify default,
   explicit override, empty fallback, serial zero and invalid negative settings.
+  The earlier 32-worker default is superseded by [concurrency qualification](implementation_plan_a9h5.md), preserving explicit counts.
 
 ## Pre-start estimate visibility and rollups
 

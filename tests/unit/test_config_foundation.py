@@ -309,7 +309,7 @@ def test_parallel_jobs_defaults_serial_and_validation(tmp_path, mode):
     result.raise_for_errors()
     assert result.values['TEST_PARALLEL_JOBS'] == 8
     if mode == 'unit':
-        assert result.values['UNIT_TEST_PARALLEL_JOBS'] == 32
+        assert result.values['UNIT_TEST_PARALLEL_JOBS'] == 16
     else:
         assert 'UNIT_TEST_PARALLEL_JOBS' not in result.values
     if mode == 'e2e':
@@ -323,7 +323,7 @@ def test_parallel_jobs_defaults_serial_and_validation(tmp_path, mode):
     assert any('TEST_PARALLEL_JOBS' in error for error in invalid.errors)
 
 
-@pytest.mark.parametrize('raw, expected', [('', None), ('0', 0), ('12', 12)])
+@pytest.mark.parametrize('raw, expected', [('', None), ('0', 0), ('12', 12), ('32', 32)])
 def test_unit_worker_override_accepts_empty_and_valid_counts(tmp_path, raw, expected):
     schema = load_shared_schema()
     result = resolve_config(schema, environ={**AUTH, 'TUI_MODE': 'unit'},
