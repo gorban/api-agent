@@ -1,3 +1,4 @@
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -66,7 +67,7 @@ def test_ancestor_package_initializer_escape_is_rejected_before_pytest(tmp_path,
     (tmp_path / 'provider' / ancestor / '__init__.py').symlink_to(outside)
     from unittest.mock import Mock
     child = Mock(side_effect=AssertionError('pytest must not start'))
-    monkeypatch.setattr('api_agent.testing.collection.subprocess.Popen', child)
+    monkeypatch.setattr('api_agent.testing.collection.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.collection').subprocess) | {'Popen': child})))
     with pytest.raises(CollectionError, match='content escapes its root'):
         collect_tests(context(tmp_path), 'integration', config={'LLM_PROVIDER': selected})
     child.assert_not_called()

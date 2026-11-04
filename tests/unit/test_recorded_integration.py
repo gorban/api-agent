@@ -249,7 +249,7 @@ def test_real_runner_setup_failure_persists_failed_run_without_starting_pytest(t
     monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: [test])
     def no_process(*args, **kwargs):
         pytest.fail('Failed suite preparation must not start a test child')
-    monkeypatch.setattr(integration.subprocess, 'Popen', no_process)
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': no_process})))
     def prepare(usage):
         raise RuntimeError('private-setup-password')
     result = recorded.run_recorded_integration(context, [test], config, accepted=True,

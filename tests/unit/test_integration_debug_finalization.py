@@ -149,7 +149,7 @@ def test_startup_failure_reaps_worker_and_closes_liveness_pipe(tmp_path, monkeyp
             raise RuntimeError('synthetic thread startup failure')
         return original_start(thread)
     monkeypatch.setattr(os, 'pipe', pipe)
-    monkeypatch.setattr(integration.subprocess, 'Popen', popen)
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': popen})))
     monkeypatch.setattr(threading.Thread, 'start', start)
     result = integration.run_integration_tests(context, tests, accepted=True, config={'DEBUG': True})
     assert result.exit_code == 1
@@ -192,7 +192,7 @@ def test_non_posix_reader_start_failure_reaps_worker_and_closes_stdout(tmp_path,
     monkeypatch.setattr(integration, 'os', platform)
     monkeypatch.setattr(processes, 'os', platform)
     monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: tests)
-    monkeypatch.setattr(integration.subprocess, 'Popen', popen)
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': popen})))
     monkeypatch.setattr(threading.Thread, 'start', start)
     try:
         result = integration.run_integration_tests(context, tests, accepted=True, config={'DEBUG': True})

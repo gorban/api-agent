@@ -39,7 +39,7 @@ def test_actual_runner_transfers_lease_to_retained_backend_until_retry_acknowled
         Path(args[3]).write_text(''.join(json.dumps(dict(kind='report',node=test.node_id,
             phase=phase,status='passed',duration=0,traceback=''))+'\n' for phase in ('setup','call','teardown')))
         return SimpleNamespace(stdout=StringIO(),returncode=0,poll=lambda:0)
-    monkeypatch.setattr(integration.subprocess,'Popen',process)
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': process})))
     monkeypatch.setattr(integration,'finalize',lambda *a,**k:None)
     context=SimpleNamespace(base_root=tmp_path,owner_root=tmp_path)
     try:

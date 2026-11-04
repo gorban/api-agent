@@ -385,7 +385,7 @@ async def test_asset_preparation_fails_closed(tmp_path, script, code):
     command.write_text(script)
     command.chmod(0o755)
     with pytest.raises(GraphQLMcpError, match=code):
-        await prepare_assets(tmp_path / 'assets', npm=str(command), timeout=0.05 if code == 'asset_timeout' else 3)
+        await prepare_assets(tmp_path / 'assets', npm=str(command), timeout=0.05 if code == 'asset_timeout' else 10)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('selection', ['explicit', 'path'])

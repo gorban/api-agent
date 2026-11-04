@@ -38,7 +38,7 @@ def pending_receipt(monkeypatch):
             pass
 
     monkeypatch.setattr(prerequisites, '_check', check)
-    monkeypatch.setattr(prerequisites.subprocess, 'Popen', lambda *args, **kwargs: process)
+    monkeypatch.setattr(prerequisites, 'subprocess', SimpleNamespace(**(vars(prerequisites.subprocess) | {'Popen': lambda *args, **kwargs: process})))
     monkeypatch.setattr(prerequisites, 'selectors', SimpleNamespace(
         DefaultSelector=Selector, EVENT_READ=prerequisites.selectors.EVENT_READ))
 

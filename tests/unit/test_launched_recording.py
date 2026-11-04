@@ -131,7 +131,7 @@ def test_post_acquisition_cancellation_publishes_before_rollback(tmp_path, monke
     subject = RecordingPrerequisites(prepare_dependencies=lambda: None,
         plan=lambda config: manager.plan, manager=lambda *args: manager, cancel_event=cancelled)
     monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kw: [test])
-    monkeypatch.setattr(integration.subprocess, 'Popen', Mock(side_effect=AssertionError('No child after cancellation')))
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': Mock(side_effect=AssertionError('No child after cancellation'))})))
     calls = []
     class Destination(Storage):
         def persist(self, directory, manifest):

@@ -95,7 +95,7 @@ def test_isolated_display_rejects_incomplete_or_invalid_startup(tmp_path, monkey
         process = popen(*args, **kwargs)
         started.append(process)
         return process
-    monkeypatch.setattr(module.subprocess, 'Popen', start)
+    monkeypatch.setattr(module, 'subprocess', SimpleNamespace(**(vars(module.subprocess) | {'Popen': start})))
     fixture = isolated_headed_display.__wrapped__(monkeypatch)
     began = time.monotonic()
     with pytest.raises(pytest.fail.Exception, match=expected):
@@ -118,7 +118,7 @@ def test_isolated_display_reaps_process_after_startup_interrupt(tmp_path, monkey
         process = popen(*args, **kwargs)
         started.append(process)
         return process
-    monkeypatch.setattr(module.subprocess, 'Popen', start)
+    monkeypatch.setattr(module, 'subprocess', SimpleNamespace(**(vars(module.subprocess) | {'Popen': start})))
     def interrupt(*args):
         raise KeyboardInterrupt
     monkeypatch.setattr(module.select, 'select', interrupt)

@@ -1,3 +1,4 @@
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -376,7 +377,7 @@ def test_before_run_failure_prevents_process_start(tmp_path, monkeypatch):
     ctx = context(base)
     selected = collect_tests(ctx, 'integration')
     monkeypatch.setattr('api_agent.testing.integration.collect_tests', lambda *a, **k: selected)
-    monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', lambda *a, **k: pytest.fail('started'))
+    monkeypatch.setattr('api_agent.testing.integration.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.integration').subprocess) | {'Popen': lambda *a, **k: pytest.fail('started')})))
     result = run_integration_tests(ctx, selected, accepted=True,
                                    before_run=lambda: (_ for _ in ()).throw(RuntimeError('secret')))
     assert result.exit_code == 1 and result.tests[0].status == 'error'
@@ -433,7 +434,7 @@ def test_child_start_failure_returns_missing_error(tmp_path, monkeypatch):
     monkeypatch.setattr('api_agent.testing.integration.collect_tests', lambda *a, **k: selected)
     def fail(*args, **kwargs):
         raise OSError('private path')
-    monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', fail)
+    monkeypatch.setattr('api_agent.testing.integration.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.integration').subprocess) | {'Popen': fail})))
     result = run_integration_tests(ctx, selected, accepted=True)
     assert result.exit_code == 1 and result.tests[0].status == 'error'
     assert 'private path' not in result.output
@@ -539,7 +540,7 @@ def test_output_reader_oserror_is_reaped_and_accounted(tmp_path, monkeypatch):
         returncode = 0
         def poll(self):
             return 0
-    monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', lambda *a, **k: FakeProcess())
+    monkeypatch.setattr('api_agent.testing.integration.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.integration').subprocess) | {'Popen': lambda *a, **k: FakeProcess()})))
     monkeypatch.setattr('api_agent.testing.integration.finalize', lambda process: None)
     result = run_integration_tests(ctx, selected, accepted=True)
     assert result.exit_code == 1 and result.tests[0].status == 'error'
@@ -564,7 +565,7 @@ def test_live_reader_timeout_still_finalizes(tmp_path, monkeypatch):
             pass
         def is_alive(self):
             return True
-    monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', lambda *a, **k: FakeProcess())
+    monkeypatch.setattr('api_agent.testing.integration.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.integration').subprocess) | {'Popen': lambda *a, **k: FakeProcess()})))
     monkeypatch.setattr('api_agent.testing.integration.finalize', lambda process: None)
     monkeypatch.setattr('api_agent.testing.integration.threading.Thread', FakeThread)
     result = run_integration_tests(ctx, selected, accepted=True)
@@ -605,7 +606,7 @@ def test_api_marker_survives_collection_and_blocks_runner_before_side_effects(tm
     assert 'requires_pack_api' in tests[0].tags
     check = Mock(side_effect=ValueError('unavailable'))
     monkeypatch.setattr('api_agent.auth.extensions.validate_operation', check)
-    monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', lambda *a, **k: pytest.fail('started'))
+    monkeypatch.setattr('api_agent.testing.integration.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.integration').subprocess) | {'Popen': lambda *a, **k: pytest.fail('started')})))
     monkeypatch.setattr('api_agent.testing.integration.collect_tests', lambda *a, **k: tests)
     calls = []
     result = run_integration_tests(ctx, tests, accepted=True, config={'TUI_MODE': 'integration'}, before_run=lambda: calls.append('before'))
@@ -1122,7 +1123,7 @@ def test_retained_output_seal_waits_for_accepted_line_before_final_flush(tmp_pat
         Thread=threading.Thread, Event=threading.Event, Lock=OutputLock))
     monkeypatch.setattr(integration, 'queue', SimpleNamespace(Queue=OutputQueue))
     monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: selected)
-    monkeypatch.setattr(integration.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': spawn})))
     monkeypatch.setattr('api_agent.testing.inspection.IntegrationInspection', retain)
     releaser.start()
     try:
@@ -1332,7 +1333,7 @@ def test_retained_stdout_boundary_receipt_controls_transfer(tmp_path, monkeypatc
             assert ack_consumed.wait(5), 'late marker was not acknowledged'
 
     monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: selected)
-    monkeypatch.setattr(integration.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': spawn})))
     monkeypatch.setattr(integration, 'finalize', finalize)
     monkeypatch.setattr('api_agent.testing.inspection.IntegrationInspection', retain)
     if receipt in {'timeout', 'false_marker_live'}:

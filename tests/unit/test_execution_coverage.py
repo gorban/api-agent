@@ -73,7 +73,7 @@ def test_group_detection_without_proc_ignores_zombies(monkeypatch, listing, runn
     def ps(*args, **kwargs):
         calls.append((args, kwargs))
         return SimpleNamespace(stdout=listing)
-    monkeypatch.setattr(processes.subprocess, 'run', ps)
+    monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(processes.subprocess) | {'run': ps})))
     assert processes._group_running(123) is running
     assert calls == [((['/bin/ps', '-A', '-o', 'pgid=', '-o', 'state='],),
                       {'capture_output': True, 'text': True, 'check': True, 'timeout': 5})]
@@ -82,7 +82,7 @@ def test_group_detection_without_proc_ignores_zombies(monkeypatch, listing, runn
 @pytest.mark.parametrize('listing', ['bad row', '123', 'abc S'])
 def test_group_detection_rejects_malformed_ps(monkeypatch, listing):
     monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
-    monkeypatch.setattr(processes.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(stdout=listing))
+    monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(processes.subprocess) | {'run': lambda *args, **kwargs: SimpleNamespace(stdout=listing)})))
     with pytest.raises(RuntimeError, match='invalid ps output'):
         processes._group_running(123)
 
@@ -93,7 +93,7 @@ def test_group_detection_rejects_ps_failure(monkeypatch, failure):
     monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
     def fail(*args, **kwargs):
         raise failure
-    monkeypatch.setattr(processes.subprocess, 'run', fail)
+    monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(processes.subprocess) | {'run': fail})))
     with pytest.raises(RuntimeError, match='ps failed'):
         processes._group_running(123)
 
@@ -126,7 +126,7 @@ def test_finalization_reports_unstopped_process_group(monkeypatch):
 
 
 def test_collection_start_failure_is_actionable_and_does_not_stop_unowned_process(monkeypatch, tmp_path):
-    monkeypatch.setattr(collection.subprocess, 'Popen', Mock(side_effect=OSError('missing python')))
+    monkeypatch.setattr(collection, 'subprocess', SimpleNamespace(**(vars(collection.subprocess) | {'Popen': Mock(side_effect=OSError('missing python'))})))
     with pytest.raises(CollectionError, match='Cannot start pytest collection for base'):
         collection._run_collection([], tmp_path, {}, 'base', None)
 
@@ -202,7 +202,7 @@ def fake_execution(monkeypatch, ctx, *, reports=(), coverage='valid', exit_code=
             html.mkdir()
             (html / 'index.html').write_text('Synthetic coverage report')
         return SimpleNamespace(stdout=io.StringIO(output), returncode=exit_code, poll=lambda: exit_code)
-    monkeypatch.setattr(runner.subprocess, 'Popen', popen)
+    monkeypatch.setattr(runner, 'subprocess', SimpleNamespace(**(vars(runner.subprocess) | {'Popen': popen})))
     return test, stops
 
 
@@ -252,7 +252,7 @@ def test_runner_rejects_bad_parallelism_and_fabricated_identity(monkeypatch,tmp_
 
 def test_runner_cannot_start_pytest_returns_error_result(monkeypatch,tmp_path):
     ctx=context(tmp_path); test,_=fake_execution(monkeypatch,ctx)
-    monkeypatch.setattr(runner.subprocess,'Popen',Mock(side_effect=OSError('missing executable')))
+    monkeypatch.setattr(runner, 'subprocess', SimpleNamespace(**(vars(runner.subprocess) | {'Popen': Mock(side_effect=OSError('missing executable'))})))
     result=runner.run_unit_tests(ctx,[test])
     assert result.exit_code == 1 and result.tests[0].status == 'error'
     assert 'Cannot start pytest' in result.output
@@ -275,7 +275,7 @@ def test_cancellation_between_discovery_and_execution_starts_no_process(monkeypa
         cancel.set()
         return [test]
     monkeypatch.setattr(runner,'collect_tests',collect)
-    launch=Mock(); monkeypatch.setattr(runner.subprocess,'Popen',launch)
+    launch=Mock(); monkeypatch.setattr(runner, 'subprocess', SimpleNamespace(**(vars(runner.subprocess) | {'Popen': launch})))
     result=runner.run_unit_tests(ctx,[test],cancel_event=cancel)
     assert result.cancelled and result.exit_code == 130
     assert result.tests[0].status == 'cancelled'

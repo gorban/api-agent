@@ -1,4 +1,5 @@
 """Runner errors retain safe causes for every selected test."""
+import importlib
 import json
 from types import SimpleNamespace
 import pytest
@@ -30,7 +31,7 @@ def test_safe_cause_reaches_each_result_and_recording(selection, monkeypatch, tm
     monkeypatch.setattr('api_agent.testing.integration.collect_tests', fail if failure == 'collection' else lambda *a, **k: tests)
     kwargs = {'before_run': fail} if failure == 'before_run' else {}
     if failure == 'spawn':
-        monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', fail)
+        monkeypatch.setattr('api_agent.testing.integration.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.integration').subprocess) | {'Popen': fail})))
     if failure == 'backend':
         monkeypatch.setattr('api_agent.testing.setup_backend.SetupBackend.start', fail)
         kwargs['config'] = {}
@@ -72,7 +73,7 @@ def test_no_reports_include_worker_exit(selection, monkeypatch, teardown_only):
             from pathlib import Path
             Path(args[3]).write_text(''.join(json.dumps(dict(kind='report', node=test.node_id, phase='teardown', status='passed', duration=0, traceback='')) + '\n' for test in tests))
         return Process()
-    monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', spawn)
+    monkeypatch.setattr('api_agent.testing.integration.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.integration').subprocess) | {'Popen': spawn})))
     monkeypatch.setattr('api_agent.testing.integration.threading.Thread', Reader)
     monkeypatch.setattr('api_agent.testing.integration.finalize', lambda process: None)
     finished, events = [], []
@@ -338,7 +339,7 @@ def test_late_prior_suite_reader_failure_does_not_contaminate_next_suite(tmp_pat
             if liveness_fd is not None:
                 os.close(liveness_fd)
         registry.append(SimpleNamespace(abort=abort))
-    monkeypatch.setattr('api_agent.testing.integration.subprocess.Popen', spawn)
+    monkeypatch.setattr('api_agent.testing.integration.subprocess', SimpleNamespace(**(vars(importlib.import_module('api_agent.testing.integration').subprocess) | {'Popen': spawn})))
     monkeypatch.setattr('api_agent.testing.integration.threading',
         SimpleNamespace(Thread=Reader, Event=threading.Event, Lock=threading.Lock))
     monkeypatch.setattr('api_agent.testing.integration.finalize', lambda process: None)

@@ -1,4 +1,5 @@
 """Synthetic commands retain bounded local evidence without changing safe errors."""
+from types import SimpleNamespace
 import sys
 import time
 
@@ -132,7 +133,7 @@ def test_prelaunch_interruption_retains_attempt_without_starting_process(
         launches.append(args)
         raise AssertionError('Prelaunch interruption must not start a process')
 
-    monkeypatch.setattr(prerequisites.subprocess, 'Popen', forbidden_launch)
+    monkeypatch.setattr(prerequisites, 'subprocess', SimpleNamespace(**(vars(prerequisites.subprocess) | {'Popen': forbidden_launch})))
     with pytest.raises(PrerequisiteError) as caught:
         run_command(('synthetic-tool', 'inspect'), environment={}, directory=tmp_path,
                     deadline=deadline, cancelled=lambda: cancelled, now=lambda: 1)
@@ -740,7 +741,7 @@ def owned_pending_helpers(monkeypatch):
         owned.append(process)
         return process
 
-    monkeypatch.setattr(prerequisites.subprocess, 'Popen', capture_process)
+    monkeypatch.setattr(prerequisites, 'subprocess', SimpleNamespace(**(vars(prerequisites.subprocess) | {'Popen': capture_process})))
     yield owned
     for process in owned:
         if not disposal_complete(process):
