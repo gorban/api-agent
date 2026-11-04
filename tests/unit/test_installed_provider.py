@@ -396,13 +396,20 @@ def current_runtime_snapshot(tmp_path_factory):
     return first, second, updated
 
 
-def test_wheel_packages_current_runtime_bytes(current_runtime_snapshot, tmp_path):
-    _, second, updated = current_runtime_snapshot
-    output = tmp_path / 'wheels'
+@pytest.fixture(scope='module')
+def current_runtime_wheel(current_runtime_snapshot, tmp_path_factory):
+    _, source, _ = current_runtime_snapshot
+    temporary = tmp_path_factory.mktemp('current-runtime-wheel')
+    output = temporary / 'wheels'
     run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
-         '--outdir', str(output), str(second)], cwd=tmp_path)
+         '--outdir', str(output), str(source)], cwd=temporary)
     wheel, = output.glob('*.whl')
-    with zipfile.ZipFile(wheel) as installed:
+    return wheel
+
+
+def test_wheel_packages_current_runtime_bytes(current_runtime_snapshot, current_runtime_wheel):
+    _, _, updated = current_runtime_snapshot
+    with zipfile.ZipFile(current_runtime_wheel) as installed:
         assert installed.read('api_agent/__init__.py') == updated
 
 
@@ -457,7 +464,7 @@ def test_wheel_snapshot_rejects_missing_and_symlink_runtime(current_runtime_snap
 
 
 @pytest.fixture(scope='module')
-def installed_wheel(tmp_path_factory):
+def installed_wheel(tmp_path_factory, request):
     repository = Path(__file__).resolve().parents[2]
     temporary = tmp_path_factory.mktemp('installed-provider')
     wheel_setting = os.environ.get('API_AGENT_TEST_WHEEL')
@@ -465,15 +472,9 @@ def installed_wheel(tmp_path_factory):
         wheel = Path(wheel_setting).resolve()
         assert wheel.is_file(), 'API_AGENT_TEST_WHEEL must name a local wheel'
     else:
-        source = repository
-        if _git_owned_checkout(repository):
-            source = temporary / 'source'
-            source.mkdir()
-            _wheel_source_snapshot(repository, source)
-        output = temporary / 'wheels'
-        run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
-             '--outdir', str(output), str(source)], cwd=temporary)
-        wheel, = output.glob('*.whl')
+        # The byte-preservation proof and isolated lifecycle consume the same
+        # physical wheel; neither needs another source snapshot or build.
+        wheel = request.getfixturevalue('current_runtime_wheel')
     environment = temporary / 'consumer-env'
     run([sys.executable, '-I', '-m', 'venv', str(environment)], cwd=temporary)
     python = environment / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')

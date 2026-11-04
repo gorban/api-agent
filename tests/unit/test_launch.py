@@ -232,7 +232,7 @@ class LaunchTests(unittest.TestCase):
     def test_launcher_dotenv_precedence_is_retained_with_demo_pack(self):
         from api_agent.config import resolve_config
         with tempfile.TemporaryDirectory() as directory:
-            origin = Path(directory)
+            origin = Path(directory).resolve()
             def dotenv(path):
                 return {'NO_STD_IN': 'True'} if Path(path) == origin / '.env' else {'NO_STD_IN': 'False'}
             with patch('api_agent.runtime.worktrees.verify_worktrees'), patch.dict(os.environ, {}, clear=True):

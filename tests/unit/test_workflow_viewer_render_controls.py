@@ -949,15 +949,31 @@ def _assert_child_stopped(pid):
         time.sleep(0.01)
 
 
-def test_renderer_timeout_kills_descendant_after_leader_exits(fake_renderer, tmp_path):
+def test_renderer_timeout_kills_descendant_after_leader_exits(tmp_path):
     child_pid = tmp_path / "child.pid"
-    renderer = fake_renderer(f"sleep 10 & echo $! > {shlex.quote(str(child_pid))}; exit 0", timeout=3.0)
-
-    with pytest.raises(RenderError, match="renderer timed out"):
-        renderer.render(b"@startuml\nA\n@enduml\n")
-
-    pid = int(child_pid.read_text())
-    _assert_child_stopped(pid)
+    process = subprocess.Popen(
+        ["/bin/sh", "-c", f"sleep 60 & echo $! > {shlex.quote(str(child_pid))}; exit 0"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+    )
+    try:
+        # Establish the descendant/finished-leader precondition independently
+        # of the short drain deadline; interpreter/shell startup is not tested.
+        startup_deadline = time.monotonic() + 10
+        while (not child_pid.exists() or viewer_render.os.waitid(
+                viewer_render.os.P_PID, process.pid,
+                viewer_render.os.WEXITED | viewer_render.os.WNOHANG | viewer_render.os.WNOWAIT) is None):
+            assert time.monotonic() < startup_deadline, "renderer fixture did not become ready"
+            time.sleep(.01)
+        pid = int(child_pid.read_text())
+        with pytest.raises(subprocess.TimeoutExpired):
+            viewer_render._drain(process, timeout=.1)
+        _assert_child_stopped(pid)
+    finally:
+        if process.returncode is None:
+            viewer_render.kill_owned_group(process.pid)
+            process.wait()
+        process.stdout.close()
+        process.stderr.close()
 
 
 def test_child_stopped_helper_accepts_disappearance(monkeypatch):

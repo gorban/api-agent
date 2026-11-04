@@ -107,11 +107,12 @@ def test_interrupted_unconfirmed_disposal_preserves_interrupt_and_retries(tmp_pa
                         return_value=False)
     monkeypatch.setattr(processes, '_group_running', group_checks)
     interruption = KeyboardInterrupt('controlled interrupt')
-    process = SimpleNamespace(pid=424242, returncode=0 if leader_known else None,
+    process = SimpleNamespace(pid=424242, returncode=None,
                               stdout=SimpleNamespace(close=Mock()), poll=lambda: 0)
     def wait(timeout):
         if wait.calls == 0:
             wait.calls += 1
+            process.returncode = 0 if leader_known else None
             raise interruption
         wait.calls += 1
         process.returncode = 0
@@ -130,7 +131,7 @@ def test_interrupted_unconfirmed_disposal_preserves_interrupt_and_retries(tmp_pa
     assert not handle.closed
     first_signal_count = signals.call_count
     assert handle.end_inspection()
-    assert signals.call_count > first_signal_count
+    assert signals.call_count == first_signal_count
     assert wait.calls == 2 and handle.closed and processes.disposal_complete(process)
 
 

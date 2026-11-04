@@ -1,4 +1,5 @@
 """Capture selected executable data; acquire toolchains only at runtime start."""
+from api_agent.testing.processes import wait_owned
 import json
 from functools import partial
 import os
@@ -90,11 +91,11 @@ def _command(mise, arguments, directory, environment, budget, cancellation):
                 if budget.remaining is not None and budget.remaining <= 0:
                     raise TimeoutError('Toolchain preparation timed out')
                 try:
-                    process.wait(timeout=min(.1, budget.remaining or .1))
+                    code = wait_owned(process, timeout=min(.1, budget.remaining or .1))
                     break
                 except subprocess.TimeoutExpired:
                     continue
-            if process.returncode:
+            if code:
                 raise OSError('Toolchain preparation failed; check declared versions and host prerequisites')
             output.seek(0)
             body = output.read(1024 * 1024 + 1)

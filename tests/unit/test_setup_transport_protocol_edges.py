@@ -10,6 +10,7 @@ import pytest
 
 from api_agent.providers import authority_channel as authority
 from api_agent.providers import setup_transport as setup
+from api_agent.providers import evidence_watchdog
 from api_agent.providers.contracts import ContractError, SetupRegistrationLimitError
 
 
@@ -286,7 +287,7 @@ async def test_corrupt_projection_child_result_rejects_and_reaps_real_process(mo
     from api_agent.providers import evidence_watchdog
     from api_agent.telemetry.privacy import EmissionBoundary
     processes = []
-    original_spawn = asyncio.create_subprocess_exec
+    original_spawn = evidence_watchdog.spawn
     original_communicate = evidence_watchdog.communicate
     async def spawn(*args, **kwargs):
         process = await original_spawn(*args, **kwargs)
@@ -296,7 +297,7 @@ async def test_corrupt_projection_child_result_rejects_and_reaps_real_process(mo
         output, stderr = await original_communicate(process, payload)
         assert process.returncode == 0 and json.loads(output) == []
         return corrupt, stderr
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(evidence_watchdog, 'spawn', spawn)
     monkeypatch.setattr(evidence_watchdog, 'communicate', corrupt_output)
     with pytest.raises((ContractError, ValueError)):
         await setup.SetupServer._prepare_isolated([], EmissionBoundary())
@@ -326,7 +327,7 @@ async def test_settlement_releases_authority_only_after_real_eof(eof):
 async def test_projection_rejects_oversized_input_before_spawning(monkeypatch):
     from api_agent.telemetry.privacy import EmissionBoundary
     spawn = AsyncMock(side_effect=AssertionError('oversized input spawned a child'))
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(evidence_watchdog, 'spawn', spawn)
     rows = [{'phase': 'request', 'content': {'text': 'x' * (setup.MAX_EVIDENCE_BYTES + 1024 * 1024)}}]
     with pytest.raises(ContractError, match='input limit'):
         await setup.SetupServer._prepare_isolated(rows, EmissionBoundary())
@@ -426,7 +427,7 @@ async def test_inline_evidence_after_full_chunked_budget_is_omitted_but_result_s
 async def test_oversized_registered_credential_rejects_projection_before_child_creation(monkeypatch):
     from api_agent.telemetry.privacy import EmissionBoundary
     spawn = AsyncMock(side_effect=AssertionError('must not spawn on oversized credential'))
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(evidence_watchdog, 'spawn', spawn)
     boundary = EmissionBoundary(secrets=('x' * (6 * 1024 * 1024),))
     with pytest.raises(ContractError, match='input limit'):
         await setup.SetupServer._prepare_isolated([], boundary)
@@ -437,7 +438,7 @@ async def test_oversized_registered_credential_rejects_projection_before_child_c
 async def test_projection_unsupported_platform_fails_before_starting_child(monkeypatch):
     from api_agent.telemetry.privacy import EmissionBoundary
     spawn = AsyncMock(side_effect=AssertionError('unsupported platform must not start a worker'))
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(evidence_watchdog, 'spawn', spawn)
     monkeypatch.setattr(setup.sys, 'platform', 'unsupported')
     with pytest.raises(ContractError, match='platform unavailable'):
         await setup.SetupServer._prepare_isolated([], EmissionBoundary())
@@ -448,13 +449,13 @@ async def test_projection_unsupported_platform_fails_before_starting_child(monke
 async def test_projection_child_nonzero_exit_is_rejected_and_reaped(monkeypatch):
     import sys
     from api_agent.telemetry.privacy import EmissionBoundary
-    original = asyncio.create_subprocess_exec
+    original = evidence_watchdog.spawn
     processes = []
     async def failing(_executable, *_args, **kwargs):
         process = await original(sys.executable, '-c', 'import sys; sys.exit(17)', **kwargs)
         processes.append(process)
         return process
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', failing)
+    monkeypatch.setattr(evidence_watchdog, 'spawn', failing)
     with pytest.raises(ContractError, match='projection unavailable'):
         await setup.SetupServer._prepare_isolated([], EmissionBoundary())
     assert len(processes) == 1 and processes[0].returncode == 17
@@ -600,23 +601,32 @@ async def test_malformed_producer_evidence_is_withheld_or_omitted_without_losing
 async def test_cancelled_projection_spawn_reaps_child_that_already_exited(monkeypatch):
     import sys
     from api_agent.telemetry.privacy import EmissionBoundary
-    original = asyncio.create_subprocess_exec
+    original = evidence_watchdog.spawn
     exited, release = asyncio.Event(), asyncio.Event()
     processes = []
     async def delayed(_executable, *_args, **kwargs):
         process = await original(sys.executable, '-c', 'pass', **kwargs)
         processes.append(process)
-        assert await process.wait() == 0
+        from api_agent.testing.processes import wait_owned
+        assert await asyncio.to_thread(wait_owned, process.process, timeout=5) == 0
+        assert process.returncode is None
         exited.set()
         await release.wait()
         return process
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', delayed)
+    monkeypatch.setattr(evidence_watchdog, 'spawn', delayed)
     task = asyncio.create_task(setup.SetupServer._prepare_isolated([], EmissionBoundary()))
-    await exited.wait()
-    task.cancel()
-    release.set()
-    with pytest.raises(asyncio.CancelledError): await task
-    assert len(processes) == 1 and processes[0].returncode == 0
+    try:
+        await asyncio.wait_for(exited.wait(), 10)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+        assert len(processes) == 1 and processes[0].returncode == 0
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.parametrize('mutation, reason', [(object(), 'unavailable'), ('x' * 1000, 'truncated')])
@@ -757,3 +767,55 @@ def test_fragment_limit_drift_fails_closed_before_releasing_oversized_part(monke
     with pytest.raises(ContractError, match='Evidence frame exceeds limit'):
         next(frames)
     assert len(inspected) == 1
+
+
+@pytest.mark.asyncio
+async def test_projection_cleanup_accepts_proved_terminal_group_refusal(monkeypatch):
+    from api_agent.testing import processes
+    from api_agent.telemetry.privacy import EmissionBoundary
+    signals = Mock(side_effect=PermissionError('terminal group'))
+    probe = Mock(return_value=False)
+    monkeypatch.setattr(processes.os, 'killpg', signals)
+    monkeypatch.setattr(processes, '_group_running', probe)
+
+    assert await setup.SetupServer._prepare_isolated([], EmissionBoundary()) == []
+
+    signals.assert_called_once()
+    probe.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_projection_repeated_cancellation_finishes_signal_and_reap(monkeypatch):
+    import threading
+    from api_agent.telemetry.privacy import EmissionBoundary
+    entered, release = threading.Event(), threading.Event()
+    class Process:
+        pid = 123
+        returncode = 0
+        reaped = False
+        async def communicate(self, _payload):
+            return b'[]', None
+        async def dispose(self):
+            if not self.reaped:
+                await asyncio.to_thread(signal_group)
+                self.reaped = True
+    process = Process()
+    async def spawn(*_args, **_kwargs):
+        return process
+    def signal_group(*_args):
+        entered.set()
+        assert release.wait(5)
+    monkeypatch.setattr(evidence_watchdog, 'spawn', spawn)
+    task = asyncio.create_task(setup.SetupServer._prepare_isolated([], EmissionBoundary()))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        assert process.reaped
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)

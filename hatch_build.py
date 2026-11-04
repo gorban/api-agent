@@ -12,8 +12,8 @@ import tomllib
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
-def _git(root, *args):
-    result = subprocess.run(('git', '--literal-pathspecs', '-C', str(root), *args), capture_output=True, timeout=20)
+def _git(root, *args, input=None):
+    result = subprocess.run(('git', '--literal-pathspecs', '-C', str(root), *args), capture_output=True, timeout=20, input=input)
     if result.returncode:
         raise RuntimeError('Packaged workflow source has no committed provenance')
     return result.stdout
@@ -49,25 +49,56 @@ def _proof(root, commit=None):
     commit_raw = _git(root, 'cat-file', 'commit', commit)
     objects[commit] = base64.b64encode(commit_raw).decode()
     tree_root = commit_raw.split(b'\n', 1)[0][5:].decode()
+    # Read the index once and retrieve committed blobs in one Git process.
+    # Object names are immutable; only tree objects may be cached between paths.
+    staged = {}
+    for row in _git(root, 'ls-files', '--stage', '-z').split(b'\0'):
+        if row:
+            metadata, name = row.split(b'\t', 1)
+            staged.setdefault(name, []).append(metadata.split())
+    trees, committed = {}, {}
+    for path in paths:
+        current = tree_root
+        for part in path.as_posix().encode().split(b'/'):
+            if current not in trees:
+                raw = _git(root, 'cat-file', 'tree', current)
+                objects[current] = base64.b64encode(raw).decode()
+                trees[current] = _tree_entries(raw, size)
+            try:
+                _, current = trees[current][part]
+            except KeyError:
+                raise RuntimeError('Packaged workflow Git tree path mismatch') from None
+        committed[path] = current
+    oids = sorted(set(committed.values()))
+    batch = _git(root, 'cat-file', '--batch', input=''.join(oid + '\n' for oid in oids).encode())
+    blobs, cursor = {}, 0
+    for oid in oids:
+        end = batch.find(b'\n', cursor)
+        header = batch[cursor:end].split()
+        if (end < cursor or len(header) != 3 or header[:2] != [oid.encode(), b'blob']
+                or not header[2].isdigit()):
+            raise RuntimeError('Invalid packaged workflow Git blob response')
+        length = int(header[2])
+        cursor = end + 1
+        blob = batch[cursor:cursor + length]
+        cursor += length
+        if len(blob) != length or batch[cursor:cursor + 1] != b'\n':
+            raise RuntimeError('Invalid packaged workflow Git blob response')
+        cursor += 1
+        blobs[oid] = blob
+    if cursor != len(batch):
+        raise RuntimeError('Invalid packaged workflow Git blob response')
     for path in paths:
         relative = path.as_posix()
         data = ((root / path).read_bytes() if helper is None else
                 helper['_read'](root, relative, 8 * 1024 * 1024))
-        rows = [row for row in _git(root, 'ls-files', '--stage', '-z', '--', relative).split(b'\0') if row]
-        head_oid = _git(root, 'rev-parse', commit + ':' + relative).decode().strip()
-        if (len(rows) != 1 or rows[0].split(b'\t', 1)[1] != relative.encode()
-                or rows[0].split(b'\t', 1)[0].split()[1].decode() != head_oid
-                or data != _git(root, 'show', commit + ':' + relative)):
+        rows = staged.get(relative.encode(), [])
+        head_oid = committed[path]
+        if (len(rows) != 1 or rows[0][1].decode() != head_oid
+                or data != blobs[head_oid]):
             raise RuntimeError('Packaged workflow document differs from committed source')
         documents.append(dict(owner='base', path=relative, length=len(data),
                               sha256=sha256(data).hexdigest()))
-        current = tree_root
-        for part in relative.encode().split(b'/'):
-            raw = _git(root, 'cat-file', 'tree', current)
-            objects[current] = base64.b64encode(raw).decode()
-            _, current = _tree_entries(raw, size)[part]
-        if current != head_oid:
-            raise RuntimeError('Packaged workflow Git tree path mismatch')
     manifest = dict(version=1, owners=[dict(owner='base', commit=commit,
         object_format=algorithm, source_prefix='')], documents=documents)
     manifest['sha256'] = sha256(json.dumps(manifest, sort_keys=True,

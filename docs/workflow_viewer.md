@@ -155,9 +155,9 @@ without replacing the hook. Existing user hooks, custom hook locations and share
 worktree hooks are preserved; the launcher explains manual integration when
 needed. Without Git or checkout metadata, launch continues without installation.
 
-A managed copy installed before locked npm asset delivery needs a one-time
-manual refresh: that older copy does not pass the original dependency root to
-the snapshot checker. First verify that the existing hook is the exact older
+An older managed copy needs a one-time manual refresh when the reviewed
+dispatcher template changes. Earlier versions may lack locked npm asset
+delivery or portable process-disposal handling. First verify that the existing hook is the exact older
 managed copy you own, and back it up outside the hook directory. Remove only
 that confirmed owned copy, then run `./launch.sh --view-flow` to install the new
 reviewed dispatcher in the vacant slot. Preserve unfamiliar, custom and shared

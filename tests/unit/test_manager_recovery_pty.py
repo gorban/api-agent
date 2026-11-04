@@ -334,16 +334,31 @@ def test_shared_scope_does_not_carry_short_limit_into_human_recovery(tmp_path, m
     assert recovery.parent_id == retrieval.parent_id
 
 
-def test_human_recovery_respects_inherited_parent_deadline(tmp_path):
+def test_human_recovery_respects_inherited_parent_deadline(tmp_path, monkeypatch):
+    from api_agent.auth import credentials, recovery
     from api_agent.auth.credentials import get_password, CredentialRecoveryError
     from api_agent.providers.progress import report_timeout_sync
     path = tmp_path / 'keeper'
-    path.write_text(f'#!{sys.executable}\nimport sys,time\nif not sys.stdin.isatty():\n print("Persistent login failed", file=sys.stderr);sys.exit(1)\ntime.sleep(10)\n')
+    path.write_text(f'#!{sys.executable}\nimport time\ntime.sleep(10)\n')
     path.chmod(0o700)
     source = dict(manager='keeper', cli_path=str(path), vault='vault', user='user')
+    # Establish the logged-out state explicitly. Starting the initial private
+    # reader is a separate behavior and must not consume this recovery budget.
+    def logged_out(*args, **kwargs):
+        raise credentials.CredentialLoginRequiredError('Synthetic login required')
+    monkeypatch.setattr(credentials, '_run', logged_out)
+    limits = []
+    real_recover = recovery.recover
+    def observed_recovery(argv, interaction, label, timeout, **kwargs):
+        limits.append(timeout)
+        return real_recover(argv, interaction, label, timeout, **kwargs)
+    monkeypatch.setattr(recovery, 'recover', observed_recovery)
+
     with report_timeout_sync('Enclosing operation', .15):
         with pytest.raises(CredentialRecoveryError, match='deadline'):
             get_password(source, interaction=Interaction([]))
+
+    assert len(limits) == 1 and limits[0] <= .15
 
 
 def test_recovery_rejects_unsupported_platform(monkeypatch):
@@ -607,3 +622,53 @@ def test_terminal_progress_does_not_consume_next_invocation_reply(progress):
             assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'second\n'
     finally:
         os.close(writer)
+
+
+@pytest.mark.parametrize('script, replies, expected', [
+    ("import getpass; assert getpass.getpass('Password: ') == 'entered-secret'; print('private-result')",
+     [Reply('input', 'entered-secret')], 'private-result\n'),
+    ("print('private-result')", [], 'private-result\n'),
+])
+def test_recovery_drains_nonblocking_streams_when_readiness_events_are_missing(monkeypatch, script, replies, expected):
+    from api_agent.auth import recovery
+    original = recovery.selectors.DefaultSelector
+    class SilentSelector:
+        def __init__(self): self.selector = original()
+        def register(self, *args): return self.selector.register(*args)
+        def unregister(self, *args): return self.selector.unregister(*args)
+        def get_map(self): return self.selector.get_map()
+        def close(self): self.selector.close()
+        def select(self, timeout):
+            self.selector.select(timeout)
+            return []
+    monkeypatch.setattr(recovery.selectors, 'DefaultSelector', SilentSelector)
+    interaction = Interaction(replies)
+
+    assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == expected
+
+    assert interaction.channel.closed
+    assert 'entered-secret' not in interaction.channel.output
+    assert 'private-result' not in interaction.channel.output
+
+
+def test_recovery_rejects_late_success_after_guardian_wait(monkeypatch):
+    from types import SimpleNamespace
+    import time
+    from api_agent.auth import recovery
+    from api_agent.auth.owned_process import OwnedProcess
+    late = [False]
+    monotonic = time.monotonic
+    def wait(process, *args, **kwargs):
+        result = process.process.wait(*args, **kwargs)
+        late[0] = True
+        return result
+    monkeypatch.setattr(OwnedProcess, 'wait', wait, raising=False)
+    monkeypatch.setattr(recovery, 'time', SimpleNamespace(
+        monotonic=lambda: monotonic() + (10 if late[0] else 0), sleep=time.sleep))
+    interaction = Interaction([])
+
+    with pytest.raises(CredentialError, match='deadline expired'):
+        recover([sys.executable, '-c', "print('private-result')"], interaction, 'Keeper', 2)
+
+    assert late[0] and interaction.channel.closed
+    assert 'private-result' not in interaction.channel.output

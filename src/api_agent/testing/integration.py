@@ -12,6 +12,7 @@ Run callbacks run synchronously on the calling thread; retained inspection
 completion events run on their monitor thread. ``after_run`` receives the
 final result after pytest completes; debug inspection handles retain owned workers.
 """
+from api_agent.testing.processes import observe_exit
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from functools import wraps
@@ -687,7 +688,7 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 worker_output = worker_output[excess:]
                             raw(repo, chunk)
                     try:
-                        while process.poll() is None:
+                        while observe_exit(process) is None:
                             if cancel_event is not None and cancel_event.is_set():
                                 cancelled = True
                                 break
@@ -700,7 +701,7 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         if cancel_event is not None and cancel_event.is_set():
                                             cancelled = True
                                             break
-                                        if process.poll() is not None:
+                                        if observe_exit(process) is not None:
                                             break
                                         if reader_errors:
                                             raise OSError('Worker output boundary reader failed')

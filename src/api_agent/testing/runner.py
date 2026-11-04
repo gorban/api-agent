@@ -1,4 +1,5 @@
 """Owned pytest unit execution and fixed, per-file production coverage gates."""
+from api_agent.testing.processes import observe_exit
 from .contracts import TestResult, RunnerEvent, format_test_summary
 from dataclasses import dataclass
 import json
@@ -436,7 +437,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                                             local_diagnostic=diagnostic, local_stderr=stderr, local_stdout=stdout)
                         results[identity.id] = result
                         emit(RunnerEvent('test_finished', repo, identity, status, result.duration, result.traceback))
-                    while process.poll() is None:
+                    while observe_exit(process) is None:
                         if cancel_event is not None and cancel_event.is_set():
                             cancelled = True
                             stop_owned()

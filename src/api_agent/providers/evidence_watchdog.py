@@ -5,9 +5,11 @@ memory cap: allocations between samples can exceed the threshold.
 """
 import asyncio
 import ctypes
+import inspect
+from functools import partial
 import os
-import signal
 import sys
+import subprocess
 
 from .contracts import ContractError
 from .progress import report_timeout
@@ -16,6 +18,76 @@ from api_agent.runtime.tasks import settle
 _RSS_LIMIT = 512 * 1024 * 1024
 _WALL_SECONDS = 10
 _POLL_SECONDS = .05
+
+
+async def _offload_owned(action, *args, **options):
+    """Retain a worker operation through cancellation of all ordinary tasks."""
+    future = asyncio.get_running_loop().run_in_executor(None, partial(action, *args, **options))
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        try:
+            await settle(future)
+        except BaseException:
+            pass
+        raise
+
+
+class OwnedProjection:
+    """Keep the actual projector leader unreaped until group disposal."""
+    def __init__(self, process):
+        self.process = process
+        self._exchange_started = False
+
+    def _close_pipes(self):
+        for name in ('stdin', 'stdout', 'stderr'):
+            pipe = getattr(self.process, name)
+            if pipe is not None:
+                pipe.close()
+
+    @property
+    def pid(self):
+        return self.process.pid
+
+    @property
+    def returncode(self):
+        return self.process.returncode
+
+    async def communicate(self, payload):
+        from api_agent.testing.processes import communicate_owned
+        self._exchange_started = True
+        try:
+            return await _offload_owned(communicate_owned, self.process, payload)
+        finally:
+            self._close_pipes()
+
+    def _dispose(self):
+        from api_agent.testing.processes import finalize
+        try:
+            finalize(self.process)
+        finally:
+            if not self._exchange_started:
+                self._close_pipes()
+
+    async def dispose(self):
+        await _offload_owned(self._dispose)
+
+    async def resident_bytes(self):
+        from api_agent.testing.processes import inspect_owned
+        return await _offload_owned(inspect_owned, self.process, _darwin_resident_bytes)
+
+async def spawn(*argv, **options):
+    """Spawn without an asyncio child watcher consuming leader ownership."""
+    # Executor futures retain the result even when shutdown cancels every task.
+    starting = asyncio.get_running_loop().run_in_executor(
+        None, partial(subprocess.Popen, list(argv), **options))
+    try:
+        return OwnedProjection(await asyncio.shield(starting))
+    except asyncio.CancelledError:
+        process = OwnedProjection(await settle(starting))
+        from .control import finish_cleanup
+        await finish_cleanup(process.dispose())
+        raise
 
 
 def _darwin_resident_bytes(pid):
@@ -33,7 +105,7 @@ def _darwin_resident_bytes(pid):
 
 def _child_exited(pid):
     # WNOWAIT observes an exited owned child without consuming its status from
-    # asyncio's child watcher. A missing child has already been reaped.
+    # the owner. A missing child has already been reaped.
     try:
         return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
     except ChildProcessError:
@@ -42,6 +114,9 @@ def _child_exited(pid):
 
 async def communicate(process, payload):
     """Communicate with an owned child; kill and reap it on every failure."""
+    dispose = getattr(process, 'dispose', None)
+    if not inspect.iscoroutinefunction(dispose):
+        raise ContractError('Evidence projection ownership unavailable')
     exchange = asyncio.create_task(process.communicate(payload))
     try:
         async with report_timeout('Evidence projection', _WALL_SECONDS) as budget:
@@ -55,10 +130,13 @@ async def communicate(process, payload):
                 if budget.remaining <= 0:
                     raise ContractError('Evidence projection timed out')
                 if done:
-                    return exchange.result()
+                    result = exchange.result()
+                    break
                 if sys.platform == 'darwin' and process.returncode is None:
                     try:
-                        resident = _darwin_resident_bytes(process.pid)
+                        sample = getattr(process, 'resident_bytes', None)
+                        resident = (await sample() if sample is not None
+                                    else _darwin_resident_bytes(process.pid))
                     except (OSError, AttributeError, TypeError, ValueError):
                         # A non-consuming kernel child-status check avoids
                         # depending on event-loop reaping latency.
@@ -69,31 +147,25 @@ async def communicate(process, payload):
                         if exited or process.returncode is not None or exchange.done():
                             continue
                         raise ContractError('Evidence projection memory measurement unavailable') from None
+                    if budget.remaining <= 0:
+                        raise ContractError('Evidence projection timed out')
+                    if resident is None:
+                        continue
                     if resident > _RSS_LIMIT:
                         raise ContractError('Evidence projection memory limit exceeded')
     finally:
-        if not exchange.done():
-            # The projector starts a fresh session. Kill its entire group even
-            # if its leader exited, since a child may still hold a pipe open.
+        async def cleanup():
             try:
-                if os.name == 'posix' and hasattr(os, 'killpg'):
-                    os.killpg(process.pid, signal.SIGKILL)
-                elif process.returncode is None:
-                    process.kill()
-            except ProcessLookupError:
-                if process.returncode is None:
-                    try:
-                        process.kill()
-                    except ProcessLookupError:
-                        pass
-            # Finish draining pipes and reaping even under repeated cancellation.
-            try:
-                await settle(exchange)
-            except BaseException:
-                pass
-        elif process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            await settle(asyncio.create_task(process.wait()))
+                await dispose()
+            finally:
+                # The pipe exchange has its own ownership barrier. Even repeated
+                # cancellation must finish group disposal and the IO thread.
+                try:
+                    await settle(exchange)
+                except BaseException:
+                    pass
+        from .control import finish_cleanup
+        await finish_cleanup(cleanup())
+    if budget.remaining <= 0:
+        raise ContractError('Evidence projection timed out')
+    return result

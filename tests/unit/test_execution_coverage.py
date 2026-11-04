@@ -1,5 +1,6 @@
 """Execution/collection boundary failures with controlled owned-process adapters."""
 import io
+import errno
 import json
 import os
 import subprocess
@@ -385,3 +386,136 @@ def test_failed_group_probe_never_acknowledges_disposal(monkeypatch):
         processes.finalize(process)
 
     assert not processes.disposal_complete(process)
+
+
+@pytest.mark.parametrize('leader_reaped,group_state', [
+    (False, 'zombies'), (False, 'live'), (False, 'unavailable'),
+    (True, 'live'), (True, 'unavailable'),
+])
+def test_group_signal_permission_rejects_unproved_disposal(monkeypatch, leader_reaped, group_state):
+    refusal = PermissionError('controlled refusal')
+    monkeypatch.setattr(processes.os, 'killpg', Mock(side_effect=refusal))
+    probe = Mock(return_value=group_state == 'live',
+                 side_effect=RuntimeError('unavailable') if group_state == 'unavailable' else None)
+    monkeypatch.setattr(processes, '_group_running', probe)
+    process = SimpleNamespace(pid=123, returncode=0 if leader_reaped else None,
+                              wait=Mock(return_value=0))
+
+    with pytest.raises((PermissionError, RuntimeError)):
+        processes.finalize(process)
+
+    assert not processes.disposal_complete(process)
+    assert probe.called is leader_reaped
+
+
+def test_terminal_refusal_acknowledges_reaped_group_without_resignalling(monkeypatch):
+    signals = Mock(side_effect=PermissionError('terminal group'))
+    monkeypatch.setattr(processes.os, 'killpg', signals)
+    probe = Mock(return_value=False)
+    monkeypatch.setattr(processes, '_group_running', probe)
+    process = SimpleNamespace(pid=123, returncode=0, wait=Mock(return_value=0))
+
+    processes.finalize(process)
+    processes.finalize(process, communicate=True)
+
+    assert processes.disposal_complete(process)
+    signals.assert_not_called()
+    probe.assert_called_once()
+
+
+def test_terminal_group_receipt_prevents_signalling_reused_group(monkeypatch):
+    process = SimpleNamespace(pid=123, returncode=0)
+    signals = Mock(side_effect=PermissionError('zombie group'))
+    monkeypatch.setattr(processes.os, 'killpg', signals)
+    probe = Mock(return_value=False)
+    monkeypatch.setattr(processes, '_group_running', probe)
+
+    assert processes.signal_owned_group(process, 9)
+    assert processes.signal_owned_group(process, 9)
+
+    signals.assert_not_called()
+    probe.assert_called_once_with(123)
+
+
+@pytest.mark.parametrize('stat', ['malformed', 'missing'])
+def test_proc_scan_rejects_corruption_but_tolerates_exited_entry(monkeypatch, tmp_path, stat):
+    entry = tmp_path / '123'
+    entry.mkdir()
+    (tmp_path / 'self').mkdir()
+    if stat == 'malformed':
+        (entry / 'stat').write_text('invalid process data')
+    monkeypatch.setattr(processes, 'Path', lambda _: tmp_path)
+
+    if stat == 'malformed':
+        with pytest.raises(RuntimeError, match='invalid process stat'):
+            processes._group_running(123)
+    else:
+        assert not processes._group_running(123)
+
+
+def test_disappeared_owned_group_is_reaped_and_acknowledged(monkeypatch):
+    monkeypatch.setattr(processes.os, 'killpg', Mock(side_effect=ProcessLookupError()))
+    monkeypatch.setattr(processes, '_group_running', Mock(return_value=False))
+    process = SimpleNamespace(pid=123, returncode=0, wait=Mock(return_value=0))
+
+    processes.finalize(process)
+
+    assert processes.disposal_complete(process)
+
+
+def test_group_absence_receipt_prevents_signal_after_pid_release(monkeypatch):
+    signals = Mock(side_effect=[ProcessLookupError(), AssertionError('reused group signalled')])
+    monkeypatch.setattr(processes.os, 'killpg', signals)
+    probe = Mock(side_effect=AssertionError('terminal absence must not be reprobed'))
+    monkeypatch.setattr(processes, '_group_running', probe)
+    process = SimpleNamespace(pid=123, returncode=None)
+    def reap(**kwargs):
+        process.returncode = 0
+        return 0
+    process.wait = reap
+
+    processes.finalize(process)
+    processes.finalize(process)
+    assert processes.signal_owned_group(process, 9)
+
+    signals.assert_called_once_with(123, processes.signal.SIGTERM)
+    assert processes.disposal_complete(process)
+
+
+def test_external_wait_adapter_preserves_timeout_and_exit_status():
+    adapter = SimpleNamespace(returncode=7, wait=Mock())
+
+    assert processes.wait_owned(adapter, timeout=.25) == 7
+
+    adapter.wait.assert_called_once_with(timeout=.25)
+
+
+def test_nonposix_exit_race_reaps_without_killing_another_process(monkeypatch):
+    monkeypatch.setattr(processes, 'os', SimpleNamespace(name='nt'))
+    adapter = SimpleNamespace(returncode=0, terminate=Mock(side_effect=ProcessLookupError()),
+                              kill=Mock(), wait=Mock(return_value=0))
+
+    assert processes.finalize(adapter) == 0
+
+    adapter.kill.assert_not_called()
+    adapter.wait.assert_called_once()
+    assert processes.disposal_complete(adapter)
+
+
+@pytest.mark.parametrize('error_number,disappeared', [(errno.ESRCH, True), (errno.EPERM, False), (errno.EIO, False)])
+def test_proc_stat_disappearance_only_tolerates_exact_esrch(monkeypatch, error_number, disappeared):
+    class Entry:
+        name = '123'
+        def __truediv__(self, name):
+            assert name == 'stat'
+            return self
+        def read_text(self):
+            raise ProcessLookupError(error_number, 'controlled proc stat failure')
+    proc = SimpleNamespace(is_dir=lambda: True, iterdir=lambda: iter([Entry()]))
+    monkeypatch.setattr(processes, 'Path', lambda path: proc)
+
+    if disappeared:
+        assert not processes._group_running(123)
+    else:
+        with pytest.raises(RuntimeError, match='invalid process stat'):
+            processes._group_running(123)

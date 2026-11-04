@@ -1,4 +1,5 @@
 """Prepare locked source-checkout frontend dependencies at operation boundaries."""
+from api_agent.testing.processes import wait_owned
 import hashlib
 from functools import partial
 import json
@@ -45,9 +46,9 @@ def _command(argv, root, budget, cancellation):
             while True:
                 _check_budget(budget, cancellation)
                 try:
-                    process.wait(timeout=min(.1, budget.remaining or .1))
+                    code = wait_owned(process, timeout=min(.1, budget.remaining or .1))
                     output.seek(0)
-                    return process.returncode, output.read(4096)
+                    return code, output.read(4096)
                 except subprocess.TimeoutExpired:
                     continue
         finally:

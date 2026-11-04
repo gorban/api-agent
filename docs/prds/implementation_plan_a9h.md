@@ -45,23 +45,6 @@ The joined source passes 11,393 unit tests at 32 workers through the production 
 
 The user confirms another full unit launch passed at exact 100% coverage and accepts integration behavior with and without DEBUG and NO_STD_IN. The separately reported multithreaded-fork warnings are tracked in [process fixture startup](implementation_plan_a9h1.md); the accepted hang repair remains complete.
 
-## Portable credential-helper fixture and timeout identity
+## Native portability follow-through
 
-- [x] Prepare the synthetic credential worker/helper before starting the short inference timeout, using bounded semantic readiness and a stdin admission handshake. Exercise delayed startup, timeout cleanup and an already-exiting worker without relaxing the production timeout or group-disposal assertions. Verify group liveness through the shared Linux/macOS process probe rather than treating absent Linux `/proc` files as macOS exit evidence.
-- [x] Print the exact timed-out collected identity alongside its ordinal, elapsed time and limit. Credential-scrub that identity before console delivery; preserve deadline/status/coverage failure semantics.
-- [ ] Human acceptance: rerun the full macOS base unit suite and the composed all-unit invocation. Separate outdated resource-pack fixture failures from the base deadline failure.
-
-## macOS fixture follow-up and aborted-run evidence
-
-- [x] Arm nested cleanup timeout injection only after its retained child signals readiness. Keep the real context, disposal receipt, authentication retention and retry assertions; isolate the scheduler hook to the owned control module and use bounded readiness, including delayed setup. Production deadlines remain unchanged.
-- [x] Native lease tests use OS-issued reaped PIDs. Linux-specific uncertainty fixtures explicitly select their mocked proc filesystem on every host; do not interpret arbitrary out-of-range PID arguments or missing macOS proc files as evidence of process death.
-- [x] Terminal unit execution prints credential-protected captured assertion/setup failures after runner finalization, even if pytest was aborted before its own summary. Reuse existing failure diagnostics and retain successful-stream levels. Omit per-test boilerplate for unstarted/incomplete tests without a captured failure.
-- [ ] Rerun the actual macOS full suite to qualify these repairs and inspect any additional captured failures; passing Linux tests does not establish native macOS completion.
-
-## Fresh native checkout and subprocess portability
-
-- [x] Real GraphQL MCP unit proofs prepare locked child assets in their disposable fixture directory instead of depending on retained source `node_modules`. Preserve selected npm/node shim entry names when invoking managed executables. Packaging proofs separately verify current runtime bytes, source archive bytes, rebuilds and unsafe-input rejection without combining multiple builds into one watchdog body.
-- [x] Process disposal uses the trusted system process inspector even under a helper-specific PATH, with bounded verification. A denied signal may be treated as exhausted only when the reserved unreaped child is visibly a zombie and every member of its group is a zombie; live, missing or uncertain evidence still rejects cleanup. Credential guardians preserve the helper exit code.
-- [x] Canonicalize launcher-created Bedrock scratch directories before secure descriptor-relative writes. Retain no-follow validation for configuration, credentials and their parents; test a symlinked system temporary root through refresh, publication and cleanup.
-- [x] Synthetic platform-specific credential tests explicitly select their intended branch. Allow bounded startup readiness independently of intentionally short validation deadlines.
-- [ ] Human acceptance: fresh macOS full suite after these repairs. Prior interrupted results do not establish the status of tests that never ran.
+Read [portable native unit execution](implementation_plan_a9h2.md) for fixture readiness, captured aborted-run diagnostics, native subprocess cleanup and fresh-checkout packaging requirements.

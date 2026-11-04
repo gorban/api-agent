@@ -10,7 +10,7 @@ import subprocess
 import time
 import sys
 import tempfile
-from .processes import finalize
+from .processes import communicate_owned, observe_exit, finalize
 from .classification import validate_features
 
 
@@ -152,6 +152,9 @@ def _run_collection(args, root, env, repo, cancel_event, timeout=120):
     except OSError as exc:
         raise CollectionError(f"Cannot start pytest collection for {repo}: {exc}") from exc
     deadline = time.monotonic() + timeout
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise CollectionError(f'Pytest collection cancelled for {repo}')
     try:
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -160,14 +163,11 @@ def _run_collection(args, root, env, repo, cancel_event, timeout=120):
             if remaining <= 0:
                 raise CollectionError(f"Pytest collection for {repo} exceeded {timeout} seconds; inspect collection hooks/imports")
             try:
-                stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                stdout, stderr = communicate_owned(process, timeout=remaining, check=check_cancelled)
                 _stop_collection(process)
                 return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
             except subprocess.TimeoutExpired:
-                if process.poll() is not None:
-                    stdout, stderr = _stop_collection(process)
-                    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
-                continue
+                raise CollectionError(f"Pytest collection for {repo} exceeded {timeout} seconds; inspect collection hooks/imports") from None
     except BaseException:
         _stop_collection(process)
         raise

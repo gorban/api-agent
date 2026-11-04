@@ -203,7 +203,8 @@ def test_observed_pinned_single_step_login():
 
 
 async def wait_for_thread_signal(signal):
-    async with asyncio.timeout(2):
+    from api_agent.providers.progress import component_timeout
+    async with component_timeout('Dashboard probe fixture readiness', 10):
         while not signal.is_set():
             await asyncio.sleep(.001)
 
@@ -222,7 +223,7 @@ def test_cancelled_start_keeps_readiness_until_bounded_cleanup_retry():
     def probe(*args):
         entered.set()
         try:
-            assert release.wait(3)
+            assert release.wait(10)
             return True
         finally:
             finished.set()
@@ -261,7 +262,7 @@ def test_concurrent_start_and_close_callers_share_one_probe_and_cancelled_closer
         calls.append(args)
         entered.set()
         try:
-            assert release.wait(3)
+            assert release.wait(10)
             return True
         finally:
             finished.set()
@@ -296,7 +297,7 @@ def test_probe_exception_is_fixed_and_consumed_after_start_cancellation():
     def probe(*args):
         entered.set()
         try:
-            assert release.wait(3)
+            assert release.wait(10)
             raise RuntimeError('synthetic-password backend payload')
         finally:
             finished.set()
@@ -344,7 +345,7 @@ def test_local_cleanup_retains_later_dependencies_until_probe_retry_completes():
     def probe(*args):
         entered.set()
         try:
-            assert release.wait(3)
+            assert release.wait(10)
             return True
         finally:
             finished.set()
