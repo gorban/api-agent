@@ -154,6 +154,21 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
                                            and versions[0]) else None
                 version = podman_version(direct_version)
                 compatibility = version is not None and version == podman_version(cli_version)
+            attempt = 0
+            while True:
+                direct_ids = [item['Id'] for item in containers]
+                if (any(not re.fullmatch('[0-9a-f]{64}', value) for value in identifiers + direct_ids)
+                        or len(set(identifiers)) != len(identifiers) or len(set(direct_ids)) != len(direct_ids)):
+                    raise ValueError()
+                if sorted(identifiers) == sorted(direct_ids):
+                    break
+                attempt += 1
+                if attempt == 3:
+                    raise PrerequisiteError('Cannot verify shared reporting engine identity; no service was adopted. '
+                        'CLI and socket container inventories did not agree after three bounded snapshots; '
+                        'retry after container startup/cleanup settles and check the selected engine/context.')
+                containers = get('/containers/json?all=1')
+                identifiers = command(('ps', '-a', '--no-trunc', '--format', '{{.ID}}')).split()
         engine_id = direct['ID']
         if not isinstance(engine_id, str) or not re.fullmatch('[A-Za-z0-9:-]{1,128}', engine_id):
             raise ValueError()
@@ -174,10 +189,7 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
             # Compatibility response IDs need not be persistent. Namespace the
             # corroborated Unix transport separately from a matched CLI ID.
             stable_identity = ['corroborated-unix-v1', hostname, store]
-        direct_ids = [item['Id'] for item in containers]
-        if (not matches or any(not re.fullmatch('[0-9a-f]{64}', value) for value in identifiers + direct_ids)
-                or len(set(identifiers)) != len(identifiers) or len(set(direct_ids)) != len(direct_ids)
-                or sorted(identifiers) != sorted(direct_ids)
+        if (not matches
                 or any(candidate.resolve(strict=True) != target for candidate, target in aliases)
                 or (physical.stat().st_dev, physical.stat().st_ino, physical.stat().st_uid) != generation):
             raise ValueError()

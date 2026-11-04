@@ -442,7 +442,7 @@ def test_compatibility_evidence_cannot_bypass_identity_checks(compatibility_engi
     if kind == 'empty-inventory': engine.cli_ids = engine.direct_ids = []
     with pytest.raises(PrerequisiteError, match='Cannot verify'):
         identify(engine)
-    assert len(engine.closed) == 3
+    assert len(engine.closed) == (5 if kind == 'wrong-inventory' else 3)
 
 
 def test_native_identity_never_queries_compatibility_version(engine):
@@ -522,3 +522,35 @@ def test_compatibility_rejects_malformed_direct_identity(compatibility_engine, i
     with pytest.raises(PrerequisiteError, match='Cannot verify'):
         identify(engine)
     assert engine.routes == ['/info', '/containers/json?all=1', '/version']
+
+
+def test_engine_binding_retries_inventory_changed_by_concurrent_startup(engine):
+    expected = identify(engine)
+    original = engine.runner
+    snapshots = []
+    def changing(command, **kwargs):
+        if command[1] == 'ps':
+            snapshots.append(True)
+            engine.direct_ids = [{'Id': 'b' * 64}]
+            engine.cli_ids = ['b' * 64]
+        return original(command, **kwargs)
+    engine.runner = changing
+
+    assert identify(engine) == expected
+    assert len(snapshots) == 2
+
+
+def test_inventory_disagreement_remains_bounded_and_actionable(engine):
+    engine.cli_ids = ['b' * 64]
+    original = engine.runner
+    snapshots = []
+    def disagree(command, **kwargs):
+        if command[1] == 'ps':
+            snapshots.append(True)
+        return original(command, **kwargs)
+    engine.runner = disagree
+
+    with pytest.raises(PrerequisiteError, match='container inventories did not agree'):
+        identify(engine)
+
+    assert len(snapshots) == 3

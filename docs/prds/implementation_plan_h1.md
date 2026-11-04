@@ -17,3 +17,5 @@ Local API here means the pack's upstream API; the api-agent chat API remains the
 - [ ] With the first Compose prerequisite added, implement the [ownership-filtered inventory/count and stop-time validation gate](implementation_plan_l.md) before enabling its app/test startup. This applies to every profile and dependency service, regardless of which stack is built first.
 
 - [x] Aggregate missing captured-file recovery for all compatible conditional containers in the selected prerequisite plan before adoption/startup. Verify remaining mounts and ownership before listing a container; unrelated validation errors remain failures, and no recovery commands are executed automatically.
+
+- [x] Retry transient CLI/socket container-inventory disagreement within the existing engine-identity deadline and a maximum of three snapshots. Retain exact matching, malformed/duplicate ID rejection, Unix ownership/generation and daemon corroboration; persistent disagreement remains an actionable failure before adoption.
