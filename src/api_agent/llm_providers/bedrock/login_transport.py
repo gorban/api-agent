@@ -50,6 +50,9 @@ def acquisition_error(frame):
     return error
 
 
+from .owned_worker import spawn_worker
+
+
 class LoginTransport(SDKTransport):
     async def acquire(self, config, environment, interaction=None):
         if os.name != 'posix':
@@ -57,9 +60,12 @@ class LoginTransport(SDKTransport):
         owned = []
         reader = None
         try:
-            async with component_timeout('AWS sign-in', self.timeout):
+            async with component_timeout('AWS sign-in', self.timeout) as budget:
                 if self._closed:
                     raise SessionClosedError('AWS sign-in transport is closed')
+                if self._cleanup_pending():
+                    from api_agent.providers.control import CleanupPendingError
+                    raise CleanupPendingError((self,), self.aclose)
                 caller = asyncio.current_task()
                 async def launch():
                     if config.get('login'):
@@ -74,13 +80,25 @@ class LoginTransport(SDKTransport):
                             raise InteractionRequiredError('AWS sign-in interaction is unavailable.') from None
                     if self._closed:
                         raise SessionClosedError('AWS sign-in transport is closed')
+                    if self._cleanup_pending():
+                        from api_agent.providers.control import CleanupPendingError
+                        raise CleanupPendingError((self,), self.aclose)
                     if caller.cancelling():
                         raise asyncio.CancelledError
-                    process = await asyncio.create_subprocess_exec(
-                        sys.executable, str(Path(__file__).with_name('login_worker.py')),
-                        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.DEVNULL, env=environment,
-                        limit=MAX_FRAME, start_new_session=True, umask=0o077)
+                    try:
+                        process = await spawn_worker(
+                            sys.executable, str(Path(__file__).with_name('login_worker.py')),
+                            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.DEVNULL, env=environment,
+                            limit=MAX_FRAME, start_new_session=True, umask=0o077)
+                    except BaseException as error:
+                        from .owned_worker import OwnedWorker
+                        for owner in getattr(error, 'retained_owners', ()):
+                            if isinstance(owner, OwnedWorker):
+                                owned.append(owner)
+                                self._processes.add(owner)
+                                self._stops.setdefault(owner, {'task': None, 'launch_pending': True})
+                        raise
                     owned.append(process)
                     self._processes.add(process)
                 task = asyncio.create_task(launch())
@@ -153,8 +171,15 @@ class LoginTransport(SDKTransport):
         except (ValueError, UnicodeError, OSError):
             raise ContractError('Invalid AWS sign-in worker response or process failure') from None
         finally:
-            if reader is not None:
-                reader.cancel()
-                await asyncio.gather(reader, return_exceptions=True)
-            for process in owned:
-                await finish_cleanup(self._stop(process))
+            primary = sys.exception()
+            try:
+                if reader is not None:
+                    reader.cancel()
+                    async def drain_reader():
+                        await asyncio.gather(reader, return_exceptions=True)
+                    await finish_cleanup(drain_reader())
+            finally:
+                # Reader cancellation cannot bypass the registered worker owner.
+                await self._finish_owned(owned, sys.exception() or primary)
+            if primary is None and budget.remaining == 0:
+                raise TimeoutError('AWS sign-in deadline expired')

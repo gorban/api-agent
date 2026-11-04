@@ -743,7 +743,7 @@ async def joined_aws_sdk_channel(fake_process, monkeypatch):
     import os
     import socket
     from api_agent.llm_providers.bedrock import sdk
-    original_spawn = sdk.asyncio.create_subprocess_exec
+    original_spawn = sdk.spawn_worker
     tasks = []
     async def spawn(*args, **kwargs):
         descriptor = os.dup(kwargs['pass_fds'][0])
@@ -762,7 +762,7 @@ async def joined_aws_sdk_channel(fake_process, monkeypatch):
                 channel.close()
         tasks.append(asyncio.create_task(exchange()))
         return await original_spawn(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     async def join(values):
         return [*values, 'caller-only-secret'], None
     try:

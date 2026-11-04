@@ -428,24 +428,39 @@ def test_start_failure_closes_allocated_terminal(monkeypatch):
 
 def test_terminal_io_failure_disposes_process(monkeypatch):
     import errno
-    from api_agent.auth import recovery
+    from api_agent.auth import recovery, owned_process
     original_allocate = os.openpty
     original_read = os.read
-    masters = []
+    original_owned = owned_process.OwnedProcess
+    masters, faults, children = [], [], []
     def allocate():
         pair = original_allocate()
         masters.append(pair[0])
         return pair
     def read(descriptor, size):
         if descriptor in masters:
+            faults.append(descriptor)
             raise OSError(errno.EINVAL, 'private terminal failure')
         return original_read(descriptor, size)
-    monkeypatch.setattr(recovery.os, 'openpty', allocate)
-    monkeypatch.setattr(recovery, 'os', SimpleNamespace(**(vars(recovery.os) | {'read': read})))
+    def owned(*args, **kwargs):
+        child = original_owned(*args, **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(recovery, 'os', SimpleNamespace(**(vars(os) | {'read': read, 'openpty': allocate})))
+    monkeypatch.setattr(owned_process, 'OwnedProcess', owned)
     interaction = Interaction([])
-    with pytest.raises(CredentialError, match='disconnected'):
-        recover([sys.executable, '-c', 'pass'], interaction, 'Keeper', None)
+
+    with pytest.raises(CredentialError, match='disconnected') as error:
+        recover([sys.executable, '-c', 'pass'], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
+
+    assert faults == masters and len(faults) == 1
+    assert 'private' not in str(error.value)
     assert interaction.channel.closed
+    assert len(children) == 1
+    assert children[0].writer is None and children[0].returncode is not None
+    assert children[0].stdout.closed
+    with pytest.raises(OSError):
+        os.fstat(masters[0])
 
 
 def test_already_exited_group_cleanup_is_safe(monkeypatch):
@@ -707,3 +722,40 @@ def test_recovery_rejects_late_success_after_guardian_wait(monkeypatch):
 
     assert late[0] and interaction.channel.closed
     assert 'private-result' not in interaction.channel.output
+
+
+def test_terminal_eio_is_eof_without_losing_private_output(monkeypatch):
+    import errno
+    from api_agent.auth import recovery, owned_process
+    original_allocate, original_read = os.openpty, os.read
+    original_owned = owned_process.OwnedProcess
+    masters, faults, children = [], [], []
+    def allocate():
+        pair = original_allocate()
+        masters.append(pair[0])
+        return pair
+    def read(descriptor, size):
+        if descriptor in masters:
+            faults.append(descriptor)
+            raise OSError(errno.EIO, 'controlled terminal EOF')
+        return original_read(descriptor, size)
+    def owned(*args, **kwargs):
+        child = original_owned(*args, **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(recovery, 'os', SimpleNamespace(**(vars(os) | {'read': read, 'openpty': allocate})))
+    monkeypatch.setattr(owned_process, 'OwnedProcess', owned)
+    interaction = Interaction([])
+    output = 'synthetic-private-value'
+
+    value = recover([sys.executable, '-c', f'print({output!r})'], interaction,
+                    'Keeper', _NORMAL_RECOVERY_SECONDS)
+
+    assert value == output + '\n'
+    assert faults == masters and len(faults) == 1
+    assert output not in interaction.channel.output and interaction.channel.closed
+    assert len(children) == 1
+    assert children[0].writer is None and children[0].returncode == 0
+    assert children[0].stdout.closed
+    with pytest.raises(OSError):
+        os.fstat(masters[0])

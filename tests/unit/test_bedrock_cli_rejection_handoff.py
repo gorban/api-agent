@@ -1,5 +1,6 @@
 """Native CLI rejection survives visible input and ordinary setup serialization."""
 import asyncio
+from api_agent.llm_providers.bedrock.owned_worker import spawn_worker as retained_spawn_worker
 import os
 import sys
 import threading
@@ -90,7 +91,7 @@ async def test_successful_cli_marker_output_does_not_establish_rejection(monkeyp
 
 
 async def native_handoff(monkeypatch, output, status):
-    launch = asyncio.create_subprocess_exec
+    launch = retained_spawn_worker
     children = []
 
     async def launch_synthetic_worker(*command, **kwargs):
@@ -99,7 +100,7 @@ async def native_handoff(monkeypatch, output, status):
         children.append(process)
         return process
 
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch_synthetic_worker)
+    monkeypatch.setattr('api_agent.llm_providers.bedrock.login_transport.spawn_worker', launch_synthetic_worker)
     app = RejectionApp()
     interaction = LoginInteraction(SimpleNamespace(interactive=True, interaction=app.interaction))
     transport = LoginTransport(timeout=5)

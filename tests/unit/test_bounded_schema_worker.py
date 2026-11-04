@@ -297,3 +297,50 @@ def test_async_cleanup_handles_actual_worker_exit_race(tmp_path,monkeypatch):
     monkeypatch.setattr(subject,'_STARTUP_SECONDS',.05)
     assert not asyncio.run(subject.async_isolated_valid_schema({},{}))
     assert processes[0][0].returncode is not None
+
+
+@pytest.mark.parametrize('failure', [OSError, ValueError])
+def test_ready_worker_write_failure_is_unavailable_and_reaps_actual_child(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+    path = tmp_path / 'write_rejection_worker.py'
+    path.write_text('import sys;sys.stdout.buffer.write(b"R");sys.stdout.buffer.flush();'
+                    'sys.stdin.buffer.read();sys.stdout.buffer.write(b"?");sys.stdout.buffer.flush()')
+    import threading
+    children, faults, thread_errors, threads = [], [], [], []
+    monkeypatch.setattr(threading, 'excepthook', lambda event: thread_errors.append(event.exc_value))
+    original = subprocess.Popen
+    original_thread = threading.Thread
+    def start_thread(*args, **kwargs):
+        thread = original_thread(*args, **kwargs)
+        threads.append(thread)
+        return thread
+    monkeypatch.setattr(subject, 'threading', SimpleNamespace(**(vars(threading) | {'Thread': start_thread})))
+
+    class RejectedInput:
+        def __init__(self, pipe):
+            self.pipe = pipe
+        def write(self, value):
+            faults.append(value)
+            self.pipe.close()
+            raise failure('controlled private pipe failure')
+        def close(self):
+            self.pipe.close()
+        @property
+        def closed(self):
+            return self.pipe.closed
+
+    def launch(*args, **kwargs):
+        child = original(*args, **kwargs)
+        child.stdin = RejectedInput(child.stdin)
+        children.append(child)
+        return child
+    monkeypatch.setattr(subject, '_WORKER', path)
+    monkeypatch.setattr(subject, 'subprocess', SimpleNamespace(**(vars(subprocess) | {'Popen': launch})))
+
+    assert subject.isolated_schema_verdict({}, {}) is None
+
+    assert faults == [b'[{}, {}]']
+    assert thread_errors == []
+    assert len(threads) == 2 and all(not thread.is_alive() for thread in threads)
+    assert len(children) == 1 and children[0].returncode == 0
+    assert children[0].stdin.closed and children[0].stdout.closed

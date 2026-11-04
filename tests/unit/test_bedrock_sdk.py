@@ -4,6 +4,9 @@ import sys
 from types import SimpleNamespace
 class Process(SimpleNamespace):
     __hash__ = object.__hash__
+    async def dispose(self):
+        self.dispose_calls = getattr(self, 'dispose_calls', 0) + 1
+        self.returncode = await self.wait()
 import pytest
 import pytest_asyncio
 from api_agent.llm_providers.bedrock import sdk
@@ -33,7 +36,6 @@ def auth():
 @pytest.fixture
 def fake_process(monkeypatch):
     processes = []
-    monkeypatch.setattr(sdk.os, 'killpg', lambda *args: None)
     settings = {'frames': [{'result': {'ok': True}}], 'returncode': 0}
     async def spawn(*args, **kwargs):
         reader = asyncio.StreamReader()
@@ -49,7 +51,7 @@ def fake_process(monkeypatch):
         process = Process(pid=999999, stdin=SimpleNamespace(write=writes.append, drain=drain, close=lambda: None), stdout=reader, returncode=None, wait=wait, terminate=lambda: None, writes=writes, args=args, kwargs=kwargs)
         processes.append(process)
         return process
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     return settings, processes
 
 
@@ -263,19 +265,15 @@ async def test_stream_yields_events_and_partial_close_terminates(auth, fake_proc
 
 
 @pytest.mark.asyncio
-async def test_stop_handles_already_exited_group(monkeypatch):
-    calls = []
-    def killpg(pid, sig):
-        calls.append((pid, sig))
-        raise ProcessLookupError()
-    monkeypatch.setattr(sdk.os, 'killpg', killpg)
-    async def wait():
-        return 0
+async def test_stop_delegates_disposal_to_the_registered_owner():
+    async def wait(): return 0
     process = Process(pid=99999, wait=wait)
     transport = sdk.SDKTransport()
     transport._processes.add(process)
     await transport._stop(process)
-    assert calls == [(99999, sdk.signal.SIGTERM)]
+    assert process.dispose_calls == 1 and process.returncode == 0
+    assert not transport._processes
+
 
 
 @pytest.mark.asyncio
@@ -292,13 +290,13 @@ async def test_close_drains_active_process(auth, fake_process):
 @pytest.mark.parametrize('action', ['timeout', 'cancel'])
 async def test_real_controlled_subprocess_is_reaped(auth, monkeypatch, action, tmp_path):
     monkeypatch.setenv('HOME', str(tmp_path))
-    original = asyncio.create_subprocess_exec
+    original = sdk.spawn_worker
     children = []
     async def spawn(*args, **kwargs):
         child = await original(sys.executable, '-c', 'import sys,time; sys.stdin.readline(); time.sleep(60)', **kwargs)
         children.append(child)
         return child
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     transport = sdk.SDKTransport(timeout=60)
     if action == 'timeout':
         with pytest.raises(TimeoutError):
@@ -320,7 +318,7 @@ async def test_real_controlled_subprocess_is_reaped(auth, monkeypatch, action, t
 async def test_spawn_failure_is_safe(auth, monkeypatch):
     async def spawn(*args, **kwargs):
         raise OSError('synthetic-secret')
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     with pytest.raises(ContractError, match='start') as error:
         await sdk.SDKTransport().call('completions', {}, auth=auth)
     assert 'synthetic-secret' not in str(error.value)
@@ -413,6 +411,7 @@ async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatc
     import os
     import signal
     from api_agent.testing.processes import _group_running
+    from api_agent.testing import processes
 
     pidfile = tmp_path / 'helper.pid'
     # Prepare the synthetic worker before starting the inference deadline. The
@@ -424,7 +423,7 @@ async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatc
               "pending=sys.argv[1]+'.pending'; Path(pending).write_text(str(p.pid)); "
               "os.replace(pending,sys.argv[1]); sys.stdin.readline(); ") + (
                   "print('{\"result\":{}}', flush=True)" if parent_exits else "time.sleep(60)")
-    child = await asyncio.create_subprocess_exec(sys.executable, '-c', script, str(pidfile),
+    child = await sdk.spawn_worker(sys.executable, '-c', script, str(pidfile),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
     transport = sdk.SDKTransport(timeout=2)
@@ -435,10 +434,19 @@ async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatc
                 await asyncio.sleep(.005)
         assert int(pidfile.read_text()) > 0
         assert _group_running(child.pid), 'Synthetic helper must be live before cleanup'
+        original_signal = processes.signal_owned_group
+        signals = []
+        def reserved_signal(process, signum):
+            assert process is child.process
+            assert process.returncode is None, 'Worker PID reservation was released before group signaling'
+            processes.observe_exit(process)
+            signals.append(signum)
+            return original_signal(process, signum)
+        monkeypatch.setattr(processes, 'signal_owned_group', reserved_signal)
 
         async def spawn(*args, **kwargs):
             return child
-        monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+        monkeypatch.setattr(sdk, 'spawn_worker', spawn)
         results = await asyncio.gather(transport.call('completions', {}, auth=auth), return_exceptions=True)
         if parent_exits:
             assert results == [{}]
@@ -449,14 +457,14 @@ async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatc
             while _group_running(child.pid):
                 await asyncio.sleep(.005)
         assert not transport._processes
+        assert signals
     finally:
         try:
             await transport.aclose()
         finally:
             # Before admission, this test owns the still-unreaped worker group.
             if child.returncode is None:
-                os.killpg(child.pid, signal.SIGKILL)
-                await asyncio.wait_for(child.wait(), 5)
+                await child.dispose()
 
 
 @pytest.mark.asyncio
@@ -493,7 +501,7 @@ async def test_expired_budget_rejects_ready_work_without_calling_it():
 async def test_close_waits_for_owned_launch(auth, monkeypatch, fake_process, cancel_call, spawn_fails):
     entered = asyncio.Event()
     release = asyncio.Event()
-    original = sdk.asyncio.create_subprocess_exec
+    original = sdk.spawn_worker
     transport = sdk.SDKTransport()
     async def spawn(*args, **kwargs):
         entered.set()
@@ -501,7 +509,7 @@ async def test_close_waits_for_owned_launch(auth, monkeypatch, fake_process, can
         if spawn_fails:
             raise OSError('synthetic-secret')
         return await original(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     call = asyncio.create_task(transport.call('completions', {}, auth=auth))
     await entered.wait()
     if cancel_call:
@@ -559,13 +567,13 @@ async def test_closed_gate_is_rechecked_before_scheduled_spawn(auth, fake_proces
 async def test_cancelled_close_still_waits_for_launch_cleanup(auth, fake_process, monkeypatch):
     entered = asyncio.Event()
     release = asyncio.Event()
-    original = sdk.asyncio.create_subprocess_exec
+    original = sdk.spawn_worker
     transport = sdk.SDKTransport()
     async def spawn(*args, **kwargs):
         entered.set()
         await release.wait()
         return await original(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     call = asyncio.create_task(transport.call('completions', {}, auth=auth))
     await entered.wait()
     close = asyncio.create_task(transport.aclose())
@@ -741,8 +749,6 @@ async def test_non_json_payload_never_acquires(value, fake_process):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('provider_first', [True, False])
 async def test_successful_disposal_is_inert_for_late_other_owner(auth, fake_process, monkeypatch, provider_first):
-    signals = []
-    monkeypatch.setattr(sdk.os, 'killpg', lambda pid, sig: signals.append((pid, sig)))
     fake_process[0]['frames'] = [{'event': {'delta': 'one'}}, {'event': {'delta': 'two'}}]
     transport = sdk.SDKTransport()
     stream = transport.stream('completions_stream', {}, auth=auth)
@@ -750,21 +756,20 @@ async def test_successful_disposal_is_inert_for_late_other_owner(auth, fake_proc
     process = fake_process[1][0]
     first, second = (transport.aclose, stream.aclose) if provider_first else (stream.aclose, transport.aclose)
     await first()
-    assert signals == [(process.pid, sdk.signal.SIGTERM), (process.pid, sdk.signal.SIGKILL)]
+    assert process.dispose_calls == 1
     await second()
     await transport.aclose()
     await stream.aclose()
     await transport._stop(process)
-    assert len(signals) == 2
+    assert process.dispose_calls == 1
     assert not transport._processes and not transport._stops
 
 
 @pytest.mark.asyncio
 async def test_concurrent_cleanup_waiter_cancellation_cannot_revoke_owner(monkeypatch):
     transport = sdk.SDKTransport()
-    signals, waits = [], []
+    waits = []
     entered, release = asyncio.Event(), asyncio.Event()
-    monkeypatch.setattr(sdk.os, 'killpg', lambda pid, sig: signals.append(sig))
     async def wait():
         waits.append(True)
         entered.set()
@@ -789,172 +794,124 @@ async def test_concurrent_cleanup_waiter_cancellation_cannot_revoke_owner(monkey
     assert not transport._stops[process]['task'].cancelled()
     release.set()
     await second
-    assert signals == [sdk.signal.SIGTERM, sdk.signal.SIGKILL]
+    assert process.dispose_calls == len(waits)
     assert waits == [True]
     assert not transport._processes and not transport._stops
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('gone', [True, False])
-async def test_reap_retry_never_resends_completed_or_absent_group_signals(monkeypatch, gone):
-    signals, waits = [], []
-    transport = sdk.SDKTransport()
-    def kill(pid, sig):
-        signals.append(sig)
-        if gone:
-            raise ProcessLookupError()
-    monkeypatch.setattr(sdk.os, 'killpg', kill)
+@pytest.mark.parametrize('failure', [OSError('controlled IO failure'), PermissionError('controlled refusal'), TimeoutError('controlled incomplete disposal')])
+async def test_failed_disposal_retries_the_same_owner(failure):
+    calls = []
     async def wait():
-        waits.append(True)
-        if len(waits) == 1:
-            raise OSError('synthetic-secret')
+        calls.append(True)
+        if len(calls) == 1: raise failure
         return 0
     process = Process(pid=999999, wait=wait)
+    transport = sdk.SDKTransport()
     transport._processes.add(process)
-    with pytest.raises(OSError):
+    with pytest.raises(type(failure)):
         await transport._stop(process)
-    assert process in transport._processes
-    expected = [sdk.signal.SIGTERM] if gone else [sdk.signal.SIGTERM, sdk.signal.SIGKILL]
-    assert signals == expected
+    assert process in transport._processes and transport._cleanup_pending()
     await transport._stop(process)
-    assert signals == expected and len(waits) == 2
+    assert calls == [True, True] and process.dispose_calls == 2
     assert not transport._processes and not transport._stops
 
 
+
 @pytest.mark.asyncio
-async def test_signal_failure_after_leader_reap_probes_without_resignaling(monkeypatch):
-    transport = sdk.SDKTransport()
-    signals = []
-    present = True
-    def kill(pid, sig):
-        signals.append(sig)
-        if len(signals) == 2:
-            raise PermissionError('synthetic-secret')
-        if sig == 0 and not present:
-            raise ProcessLookupError()
-    monkeypatch.setattr(sdk.os, 'killpg', kill)
-    async def wait(): return 0
+async def test_refused_owner_disposal_stays_pending_until_successful_retry():
+    ready = False
+    async def wait():
+        if not ready: raise PermissionError('controlled refusal')
+        return 0
     process = Process(pid=999999, wait=wait)
+    transport = sdk.SDKTransport()
     transport._processes.add(process)
-    with pytest.raises(PermissionError):
-        await transport._stop(process)
-    assert process in transport._processes
-    assert transport._stops[process]['phase'] == 1
-    with pytest.raises(PermissionError, match='cleanup remains pending'):
-        await transport._stop(process)
-    assert signals == [sdk.signal.SIGTERM, sdk.signal.SIGKILL, 0, 0]
-    present = False
+    for _ in range(2):
+        with pytest.raises(PermissionError): await transport._stop(process)
+        assert process in transport._processes and transport._cleanup_pending()
+    ready = True
     await transport._stop(process)
-    assert signals == [sdk.signal.SIGTERM, sdk.signal.SIGKILL, 0, 0, 0]
-    assert not transport._processes and not transport._stops
+    assert process.dispose_calls == 3 and not transport._processes
+
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('denied_signal', [sdk.signal.SIGTERM, sdk.signal.SIGKILL])
-@pytest.mark.parametrize('probe_error', [None, PermissionError('unverifiable group')])
-async def test_permission_denied_retains_live_or_unverifiable_group(
-        monkeypatch, denied_signal, probe_error):
+async def test_unowned_handle_is_rejected_without_retiring_its_receipt():
+    process = SimpleNamespace()
     transport = sdk.SDKTransport()
-    signals = []
-    def kill(pid, sig):
-        signals.append(sig)
-        if sig == denied_signal:
-            raise PermissionError('signal denied')
-        if sig == 0 and probe_error is not None:
-            raise probe_error
-    monkeypatch.setattr(sdk.os, 'killpg', kill)
-    async def wait(): return 0
-    process = Process(pid=999999, wait=wait)
+    # A foreign handle has no authority to claim disposal.
+    class Foreign: pass
+    process = Foreign()
     transport._processes.add(process)
-    with pytest.raises(PermissionError):
+    with pytest.raises(RuntimeError, match='cannot reserve'):
         await transport._stop(process)
-    assert process in transport._processes
-    assert transport._cleanup_pending()
-    assert transport._stops[process]['phase'] == (0 if denied_signal == sdk.signal.SIGTERM else 1)
-    with pytest.raises(PermissionError):
-        await transport._stop(process)
-    assert signals.count(denied_signal) == 1
-    assert signals[-1] == 0
+    assert process in transport._processes and transport._cleanup_pending()
+
 
 
 @pytest.mark.asyncio
-async def test_new_worker_is_blocked_during_first_denied_reap(auth, fake_process, monkeypatch):
+async def test_normal_retirement_allows_concurrent_work_until_a_failure_is_known(auth, fake_process):
     from api_agent.providers.control import CleanupPendingError
-    entered = asyncio.Event()
-    def kill(pid, sig):
-        if sig == sdk.signal.SIGTERM:
-            raise PermissionError('denied')
-    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    entered, release = asyncio.Event(), asyncio.Event()
     async def wait():
         entered.set()
-        await asyncio.Event().wait()
+        await release.wait()
+        raise PermissionError('controlled refusal')
     process = Process(pid=999999, wait=wait)
     transport = sdk.SDKTransport()
     transport._processes.add(process)
     stopping = asyncio.create_task(transport._stop(process))
     await entered.wait()
+    assert await transport.call('models', {}, auth=auth) == {'ok': True}
+    assert len(fake_process[1]) == 1
+    release.set()
+    with pytest.raises(PermissionError): await stopping
     with pytest.raises(CleanupPendingError):
         await transport.call('models', {}, auth=auth)
-    assert not fake_process[1]
-    with pytest.raises(PermissionError):
-        await stopping
+    assert len(fake_process[1]) == 1
+
 
 
 @pytest.mark.asyncio
-async def test_new_worker_is_blocked_if_cleanup_fails_during_auth(
-        auth, fake_process, monkeypatch):
+async def test_new_worker_is_blocked_if_cleanup_fails_during_auth(auth, fake_process):
     from api_agent.providers.control import CleanupPendingError
-    absent = False
-    def kill(pid, sig):
-        if absent:
-            raise ProcessLookupError()
-        if sig == sdk.signal.SIGTERM:
-            raise PermissionError('denied')
-    monkeypatch.setattr(sdk.os, 'killpg', kill)
-    async def wait(): return 0
+    ready = False
+    async def wait():
+        if not ready: raise PermissionError('controlled refusal')
+        return 0
     process = Process(pid=999999, wait=wait)
     transport = sdk.SDKTransport()
     transport._processes.add(process)
     async def acquire():
-        with pytest.raises(PermissionError):
-            await transport._stop(process)
+        with pytest.raises(PermissionError): await transport._stop(process)
         return await auth()
     with pytest.raises(CleanupPendingError):
         await transport.call('models', {}, auth=acquire)
     assert not fake_process[1]
-    absent = True
+    ready = True
     await transport.aclose()
 
 
+
 @pytest.mark.asyncio
-async def test_denied_signal_then_absent_group_bounds_unreaped_leader(monkeypatch):
-    transport = sdk.SDKTransport()
-    signals, waits = [], []
-    def kill(pid, sig):
-        signals.append(sig)
-        if sig == sdk.signal.SIGTERM:
-            raise PermissionError('denied')
-        raise ProcessLookupError()
-    monkeypatch.setattr(sdk.os, 'killpg', kill)
-    async def wait():
-        waits.append(True)
-        if len(waits) == 1:
-            raise asyncio.TimeoutError()
-        return 0
+async def test_owner_completion_releases_admission_receipt():
+    async def wait(): return 0
     process = Process(pid=999999, wait=wait)
+    transport = sdk.SDKTransport()
     transport._processes.add(process)
     await transport._stop(process)
-    assert signals == [sdk.signal.SIGTERM, 0]
-    assert len(waits) == 2
-    assert not transport._processes
+    assert not transport._cleanup_pending()
+    assert process.dispose_calls == 1
+
 
 
 @pytest.mark.asyncio
 async def test_interrupted_disposal_owner_retries_reap_without_resignaling(monkeypatch):
     transport = sdk.SDKTransport()
-    signals, waits = [], []
+    waits = []
     entered, release = asyncio.Event(), asyncio.Event()
-    monkeypatch.setattr(sdk.os, 'killpg', lambda pid, sig: signals.append(sig))
     async def wait():
         waits.append(True)
         entered.set()
@@ -971,7 +928,7 @@ async def test_interrupted_disposal_owner_retries_reap_without_resignaling(monke
     assert transport._cleanup_pending()
     release.set()
     await transport._stop(process)
-    assert signals == [sdk.signal.SIGTERM, sdk.signal.SIGKILL]
+    assert process.dispose_calls == len(waits)
     assert waits == [True, True]
     assert not transport._processes and not transport._stops
 
@@ -1049,7 +1006,7 @@ async def test_wire_timeout_cannot_overflow_frame_limit(auth, fake_process, monk
 async def test_worker_authority_channel_rejects_invalid_handoffs(auth, fake_process, monkeypatch, wire):
     import os
     import socket
-    original_spawn = sdk.asyncio.create_subprocess_exec
+    original_spawn = sdk.spawn_worker
     tasks = []
     async def spawn(*args, **kwargs):
         fd = os.dup(kwargs['pass_fds'][0])
@@ -1065,7 +1022,7 @@ async def test_worker_authority_channel_rejects_invalid_handoffs(auth, fake_proc
                 channel.close()
         tasks.append(asyncio.create_task(send()))
         return await original_spawn(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     with pytest.raises(ContractError, match='authority handoff'):
         await sdk.SDKTransport().call('completions', {}, auth=auth, join=lambda values: None)
     await asyncio.gather(*tasks)
@@ -1076,7 +1033,7 @@ async def test_worker_authority_channel_rejects_invalid_handoffs(auth, fake_proc
 async def test_parent_rejects_invalid_joined_authority_and_releases_lease(auth, fake_process, monkeypatch, union):
     import os
     import socket
-    original_spawn = sdk.asyncio.create_subprocess_exec
+    original_spawn = sdk.spawn_worker
     tasks = []
     async def spawn(*args, **kwargs):
         fd = os.dup(kwargs['pass_fds'][0])
@@ -1089,7 +1046,7 @@ async def test_parent_rejects_invalid_joined_authority_and_releases_lease(auth, 
                 channel.close()
         tasks.append(asyncio.create_task(send()))
         return await original_spawn(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     lease = SimpleNamespace(release=__import__('unittest.mock', fromlist=['Mock']).Mock())
     async def join(values):
         assert values == ['synthetic-key']
@@ -1123,7 +1080,7 @@ async def test_worker_error_preserves_valid_usage_without_releasing_unjoined_res
 async def test_joined_authority_without_dispatch_callback_still_requires_worker_ack(auth, fake_process, monkeypatch):
     import os
     import socket
-    original_spawn = sdk.asyncio.create_subprocess_exec
+    original_spawn = sdk.spawn_worker
     tasks, observed = [], []
     async def spawn(*args, **kwargs):
         fd = os.dup(kwargs['pass_fds'][0])
@@ -1143,7 +1100,7 @@ async def test_joined_authority_without_dispatch_callback_still_requires_worker_
                 channel.close()
         tasks.append(asyncio.create_task(exchange()))
         return await original_spawn(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     async def join(values): return None
     result = await sdk.SDKTransport().call('completions', {}, auth=auth, join=join)
     await asyncio.gather(*tasks)
@@ -1162,7 +1119,7 @@ async def test_joined_failure_body_cannot_contradict_safety_rejection(auth, fake
     import socket
     fake_process[0]['frames'] = [dict(error='unknown', execution='possibly_executed', code=code,
                                     provider_response={'content':'safe rejected body'})]
-    original_spawn = sdk.asyncio.create_subprocess_exec
+    original_spawn = sdk.spawn_worker
     tasks = []
     async def spawn(*args, **kwargs):
         descriptor = os.dup(kwargs['pass_fds'][0])
@@ -1181,7 +1138,7 @@ async def test_joined_failure_body_cannot_contradict_safety_rejection(auth, fake
                 channel.close()
         tasks.append(asyncio.create_task(exchange()))
         return await original_spawn(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     async def join(values):
         return None
     transport = sdk.SDKTransport()
@@ -1198,7 +1155,7 @@ async def test_joined_failure_body_cannot_contradict_safety_rejection(auth, fake
 async def output_limit_join(fake_process, monkeypatch):
     import os
     import socket
-    original_spawn = sdk.asyncio.create_subprocess_exec
+    original_spawn = sdk.spawn_worker
     tasks = []
     async def spawn(*args, **kwargs):
         channel = socket.socket(fileno=os.dup(kwargs['pass_fds'][0]))
@@ -1216,7 +1173,7 @@ async def output_limit_join(fake_process, monkeypatch):
                 channel.close()
         tasks.append(asyncio.create_task(exchange()))
         return await original_spawn(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     async def join(values):
         return None
     yield join
@@ -1253,13 +1210,12 @@ async def test_output_rejection_retains_pending_cleanup_and_authority_lease(
         return values, lease
     absent = False
     signals = []
-    def kill(pid, sig):
-        signals.append(sig)
-        if absent:
-            raise ProcessLookupError()
-        if sig == sdk.signal.SIGTERM:
-            raise PermissionError('synthetic permission denied')
-    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    original_dispose = Process.dispose
+    async def dispose(process):
+        signals.append('dispose')
+        if not absent: raise PermissionError('synthetic permission denied')
+        await original_dispose(process)
+    monkeypatch.setattr(Process, 'dispose', dispose)
     transport = sdk.SDKTransport()
     with pytest.raises(OutputLimitRejected) as caught:
         await transport.call('responses', {}, auth=auth, join=join)
@@ -1276,7 +1232,7 @@ async def test_output_rejection_retains_pending_cleanup_and_authority_lease(
     await transport.aclose()
     lease.release.assert_called_once()
     assert not transport._processes and not transport._leases
-    assert signals == [sdk.signal.SIGTERM, 0, 0]
+    assert signals == ['dispose', 'dispose']
 
 
 @pytest.mark.asyncio
@@ -1288,7 +1244,7 @@ async def test_late_authority_lease_after_concurrent_disposal_is_retained_on_rel
     from api_agent.providers.control import CleanupPendingError
     transport = sdk.SDKTransport()
     lease = SimpleNamespace(release=Mock(side_effect=[PermissionError('lease denied'), None]))
-    original_spawn = sdk.asyncio.create_subprocess_exec
+    original_spawn = sdk.spawn_worker
     tasks = []
     async def spawn(*args, **kwargs):
         channel = socket.socket(fileno=os.dup(kwargs['pass_fds'][0]))
@@ -1300,7 +1256,7 @@ async def test_late_authority_lease_after_concurrent_disposal_is_retained_on_rel
                 channel.close()
         tasks.append(asyncio.create_task(send()))
         return await original_spawn(*args, **kwargs)
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
     async def join(values):
         await transport._stop(fake_process[1][0])
         return values, lease
@@ -1350,12 +1306,11 @@ async def test_cancellation_after_completed_stop_is_not_reported_as_pending(
 async def test_successful_result_with_denied_cleanup_reports_pending(auth, fake_process, monkeypatch):
     from api_agent.providers.control import CleanupPendingError
     absent = False
-    def kill(pid, sig):
-        if absent:
-            raise ProcessLookupError()
-        if sig == sdk.signal.SIGTERM:
-            raise PermissionError('denied')
-    monkeypatch.setattr(sdk.os, 'killpg', kill)
+    original_dispose = Process.dispose
+    async def dispose(process):
+        if not absent: raise PermissionError('denied')
+        await original_dispose(process)
+    monkeypatch.setattr(Process, 'dispose', dispose)
     transport = sdk.SDKTransport()
     with pytest.raises(CleanupPendingError) as caught:
         await transport.call('completions', {}, auth=auth)
@@ -1567,3 +1522,316 @@ async def test_native_stream_category_cannot_contradict_admitted_aws_code(auth, 
             await transport.call('converse_stream', {}, auth=auth, join=output_limit_join)
     finally:
         await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('login', [False, True])
+async def test_failed_pipe_attachment_blocks_transport_until_retained_worker_retires(auth, monkeypatch, login):
+    from api_agent.llm_providers.bedrock import owned_worker, login_transport
+    from api_agent.providers.control import CleanupPendingError
+    transport = login_transport.LoginTransport(timeout=2) if login else sdk.SDKTransport(timeout=2)
+    async def operation():
+        if login:
+            return await transport.acquire({'method': 'direct', 'login': False}, {})
+        return await transport.call('models', {}, auth=auth)
+    def denied(process): raise PermissionError('controlled disposal refusal')
+    async def broken(*args, **kwargs): raise OSError('controlled pipe attachment failure')
+    try:
+        with monkeypatch.context() as failure:
+            failure.setattr(owned_worker, 'finalize', denied)
+            failure.setattr(asyncio.get_running_loop(), 'connect_write_pipe', broken)
+            with pytest.raises(ContractError, match='start|worker response') as caught:
+                await operation()
+            assert caught.value.cleanup_error.owners == (transport,)
+            owner, = transport._processes
+            assert isinstance(owner, owned_worker.OwnedWorker)
+            assert owner.returncode is None
+            with pytest.raises(CleanupPendingError):
+                await operation()
+    finally:
+        await transport.aclose()
+    assert owner.returncode is not None
+    assert not transport._processes
+
+
+@pytest.mark.asyncio
+async def test_raw_async_child_has_no_numeric_group_signal_authority(monkeypatch):
+    import os
+    child = await asyncio.create_subprocess_exec(sys.executable, '-c', 'pass')
+    await child.wait()
+    claims = []
+    async def claimed_disposal(): claims.append(True)
+    child.dispose = claimed_disposal
+    def forbidden(*args): pytest.fail('reaped async PID was signalled')
+    monkeypatch.setattr(sdk, 'os', SimpleNamespace(**(vars(os) | {'killpg': forbidden})))
+    transport = sdk.SDKTransport()
+    transport._processes.add(child)
+    try:
+        with pytest.raises(RuntimeError, match='cannot reserve'):
+            await transport._stop(child)
+        assert child in transport._processes
+        assert not claims
+    finally:
+        transport._processes.discard(child)
+        transport._stops.pop(child, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('login', [False, True])
+async def test_success_cannot_be_released_after_owned_disposal_expires_budget(auth, monkeypatch, login):
+    from api_agent.llm_providers.bedrock import owned_worker, login_transport
+    from api_agent.providers import progress
+    child = await owned_worker.spawn_worker(sys.executable, '-c',
+        'import sys; print("ready", flush=True); sys.stdin.readline(); print(\'{"result":{}}\', flush=True)',
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+    assert await asyncio.wait_for(child.stdout.readline(), 5) == b'ready\n'
+    now = [0]
+    monkeypatch.setattr(progress, '_clock', lambda: now[0])
+    async def prepared(*args, **kwargs): return child
+    original = owned_worker.finalize
+    def expire_after_disposal(process):
+        result = original(process)
+        now[0] = 3
+        return result
+    module = login_transport if login else sdk
+    monkeypatch.setattr(module, 'spawn_worker', prepared)
+    monkeypatch.setattr(owned_worker, 'finalize', expire_after_disposal)
+    transport = module.LoginTransport(timeout=2) if login else sdk.SDKTransport(timeout=2)
+    try:
+        with pytest.raises(TimeoutError, match='deadline expired'):
+            if login:
+                await asyncio.wait_for(transport.acquire({'method': 'direct', 'login': False}, {}), 10)
+            else:
+                await asyncio.wait_for(transport.call('completions', {}, auth=auth), 10)
+        assert child.returncode == 0
+        assert not transport._processes
+    finally:
+        await transport.aclose()
+        await child.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('login', [False, True])
+async def test_foreign_spawn_failure_metadata_cannot_claim_worker_ownership(auth, monkeypatch, login):
+    from api_agent.llm_providers.bedrock import login_transport
+    error = RuntimeError('controlled failed launch')
+    error.retained_owners = (object(),)
+    async def fail(*args, **kwargs): raise error
+    module = login_transport if login else sdk
+    monkeypatch.setattr(module, 'spawn_worker', fail)
+    transport = login_transport.LoginTransport() if login else sdk.SDKTransport()
+    with pytest.raises(RuntimeError) as caught:
+        if login:
+            await transport.acquire({'method': 'direct', 'login': False}, {})
+        else:
+            await transport.call('models', {}, auth=auth)
+    assert caught.value is error
+    assert not transport._processes
+
+
+@pytest.mark.asyncio
+async def test_login_rechecks_pending_owner_at_launch_admission(monkeypatch):
+    from unittest.mock import Mock
+    from api_agent.llm_providers.bedrock.login_transport import LoginTransport
+    from api_agent.providers.control import CleanupPendingError
+    transport = LoginTransport()
+    monkeypatch.setattr(transport, '_cleanup_pending', Mock(side_effect=[False, True]))
+    with pytest.raises(CleanupPendingError):
+        await transport.acquire({'method': 'direct', 'login': False}, {})
+    assert not transport._processes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('refused', [False, True])
+async def test_repeated_login_cancellation_cannot_skip_worker_disposal(monkeypatch, refused):
+    from api_agent.llm_providers.bedrock import owned_worker, login_transport
+    child = await owned_worker.spawn_worker(sys.executable, '-c',
+        'import sys,time; print(\'{"auth":"ready"}\', flush=True); sys.stdin.readline(); time.sleep(60)',
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+    prompt, draining, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def prepared(*args, **kwargs): return child
+    async def ready(): pass
+    async def write(text):
+        assert text == 'ready'
+        prompt.set()
+    async def read():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            draining.set()
+            await release.wait()
+    interaction = SimpleNamespace(check_ready=ready, write=write, read=read)
+    transport = login_transport.LoginTransport(timeout=10)
+    pending = None
+    try:
+        with monkeypatch.context() as controls:
+            controls.setattr(login_transport, 'spawn_worker', prepared)
+            if refused:
+                def denied(process): raise PermissionError('controlled disposal refusal')
+                controls.setattr(owned_worker, 'finalize', denied)
+            pending = asyncio.create_task(transport.acquire({'method': 'direct', 'login': True}, {}, interaction))
+            await asyncio.wait_for(prompt.wait(), 5)
+            pending.cancel()
+            await asyncio.wait_for(draining.wait(), 5)
+            pending.cancel()
+            await asyncio.sleep(.02)
+            assert not pending.done(), 'worker ownership escaped while input draining remained incomplete'
+            release.set()
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await pending
+            if refused:
+                assert caught.value.retained_owners == (transport,)
+                assert caught.value.cleanup_error.owners == (transport,)
+                assert child in transport._processes and child.returncode is None
+            else:
+                assert child.returncode is not None and not transport._processes
+    finally:
+        release.set()
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        await transport.aclose()
+        await child.dispose()
+    assert child.returncode is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('classified', [False, True])
+@pytest.mark.parametrize('refused', [False, True])
+@pytest.mark.parametrize('interrupt', [False, True])
+async def test_authority_channel_close_failure_cannot_skip_registered_worker(auth, monkeypatch, classified, refused, interrupt):
+    import socket
+    from api_agent.llm_providers.bedrock import owned_worker
+    from api_agent.providers.control import CleanupPendingError
+    pair = socket.socketpair
+    channels, children = [], []
+    class Channel:
+        def __init__(self, raw, parent):
+            self.raw = raw
+            self.parent = parent
+            self.attempts = 0
+        def __getattr__(self, name): return getattr(self.raw, name)
+        def close(self):
+            self.attempts += 1
+            self.raw.close()
+            if self.parent and interrupt:
+                raise asyncio.CancelledError()
+            if self.parent or not classified:
+                raise OSError('private controlled close detail')
+    def allocate():
+        result = tuple(Channel(raw, index == 0) for index, raw in enumerate(pair()))
+        channels.extend(result)
+        return result
+    async def prepared(*args, **kwargs):
+        descriptor = kwargs['pass_fds'][0]
+        code = ('import socket,sys,time; sys.stdin.readline(); '
+                f'channel=socket.socket(fileno={descriptor}); '
+                "channel.sendall(b'[]\\n'); channel.recv(1024); time.sleep(60)")
+        child = await owned_worker.spawn_worker(sys.executable, '-c', code, **kwargs)
+        children.append(child)
+        return child
+    async def join(values):
+        assert classified and values == []
+        raise ProviderAccessError('authentication', 'Controlled classified primary failure')
+    transport = sdk.SDKTransport(timeout=10)
+    try:
+        with monkeypatch.context() as controls:
+            controls.setattr(sdk, 'socket', SimpleNamespace(**(vars(socket) | {'socketpair': allocate})))
+            controls.setattr(sdk, 'spawn_worker', prepared)
+            if refused:
+                def denied(process): raise PermissionError('controlled disposal refusal')
+                controls.setattr(owned_worker, 'finalize', denied)
+            expected = asyncio.CancelledError if interrupt else ProviderAccessError if classified else ContractError
+            with pytest.raises(expected) as caught:
+                await transport.call('models', {}, auth=auth, join=join)
+            assert len(channels) == 2 and all(channel.attempts == 1 for channel in channels)
+            assert 'private controlled close detail' not in str(caught.value)
+            if classified and not interrupt:
+                assert caught.value.kind == 'authentication'
+                assert isinstance(caught.value.channel_cleanup_error, ContractError)
+            if refused:
+                assert caught.value.cleanup_error.owners == (transport,)
+                assert children[0] in transport._processes
+                with pytest.raises(CleanupPendingError):
+                    await transport.call('models', {}, auth=auth)
+            else:
+                assert children[0].returncode is not None and not transport._processes
+    finally:
+        await transport.aclose()
+        for child in children: await child.dispose()
+    assert all(channel.raw.fileno() == -1 for channel in channels)
+    assert children[0].returncode is not None
+
+
+@pytest.mark.parametrize('failure', [asyncio.CancelledError(), KeyboardInterrupt(), SystemExit()])
+def test_authority_channel_close_preserves_interrupt_and_attempts_remaining_channels(failure):
+    calls = []
+    def interrupted():
+        calls.append('first')
+        raise failure
+    def closed(): calls.append('second')
+    with pytest.raises(type(failure)) as caught:
+        sdk._close_authority_channels([SimpleNamespace(close=interrupted), SimpleNamespace(close=closed)], None)
+    assert caught.value is failure
+    assert calls == ['first', 'second']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('allocation_fails', [False, True])
+async def test_authority_setup_failure_retires_every_allocated_channel_before_spawn(auth, monkeypatch, allocation_fails):
+    import socket
+    pair = socket.socketpair
+    channels = []
+    class Channel:
+        def __init__(self, raw):
+            self.raw = raw
+            self.closes = 0
+        def setblocking(self, value): raise OSError('private controlled setup detail')
+        def close(self):
+            self.closes += 1
+            self.raw.close()
+    def allocate():
+        if allocation_fails: raise OSError('private controlled setup detail')
+        result = tuple(Channel(raw) for raw in pair())
+        channels.extend(result)
+        return result
+    async def forbidden(*args, **kwargs): pytest.fail('worker started after authority setup failure')
+    monkeypatch.setattr(sdk, 'socket', SimpleNamespace(**(vars(socket) | {'socketpair': allocate})))
+    monkeypatch.setattr(sdk, 'spawn_worker', forbidden)
+    transport = sdk.SDKTransport()
+    with pytest.raises(ContractError, match='prepare Bedrock authority') as caught:
+        await transport.call('models', {}, auth=auth, join=forbidden)
+    assert 'private controlled setup detail' not in str(caught.value)
+    assert len(channels) == (0 if allocation_fails else 2)
+    assert all(channel.closes == 1 and channel.raw.fileno() == -1 for channel in channels)
+    assert not transport._processes
+
+
+@pytest.mark.parametrize('control_first', [False, True])
+@pytest.mark.parametrize('classified', [False, True])
+def test_channel_cleanup_interrupt_takes_precedence_over_ordinary_failures(control_first, classified):
+    interruption = asyncio.CancelledError()
+    ordinary = OSError('private ordinary close failure')
+    failures = [interruption, ordinary] if control_first else [ordinary, interruption]
+    calls = []
+    def channel(index):
+        def close():
+            calls.append(index)
+            raise failures[index]
+        return SimpleNamespace(close=close)
+    primary = ProviderAccessError('authentication', 'Controlled primary') if classified else None
+    with pytest.raises(asyncio.CancelledError) as caught:
+        sdk._close_authority_channels([channel(0), channel(1)], primary)
+    assert caught.value is interruption
+    assert calls == [0, 1]
+
+
+def test_channel_cleanup_keeps_first_interrupt_while_attempting_later_channels():
+    interruption = KeyboardInterrupt()
+    def first(): raise interruption
+    def second(): raise asyncio.CancelledError()
+    with pytest.raises(KeyboardInterrupt) as caught:
+        sdk._close_authority_channels([SimpleNamespace(close=first), SimpleNamespace(close=second)], None)
+    assert caught.value is interruption
