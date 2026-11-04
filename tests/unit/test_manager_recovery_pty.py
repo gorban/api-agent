@@ -1,4 +1,5 @@
 """Synthetic helpers exercise real controlling-terminal authentication."""
+from types import SimpleNamespace
 import os
 import sys
 
@@ -7,6 +8,10 @@ import pytest
 from api_agent.auth.credentials import CredentialError
 from api_agent.auth.interaction import Reply
 from api_agent.auth.recovery import recover
+
+
+# These functional fixtures include native interpreter and guardian startup.
+_NORMAL_RECOVERY_SECONDS = 10
 
 
 class Channel:
@@ -42,7 +47,7 @@ class Interaction:
 def test_real_getpass_stdout_private():
     interaction = Interaction([Reply('input', 'master-secret')])
     script = "import getpass; assert getpass.getpass('Password: ') == 'master-secret'; print('vault-secret')"
-    assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'vault-secret\n'
+    assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'vault-secret\n'
     assert 'master-secret' not in interaction.channel.output
     assert 'vault-secret' not in interaction.channel.output
     assert interaction.channel.closed
@@ -52,7 +57,7 @@ def test_real_getpass_stdout_private():
 def test_cancel_and_eof(action):
     interaction = Interaction([Reply(action)])
     with pytest.raises(CredentialError, match='cancelled|input ended'):
-        recover([sys.executable, '-c', "import getpass; getpass.getpass('Password: ')"], interaction, 'Keeper', 2)
+        recover([sys.executable, '-c', "import getpass; getpass.getpass('Password: ')"], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert interaction.channel.closed
 
 
@@ -63,19 +68,26 @@ def test_reply_hides_value():
 def test_incorrect_password_then_correct():
     interaction = Interaction([Reply('input', 'wrong'), Reply('input', 'correct')])
     script = "import getpass\nwhile getpass.getpass('Password: ') != 'correct': pass\nprint('secret')"
-    assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'secret\n'
+    assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'secret\n'
     assert 'wrong' not in interaction.channel.output
     assert 'correct' not in interaction.channel.output
 
 
-def test_timeout_and_nonzero_failures_are_safe():
-    for script, pattern in [("import time; time.sleep(10)", 'deadline'),
-                            ("import sys; print('private', file=sys.stderr); sys.exit(7)", 'authentication failed')]:
-        interaction = Interaction([])
-        with pytest.raises(CredentialError, match=pattern) as error:
-            recover([sys.executable, '-c', script], interaction, 'Keeper', .15)
-        assert 'private' not in str(error.value)
-        assert interaction.channel.closed
+def test_timeout_failure_is_safe():
+    interaction = Interaction([])
+    with pytest.raises(CredentialError, match='deadline') as error:
+        recover([sys.executable, '-c', "import time; time.sleep(10)"], interaction, 'Keeper', .15)
+    assert 'private' not in str(error.value)
+    assert interaction.channel.closed
+
+
+def test_nonzero_failure_is_safe():
+    interaction = Interaction([])
+    with pytest.raises(CredentialError, match='authentication failed') as error:
+        recover([sys.executable, '-c', "import sys; print('private', file=sys.stderr); sys.exit(7)"],
+                interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
+    assert 'private' not in str(error.value)
+    assert interaction.channel.closed
 
 
 def test_retry_closes_previous_generation():
@@ -92,7 +104,7 @@ def test_retry_closes_previous_generation():
 
     interaction = Generations()
     script = "import getpass; assert getpass.getpass('Password: ') == 'ok'; print('secret')"
-    assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'secret\n'
+    assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'secret\n'
     assert len(interaction.channels) == 2
     assert all(channel.closed for channel in interaction.channels)
 
@@ -120,7 +132,7 @@ def test_original_retrieval_after_logged_out_failure(tmp_path):
     path.chmod(0o700)
     interaction = Interaction([Reply('input', 'master-secret')])
     assert get_password(dict(manager='keeper', cli_path=str(path), vault='vault', user='user'),
-                        interaction=interaction, recovery_timeout=2) == 'credential-secret'
+                        interaction=interaction, recovery_timeout=_NORMAL_RECOVERY_SECONDS) == 'credential-secret'
     assert 'credential-secret' not in interaction.channel.output
 
 
@@ -141,7 +153,7 @@ def test_concurrent_retrievals_reuse_session_without_sharing_value(tmp_path):
     interaction = Operation([Reply('input', 'master-secret')])
     def fetch(user):
         return get_password(dict(manager='keeper', cli_path=str(path), vault='vault', user=user),
-                            interaction=interaction, recovery_timeout=2)
+                            interaction=interaction, recovery_timeout=_NORMAL_RECOVERY_SECONDS)
     with ThreadPoolExecutor(2) as pool:
         assert list(pool.map(fetch, ['one', 'two'])) == ['vault/one', 'vault/two']
     assert interaction.opened == 1
@@ -152,7 +164,7 @@ def test_concurrent_retrievals_reuse_session_without_sharing_value(tmp_path):
 def test_invalid_input_is_private(reply, pattern):
     interaction = Interaction([reply])
     with pytest.raises(CredentialError, match=pattern):
-        recover([sys.executable, '-c', "import getpass; getpass.getpass('Password: ')"], interaction, 'Keeper', 2)
+        recover([sys.executable, '-c', "import getpass; getpass.getpass('Password: ')"], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert interaction.channel.closed
 
 
@@ -164,7 +176,7 @@ def test_invalid_input_is_private(reply, pattern):
 def test_bounded_private_streams(script, pattern):
     interaction = Interaction([])
     with pytest.raises(CredentialError, match=pattern) as error:
-        recover([sys.executable, '-c', script], interaction, 'Keeper', 2)
+        recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert len(str(error.value)) < 150
     assert interaction.channel.closed
 
@@ -182,7 +194,7 @@ def test_disconnected_transport_is_safe():
         def open(self, label):
             raise RuntimeError('private transcript')
     with pytest.raises(CredentialError, match='disconnected') as error:
-        recover([sys.executable, '-c', 'pass'], Disconnected([]), 'Keeper', 2)
+        recover([sys.executable, '-c', 'pass'], Disconnected([]), 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert 'private' not in str(error.value)
     assert error.value.__cause__ is None
 
@@ -300,7 +312,7 @@ if pid == 0:
 open({str(marker)!r}, 'w').write(str(pid))
 print('value')
 '''
-    assert _run([sys.executable, '-c', script], 2) == 'value\n'
+    assert _run([sys.executable, '-c', script], _NORMAL_RECOVERY_SECONDS) == 'value\n'
     stat = Path(f'/proc/{int(marker.read_text())}/stat')
     deadline = time.monotonic() + .3
     while stat.exists() and stat.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
@@ -406,10 +418,10 @@ def test_terminal_io_failure_disposes_process(monkeypatch):
             raise OSError(errno.EINVAL, 'private terminal failure')
         return original_read(descriptor, size)
     monkeypatch.setattr(recovery.os, 'openpty', allocate)
-    monkeypatch.setattr(recovery.os, 'read', read)
+    monkeypatch.setattr(recovery, 'os', SimpleNamespace(**(vars(recovery.os) | {'read': read})))
     interaction = Interaction([])
     with pytest.raises(CredentialError, match='disconnected'):
-        recover([sys.executable, '-c', "import sys,time;print('prompt',file=sys.stderr);time.sleep(10)"], interaction, 'Keeper', 1)
+        recover([sys.executable, '-c', "import sys,time;print('prompt',file=sys.stderr);time.sleep(10)"], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert interaction.channel.closed
 
 
@@ -427,7 +439,7 @@ def test_already_exited_group_cleanup_is_safe(monkeypatch):
     monkeypatch.setattr(OwnedProcess, 'dispose', dispose)
     interaction = Interaction([Reply('cancel')])
     with pytest.raises(CredentialError, match='cancelled'):
-        recover([sys.executable, '-c', "import getpass;getpass.getpass('Password: ')"], interaction, 'Keeper', 1)
+        recover([sys.executable, '-c', "import getpass;getpass.getpass('Password: ')"], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert len(calls) == 1
     assert interaction.channel.closed
 
@@ -435,7 +447,7 @@ def test_already_exited_group_cleanup_is_safe(monkeypatch):
 def test_terminal_only_escape_chunks_are_not_relayed():
     interaction = Interaction([])
     script = "import os,time;os.write(2,b'\\x1b[');time.sleep(.03);os.write(2,b'32m');print('value')"
-    assert recover([sys.executable, '-c', script], interaction, 'Keeper', 1) == 'value\n'
+    assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'value\n'
     assert interaction.channel.output == ''
 
 
@@ -509,7 +521,7 @@ def test_post_reap_stream_close_failure_never_resignals_released_group(monkeypat
     monkeypatch.setattr(OwnedProcess, 'dispose', dispose)
     monkeypatch.setattr(recovery.subprocess, 'Popen', popen)
     with pytest.raises(CredentialError, match='disconnected'):
-        recover([sys.executable, '-c', "print('value')"], Interaction([]), 'Keeper', 1)
+        recover([sys.executable, '-c', "print('value')"], Interaction([]), 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert len(groups) == 1
     for descriptor in owned:
         with pytest.raises(OSError):
@@ -528,7 +540,7 @@ def test_successful_already_exited_group_disposal(monkeypatch):
         original(process)
         raise ProcessLookupError('synthetic concurrent group exit')
     monkeypatch.setattr(OwnedProcess, 'dispose', dispose)
-    assert recover([sys.executable, '-c', "print('value')"], Interaction([]), 'Keeper', 1) == 'value\n'
+    assert recover([sys.executable, '-c', "print('value')"], Interaction([]), 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'value\n'
     assert len(calls) == 1
 
 
@@ -564,10 +576,10 @@ def test_eof_after_valid_input_is_forwarded_to_helper(success):
         + ("print('credential')" if success else 'sys.exit(7)')
     )
     if success:
-        assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'credential\n'
+        assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'credential\n'
     else:
         with pytest.raises(CredentialError, match='input ended'):
-            recover([sys.executable, '-c', script], interaction, 'Keeper', 2)
+            recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert interaction.channel.closed
 
 
@@ -580,10 +592,10 @@ def test_finite_terminal_input_is_consumed_once_per_invocation():
     with os.fdopen(reader) as stream:
         interaction = TerminalInteraction(stream, io.StringIO())
         script = "import sys,time;sys.stderr.write('Password: ');sys.stderr.flush();value=sys.stdin.readline();time.sleep(.1);sys.stdout.write(value)"
-        assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'first\n'
-        assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'second\n'
+        assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'first\n'
+        assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'second\n'
         with pytest.raises(CredentialError, match='input ended'):
-            recover([sys.executable, '-c', script], interaction, 'Keeper', 2)
+            recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
 
 
 def test_cancellation_remains_responsive_after_forwarded_eof():
@@ -596,7 +608,7 @@ def test_cancellation_remains_responsive_after_forwarded_eof():
         Reply('input', 'discarded-after-eof'), Reply('cancel')])
     script = "import sys,time;sys.stdin.readline();sys.stdin.readline();time.sleep(60)"
     with pytest.raises(CredentialError, match='cancelled'):
-        recover([sys.executable, '-c', script], interaction, 'Keeper', 2)
+        recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
     assert interaction.channel.closed
 
 
@@ -618,8 +630,8 @@ def test_terminal_progress_does_not_consume_next_invocation_reply(progress):
                 "sys.stderr.write('word: ');sys.stderr.flush();value=sys.stdin.readline();"
                 + progress + "time.sleep(.05);sys.stdout.write(value)"
             )
-            assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'first\n'
-            assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == 'second\n'
+            assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'first\n'
+            assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == 'second\n'
     finally:
         os.close(writer)
 
@@ -644,7 +656,7 @@ def test_recovery_drains_nonblocking_streams_when_readiness_events_are_missing(m
     monkeypatch.setattr(recovery.selectors, 'DefaultSelector', SilentSelector)
     interaction = Interaction(replies)
 
-    assert recover([sys.executable, '-c', script], interaction, 'Keeper', 2) == expected
+    assert recover([sys.executable, '-c', script], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS) == expected
 
     assert interaction.channel.closed
     assert 'entered-secret' not in interaction.channel.output

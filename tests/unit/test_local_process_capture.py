@@ -147,7 +147,7 @@ def test_continuously_readable_output_yields_to_peer_tasks(monkeypatch):
             reads.append(descriptor)
             if len(reads) == 1: asyncio.create_task(peer())
             return b'x' if len(reads) <= 1024 else b''
-        monkeypatch.setattr(process.os, 'read', read)
+        monkeypatch.setattr(process, 'os', SimpleNamespace(**(vars(process.os) | {'read': read})))
         owner = process.OwnedStudioProcess(child)
         owner.capture(lambda text: None, EmissionBoundary(ContentPolicy()))
         await owner._reader

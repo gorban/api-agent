@@ -148,7 +148,7 @@ def test_startup_failure_reaps_worker_and_closes_liveness_pipe(tmp_path, monkeyp
         if target == ('read_output' if failure == 'reader' else '_watch') and failure != 'popen':
             raise RuntimeError('synthetic thread startup failure')
         return original_start(thread)
-    monkeypatch.setattr(os, 'pipe', pipe)
+    monkeypatch.setattr(integration, 'os', SimpleNamespace(**(vars(integration.os) | {'pipe': pipe})))
     monkeypatch.setattr(integration, 'subprocess', SimpleNamespace(**(vars(integration.subprocess) | {'Popen': popen})))
     monkeypatch.setattr(threading.Thread, 'start', start)
     result = integration.run_integration_tests(context, tests, accepted=True, config={'DEBUG': True})

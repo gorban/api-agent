@@ -1,4 +1,5 @@
 """Credential views share normalization and retain original source ranges."""
+from types import SimpleNamespace
 import json
 import sys
 import time
@@ -186,7 +187,7 @@ def test_alternate_genuine_control_capture_at_response_bound(tmp_path, monkeypat
             reads.setdefault(fd, []).append((offset, len(chunk)))
             offsets[fd] = offset + len(chunk)
         return chunk
-    monkeypatch.setattr(prerequisites.os, 'read', read_credential_tail)
+    monkeypatch.setattr(prerequisites, 'os', SimpleNamespace(**(vars(prerequisites.os) | {'read': read_credential_tail})))
     finalized = []
     original_finalize = prerequisites.finalize
     def finalize(process):
@@ -255,7 +256,7 @@ def test_interrupted_genuine_control_capture_tracks_original_value(
         original_finalize(process)
         if termination == 'cleanup':
             raise RuntimeError('owned post-disposal failure')
-    monkeypatch.setattr(prerequisites.os, 'read', read)
+    monkeypatch.setattr(prerequisites, 'os', SimpleNamespace(**(vars(prerequisites.os) | {'read': read})))
     monkeypatch.setattr(prerequisites, 'finalize', finalize)
     now = lambda: 2 if observed and termination == 'deadline' else 0
 

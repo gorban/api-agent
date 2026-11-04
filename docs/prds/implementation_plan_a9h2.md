@@ -50,3 +50,11 @@ Verification: 26,704 full Linux unit tests pass at exact 100% line and branch co
 - [ ] Human acceptance: normal macOS full unit suite. Native memory-query unavailability followed by signal denial remains unresolved until a fresh native run; diagnostics now preserve the numeric query errno.
 
 Verification: 26,719 full Linux unit tests pass at exact 100% line and branch coverage. Forced system-process inspection and readiness-only rejection controls pass. Native execution is a separate acceptance gate.
+
+## Native boundary-test follow-through
+
+- [x] Keep large conversation-index boundary tests independent of repeated schema-worker startup while retaining actual gate ordering, validation results and complete evidence. Real isolated validation remains covered separately.
+- [x] Explicitly select the intended platform in cache-policy fixtures. Keep native process-inspection reads outside consumer-local read doubles and preserve the same response-byte limits.
+- [x] Prove the cleanup fixture's actual retained child exit before injecting terminal signal refusal. Give ordinary recovery-semantic fixtures bounded startup allowance while preserving explicit short-deadline and privacy assertions. Production limits remain unchanged.
+- [x] Complete independent and external review, full Linux unit coverage and public-boundary checks. Verification: 26,720 tests pass at exact 100% line and branch coverage.
+- [ ] Actual macOS full-suite acceptance, including remaining schema/evidence availability, native memory-query exit timing and intentionally short-deadline fixtures. Passing Linux checks do not qualify those unresolved native results.

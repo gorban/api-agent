@@ -144,7 +144,7 @@ def test_overlapping_independent_duties_settle_once(pending_receipt):
 def test_diagnostic_scrubbing_precedes_tail_truncation(tmp_path, monkeypatch, stream, read_size):
     secret = 'synthetic-secret-' + 'q' * 3000 + '-secret-end'
     original_read = prerequisites.os.read
-    monkeypatch.setattr(prerequisites.os, 'read', lambda fd, size: original_read(fd, min(size, read_size)))
+    monkeypatch.setattr(prerequisites, 'os', SimpleNamespace(**(vars(prerequisites.os) | {'read': lambda fd, size: original_read(fd, min(size, read_size))})))
     helper = tmp_path / 'output.py'
     helper.write_text('import os, sys\nos.write(int(sys.argv[1]), os.environ["API_KEY"].encode() + b"x" * 16000)\nsys.exit(1)\n')
     with pytest.raises(prerequisites.PrerequisiteError) as caught:

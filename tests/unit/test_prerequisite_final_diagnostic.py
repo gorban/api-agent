@@ -172,7 +172,7 @@ def test_interruption_identity_and_cleanup_receipts_keep_one_final_diagnostic(
         assert len(processes) == 1 and disposal_complete(processes[0])
         captures.append(len(data))
         return original_capture(data)
-    monkeypatch.setattr(os, 'read', read)
+    monkeypatch.setattr(prerequisites, 'os', SimpleNamespace(**(vars(prerequisites.os) | {'read': read})))
     monkeypatch.setattr(prerequisites, 'finalize', finalize)
     monkeypatch.setattr(scrubber, 'capture', capture)
 

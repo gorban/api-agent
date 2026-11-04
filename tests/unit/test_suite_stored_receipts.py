@@ -8,19 +8,17 @@ import pytest
 
 from api_agent.providers.control import CleanupPendingError
 from api_agent.testing import suite_lock as locks
-from api_agent.telemetry import history
 
 
 @pytest.fixture
 def real_namespace(tmp_path, monkeypatch):
-    monkeypatch.setenv('XDG_CACHE_HOME',str(tmp_path/'cache'))
-    monkeypatch.setattr(locks,'cache_path',history.cache_path)
+    monkeypatch.setattr(locks, 'cache_path', lambda: tmp_path / 'cache' / 'cost-history.sqlite3')
     return locks.suite_lock_path()
 
 
-def competing_process():
-    script='from api_agent.testing.suite_lock import suite_lock,SuiteBusyError\ntry:\n with suite_lock():pass\nexcept SuiteBusyError:raise SystemExit(17)\n'
-    result=subprocess.run([sys.executable,'-c',script],env=os.environ,timeout=5,capture_output=True)
+def competing_process(namespace):
+    script='from pathlib import Path\nimport sys\nfrom api_agent.testing import suite_lock as locks\nlocks.suite_lock_path=lambda:Path(sys.argv[1])\ntry:\n with locks.suite_lock():pass\nexcept locks.SuiteBusyError:raise SystemExit(17)\n'
+    result=subprocess.run([sys.executable,'-c',script,str(namespace)],env=os.environ,timeout=5,capture_output=True)
     assert result.returncode in (0,17),result.stderr.decode()
     return result.returncode
 
@@ -59,17 +57,17 @@ def test_same_parent_advances_stable_child_until_kernel_lease_released(real_name
     lease=bind(parent)
     descriptor=lease.fd
     try:
-        assert competing_process()==17
+        assert competing_process(real_namespace)==17
         with pytest.raises(CleanupPendingError) as raised:retry(parent)
         assert raised.value is child and calls==['parent']
-        assert competing_process()==17
+        assert competing_process(real_namespace)==17
         handle=child if direct_child else parent
         with pytest.raises(CleanupPendingError) as raised:retry(handle)
         assert raised.value is child and calls==['parent','child']
-        assert competing_process()==17
+        assert competing_process(real_namespace)==17
         retry(handle)
         assert calls==['parent','child','child'] and closed
-        assert lease.fd is None and competing_process()==0
+        assert lease.fd is None and competing_process(real_namespace)==0
         with pytest.raises(OSError):os.fstat(descriptor)
         retry(parent);retry(child)
         assert calls==['parent','child','child']
@@ -95,9 +93,9 @@ def test_known_child_cancellation_identity_and_pending_lease_survive(real_namesp
         with pytest.raises(CleanupPendingError):retry(parent)
         with pytest.raises(asyncio.CancelledError) as raised:retry(parent)
         assert raised.value is cancelled and raised.value.args==('original child interruption',)
-        assert attempts==1 and competing_process()==17
+        assert attempts==1 and competing_process(real_namespace)==17
         retry(parent)
-        assert attempts==2 and lease.fd is None and competing_process()==0
+        assert attempts==2 and lease.fd is None and competing_process(real_namespace)==0
     finally:
         rescue=True
         retry(child);retry(parent)
@@ -120,10 +118,10 @@ def test_self_receipt_attachment_remains_independent_of_parent_ack(real_namespac
     try:
         with pytest.raises(CleanupPendingError):retry(parent)
         retry(parent)
-        assert attempts==2 and child_calls==[] and competing_process()==17
+        assert attempts==2 and child_calls==[] and competing_process(real_namespace)==17
         assert lease.fd is not None
         retry(child)
-        assert child_calls==['closed'] and lease.fd is None and competing_process()==0
+        assert child_calls==['closed'] and lease.fd is None and competing_process(real_namespace)==0
     finally:
         rescue=True
         retry(child);retry(parent)
@@ -145,13 +143,13 @@ def test_replacement_cycle_advances_without_duplicate_disposal(real_namespace):
     try:
         with pytest.raises(CleanupPendingError):retry(parent)
         with pytest.raises(CleanupPendingError):retry(parent)
-        assert competing_process()==17
+        assert competing_process(real_namespace)==17
         with pytest.raises(CleanupPendingError):retry(parent)
         assert len(lease.receipts[id(parent)].parents) == 1
         assert len(lease.receipts[id(child)].parents) == 1
-        assert competing_process()==17
+        assert competing_process(real_namespace)==17
         retry(parent)
-        assert calls=={'parent':1,'child':3} and lease.fd is None and competing_process()==0
+        assert calls=={'parent':1,'child':3} and lease.fd is None and competing_process(real_namespace)==0
         retry(parent);retry(child)
         assert calls=={'parent':1,'child':3}
     finally:
@@ -173,11 +171,11 @@ def test_all_replacement_duties_acknowledge_before_parent_releases(real_namespac
     try:
         with pytest.raises(CleanupPendingError):retry(parent)
         retry(first)
-        assert calls==['first'] and lease.fd is not None and competing_process()==17
+        assert calls==['first'] and lease.fd is not None and competing_process(real_namespace)==17
         assert not lease.receipts[id(parent)].acknowledged
         assert not lease.receipts[id(parent)].disposed
         retry(parent)
-        assert calls==['first','second'] and lease.fd is None and competing_process()==0
+        assert calls==['first','second'] and lease.fd is None and competing_process(real_namespace)==0
         retry(parent);retry(first);retry(second)
         assert calls==['first','second']
     finally:
@@ -199,10 +197,10 @@ def test_reexported_acknowledged_child_notifies_new_parent_once(real_namespace):
         locks.retain_cleanup_receipt(parent)
     try:
         retry(child)
-        assert calls==['child'] and competing_process()==17
+        assert calls==['child'] and competing_process(real_namespace)==17
         with pytest.raises(CleanupPendingError) as raised:retry(parent)
         assert raised.value is child
-        assert calls==['child','parent'] and lease.fd is None and competing_process()==0
+        assert calls==['child','parent'] and lease.fd is None and competing_process(real_namespace)==0
         retry(parent);retry(child)
         assert calls==['child','parent']
     finally:

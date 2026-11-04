@@ -610,8 +610,16 @@ def test_hostile_label_shaped_unknown_call_is_not_published_as_identity(scenario
     assert len(script.requests) == 1
 
 
-def test_rejection_after_largest_existing_call_array_keeps_unbounded_numeric_position(scenario):
+def test_rejection_after_largest_existing_call_array_keeps_unbounded_numeric_position(scenario, monkeypatch):
+    from jsonschema import Draft202012Validator
+    from api_agent.workflows import tool_gate
     from api_agent.workflows.tool_evidence import tool_evidence
+    validations = []
+    async def validate_fixture_schema(schema, value):
+        # This is an index/evidence boundary, not 256 worker-startup proofs.
+        validations.append((schema, value))
+        return Draft202012Validator(schema).is_valid(value)
+    monkeypatch.setattr(tool_gate, 'async_isolated_valid_schema', validate_fixture_schema)
     batch = reply(calls=tuple(ToolCall('call-' + str(i), ALIASES[0], '{"query":"hello"}') for i in range(128))
                   + (ToolCall('rejected-secret', 'unknown-secret', 'invalid'),))
     script, journal = Script([batch, *(verdict() for _ in range(128))]), {}
@@ -622,6 +630,11 @@ def test_rejection_after_largest_existing_call_array_keeps_unbounded_numeric_pos
     assert report['rejections'][0]['call_index'] == 129
     assert report['rejections'][0]['request_id'] == script.requests[0].request_id
     assert 'secret' not in json.dumps(report)
+    owner = scenario[0][ALIASES[0]]
+    assert validations == [(owner.spec.input_schema, {'query': 'hello'}),
+                           (owner.spec.output_schema, {'hello': owner.value})] * 128
+    expected = ['call-' + str(i) for i in range(128)]
+    assert owner.invocations == owner.validations == expected
 
 
 @pytest.mark.parametrize('outcome', ['length', 'refused'])

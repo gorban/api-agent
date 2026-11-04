@@ -1,4 +1,5 @@
 """Owned exchanges preserve bytes and finish disposal on exceptional IO."""
+from types import SimpleNamespace
 import os
 import subprocess
 import sys
@@ -84,7 +85,7 @@ def test_silent_selector_cannot_claim_complete_output_after_would_block(child_fa
         if fd == descriptor and processes.disposal_complete(child):
             raise BlockingIOError('controlled incomplete output')
         return original(fd, count)
-    monkeypatch.setattr(processes.os, 'read', would_block)
+    monkeypatch.setattr(processes, 'os', SimpleNamespace(**(vars(processes.os) | {'read': would_block})))
 
     with pytest.raises(RuntimeError, match='output did not close'):
         processes.communicate_owned(child, timeout=5)
@@ -101,7 +102,7 @@ def test_read_error_disposes_retained_child_and_closes_pipes(child_factory, monk
         if fd == descriptor:
             raise OSError('controlled pipe failure')
         return original(fd, count)
-    monkeypatch.setattr(processes.os, 'read', failed_read)
+    monkeypatch.setattr(processes, 'os', SimpleNamespace(**(vars(processes.os) | {'read': failed_read})))
 
     with pytest.raises(OSError, match='controlled pipe failure'):
         processes.communicate_owned(child, timeout=5)
