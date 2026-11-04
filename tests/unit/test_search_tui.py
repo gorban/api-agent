@@ -249,10 +249,10 @@ def test_search_navigation_ranges_literal_text_paste_and_invalid_cursor(tmp_path
             control = app.screen.query_one(SearchInput)
             control.value = '::test_'
             await pilot.pause()
-            await pilot.press('j', 'down', 'k', 'up')
+            await pilot.press('down', 'up')
             assert table.cursor_row == 0
             assert control.value == '::test_'
-            await pilot.press('shift+down', 'shift+up', 'shift+down', 'shift+k', 'shift+j')
+            await pilot.press('shift+down', 'shift+up', 'shift+down', 'shift+up', 'shift+down')
             assert table.selected_row_indices == (0, 1)
             await pilot.press('ctrl+shift+down')
             assert table.selected_row_indices == tuple(range(100))
@@ -353,13 +353,13 @@ def test_search_table_focus_space_ranges_typing_and_exit_message(tmp_path):
             await pilot.pause()
             await pilot.press('tab')
             assert app.focused is table
-            await pilot.press('j', 'k', 'shift+j')
+            await pilot.press('down', 'up', 'shift+down')
             assert table.selected_row_indices == (0, 1)
             await pilot.press('space')
             assert app.selection.selected_ids == {test.id for test in tests[2:]}
             assert control.value == '::test_'
             assert app.focused is control  # Row toggles return to editing.
-            await pilot.press('tab', 'shift+k', 'down')
+            await pilot.press('tab', 'shift+up', 'down')
             assert app.focused is table
             assert table.range_anchor is None
             control.selection = Selection(0, len(control.value))
@@ -435,4 +435,46 @@ def test_async_search_copy_preserves_newer_selection(tmp_path, monkeypatch, chan
             await task
             assert control.selection == Selection(2, 4)
             assert control.selected_text == ('yz' if change == 'value' else 'cd')
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+@pytest.mark.parametrize('search_key', ['slash', 'question_mark'])
+@pytest.mark.parametrize('focus_table', [False, True])
+def test_search_types_vim_letters_and_keeps_vertical_arrows(tmp_path, mode, search_key, focus_table):
+    async def scenario():
+        tests = identities(3)
+        app = fixture(tmp_path, mode, collector=lambda *a: tests)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press(search_key)
+            table = app.screen.query_one(TestTable)
+            control = app.screen.query_one(SearchInput)
+            if focus_table:
+                table.focus()
+            await pilot.press(*'workflowhjklJK')
+            assert control.value == 'workflowhjklJK'
+            assert app.focused is control
+            assert table.range_anchor is None
+            control.value = '::test_'
+            await pilot.pause()
+            table.move_cursor(row=1)
+            await pilot.press('down')
+            assert table.cursor_row == 2
+            await pilot.press('up')
+            assert table.cursor_row == 1
+            assert control.value == '::test_'
+            for letter in 'hjklHJKL':
+                control.value = ''
+                await pilot.pause()
+                if focus_table:
+                    table.focus()
+                await pilot.press(letter)
+                assert control.value == letter
+                assert app.focused is control
+                assert table.range_anchor is None
+            await pilot.press('escape')
+            table.move_cursor(row=0)
+            await pilot.press('j')
+            assert table.cursor_row == 1
     asyncio.run(scenario())

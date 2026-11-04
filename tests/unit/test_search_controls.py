@@ -76,10 +76,10 @@ def test_native_edit_selection_replacement_and_paste():
 
 
 @pytest.mark.parametrize('key,action', [
-    ('up', 'up'), ('k', 'up'), ('down', 'down'), ('j', 'down'),
+    ('up', 'up'), ('down', 'down'),
     ('pageup', 'page_up'), ('pagedown', 'page_down'),
-    ('shift+up', 'range_up'), ('shift+k', 'range_up'),
-    ('shift+down', 'range_down'), ('shift+j', 'range_down'),
+    ('shift+up', 'range_up'),
+    ('shift+down', 'range_down'),
     ('shift+pageup', 'range_page_up'), ('shift+pagedown', 'range_page_down'),
     ('ctrl+shift+up', 'range_top'), ('super+shift+up', 'range_top'),
     ('ctrl+shift+down', 'range_bottom'), ('super+shift+down', 'range_bottom'),

@@ -658,11 +658,7 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
 
     def on_key(self, event):
         if self.test_search is not None and isinstance(self.app.focused, TestTable):
-            movement = {'j': 'down', 'k': 'up', 'J': 'range_down', 'K': 'range_up',
-                        'shift+j': 'range_down', 'shift+k': 'range_up'}
-            if event.key in movement:
-                self.on_search_input_navigate(SearchInput.Navigate(movement[event.key]))
-            elif event.is_printable and event.key != 'space':
+            if event.is_printable and event.key != 'space':
                 control = self.query_one(SearchInput)
                 control.focus()
                 control.replace(event.character, *control.selection)
