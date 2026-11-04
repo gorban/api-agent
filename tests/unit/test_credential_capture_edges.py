@@ -1,4 +1,5 @@
 """Registered credentials remain private across encoding and capture seams."""
+from types import SimpleNamespace
 import json
 import sys
 import time
@@ -148,7 +149,7 @@ def test_response_bound_masks_registered_prefix(tmp_path, monkeypatch, stream, r
     helper = tmp_path / 'writer.py'
     helper.write_text('import os, sys\nfd = int(sys.argv[1])\ndata = b"x" * (8 * 1024 * 1024 - 2500) + os.environ["API_KEY"].encode()\nwhile data:\n n = os.write(fd, data)\n data = data[n:]\n')
     original = prerequisites.os.read
-    monkeypatch.setattr(prerequisites.os, 'read', lambda fd, size: original(fd, min(size, read_size)))
+    monkeypatch.setattr(prerequisites, 'os', SimpleNamespace(**(vars(prerequisites.os) | {'read': lambda fd, size: original(fd, min(size, read_size))})))
 
     with pytest.raises(prerequisites.PrerequisiteError, match='safe bound') as caught:
         prerequisites.run_command((sys.executable, str(helper), str(stream)),
@@ -174,7 +175,7 @@ def test_interrupted_capture_masks_partial_utf8_secret(tmp_path, monkeypatch, in
         if value:
             observed.append(value)
         return value
-    monkeypatch.setattr(prerequisites.os, 'read', read)
+    monkeypatch.setattr(prerequisites, 'os', SimpleNamespace(**(vars(prerequisites.os) | {'read': read})))
     now = lambda: 2 if observed and interruption == 'deadline' else 0
 
     with pytest.raises(prerequisites.PrerequisiteError) as caught:

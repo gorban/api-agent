@@ -153,11 +153,30 @@ def test_invalid_resolved_tool_path_is_rejected(fake_mise, monkeypatch, value):
 
 
 def test_preparation_timeout_during_install_is_reported(fake_mise, monkeypatch, tmp_path):
+    import time
+    from api_agent.testing.processes import finalize
     marker = tmp_path / 'waiting'
     monkeypatch.setenv('FAKE_MISE_WAIT', str(marker))
+    original_popen = mise_tools.subprocess.Popen
+    children = []
+    def ready_install(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        deadline = time.monotonic() + 10
+        try:
+            while not marker.exists():
+                assert time.monotonic() < deadline, 'installer did not reach its wait'
+                time.sleep(.01)
+        except BaseException:
+            finalize(child)
+            raise
+        return child
+    monkeypatch.setattr(mise_tools, 'subprocess', SimpleNamespace(
+        **(vars(mise_tools.subprocess) | {'Popen': ready_install})))
     with pytest.raises(TimeoutError, match='timed out'):
         mise_tools.ensure_tools('node', timeout=.3)
     assert marker.exists()
+    assert len(children) == 1 and children[0].returncode is not None
 
 
 def test_cancellation_during_install_stops_preparation(fake_mise, monkeypatch, tmp_path):

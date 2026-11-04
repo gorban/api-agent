@@ -1,4 +1,5 @@
 """Original keys and accepted native containers share credential semantics."""
+from types import SimpleNamespace
 import json
 import sys
 import time
@@ -203,7 +204,7 @@ def test_interrupted_helper_masks_malformed_tail_and_completes_disposal(stream, 
         if termination == 'cleanup':
             raise RuntimeError('owned disposal reporting failure')
 
-    monkeypatch.setattr(prerequisites.os, 'read', read)
+    monkeypatch.setattr(prerequisites, 'os', SimpleNamespace(**(vars(prerequisites.os) | {'read': read})))
     monkeypatch.setattr(prerequisites, 'finalize', finalize)
     now = lambda: 2 if any(observed) and termination == 'deadline' else 0
     with pytest.raises(prerequisites.PrerequisiteError) as caught:
@@ -255,7 +256,7 @@ def test_malformed_tail_prefix_at_actual_response_bound(stream, tail, tmp_path, 
     helper = tmp_path / 'owned_bounded_writer.py'
     helper.write_text('import os,sys\nfd=int(sys.argv[1])\nprefix=bytes.fromhex(sys.argv[2])\ntail=bytes.fromhex(sys.argv[3])\ndata=b"x"*(8*1024*1024+1-len(prefix)-len(tail))+prefix+tail\nwhile data:\n count=os.write(fd,data)\n data=data[count:]\n')
     original_read = prerequisites.os.read
-    monkeypatch.setattr(prerequisites.os, 'read', lambda fd, size: original_read(fd, min(size, 127)))
+    monkeypatch.setattr(prerequisites, 'os', SimpleNamespace(**(vars(prerequisites.os) | {'read': lambda fd, size: original_read(fd, min(size, 127))})))
     finalized = []
     original_finalize = prerequisites.finalize
 

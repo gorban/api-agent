@@ -466,6 +466,8 @@ def test_unit_scratch_cache_platform_defaults(tmp_path, monkeypatch, platform, s
 
 
 def test_unit_scratch_rejects_symlinked_cache_ancestor(tmp_path, monkeypatch):
+    from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(platform='linux'))
     from api_agent.testing.runner import _unit_scratch
     monkeypatch.delenv('TMPDIR', raising=False)
     link = tmp_path / 'link'
@@ -479,6 +481,7 @@ def test_unit_scratch_rejects_symlinked_cache_ancestor(tmp_path, monkeypatch):
 def test_unit_scratch_without_posix_uid_api(tmp_path, monkeypatch):
     import os
     from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(platform='linux'))
     monkeypatch.setattr(runner, 'os', SimpleNamespace(environ={'XDG_CACHE_HOME': str(tmp_path)}))
     with runner._unit_scratch('api-agent-unit-') as scratch:
         assert Path(scratch).is_dir()
@@ -499,6 +502,7 @@ def test_unit_scratch_rejects_late_untrusted_ancestor(tmp_path, monkeypatch):
     import os
     from types import ModuleType
     from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(platform='linux'))
     monkeypatch.delenv('TMPDIR', raising=False)
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'late' / 'cache'))
     proxy = ModuleType('isolated_os')
@@ -520,6 +524,8 @@ def test_unit_scratch_rejects_late_untrusted_ancestor(tmp_path, monkeypatch):
 
 def test_unit_scratch_new_intermediates_private_with_open_umask(tmp_path, monkeypatch):
     import os
+    from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(platform='linux'))
     from api_agent.testing.runner import _unit_scratch
     monkeypatch.delenv('TMPDIR', raising=False)
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'one/two'))
@@ -534,6 +540,7 @@ def test_unit_scratch_new_intermediates_private_with_open_umask(tmp_path, monkey
 
 def test_unit_scratch_without_uid_api_rejects_symlink(tmp_path, monkeypatch):
     from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(platform='linux'))
     link = tmp_path / 'link'
     link.symlink_to(tmp_path, target_is_directory=True)
     monkeypatch.setattr(runner, 'os', SimpleNamespace(environ={'XDG_CACHE_HOME': str(link)}))

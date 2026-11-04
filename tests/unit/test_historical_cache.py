@@ -53,6 +53,8 @@ def test_new_accounting_identifies_transport_equivalent_estimator():
 
 
 def test_transaction_verified_idempotent_and_origin(tmp_path, monkeypatch):
+    from api_agent.telemetry import history
+    monkeypatch.setattr(history, 'sys', SimpleNamespace(platform='linux'))
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path))
     assert cache_path() == tmp_path / 'api-agent' / 'cost-history.sqlite3'
     cache = HistoryCache()
@@ -131,6 +133,7 @@ def test_adapter_sync_reconciles_late_upload_and_ingest(tmp_path):
 
 
 def test_adapter_card_cache_and_initialization(tmp_path, monkeypatch):
+    monkeypatch.setattr('api_agent.telemetry.history.cache_path', lambda: tmp_path / 'cost-history.sqlite3')
     context = SimpleNamespace(owner_root=tmp_path, base_root=tmp_path)
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path))
     snapshot = estimator_for(context, [], {'ALLURE_S3_BUCKET': 'bucket'})

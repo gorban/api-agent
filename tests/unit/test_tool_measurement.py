@@ -1,5 +1,6 @@
 """Real locking inodes isolate measurements without serializing tool leases."""
 import asyncio
+import stat
 import importlib.util
 import os
 from pathlib import Path
@@ -72,8 +73,8 @@ def test_lock_paths_reject_unowned_public_or_redirected_inodes(helper, tmp_path,
         real = os.fstat
         def ownership(fd):
             info = real(fd)
-            mismatch = (kind == 'directory-owner' and os.path.isdir('/proc/self/fd/' + str(fd))) or (
-                kind == 'file-owner' and not os.path.isdir('/proc/self/fd/' + str(fd)))
+            mismatch = (kind == 'directory-owner' and stat.S_ISDIR(info.st_mode)) or (
+                kind == 'file-owner' and not stat.S_ISDIR(info.st_mode))
             return SimpleNamespace(st_uid=info.st_uid + 1 if mismatch else info.st_uid,
                 st_mode=info.st_mode, st_nlink=info.st_nlink)
         monkeypatch.setattr(helper, 'os', SimpleNamespace(**(vars(helper.os) | {'fstat': ownership})))

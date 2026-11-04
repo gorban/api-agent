@@ -773,15 +773,38 @@ def test_fragment_limit_drift_fails_closed_before_releasing_oversized_part(monke
 async def test_projection_cleanup_accepts_proved_terminal_group_refusal(monkeypatch):
     from api_agent.testing import processes
     from api_agent.telemetry.privacy import EmissionBoundary
-    signals = Mock(side_effect=PermissionError('terminal group'))
+    original_spawn = evidence_watchdog.spawn
+    children = []
     probe = Mock(return_value=False)
-    monkeypatch.setattr(processes.os, 'killpg', signals)
-    monkeypatch.setattr(processes, '_group_running', probe)
+    resident = Mock(side_effect=AssertionError('terminal child must not be sampled'))
+    monkeypatch.setattr(evidence_watchdog, '_darwin_resident_bytes', resident)
+    def terminal_refusal(pid, signum):
+        child = children[0].process
+        assert pid == child.pid and child.returncode is None
+        assert processes.observe_exit(child) == 0
+        raise PermissionError('terminal group')
+    signals = Mock(side_effect=terminal_refusal)
+    async def exited_spawn(_executable, *_args, **options):
+        child = await original_spawn('/bin/sh', '-c', "printf '[]'", **options)
+        children.append(child)
+        assert await asyncio.to_thread(processes.wait_owned, child.process, timeout=5) == 0
+        assert child.returncode is None
+        assert await child.resident_bytes() is None
+        monkeypatch.setattr(processes.os, 'killpg', signals)
+        monkeypatch.setattr(processes, '_group_running', probe)
+        return child
+    monkeypatch.setattr(evidence_watchdog, 'spawn', exited_spawn)
+    try:
+        assert await asyncio.wait_for(setup.SetupServer._prepare_isolated([], EmissionBoundary()), 10) == []
 
-    assert await setup.SetupServer._prepare_isolated([], EmissionBoundary()) == []
-
-    signals.assert_called_once()
-    probe.assert_called_once()
+        signals.assert_called_once()
+        probe.assert_called_once()
+        resident.assert_not_called()
+        assert children[0].returncode == 0
+        assert processes.disposal_complete(children[0].process)
+    finally:
+        for child in children:
+            await child.dispose()
 
 
 @pytest.mark.asyncio

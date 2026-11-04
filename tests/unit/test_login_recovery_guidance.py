@@ -11,6 +11,9 @@ from api_agent.auth.interaction import Reply
 from api_agent.auth.login_recovery import recover_login
 
 
+# Ordinary recovery semantics include native guardian and CLI startup.
+_NORMAL_RECOVERY_SECONDS = 10
+
 class Channel:
     def __init__(self):
         self.output = ''
@@ -59,7 +62,7 @@ else:
 ''')
     interaction = Interaction()
     source = dict(manager='keeper', cli_path=cli, vault='synthetic-vault', user='synthetic-user')
-    assert c.get_password(source, timeout=3, interaction=interaction, recovery_timeout=5) == 'private-credential-result'
+    assert c.get_password(source, timeout=_NORMAL_RECOVERY_SECONDS, interaction=interaction, recovery_timeout=_NORMAL_RECOVERY_SECONDS) == 'private-credential-result'
     assert 'Touch your security key to continue' in interaction.channel.output
     assert 'Signed in' in interaction.channel.output
     assert 'entered-secret' not in interaction.channel.output
@@ -127,7 +130,7 @@ sys.stdout.flush()
 assert sys.stdin.readline().strip() == 'entered-secret'
 ''')
     interaction = Interaction()
-    assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic', 2, login_only=True) == ''
+    assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic', _NORMAL_RECOVERY_SECONDS, login_only=True) == ''
     assert 'Password: ' in interaction.channel.output and 'Touch ✓' in interaction.channel.output
     assert '\x1b' not in interaction.channel.output and '\ufffd' not in interaction.channel.output
 
@@ -138,7 +141,7 @@ def test_probe_guidance_limits_both_streams_and_disposes(tmp_path, monkeypatch, 
     cli = executable(tmp_path, f"sys.{stream}.write('x'*33)\nsys.{stream}.flush()\ntime.sleep(30)")
     interaction = Interaction()
     with pytest.raises(c.CredentialRecoveryError, match='exceeded its limit'):
-        recovery.recover([cli, 'whoami'], interaction, 'Synthetic', 2, login_only=True)
+        recovery.recover([cli, 'whoami'], interaction, 'Synthetic', _NORMAL_RECOVERY_SECONDS, login_only=True)
     assert interaction.channel.closed
 
 
@@ -216,7 +219,7 @@ def test_private_retry_does_not_restart_exhausted_retrieval_budget(ordinary_adap
 def test_whoami_shape_alone_does_not_grant_stdout_guidance(tmp_path):
     cli = executable(tmp_path, "print('private-stdout-value')")
     interaction = Interaction()
-    result = recovery.recover([cli, 'whoami'], interaction, 'Synthetic', 2)
+    result = recovery.recover([cli, 'whoami'], interaction, 'Synthetic', _NORMAL_RECOVERY_SECONDS)
     assert 'private-stdout-value' not in interaction.channel.output
     assert result == 'private-stdout-value\n'
 
@@ -252,7 +255,7 @@ while not Path({str(release)!r}).exists(): time.sleep(.01)
         if 'Touch your security key now' in interaction.channel.output:
             release.touch()
     interaction.channel.write = write
-    assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic', 2, login_only=True) == ''
+    assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic', _NORMAL_RECOVERY_SECONDS, login_only=True) == ''
     assert release.exists() and interaction.channel.closed
     assert 'PYTHONUNBUFFERED' not in os.environ
     assert os.environ['SYNTHETIC_PRESERVED_SETTING'] == 'preserved-value'
@@ -268,6 +271,6 @@ def test_private_recovery_keeps_inherited_buffering_environment(tmp_path, monkey
         monkeypatch.setenv('PYTHONUNBUFFERED', inherited)
     cli = executable(tmp_path, "print(os.environ.get('PYTHONUNBUFFERED', 'unset'))")
     interaction = Interaction()
-    assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic', 2) == (inherited or 'unset') + '\n'
+    assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic', _NORMAL_RECOVERY_SECONDS) == (inherited or 'unset') + '\n'
     assert not interaction.channel.output
     assert os.environ.get('PYTHONUNBUFFERED') == inherited

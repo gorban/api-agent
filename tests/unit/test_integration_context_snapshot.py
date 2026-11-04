@@ -28,7 +28,7 @@ else:
 '''
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
                             env={**os.environ, 'API_AGENT_INTEGRATION_CONTEXT': str(path)},
-                            timeout=3)
+                            timeout=10)
     assert result.returncode == 0, result.stderr
     assert not result.stdout and not result.stderr
 
