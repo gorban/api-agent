@@ -82,6 +82,16 @@ GLM 5 Completions qualifies bounded strict schema output. Other schema/effort
 combinations remain explicit rejections. Studio selections use actual catalog
 family/version metadata, including missing and duplicate version labels.
 
+- [x] Resolve included Studio integration picker handles through the shipped catalog
+  normalizer/grouping module using the exact selected ID. Presentation may shorten
+  scope-qualified family labels; integration assertions must still verify the
+  exact version ID, advertised version, distinct effort and emitted HTTP/provider
+  selections without reimplementing label parsing.
+- [x] Exercise a controlled scoped-only catalog whose displayed family differs
+  from its advertised family, alongside the ordinary unscoped catalog, through
+  the original page and real local HTTP. Preserve usage and exact-answer checks.
+  Deterministic validation does not replace live provider acceptance.
+
 The initial 20-graph GLM 5 Completions pilot in us-east-1 completed with 35 inference
 calls, including three within-graph repair attempts. All 20 graphs hit the first
 component; 12 hit the second. Independent receipt, full fingerprint and exact

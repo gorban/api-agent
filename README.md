@@ -173,8 +173,12 @@ Integration/E2E reporting requires an explicit storage choice: save
 `--allure-s3-use-localstack=True` for managed local history. For external S3,
 choose False and supply a bucket; unit coverage needs neither.
 
-All tests start selected. Add positional selectors to preselect tests, or adjust
-selection in the TUI. Append `--no-std-in` for terminal automation, or export
+Unit tests start with the active owner's tests selected and measure only that
+owner's production code. Dependency and base tests remain visible in the TUI.
+Use `--all-unit` (or `ALL_UNIT=True`) to select and measure all composed unit suites. Positional
+selectors override the default selection. Running from base selects all base
+units. Integration/E2E retain their existing selection and coverage behavior.
+Adjust selection in the TUI. Append `--no-std-in` for terminal automation, or export
 `NO_STD_IN=True` for multiple commands. Obtain explicit human approval before
 using `--start=True` or `--debug` for integration, or `--start=E2E` for E2E. The first executor requires
 `--e2e-reruns 0`; confirmation attempts remain pending. The bundled selection is:

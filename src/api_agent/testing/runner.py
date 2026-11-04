@@ -226,8 +226,8 @@ def _production_sources(context, root):
 
 
 @suite_locked
-def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, successful_test_diagnostics_level='warning', evidence_boundary=None):
-    """Run selected collected identities once; preserve owner configs and full source scope.
+def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, coverage_owner_only=False, successful_test_diagnostics_level='warning', evidence_boundary=None):
+    """Run selected collected identities once; preserve owner configs and coverage scope.
 
     Callbacks run on the calling thread. Cancellation terminates and reaps only
     owned process groups. Nonzero also signals skipped/incomplete selected tests.
@@ -293,7 +293,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             from .progress import write_lazy_plugin
             plugin = write_lazy_plugin(Path(temporary))
             args = [sys.executable, '-c', _PLUGIN, str(events), '-p', plugin, '-o', 'addopts=', '--rootdir', str(root), '--basetemp', str(Path(temporary) / 'pytest')]
-            sources = _production_sources(context, root)
+            sources = (() if coverage_owner_only and root != owner else _production_sources(context, root))
             has_code = bool(sources)
             env.pop('API_AGENT_COVERAGE_OUTPUT', None)
             env.pop('API_AGENT_COVERAGE_SOURCE', None)
@@ -500,7 +500,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     for repo, root in roots.items():
         if repo in {test.repo for test in tests}:
             continue
-        sources = _production_sources(context, root)
+        sources = (() if coverage_owner_only and root != owner else _production_sources(context, root))
         if not sources:
             continue
         try:

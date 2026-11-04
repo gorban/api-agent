@@ -231,6 +231,15 @@ help = "Unit-test worker override. Empty inherits TEST_PARALLEL_JOBS; 0 runs uni
 TUI_MODE = "unit"
 COLLECT_ONLY = false
 
+[fields.ALL_UNIT]
+type = "bool"
+default = false
+acknowledge_default = false
+help = "Run all composed unit tests and coverage, including dependency packs and base. Default unit selection and coverage belong to the active owner. Explicit positional selectors override the default selection."
+[fields.ALL_UNIT.applies_when]
+TUI_MODE = "unit"
+COLLECT_ONLY = false
+
 [fields.UNIT_COVERAGE_FULL]
 type = "bool"
 default = false

@@ -21,6 +21,13 @@ class SelectionModel:
         self.selected_scopes = {"all"}
         self._index_catalog()
 
+    def set_defaults(self, repositories=None):
+        """Select whole repository scopes, including future recollected tests."""
+        self.selected_scopes = ({"all"} if repositories is None else
+                                {f"repo:{repo}" for repo in repositories})
+        self.selected_ids = {test.id for test in self.tests
+                             if repositories is None or f"repo:{test.repo}" in self.selected_scopes}
+
     def preselect(self, selectors):
         """Select startup matches against the full suite, retaining group intent."""
         self.selected_ids = {test.id for test in select_tests(self.tests, selectors)}
@@ -91,14 +98,16 @@ class SelectionModel:
         checked = {scope for scope in self.selected_scopes if scope in self._spec_by_key
                    and self._spec_by_key[scope][1] and self._spec_by_key[scope][1] <= self.selected_ids}
         self.selected_scopes = {scope for scope in self.selected_scopes if scope in checked or (
-            "::tag:" in scope and any(test.repo == scope.split("::tag:", 1)[0]
+            scope.startswith("repo:") and all(test.id in self.selected_ids
+                for test in self.tests if test.repo == scope[5:])
+            or "::tag:" in scope and any(test.repo == scope.split("::tag:", 1)[0]
                                       and scope.split("::tag:", 1)[1] in test.tags
                                       and test.id in self.selected_ids for test in self.tests))}
 
     def refresh_for_run(self, tests):
         """Recollect once, expanding checked groups but preserving exact exclusions."""
         checked = {row.id for row in self.groups() if row.selected}
-        scopes = {scope for scope in self.selected_scopes if scope in checked or "::tag:" in scope}
+        scopes = {scope for scope in self.selected_scopes if scope in checked or "::tag:" in scope or scope.startswith("repo:")}
         qualified_tags = {(repo, tag) for scope in scopes
                           for repo, separator, tag in [scope.partition("::tag:")] if separator}
         tags = {scope[4:] for scope in scopes if scope.startswith("tag:")}
@@ -110,7 +119,7 @@ class SelectionModel:
         self.selected_ids = {
             test.id for test in self.tests
             if test.id in selected or (test.id not in old_ids and (
-                "all" in scopes or bool(tags & test.tags)
+                "all" in scopes or f"repo:{test.repo}" in scopes or bool(tags & test.tags)
                 or any(test.repo == repo and tag in test.tags for repo, tag in qualified_tags)
                 or f"{test.repo}::{test.file}" in files))
         }
