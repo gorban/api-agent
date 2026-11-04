@@ -358,7 +358,8 @@ def test_scrubber_failure_cannot_expose_exception_text():
 
 
 @pytest.mark.parametrize('cancel_request', [False, True])
-def test_pending_nested_cleanup_retains_auth_and_supports_disposal_retry(cancel_request):
+@pytest.mark.parametrize('startup_delay', [0, .05])
+def test_pending_nested_cleanup_retains_auth_and_supports_disposal_retry(cancel_request, startup_delay, monkeypatch):
     from api_agent.providers.control import CleanupPendingError
     class Auth:
         closed = False
@@ -375,6 +376,23 @@ def test_pending_nested_cleanup_retains_auth_and_supports_disposal_retry(cancel_
         cancelled = asyncio.Event()
         entered = asyncio.Event()
         contexts = []
+        expired = False
+        original_wait = asyncio.wait
+        from types import SimpleNamespace
+        from api_agent.providers import control
+        from api_agent.providers.progress import component_timeout
+        async def ready_timeout(tasks, *, timeout):
+            nonlocal expired
+            if (not cancel_request and not expired and any(
+                    isinstance(task, asyncio.Task) and getattr(task.get_coro(), 'cr_code', None) is child.__code__ for task in tasks)):
+                async with component_timeout('Nested cleanup fixture readiness', 5):
+                    await entered.wait()
+                expired = True
+                return await original_wait(tasks, timeout=0)
+            return await original_wait(tasks, timeout=timeout)
+        proxy = SimpleNamespace(**vars(asyncio))
+        proxy.wait = ready_timeout
+        monkeypatch.setattr(control, 'asyncio', proxy)
         async def child():
             entered.set()
             try:
@@ -384,12 +402,14 @@ def test_pending_nested_cleanup_retains_auth_and_supports_disposal_retry(cancel_
                 await release.wait()
         async def complete(value, *, auth, context):
             contexts.append(context)
+            await asyncio.sleep(startup_delay)
             return await context.run(child())
         provider = Provider()
-        backend, calls = setup_bridge(owner=LLMSessionOwner(provider), complete=complete, timeout=120 if cancel_request else .01)
+        backend, calls = setup_bridge(owner=LLMSessionOwner(provider), complete=complete, timeout=120)
         try:
             task = asyncio.create_task(backend.handle(request('POST', payload()), 'chat'))
-            await entered.wait()
+            async with component_timeout('Nested cleanup fixture startup', 5):
+                await entered.wait()
             if cancel_request:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
@@ -397,6 +417,7 @@ def test_pending_nested_cleanup_retains_auth_and_supports_disposal_retry(cancel_
             else:
                 response = await task
                 assert response.status_code == 502
+            assert expired is (not cancel_request)
             assert cancelled.is_set()
             assert contexts[0].retained_tasks
             assert not backend._contexts

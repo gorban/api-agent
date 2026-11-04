@@ -728,14 +728,36 @@ def test_cli_unavailable_and_cleanup_failure(tmp_path, monkeypatch):
         p.run_command((sys.executable, '-c', 'pass'), **args)
 
 
-def test_process_identity_linux_dead_and_malformed(monkeypatch):
+def test_native_process_identity_distinguishes_current_and_reaped_process():
     assert p.process_identity(os.getpid())
-    assert p.process_identity(999999999) is None
-    original = Path.read_text
+    departed = subprocess.Popen([sys.executable, '-c', 'pass'], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+    try:
+        departed.wait(timeout=5)
+    finally:
+        if departed.poll() is None:
+            departed.kill()
+            departed.wait(timeout=5)
+    assert p.process_identity(departed.pid) is None
+
+
+def test_process_identity_linux_dead_and_malformed(monkeypatch):
+    boot = '/proc/sys/kernel/random/boot_id'
+    monkeypatch.setattr(Path, 'is_file', lambda path: str(path) == boot)
     def read(path, *args, **kwargs):
-        if str(path).endswith('/stat'): return '123 (name) ' + ' '.join(['Z'] + ['1'] * 19)
-        return original(path, *args, **kwargs)
+        if str(path) == boot:
+            return 'synthetic-boot'
+        if str(path) == '/proc/999999999/stat':
+            raise FileNotFoundError()
+        return '123 (name) ' + ' '.join(['S'] + ['1'] * 19)
+    def missing(pid, signal):
+        assert pid == 999999999 and signal == 0
+        raise ProcessLookupError()
     monkeypatch.setattr(Path, 'read_text', read)
+    monkeypatch.setattr(p.os, 'kill', missing)
+    assert p.process_identity(123) == 'synthetic-boot:1'
+    assert p.process_identity(999999999) is None
+    monkeypatch.setattr(Path, 'read_text', lambda *args, **kwargs: '123 (name) ' + ' '.join(['Z'] + ['1'] * 19))
     assert p.process_identity(123) is None
     monkeypatch.setattr(Path, 'read_text', lambda *args, **kwargs: 'malformed')
     with pytest.raises(p.PrerequisiteError): p.process_identity(123)
@@ -1014,6 +1036,7 @@ def test_stopped_but_actively_leased_container_cannot_restart(setup):
 
 @pytest.mark.parametrize('case', ['stat_permission', 'stat_io', 'stat_missing_live_pid', 'malformed_ticks', 'empty_fields', 'boot_permission', 'boot_empty'])
 def test_linux_identity_uncertainty_refuses_stale_cleanup(monkeypatch, case):
+    monkeypatch.setattr(Path, 'is_file', lambda path: str(path) == '/proc/sys/kernel/random/boot_id')
     original = Path.read_text
     def read(path, *args, **kwargs):
         if str(path).endswith('/stat'):
@@ -1041,6 +1064,7 @@ def test_uncertain_process_identity_does_not_allow_cleanup(setup):
 
 
 def test_hidden_missing_proc_stat_does_not_prove_process_dead(monkeypatch):
+    monkeypatch.setattr(Path, 'is_file', lambda path: str(path) == '/proc/sys/kernel/random/boot_id')
     original = Path.read_text
     def read(path, *args, **kwargs):
         if str(path).endswith('/stat'): raise FileNotFoundError('hidden process')

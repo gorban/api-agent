@@ -396,7 +396,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                           if result.values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL') == 'info' else {}),
                                        require_full_coverage=not result.positionals)
             print()
-            from api_agent.testing.terminal_diagnostics import write_successful_diagnostics
+            from api_agent.testing.terminal_diagnostics import write_successful_diagnostics, write_unit_failure_diagnostics
+            write_unit_failure_diagnostics(execution.tests, lambda text: print(text, flush=True), scrubber=unit_scrubber)
             write_successful_diagnostics(execution.tests, lambda text: print(text, flush=True),
                 scrubber=unit_scrubber,
                 level=result.values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL', 'warning'))

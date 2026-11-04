@@ -118,3 +118,17 @@ def test_unit_launcher_emits_streams_after_runner_before_coverage(monkeypatch, c
         assert 'unit information' not in output
         marker = 'unit warning'
     assert output.index('all unit tests completed') < output.index(marker) < output.index('Unit results:') < output.index('Code coverage:')
+
+
+def test_unit_captured_failures_survive_abort_without_unfinished_test_spam():
+    from api_agent.testing.terminal_diagnostics import write_unit_failure_diagnostics
+    from types import SimpleNamespace
+    failure = SimpleNamespace(identity=SimpleNamespace(id='owned::test_failed'), status='failed',
+        local_diagnostic='AssertionError: expected value; API_KEY=synthetic-secret', traceback='original')
+    unfinished = SimpleNamespace(identity=SimpleNamespace(id='owned::test_unstarted'), status='error',
+        local_diagnostic='', traceback='Unit pytest report incomplete')
+    output = []
+
+    write_unit_failure_diagnostics([failure, unfinished, failure], output.append, scrubber=CredentialScrubber())
+
+    assert output == ['Failure details: owned::test_failed\nAssertionError: expected value; API_KEY=[REDACTED]']
