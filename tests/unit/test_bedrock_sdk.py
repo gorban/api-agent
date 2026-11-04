@@ -408,40 +408,55 @@ def test_process_liveness_probe_does_not_hide_other_read_failures():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('parent_exits', [False, True])
-async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatch, tmp_path, parent_exits):
-    original = asyncio.create_subprocess_exec
+@pytest.mark.parametrize('startup_delay', [0, .5])
+async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatch, tmp_path, parent_exits, startup_delay):
+    import os
+    import signal
+    from api_agent.testing.processes import _group_running
+
     pidfile = tmp_path / 'helper.pid'
-    # Helpers stay in the isolated worker group; fake worker can exit first.
-    # Publish only the complete PID so readiness cannot expose an empty file.
+    # Prepare the synthetic worker before starting the inference deadline. The
+    # request on stdin releases it only after SDKTransport owns its process group.
     script = ("import os,subprocess,sys,time; from pathlib import Path; "
+              f"time.sleep({startup_delay}); "
               "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
               "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
               "pending=sys.argv[1]+'.pending'; Path(pending).write_text(str(p.pid)); "
-              "os.replace(pending,sys.argv[1]); ") + ("print('{\"result\":{}}', flush=True)" if parent_exits else "time.sleep(60)")
-    children = []
-    async def spawn(*args, **kwargs):
-        child = await original(sys.executable, '-c', script, str(pidfile), **kwargs)
-        children.append(child)
-        return child
-    monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
-    transport = sdk.SDKTransport(timeout=.3)
-    task = asyncio.create_task(transport.call('completions', {}, auth=auth))
-    while not pidfile.exists():
-        await asyncio.sleep(.005)
-    pid = int(pidfile.read_text())
-    results = await asyncio.gather(task, return_exceptions=True)
-    if parent_exits:
-        assert results == [{}]
-    else:
-        assert isinstance(results[0], TimeoutError)
-    assert children[0].returncode is not None
-    stat = __import__('pathlib').Path(f'/proc/{pid}/stat')
-    for _ in range(100):
-        if not _process_still_running(stat):
-            break
-        await asyncio.sleep(.005)
-    assert not _process_still_running(stat)
-    assert not transport._processes
+              "os.replace(pending,sys.argv[1]); sys.stdin.readline(); ") + (
+                  "print('{\"result\":{}}', flush=True)" if parent_exits else "time.sleep(60)")
+    child = await asyncio.create_subprocess_exec(sys.executable, '-c', script, str(pidfile),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+    transport = sdk.SDKTransport(timeout=2)
+    try:
+        async with component_timeout('Synthetic credential helper startup', 10):
+            while not pidfile.exists():
+                assert child.returncode is None, 'Synthetic worker exited before publishing helper readiness'
+                await asyncio.sleep(.005)
+        assert int(pidfile.read_text()) > 0
+        assert _group_running(child.pid), 'Synthetic helper must be live before cleanup'
+
+        async def spawn(*args, **kwargs):
+            return child
+        monkeypatch.setattr(sdk.asyncio, 'create_subprocess_exec', spawn)
+        results = await asyncio.gather(transport.call('completions', {}, auth=auth), return_exceptions=True)
+        if parent_exits:
+            assert results == [{}]
+        else:
+            assert isinstance(results[0], TimeoutError)
+        assert child.returncode is not None
+        async with component_timeout('Synthetic credential helper disposal', 5):
+            while _group_running(child.pid):
+                await asyncio.sleep(.005)
+        assert not transport._processes
+    finally:
+        try:
+            await transport.aclose()
+        finally:
+            # Before admission, this test owns the still-unreaped worker group.
+            if child.returncode is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                await asyncio.wait_for(child.wait(), 5)
 
 
 @pytest.mark.asyncio

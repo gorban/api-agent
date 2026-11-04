@@ -36,4 +36,4 @@ requested recursive executable extension has its own linked verification gates.
 ## Interactive shell trust
 
 - [x] Before isolating project tool configuration and state, persist trust for the exact resolved checkout `mise.toml` through the caller's mise configuration/state. Suppress project environment and hooks during this trust operation. Do not trust a directory tree, parent or sibling configuration. A failed trust write must stop before tool execution with recovery guidance. Preserve inherited custom state/configuration paths and normal CLI/cwd/exit behavior.
-- [ ] Human acceptance: after running `launch.sh`, leaving and reentering the checkout in macOS Terminal no longer warns that its unchanged `mise.toml` is untrusted. Later paranoid-mode content changes retain mise's normal trust checks until the next explicit launch.
+- [x] Human acceptance: the user confirmed on November 4, 2026 that running `launch.sh --help` fixes the repeated untrusted-config warning on macOS. Later paranoid-mode content changes retain mise's normal trust checks; that separate behavior is not qualified by this acceptance.

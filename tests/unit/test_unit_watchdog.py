@@ -151,6 +151,8 @@ def test_timeout_is_sticky_after_late_pass_reports_and_keeps_prior_verdicts(cont
     assert [row.status for row in result.tests] == ['passed', 'failed', 'error']
     assert 'original failure' in result.tests[1].traceback
     assert 'Selected unit #3' in result.tests[2].traceback
+    assert 'Timed out unit: ' + third.id in result.output
+    assert 'Timed out unit: ' + third.id in result.tests[2].traceback
     assert '3.00s elapsed; limit 3.00s' in result.tests[2].traceback
     assert state.stops == 1
 
@@ -644,3 +646,14 @@ def test_cleanup_duration_does_not_move_recorded_successful_exit_time(controlled
     result = runner.run_unit_tests(context, (first,))
     assert result.exit_code == 0 and result.tests[0].status == 'passed'
     assert 'deadline' not in result.output and state.stops == 1
+
+
+def test_timeout_identity_is_scrubbed_before_console_delivery(controlled_runner, monkeypatch):
+    context, tests, clock, state = controlled_runner
+    monkeypatch.setenv('SYNTHETIC_API_KEY', 'third')
+    state.rows = [dict(kind='test_started', node=tests[2].node_id)]
+
+    result = runner.run_unit_tests(context, tests)
+
+    assert 'Timed out unit: base::test.py::[REDACTED]' in result.output
+    assert 'third' not in result.output
