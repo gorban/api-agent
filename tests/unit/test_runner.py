@@ -554,6 +554,7 @@ def test_unit_scratch_without_uid_api_rejects_symlink(tmp_path, monkeypatch):
         runner._unit_scratch('unit-')
 
 
+@pytest.mark.unit_platform('linux')
 def test_unit_scratch_closes_directory_descriptor_on_interrupt(tmp_path, monkeypatch):
     import os
     from types import ModuleType

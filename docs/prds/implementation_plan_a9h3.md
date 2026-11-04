@@ -8,3 +8,5 @@
 - [x] Credential retrieval rechecks its fixed deadline and cancellation after guardian exit, final output draining and thread completion, before releasing a successful value. Use real-child causal controls to prove that late exit or late cancellation rejects without leaking captured credentials.
 - [x] Complete adversarial and external review, exact applicable coverage and public boundary checks. The final Linux suite passes 26,751 tests with exact 100% line and branch coverage; targeted guard-removal mutations reject. Committed metadata and HEAD checks remain publication gates.
 - [ ] Native terminal handoff, constrained-resource execution and full-suite acceptance. Resolve platform-incompatible unit-test admission without silently weakening the current strict selected-skip gate. Linux success does not establish native qualification.
+
+[Unit platform applicability](implementation_plan_a9h4.md) implements explicit not-applicable reporting while retaining strict ordinary-skip and coverage gates.

@@ -103,6 +103,7 @@ addopts = "--strict-markers"
 asyncio_default_fixture_loop_scope = "function"
 markers = ["requires_pack_api: selected integration requires the pack API and identity preflight",
     "feature(name): explicit functional feature for reporting",
+    "unit_platform(*platforms): supported unit host platforms",
     "requires_ui_session: selected integration consumes the UI provider",
     "requires_llm: selected integration consumes an LLM provider",
     "credential_authorities(*owners): explicitly admit every worker credential producer"]

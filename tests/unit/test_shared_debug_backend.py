@@ -73,6 +73,7 @@ def isolated_headed_display(monkeypatch):
         process.stderr.close()
 
 
+@pytest.mark.unit_platform('linux')
 @pytest.mark.skipif(sys.platform != 'linux', reason='Xvfb isolation is Linux-specific')
 @pytest.mark.parametrize('payload,expected', [
     (b'123', 'did not start within'),
@@ -104,6 +105,7 @@ def test_isolated_display_rejects_incomplete_or_invalid_startup(tmp_path, monkey
     assert len(started) == 1 and started[0].poll() is not None
 
 
+@pytest.mark.unit_platform('linux')
 @pytest.mark.skipif(sys.platform != 'linux', reason='Xvfb isolation is Linux-specific')
 def test_isolated_display_reaps_process_after_startup_interrupt(tmp_path, monkeypatch):
     import test_shared_debug_backend as module
@@ -811,6 +813,7 @@ def test_recorded_remote_fixture_publishes_before_backend_inspection_opens(monke
             inspection.end_inspection()
 
 
+@pytest.mark.unit_platform('linux')
 def test_original_controlled_browser_survives_parallel_workers_and_client_disconnect(monkeypatch, tmp_path, isolated_headed_display):
     display_process, display = isolated_headed_display
     assert display_process.poll() is None and os.environ['DISPLAY'] == display
@@ -881,6 +884,7 @@ def test_original_controlled_browser_survives_parallel_workers_and_client_discon
         output.join_thread()
 
 
+@pytest.mark.unit_platform('linux')
 @pytest.mark.skipif(sys.platform != 'linux', reason='Linux process ancestry proof')
 def test_abrupt_launcher_exit_reaps_its_controlled_backend_browser(tmp_path, isolated_headed_display):
     display_process, display = isolated_headed_display
@@ -956,6 +960,7 @@ time.sleep(60)
         process.stderr.close()
 
 
+@pytest.mark.unit_platform('linux')
 def test_managed_browser_long_temp_keeps_profile_in_bulk_and_cleans_child(tmp_path, monkeypatch, isolated_headed_display):
     from pathlib import Path
     from api_agent.runtime.managed_browser import ChromiumDriver

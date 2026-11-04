@@ -2303,6 +2303,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                                      or any(test.status not in {'passed', 'skipped'} for test in self.unit_result.tests))
                                      if non_unit else bool(self.unit_result.exit_code),
                 skipped=non_unit and any(test.status == 'skipped' for test in self.unit_result.tests),
+                neutral=not non_unit and bool(self.unit_result.tests)
+                    and all(test.status == 'not_applicable' for test in self.unit_result.tests),
                 neutral_details=non_unit or not self.unit_result.require_full_coverage,
                 green_prefixes=("Code coverage: lines 100% · branches 100%.", "Allure publication: PASS"),
                 red_prefixes=('Allure publication: FAIL', 'Test operation: FAIL', 'Inspection cleanup: FAIL')))
@@ -2524,7 +2526,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             result = (next((test for test in self.unit_result.tests if test.identity.id == key), None)
                       if self.unit_result is not None else self.finished_test_results.get(key))
             if self.unit_result is None and self.unit_rows.get(key, ('PENDING',))[0] not in {
-                    'PASSED', 'FAILED', 'ERROR', 'BROKEN', 'SKIPPED', 'CANCELLED', 'INTERRUPTED'}:
+                    'PASSED', 'FAILED', 'ERROR', 'BROKEN', 'SKIPPED', 'CANCELLED', 'INTERRUPTED', 'NOT_APPLICABLE'}:
                 result = None
             from api_agent.telemetry.usage_output import has_tokens
             historical = (self.cost_estimator.predictions.get(key, {}).get('has_token_history', False)
@@ -2533,7 +2535,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                            or has_tokens(self.suite_usage, key) or historical):
                 mode = (self.mode or 'unit').capitalize()
                 title = (f"{mode} test details" if result.status == 'passed' else
-                         f"{mode} test skipped" if result.status == 'skipped' else f"{mode} test failure")
+                         f"{mode} test skipped" if result.status == 'skipped' else
+                         f"{mode} test not applicable" if self.mode == 'unit' and result.status == 'not_applicable' else f"{mode} test failure")
                 from .test_results import test_details
                 table = self.screen.query_one(DataTable)
                 return_scroll_y = table.scroll_y
