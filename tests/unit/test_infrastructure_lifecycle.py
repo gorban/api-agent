@@ -301,7 +301,7 @@ def test_removed_captured_assets_explain_container_recreation_without_mutating_e
     assert isinstance(caught.value.__cause__, FileNotFoundError)
     assert manager.lease is None
     assert engine.records == original
-    assert not any('up' in command or command[1] in ('stop', 'rm', 'volume', 'down')
+    assert not any('up' in command or command[1] in ('stop', 'rm', 'down') or command[1:3] == ('volume', 'rm')
                    for command, _ in engine.calls[before:])
 
 
@@ -773,3 +773,90 @@ def test_real_identity_rejects_present_empty_userinfo(userinfo):
         target = url.replace('http://', 'http://' + userinfo, 1)
         assert not p._http_identity(ResolvedCheck('http', target, identity_field='id',
                                                 identity_value='fixture'), .2)
+
+
+@pytest.mark.parametrize('missing_count', [1, 2])
+def test_acquire_lists_all_missing_captures_and_excludes_healthy_containers(synthetic, missing_count):
+    from copy import deepcopy
+    manager, engine, _, _, _ = synthetic
+    lease = manager.acquire()
+    identifiers = sorted(lease.owned_ids)
+    assert len(identifiers) == 2
+    paths = [Path(next(mount['Source'] for mount in engine.records[identifier]['Mounts']
+                       if mount['Type'] == 'bind')) for identifier in identifiers]
+    assert paths[0] != paths[1]
+    manager.release()
+    for path in paths[:missing_count]:
+        path.unlink()
+    before = len(engine.calls)
+    records = deepcopy(engine.records)
+
+    with pytest.raises(p.MissingCapturedAssetsError) as caught:
+        manager.acquire()
+
+    message = str(caught.value)
+    assert f'Affected containers in the selected prerequisite plan: {missing_count}' in message
+    for identifier in identifiers[:missing_count]:
+        assert message.count('docker stop ' + identifier) == 1
+        assert message.count('docker rm ' + identifier) == 1
+    for identifier in identifiers[missing_count:]:
+        assert identifier not in message
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+    assert manager.lease is None
+    assert engine.records == records
+    assert all(command[1] in ('ps', 'inspect', 'image', 'volume')
+               and (command[1] not in ('image', 'volume') or command[2] == 'inspect')
+               for command, _ in engine.calls[before:])
+
+
+@pytest.mark.parametrize('different_container', [False, True])
+def test_missing_capture_does_not_hide_invalid_other_mount(synthetic, different_container):
+    manager, engine, _, _, _ = synthetic
+    lease = manager.acquire()
+    identifier = lease.owned_ids[0]
+    record = engine.records[identifier]
+    path = Path(next(mount['Source'] for mount in record['Mounts'] if mount['Type'] == 'bind'))
+    manager.release()
+    path.unlink()
+    invalid = engine.records[lease.owned_ids[1]] if different_container else record
+    next(mount for mount in invalid['Mounts'] if mount['Type'] == 'volume')['Name'] = 'unowned-volume'
+
+    with pytest.raises(p.PrerequisiteError, match='storage or captured assets could not be verified') as caught:
+        manager.acquire()
+
+    assert not isinstance(caught.value, p.MissingCapturedAssetsError)
+    assert 'docker rm' not in str(caught.value)
+    assert manager.lease is None
+
+
+@pytest.mark.parametrize('boundary', ['jaeger', 'reporting'])
+def test_missing_capture_notice_waits_for_other_plan_storage_checks(synthetic, monkeypatch, boundary):
+    manager, engine, _, _, _ = synthetic
+    lease = manager.acquire()
+    path = Path(next(mount['Source'] for mount in engine.records[lease.owned_ids[0]]['Mounts']
+                     if mount['Type'] == 'bind'))
+    manager.release()
+    path.unlink()
+    calls = []
+    if boundary == 'jaeger':
+        original = manager._compatible
+        def with_jaeger(*args, **kwargs):
+            return original(*args, **kwargs) | {'jaeger': SimpleNamespace(id='f' * 64)}
+        def reject_storage(identifier, deadline):
+            calls.append(identifier)
+            raise p.PrerequisiteError('Jaeger storage verification failed')
+        monkeypatch.setattr(manager, '_compatible', with_jaeger)
+        monkeypatch.setattr(manager, 'verify_jaeger_storage', reject_storage)
+        options = {}
+        message = 'Jaeger storage verification failed'
+    else:
+        options = {'expected_ids': lease.owned_ids, 'reporting_directory': manager.directory}
+        message = 'Registered reporting service changed'
+
+    with pytest.raises(p.PrerequisiteError, match=message) as caught:
+        manager.acquire(**options)
+
+    assert not isinstance(caught.value, p.MissingCapturedAssetsError)
+    assert 'docker rm' not in str(caught.value)
+    assert manager.lease is None
+    assert calls == (['f' * 64] if boundary == 'jaeger' else [])

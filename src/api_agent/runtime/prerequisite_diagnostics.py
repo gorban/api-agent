@@ -2,22 +2,25 @@
 import shlex
 
 
-def missing_captured_assets_message(identifier, *, executable, project):
-    """Explain a retained bind whose captured host files were removed."""
+def missing_captured_assets_message(identifiers, *, executable, project):
+    """List verified retained containers whose captured host files were removed."""
     border = '!' * 72
     notice = '\n'.join((
         border, '', 'ACTION REQUIRED: retained prerequisite files are missing', '',
-        'A retained container references captured host files that no longer exist.',
+        'Retained containers reference captured host files that no longer exist.',
         'Cleaning ignored artifacts (for example with git clean -xdf) can cause this.',
-        'The container cannot be adopted until it is recreated with fresh captures.', '',
+        'These containers cannot be adopted until recreated with fresh captures.', '',
+        f'Affected containers in the selected prerequisite plan: {len(identifiers)}',
+        *('   ' + identifier for identifier in identifiers), '',
         'Recover while preserving named volumes:',
         f'1. Stop all launcher/test invocations using project {project}.',
         '2. Use the same container engine/context as the launcher. Confirm the',
-        '   identified container is not being used by another operation.',
-        '3. Stop and remove only that container:',
-        '   ' + shlex.join((executable, 'stop', identifier)),
-        '   ' + shlex.join((executable, 'rm', identifier)),
-        '4. Rerun the launcher/test; it captures the assets and recreates the container.', '',
+        '   identified containers are not being used by another operation.',
+        '3. Stop and remove only the listed containers:',
+        *(line for identifier in identifiers for line in (
+            '   ' + shlex.join((executable, 'stop', identifier)),
+            '   ' + shlex.join((executable, 'rm', identifier)))),
+        '4. Rerun the launcher/test; it captures the assets and recreates the containers.', '',
         'Keep all volumes. Do not use -v, compose down -v, or volume pruning.',
         '', border,
     ))
