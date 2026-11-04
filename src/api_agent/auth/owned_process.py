@@ -12,6 +12,10 @@ import sys
 import time
 
 
+# Cleanup inspection retains ownership even when the operation deadline expired.
+_GROUP_PROBE_SECONDS = 5
+
+
 def kill_owned_group(pid: int) -> None:
     """Signal an owned, unreaped group; tolerate only a proved zombie-only group."""
     try:
@@ -23,7 +27,7 @@ def kill_owned_group(pid: int) -> None:
         # The caller retains its child PID with WNOWAIT throughout this check.
         snapshot = subprocess.run(
             ["/bin/ps", "-axo", "pid=,pgid=,stat="], capture_output=True, text=True,
-            check=True, timeout=1.0,
+            check=True, timeout=_GROUP_PROBE_SECONDS,
         )
         members = []
         for line in snapshot.stdout.splitlines():

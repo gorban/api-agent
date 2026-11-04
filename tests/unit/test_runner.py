@@ -351,6 +351,8 @@ def test_unit_executor_uses_collected_labels_for_each_actual_child_cwd(tmp_path,
 @pytest.mark.parametrize('explicit, failing', [(False, False), (True, False), (False, True)])
 def test_unit_scratch_owned_by_runner_and_child(tmp_path, monkeypatch, explicit, failing):
     import json
+    from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(**(vars(runner.sys) | {'platform': 'linux'})))
     cache = tmp_path / 'cache'
     chosen = tmp_path / 'chosen'
     chosen.mkdir()
@@ -380,6 +382,8 @@ def test_unit_scratch_owned_by_runner_and_child(tmp_path, monkeypatch, explicit,
 
 def test_unit_scratch_concurrent_and_unsafe_cache(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
+    from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(**(vars(runner.sys) | {'platform': 'linux'})))
     from api_agent.testing.runner import _unit_scratch
     monkeypatch.delenv('TMPDIR', raising=False)
     monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path))
@@ -411,6 +415,8 @@ def test_unit_scratch_rejects_unavailable_explicit_directory(tmp_path, monkeypat
 
 def test_unit_scratch_rejects_shared_writable_parent(tmp_path, monkeypatch):
     import os
+    from api_agent.testing import runner
+    monkeypatch.setattr(runner, 'sys', SimpleNamespace(**(vars(runner.sys) | {'platform': 'linux'})))
     from api_agent.testing.runner import _unit_scratch
     if not hasattr(os, 'getuid'):
         pytest.skip('POSIX ownership check')

@@ -98,6 +98,7 @@ class OwnedViewerHost:
     entry_path: str
     clients: set
     _closed: bool = False
+    _closing: bool = False
 
     @property
     def entry_url(self):
@@ -107,6 +108,7 @@ class OwnedViewerHost:
         if self._closed:
             return
         async with component_timeout('Workflow viewer host cleanup', 10):
+            self._closing = True
             self.server.close()
             for task in tuple(self.clients):
                 task.cancel()
@@ -144,6 +146,10 @@ async def start_viewer_host(bundle, *, projection, repository_sources=()):
             task = asyncio.current_task()
             host.clients.add(task)
             try:
+                # An accepted transport may schedule its handler only after
+                # shutdown has taken the snapshot of registered client tasks.
+                if host._closing:
+                    return
                 # asyncio.start_server retains its registration ContextVars. A
                 # connection must start its own five-second request budget,
                 # even after the host's ten-second startup budget has ended.

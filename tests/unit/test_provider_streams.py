@@ -47,6 +47,9 @@ def test_read_cancellation_during_close_retains_awaited_generator_disposal():
             assert not disposed.is_set() and stream in llm._streams
             assert not stream._next.done()
             release.set()
+            # The short limit above proves pending ownership. Final disposal
+            # gets a normal bounded allowance after releasing the generator.
+            llm._timeout = 5
             await pending.value.retry()
             assert disposed.is_set() and stream not in llm._streams
         finally:

@@ -177,6 +177,11 @@ def _run(argv: list[str], timeout: float, *, classify_login=None, cancel_event=N
             index, chunk = events.get_nowait()
             if chunk is not None:
                 captured[index].extend(chunk)
+        # Exit observation and pipe settlement may consume the remaining budget.
+        if cancel_event is not None and cancel_event.is_set():
+            reason = 'cancelled'
+        elif time.monotonic() >= deadline:
+            reason = reason or 'timed out'
         if reason or code:
             if reason == "cancelled":
                 raise CredentialRecoveryError("Password manager recovery cancelled.") from None

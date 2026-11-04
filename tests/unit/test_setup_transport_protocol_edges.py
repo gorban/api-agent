@@ -775,7 +775,7 @@ async def test_projection_cleanup_accepts_proved_terminal_group_refusal(monkeypa
     from api_agent.telemetry.privacy import EmissionBoundary
     original_spawn = evidence_watchdog.spawn
     children = []
-    probe = Mock(return_value=False)
+    probe = Mock(wraps=processes._owned_group_terminal)
     resident = Mock(side_effect=AssertionError('terminal child must not be sampled'))
     monkeypatch.setattr(evidence_watchdog, '_darwin_resident_bytes', resident)
     def terminal_refusal(pid, signum):
@@ -791,7 +791,7 @@ async def test_projection_cleanup_accepts_proved_terminal_group_refusal(monkeypa
         assert child.returncode is None
         assert await child.resident_bytes() is None
         monkeypatch.setattr(processes.os, 'killpg', signals)
-        monkeypatch.setattr(processes, '_group_running', probe)
+        monkeypatch.setattr(processes, '_owned_group_terminal', probe)
         return child
     monkeypatch.setattr(evidence_watchdog, 'spawn', exited_spawn)
     try:

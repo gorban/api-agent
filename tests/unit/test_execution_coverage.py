@@ -63,8 +63,8 @@ def test_nonposix_interrupted_disposal_requires_confirmed_leader(monkeypatch, re
 
 
 @pytest.mark.parametrize('listing,running', [
-    (' 123 Z\n 456 S\n', False),
-    (' 123 S\n 456 Z\n', True),
+    (' 123 1 123 Z\n 456 1 456 S\n', False),
+    (' 123 1 123 S\n 456 1 456 Z\n', True),
     ('', False),
 ])
 def test_group_detection_without_proc_ignores_zombies(monkeypatch, listing, running):
@@ -75,7 +75,7 @@ def test_group_detection_without_proc_ignores_zombies(monkeypatch, listing, runn
         return SimpleNamespace(stdout=listing)
     monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(processes.subprocess) | {'run': ps})))
     assert processes._group_running(123) is running
-    assert calls == [((['/bin/ps', '-A', '-o', 'pgid=', '-o', 'state='],),
+    assert calls == [((['/bin/ps', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'state='],),
                       {'capture_output': True, 'text': True, 'check': True, 'timeout': 5})]
 
 

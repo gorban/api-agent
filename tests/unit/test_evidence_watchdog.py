@@ -543,3 +543,81 @@ def test_live_worker_measurement_failure_reports_only_numeric_errno(monkeypatch,
         assert 'untrusted-private-detail' not in str(caught.value)
         assert child.returncode is not None
     asyncio.run(scenario())
+
+
+def test_owned_zombie_rss_reconciles_before_waitid_delivery_then_finishes_exchange(monkeypatch):
+    import errno
+    from unittest.mock import Mock
+    from api_agent.testing import processes
+    async def scenario():
+        child = await watchdog.spawn('/bin/sh', '-c', "printf '[]'",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+        original_observe = processes.observe_exit
+        try:
+            assert await asyncio.to_thread(processes.wait_owned, child.process, timeout=5) == 0
+            assert child.returncode is None
+            query = Mock(side_effect=OSError(errno.ESRCH, 'controlled missing task'))
+            def delayed_waitid(process):
+                assert process is child.process
+                assert original_observe(process) == 0
+                return None
+            with monkeypatch.context() as patch:
+                from types import SimpleNamespace
+                patch.setattr(processes, 'sys', SimpleNamespace(platform='darwin'))
+                patch.setattr(watchdog, 'sys', SimpleNamespace(platform='darwin'))
+                patch.setattr(processes, 'observe_exit', delayed_waitid)
+                patch.setattr(watchdog, '_darwin_resident_bytes', query)
+
+                assert await child.resident_bytes() is None
+
+                query.assert_called_once_with(child.pid)
+                assert child.returncode is None
+            assert await watchdog.communicate(child, b'') == (b'[]', None)
+            assert child.returncode == 0 and processes.disposal_complete(child.process)
+            assert child.process.stdout.closed and child.process.stdin.closed
+        finally:
+            await child.dispose()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('system_snapshot_cleanup', [False, True])
+def test_failed_terminal_snapshot_preserves_controlled_memory_error_and_disposal(monkeypatch, system_snapshot_cleanup):
+    import errno
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from api_agent.testing import processes
+
+    async def scenario():
+        child = await _sleeping_child()
+        query = Mock(side_effect=OSError(errno.ESRCH, 'untrusted-query-detail'))
+        original_snapshot = processes._process_snapshot
+        injected = []
+        delegated = []
+        def snapshot(*, timeout=5):
+            if not injected:
+                injected.append(timeout)
+                raise RuntimeError('untrusted-snapshot-detail')
+            delegated.append(timeout)
+            return original_snapshot(timeout=timeout)
+        monkeypatch.setattr(processes, 'sys', SimpleNamespace(platform='darwin'))
+        monkeypatch.setattr(watchdog, 'sys', SimpleNamespace(platform='darwin'))
+        monkeypatch.setattr(watchdog, '_POLL_SECONDS', .01)
+        monkeypatch.setattr(watchdog, '_darwin_resident_bytes', query)
+        monkeypatch.setattr(processes, '_process_snapshot', snapshot)
+        if system_snapshot_cleanup:
+            monkeypatch.setattr(processes, 'Path', lambda value: SimpleNamespace(is_dir=lambda: False))
+        try:
+            with pytest.raises(ContractError, match=r'memory measurement unavailable \(errno 3\)') as caught:
+                await watchdog.communicate(child, b'')
+            query.assert_called_once_with(child.pid)
+            assert injected == [5]
+            if system_snapshot_cleanup:
+                assert delegated
+            assert 'untrusted' not in str(caught.value)
+            assert child.returncode is not None
+            assert processes.disposal_complete(child.process)
+            assert child.process.stdin.closed and child.process.stdout.closed
+        finally:
+            await child.dispose()
+    asyncio.run(scenario())

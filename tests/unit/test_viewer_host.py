@@ -131,6 +131,53 @@ def test_shutdown_drains_stalled_partial_client():
     asyncio.run(exercise())
 
 
+def test_shutdown_closes_accepted_client_whose_handler_starts_late(monkeypatch):
+    async def exercise():
+        accepted, admit = asyncio.Event(), asyncio.Event()
+        original = asyncio.start_server
+        async def listen(callback, *args, **kwargs):
+            async def delayed(reader, writer):
+                accepted.set()
+                await admit.wait()
+                await callback(reader, writer)
+            return await original(delayed, *args, **kwargs)
+        monkeypatch.setattr(viewer_host, 'asyncio', SimpleNamespace(
+            **(vars(asyncio) | {'start_server': listen})))
+        file = SimpleNamespace(path='r/base/flow.md.html', content_type='text/html', body=b'ok')
+        bundle, projection = admitted(file)
+        host = await start_viewer_host(bundle, projection=projection)
+        reader, writer = await asyncio.open_connection('127.0.0.1', host.port)
+        closing = None
+        try:
+            await asyncio.wait_for(accepted.wait(), 5)
+            writer.write(b'GET /r/base/flow.md.html HTTP/1.1\r\nHost:')
+            await writer.drain()
+            assert not host.clients
+            closing = asyncio.create_task(host.aclose())
+            async def stopped_listening():
+                while host.server.is_serving():
+                    await asyncio.sleep(0)
+            await asyncio.wait_for(stopped_listening(), 5)
+            admit.set()
+            await asyncio.wait_for(closing, 1)
+            assert host._closed and not host.clients
+            try:
+                assert await reader.read() == b''
+            except ConnectionResetError:
+                pass
+        finally:
+            admit.set()
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionResetError:
+                pass
+            if closing is not None:
+                await asyncio.gather(closing, return_exceptions=True)
+            await asyncio.wait_for(host.aclose(), 5)
+    asyncio.run(exercise())
+
+
 def test_rejects_unadmitted_bundle_routes_before_binding():
     async def exercise():
         outside = SimpleNamespace(path='cfg/secrets.toml', content_type='text/plain', body=b'x')
