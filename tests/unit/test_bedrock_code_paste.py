@@ -92,7 +92,9 @@ async def copy_selected_url(monkeypatch, screen, pilot):
     def native_write(command, **kwargs):
         writes.append(kwargs['input'])
     monkeypatch.setattr('api_agent.tui.clipboard.native_command', lambda: ['synthetic-copy'])
-    monkeypatch.setattr('api_agent.tui.clipboard.subprocess.run', native_write)
+    from api_agent.tui import clipboard as clipboard_api
+    monkeypatch.setattr(clipboard_api, 'subprocess',
+        SimpleNamespace(**(vars(clipboard_api.subprocess) | {'run': native_write})))
     await screen.action_copy_output()
     await pilot.pause()
     assert app.clipboard == ''
