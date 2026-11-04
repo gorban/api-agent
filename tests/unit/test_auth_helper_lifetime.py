@@ -313,3 +313,28 @@ def test_guard_inspects_real_zombie_after_closing_standard_streams(tmp_path):
         os.close(writer)
     assert result.returncode == 0
     assert marker.read_text() == '7'
+
+
+def test_guardian_inspection_budget_is_bounded_and_keeps_child_reserved(monkeypatch):
+    from api_agent.auth import owned_process as owned
+    from api_agent.testing.processes import wait_owned
+    from types import SimpleNamespace
+    child = subprocess.Popen([sys.executable, '-c', 'pass'], start_new_session=True)
+    try:
+        assert wait_owned(child, timeout=5) == 0
+        def denied(pid, signum):
+            assert pid == child.pid
+            raise PermissionError('controlled terminal group refusal')
+        def unavailable(*args, **kwargs):
+            assert kwargs['timeout'] == 5
+            assert child.returncode is None
+            assert os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+            raise subprocess.TimeoutExpired(args[0], kwargs['timeout'])
+        monkeypatch.setattr(owned, 'os', SimpleNamespace(**(vars(os) | {'killpg': denied})))
+        monkeypatch.setattr(owned, 'subprocess', SimpleNamespace(**(vars(subprocess) | {'run': unavailable})))
+        with pytest.raises(subprocess.TimeoutExpired) as failure:
+            owned.kill_owned_group(child.pid)
+        assert failure.value.timeout == 5
+        assert child.returncode is None
+    finally:
+        assert child.wait(timeout=5) == 0

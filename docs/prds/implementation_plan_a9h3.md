@@ -1,0 +1,10 @@
+# Retained child exit and final release
+
+[Portable native unit execution](implementation_plan_a9h2.md)
+
+- [x] A native memory-query ESRCH may be reconciled only by positive evidence that the exact reserved child and its entire dedicated group are zombies. Inspect trusted system process metadata under the existing handle lock; require matching child, parent and group identities. Missing, malformed, duplicate, live or foreign evidence never authorizes terminal handling. Failure of the terminal-state query preserves the controlled unavailable-error contract and owned cleanup; it never becomes successful terminal evidence. Preserve normal exchange completion, reaping and final deadline checks before releasing any result.
+- [x] A denied signal may acknowledge terminal disposal only through the same ownership and zombie-group proof. Never signal a reaped numeric group identity. Keep external-reaping and uncertain-reservation rejection checks.
+- [x] Credential-guardian process inspection has a bounded five-second cleanup allowance, consistent with ordinary group verification. Cleanup retains ownership after an operation expires; the larger inspection allowance does not authorize a late successful credential result.
+- [x] Credential retrieval rechecks its fixed deadline and cancellation after guardian exit, final output draining and thread completion, before releasing a successful value. Use real-child causal controls to prove that late exit or late cancellation rejects without leaking captured credentials.
+- [x] Complete adversarial and external review, exact applicable coverage and public boundary checks. The final Linux suite passes 26,751 tests with exact 100% line and branch coverage; targeted guard-removal mutations reject. Committed metadata and HEAD checks remain publication gates.
+- [ ] Native terminal handoff, constrained-resource execution and full-suite acceptance. Resolve platform-incompatible unit-test admission without silently weakening the current strict selected-skip gate. Linux success does not establish native qualification.

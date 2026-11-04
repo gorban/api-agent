@@ -8,25 +8,40 @@ import selectors
 import threading
 import subprocess
 import time
+import sys
 
 _Popen = subprocess.Popen
+
+
+def _process_snapshot(*, timeout=5):
+    """Read one bounded system snapshot with explicit process identities."""
+    try:
+        report = subprocess.run(
+            ['/bin/ps', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'state='],
+            capture_output=True, text=True, check=True, timeout=timeout)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError('Cannot inspect owned processes: ps failed') from exc
+    rows = []
+    seen = set()
+    for line in report.stdout.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        if len(fields) != 4 or any(not value.isascii() or not value.isdecimal() for value in fields[:3]):
+            raise RuntimeError('Cannot inspect owned processes: invalid ps output')
+        pid, parent, group = map(int, fields[:3])
+        if pid in seen:
+            raise RuntimeError('Cannot inspect owned processes: duplicate ps process identity')
+        seen.add(pid)
+        rows.append((pid, parent, group, fields[3]))
+    return tuple(rows)
 
 
 def _group_running(group, *, timeout=5):
     """Return whether a POSIX group has live members, excluding zombies."""
     if not Path('/proc').is_dir():
-        try:
-            report = subprocess.run(['/bin/ps', '-A', '-o', 'pgid=', '-o', 'state='],
-                                    capture_output=True, text=True, check=True, timeout=timeout)
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(f'Cannot verify owned pytest process group {group}: ps failed') from exc
-        for line in report.stdout.splitlines():
-            fields = line.split()
-            if len(fields) != 2 or not fields[0].isdecimal() or not fields[1]:
-                raise RuntimeError(f'Cannot verify owned pytest process group {group}: invalid ps output')
-            if int(fields[0]) == group and fields[1][0] != 'Z':
-                return True
-        return False
+        return any(pgid == group and not state.startswith('Z')
+                   for _, _, pgid, state in _process_snapshot(timeout=timeout))
     for entry in Path('/proc').iterdir():
         if not entry.name.isdecimal():
             continue
@@ -86,6 +101,22 @@ def _disposal_lock(process):
     return process.__dict__.setdefault('_api_agent_disposal_lock', threading.RLock())
 
 
+def _owned_group_terminal(process, *, timeout=5):
+    """Prove this reserved child and its entire group are zombies."""
+    if not isinstance(process, _Popen):
+        return False
+    with _disposal_lock(process):
+        if process.returncode is not None:
+            return False
+        observe_exit(process)  # A missing child reservation must not authorize ps evidence.
+        rows = _process_snapshot(timeout=timeout)
+        leader = next((row for row in rows if row[0] == process.pid), None)
+        if leader is None or leader[1] != os.getpid() or leader[2] != process.pid:
+            return False
+        # The identity checks ensure the leader is included in this nonempty group.
+        return all(state.startswith('Z') for _, _, group, state in rows if group == process.pid)
+
+
 def inspect_owned(process, inspector):
     """Inspect the actual child only while its identity remains reserved."""
     if isinstance(process, asyncio.subprocess.Process):
@@ -93,7 +124,17 @@ def inspect_owned(process, inspector):
     with _disposal_lock(process):
         if process.returncode is not None or observe_exit(process) is not None:
             return None
-        return inspector(process.pid)
+        try:
+            return inspector(process.pid)
+        except OSError as error:
+            if sys.platform == 'darwin' and error.errno == errno.ESRCH:
+                try:
+                    terminal = _owned_group_terminal(process)
+                except RuntimeError:
+                    raise error from None
+                if terminal:
+                    return None
+            raise
 
 
 def signal_owned_group(process, signum):
@@ -117,7 +158,7 @@ def signal_owned_group(process, signum):
             process._api_agent_group_disposal_complete = True
             return True
         except PermissionError:
-            if observe_exit(process) is None or _group_running(process.pid):
+            if not _owned_group_terminal(process):
                 raise
             process._api_agent_group_disposal_complete = True
             return True

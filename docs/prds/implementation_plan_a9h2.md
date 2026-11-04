@@ -16,7 +16,7 @@
 ## Fresh native checkout and subprocess portability
 
 - [x] Real GraphQL MCP unit proofs prepare locked child assets in their disposable fixture directory instead of depending on retained source `node_modules`. Preserve selected npm/node shim entry names when invoking managed executables. Packaging proofs separately verify current runtime bytes, source archive bytes, rebuilds and unsafe-input rejection without combining multiple builds into one watchdog body.
-- [x] Process disposal uses the trusted system process inspector even under a helper-specific PATH, with bounded verification. A denied signal may be treated as exhausted only when the reserved unreaped child is visibly a zombie and every member of its group is a zombie; live, missing or uncertain evidence still rejects cleanup. Credential guardians preserve the helper exit code.
+- [x] Process disposal uses the trusted system process inspector even under a helper-specific PATH, with bounded verification. A denied signal may be treated as exhausted only when the reserved unreaped child is visibly a zombie and every member of its group is a zombie; live, missing or uncertain evidence still rejects cleanup. Credential guardians preserve the helper exit code. Their terminal-state inspection has a separate bounded five-second cleanup budget while retaining the child reservation, including after an operation deadline; unavailable or uncertain inspection still rejects cleanup.
 - [x] Canonicalize launcher-created Bedrock scratch directories before secure descriptor-relative writes. Retain no-follow validation for configuration, credentials and their parents; test a symlinked system temporary root through refresh, publication and cleanup.
 - [x] Synthetic platform-specific credential tests explicitly select their intended branch. Allow bounded startup readiness independently of intentionally short validation deadlines.
 - [ ] Human acceptance: fresh macOS full suite after these repairs. Prior interrupted results do not establish the status of tests that never ran.
@@ -58,3 +58,14 @@ Verification: 26,719 full Linux unit tests pass at exact 100% line and branch co
 - [x] Prove the cleanup fixture's actual retained child exit before injecting terminal signal refusal. Give ordinary recovery-semantic fixtures bounded startup allowance while preserving explicit short-deadline and privacy assertions. Production limits remain unchanged.
 - [x] Complete independent and external review, full Linux unit coverage and public-boundary checks. Verification: 26,720 tests pass at exact 100% line and branch coverage.
 - [ ] Actual macOS full-suite acceptance, including remaining schema/evidence availability, native memory-query exit timing and intentionally short-deadline fixtures. Passing Linux checks do not qualify those unresolved native results.
+
+## Completed native-run diagnosis
+
+- [x] Audit all cache-branch fixtures, including child execution and concurrent scratch ownership, against their intended platform; do not write into the active user's caches.
+- [x] Reproduce shared schema-worker and process-startup availability failures under controlled resource limits before changing scheduling or execution limits. Preserve explicit worker overrides and production timeout/rejection semantics.
+- [x] Reconcile native task disappearance with positive retained-child terminal evidence. An unavailable memory sample alone must not authorize successful release or skip live-worker enforcement.
+- [ ] Complete source review, causal rejection checks, full coverage and publication checks; retain actual native qualification as a separate gate.
+
+- [x] Viewer shutdown must reject accepted connections whose handlers begin after shutdown's client snapshot. Prove the real accepted-transport/queued-handler race without extending request or cleanup deadlines, and retain writer closure and empty client ownership on completion.
+
+[Retained child exit and final release](implementation_plan_a9h3.md) defines the native terminal proof and post-cleanup credential release requirements.

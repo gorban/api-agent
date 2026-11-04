@@ -861,6 +861,8 @@ def test_browser():
 
 def test_launcher_liveness_eof_stops_only_registered_worker_group(tmp_path):
     import os
+    import signal
+    from api_agent.testing.processes import disposal_complete
     if os.name != 'posix':
         pytest.skip('POSIX worker group ownership')
     base = fixture_repo(tmp_path / 'base', '''
@@ -880,11 +882,14 @@ def test_browser():
     result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
         config={'DEBUG': True}, on_event=events.append)
     handle = next(handle for handle in result.inspections if hasattr(handle, 'process'))
+    assert os.getpgid(handle.process.pid) == handle.process.pid
     # Closing the sole writer produces the same EOF as abrupt launcher exit.
     os.close(handle.liveness_fd)
     handle.liveness_fd = None
     assert handle.wait_closed(timeout=5)
-    assert handle.process.poll() < 0
+    # The EOF worker signals its group, then has an explicit exit-130 fallback.
+    assert handle.process.poll() in (-signal.SIGKILL, 130)
+    assert disposal_complete(handle.process) and handle.process.stdout.closed
     assert any(event.kind == 'inspection_lost' for event in events)
     for remaining in result.inspections:
         remaining.end_inspection()
