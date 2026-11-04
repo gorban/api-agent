@@ -13,6 +13,10 @@ from api_agent.providers.rich_inference import continuation, request_to_wire, sc
 from .catalog import selection
 from .mantle import _bounded, _fields, _require, _text
 
+# Exact profile with an observed assistant reasoningText.text input rejection.
+# Other models/profiles retain native replay until separately qualified.
+_UNSIGNED_REASONING_OUTPUT_ONLY = frozenset({'us.openai.gpt-6-luna'})
+
 
 def validate_request(request, *, endpoint='runtime', api_mode='converse', config=None):
     if not isinstance(request, LLMRequest):
@@ -63,7 +67,21 @@ def continuation_message(message, selected_llm):
         if (parsed.payload.continuation is None or message.role != 'assistant' or message.results
                 or parsed.payload.content != message.content or parsed.payload.calls != message.calls):
             raise ContractError('Converse continuation differs from its visible message')
-        return deepcopy(native)
+        replay = deepcopy(native)
+        protected = any('reasoningContent' in block and (
+            'redactedContent' in block['reasoningContent']
+            or 'signature' in block['reasoningContent'].get('reasoningText', {}))
+            for block in replay['content'])
+        if not protected and selected_llm in _UNSIGNED_REASONING_OUTPUT_ONLY:
+            # This profile's unsigned reasoning text is display output, not an admitted
+            # Converse assistant input. Keep the original carrier privately;
+            # A signed/encrypted carrier, including its surrounding content,
+            # must still replay unchanged.
+            replay['content'] = [block for block in replay['content']
+                if 'reasoningContent' not in block
+                or 'reasoningText' not in block['reasoningContent']
+                or 'signature' in block['reasoningContent']['reasoningText']]
+        return replay
     except (ContractError, ProviderAccessError, ValueError, TypeError):
         raise ProviderAccessError('invalid_request', 'Invalid Bedrock Converse continuation.') from None
 
