@@ -18,6 +18,9 @@ def require_selection_configuration(requirements):
     for key in ('LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL'):
         if values.get(key) not in (None, ''):
             exact_model(values, key)
+    if values.get('LLM_DEFAULT_MODEL') and any(values.get(key) in (None, '') for key in (
+            'LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL')):
+        return dict(values)
     requirements.require('LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL')
     default = exact_model(values, 'LLM_STUDIO_TEST_DEFAULT_MODEL')
     selected = exact_model(values, 'LLM_STUDIO_TEST_SELECTED_MODEL')
@@ -41,6 +44,13 @@ def selection_catalog(selection_configuration, llm_provider):
     observed = SelectionProvider(llm_provider)
     with report_timeout_sync('Studio selection catalog preparation', getattr(llm_provider, 'config', {}).get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', 300)):
         catalog = observed.describe()
+    if isinstance(selection_configuration, dict):
+        from api_agent.testing.model_choices import studio_choices
+        from api_agent.testing.provider_setup import IntegrationRequirements
+        choices = studio_choices(selection_configuration, catalog)
+        IntegrationRequirements(selection_configuration).require_combination(choices is not None,
+            'Studio selection requires a distinct allowed model and distinct supported reasoning efforts.')
+        selection_configuration = choices
     default, selected, default_effort, selected_effort = selection_configuration
     observed.choices = selection_configuration
     observed.rows = tuple(catalog_choice(catalog, model, (effort,), require_metadata=False) for model, effort in (

@@ -37,6 +37,24 @@ and selected GPT reasoning calls on Responses/Converse. Exact execution IDs and
 all tool/schema combinations were not exhaustively recorded. Sonnet Responses
 rejections establish the observed unsupported pair, not a credential failure.
 
+## Catalog-derived integration selections
+
+- [x] When an exact workflow-test model is unset, resolve the allowed application
+  default with the normal highest-version policy; preserve explicit test models.
+- [x] Resolve Studio's initial default the same way and select a deterministic,
+  distinct allowed alternate with distinct advertised reasoning efforts. Skip
+  only when those capabilities are unavailable; malformed overrides and runtime
+  provider failures remain failures.
+- [x] When reasoning-counter qualification is unset, resolve the default and
+  effort pair from the catalog, then make one bounded, normally accounted probe.
+  Missing separate counters skip before the six-call comparison; invalid replies,
+  authentication and inference errors fail. Explicit false disables the probe;
+  true retains previously qualified execution. Never switch routes or identities,
+  fabricate counters, discard failed comparison pairs or weaken the signed score.
+- [ ] Close final controlled rejection, exact applicable coverage and selected
+  live Responses qualification. Source review passed; the local live attempt
+  required session interaction before inference. Mac qualification remains open.
+
 ## Remaining qualification
 
 - [x] Opus 4.5 hybrid native effort plus manual thinking budget and beta opt-in:

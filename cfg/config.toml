@@ -476,7 +476,7 @@ acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
-help = "Exact model ID for workflow integration and calibration; empty requires provider qualification."
+help = "Exact model ID for workflow integration and calibration; empty uses the application default resolved from the allowed catalog. Calibration remains bound to the resolved model."
 [fields.LLM_WORKFLOW_TEST_MODEL.applies_when]
 TUI_MODE = "integration"
 
@@ -485,7 +485,7 @@ acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
-help = "Exact model ID for the three-pair reasoning contrast using the configured effort pair; empty requires an explicit qualified model."
+help = "Exact model ID for the three-pair reasoning contrast; empty resolves the allowed application default. Empty effort controls use distinct advertised choices. Unset counter qualification performs a bounded probe."
 [fields.LLM_REASONING_TEST_MODEL.applies_when]
 TUI_MODE = "integration"
 
@@ -494,7 +494,7 @@ acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
-help = "Exact initial Studio selection-test model ID; empty requires explicit qualification."
+help = "Exact initial Studio selection-test model ID; empty resolves LLM_DEFAULT_MODEL against the allowed catalog."
 [fields.LLM_STUDIO_TEST_DEFAULT_MODEL.applies_when]
 TUI_MODE = "integration"
 
@@ -503,7 +503,7 @@ acknowledge_default = false
 type = "str"
 default = ""
 review_optional = true
-help = "Exact alternate Studio selection-test model ID; must differ from the initial model."
+help = "Exact alternate Studio selection-test model ID; empty selects a distinct allowed catalog model with supported effort choices."
 [fields.LLM_STUDIO_TEST_SELECTED_MODEL.applies_when]
 TUI_MODE = "integration"
 
@@ -550,9 +550,8 @@ TUI_MODE = "integration"
 [fields.LLM_REASONING_TEST_TOKEN_REPORTING]
 acknowledge_default = false
 type = "bool"
-default = false
 review_optional = true
-help = "Whether the selected provider/API route is qualified to report reasoning-token measurements for the contrast test. This does not establish a behavioral contrast. False rejects before authentication or inference."
+help = "True uses already-qualified reasoning-token reporting. False explicitly skips before inference. Unset performs one bounded, accounted probe of the selected model before the six-call contrast; missing counters skip, provider errors fail. This does not establish a behavioral contrast."
 [fields.LLM_REASONING_TEST_TOKEN_REPORTING.applies_when]
 TUI_MODE = "integration"
 
@@ -562,7 +561,7 @@ type = "int"
 allow_empty = true
 validation = "positive"
 review_optional = true
-help = "Optional output-token cap from 1 to 16384 for each of the six matched reasoning contrast requests; empty preserves the application/provider default. It is sent through the application API and checked against advertised model limits before inference."
+help = "Optional output-token cap from 1 to 16384 for the preliminary counter probe and each of the six matched reasoning contrast requests; empty preserves application/provider defaults for the six comparison calls. The preliminary probe uses at most 4096 tokens when output limits are supported, further capped by this setting and the advertised maximum. Comparison limits are sent through the application API and checked against advertised model limits before inference."
 [fields.LLM_REASONING_TEST_MAX_OUTPUT_TOKENS.applies_when]
 TUI_MODE = "integration"
 

@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.feature('Reasoning contrast'), pytest.mark.requires_ll
 
 
 @pytest.fixture
-def reasoning_ready(integration_config):
+def reasoning_ready(integration_config, request):
     config = integration_config.values
     timeout = reasoning_timeout(config)
     reporting = config.get('LLM_REASONING_TEST_TOKEN_REPORTING')
@@ -26,6 +26,40 @@ def reasoning_ready(integration_config):
     if config.get('LLM_REASONING_TEST_MODEL') not in (None, ''):
         from api_agent.testing.model_choices import exact_model
         exact_model(config, 'LLM_REASONING_TEST_MODEL')
+    limit = config.get('LLM_REASONING_TEST_MAX_OUTPUT_TOKENS')
+    if limit is not None and (type(limit) is not int or not 1 <= limit <= MAX_OUTPUT_TOKENS):
+        raise ValueError(f'Reasoning contrast output limit must be a positive integer at most {MAX_OUTPUT_TOKENS} or unset')
+    automatic = request is not None and reporting is not False and bool(config.get('LLM_DEFAULT_MODEL')) and (
+        reporting is None or any(config.get(key) in (None, '') for key in (
+            'LLM_REASONING_TEST_MODEL', 'LLM_REASONING_TEST_LOW_EFFORT', 'LLM_REASONING_TEST_HIGH_EFFORT')))
+    if automatic:
+        from api_agent.testing.model_choices import reasoning_choices, catalog_choice, probe_reasoning_tokens
+        from api_agent.testing.provider_setup import IntegrationRequirements
+        try:
+            with report_timeout_sync('Reasoning contrast catalog preparation', timeout):
+                provider = request.getfixturevalue('llm_provider')
+                catalog = provider.describe()
+        except pytest.skip.Exception as error:
+            raise AssertionError('Reasoning contrast catalog setup was unavailable.') from error
+        choices = reasoning_choices(config, catalog)
+        integration_config.require_combination(choices is not None,
+            'Reasoning contrast requires two supported reasoning efforts on the default model.')
+        model, low, high = choices
+        if reporting is None:
+            row = catalog_choice(catalog, model, (low, high), require_metadata=False)
+            from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+            from api_agent.testing.authority_scope import join_current
+            boundary = EmissionBoundary(ContentPolicy(getattr(provider, 'config', {}).get('LOG_CONTENT') is True))
+            join_current('ui', boundary)
+            try:
+                reporting = probe_reasoning_tokens(provider, row, low, timeout_seconds=timeout, max_output_tokens=limit)
+            except pytest.skip.Exception as error:
+                raise AssertionError('Reasoning contrast inference setup was unavailable.') from error
+            integration_config.require_combination(reporting,
+                'Selected model/API did not report separate reasoning-token counts in the bounded probe.')
+        config = dict(config, LLM_REASONING_TEST_MODEL=model, LLM_REASONING_TEST_LOW_EFFORT=low,
+                      LLM_REASONING_TEST_HIGH_EFFORT=high, LLM_REASONING_TEST_TOKEN_REPORTING=reporting)
+        integration_config = IntegrationRequirements(config, owner_root=integration_config.owner_root)
     if reporting is None or reporting is False:
         integration_config.require_combination(False,
             'Reasoning contrast requires a provider/API route qualified for reasoning-token reporting; '
@@ -36,9 +70,6 @@ def reasoning_ready(integration_config):
         'LLM_REASONING_TEST_LOW_EFFORT', 'LLM_REASONING_TEST_HIGH_EFFORT'))
     if not all(effort in ('off', 'low', 'medium', 'high') for effort in efforts) or ('off', 'low', 'medium', 'high').index(efforts[0]) >= ('off', 'low', 'medium', 'high').index(efforts[1]):
         raise ValueError('Reasoning contrast requires two distinct qualified explicit effort controls')
-    limit = config.get('LLM_REASONING_TEST_MAX_OUTPUT_TOKENS')
-    if limit is not None and (type(limit) is not int or not 1 <= limit <= MAX_OUTPUT_TOKENS):
-        raise ValueError(f'Reasoning contrast output limit must be a positive integer at most {MAX_OUTPUT_TOKENS} or unset')
     return model, efforts, limit, timeout
 
 
