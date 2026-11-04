@@ -918,3 +918,35 @@ def test_explicit_snapshot_region_discovery_does_not_resolve_credentials(store, 
     monkeypatch.setattr(boto3, 'Session', session)
     monkeypatch.setattr(worker, 'verify_identity', lambda material, config:store.snapshot()['identity'])
     assert worker.ambient(dict(profile='chosen', region=None))['region'] == 'us-west-2'
+
+
+def test_refresh_canonicalizes_owned_temporary_root_before_secure_write(
+        store, native, selected_environment, tmp_path, monkeypatch):
+    from api_agent.llm_providers.bedrock import login_worker as worker
+    publish(store, native)
+    store.credentials.write_bytes(store.credentials.read_bytes().replace(b'9999999999', b'1'))
+    alias = tmp_path / 'temporary-alias'
+    real = tmp_path / 'temporary-root'
+    real.mkdir()
+    alias.symlink_to(real, target_is_directory=True)
+    original = worker.tempfile.TemporaryDirectory
+    monkeypatch.setattr(worker.tempfile, 'TemporaryDirectory',
+                        lambda **kwargs: original(dir=alias, **kwargs))
+    observed = []
+    def resolve(config):
+        temporary = Path(os.environ['AWS_SHARED_CREDENTIALS_FILE'])
+        observed.append(temporary)
+        assert temporary == temporary.resolve()
+        assert temporary.is_relative_to(real)
+        assert p.parsed(temporary.read_bytes()).sections() == []
+        return dict(AccessKeyId='newkey', SecretAccessKey='newsecret', SessionToken='newtoken',
+            expires_at=9999999999, identity=dict(Account=config['account'], Arn=config['principal']),
+            region='us-east-1')
+    monkeypatch.setattr(worker, '_ambient', resolve)
+
+    result = worker.ambient(dict(profile='chosen', region='us-east-1'))
+
+    assert result['AccessKeyId'] == 'newkey'
+    assert len(observed) == 1 and not observed[0].exists()
+    assert 'newkey' in store.credentials.read_text()
+    assert os.environ['AWS_SHARED_CREDENTIALS_FILE'] == str(store.credentials)

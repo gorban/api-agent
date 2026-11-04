@@ -35,9 +35,9 @@ def executables(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_default_node_shim_is_replaced_before_subprocess(executables, monkeypatch, tmp_path):
-    _, real_dir, mise, requested = executables
+    shim_dir, real_dir, _, requested = executables
     transport = owner.GraphQLMcpOwner('http://localhost/graphql')
-    assert transport._node == str(mise)
+    assert transport._node == str(shim_dir / 'node')
     monkeypatch.setattr(assets, 'installed_script', lambda _: tmp_path / 'script.js')
     command = []
     async def spawn(*args, **kwargs):

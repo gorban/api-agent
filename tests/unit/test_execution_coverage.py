@@ -74,8 +74,8 @@ def test_group_detection_without_proc_ignores_zombies(monkeypatch, listing, runn
         return SimpleNamespace(stdout=listing)
     monkeypatch.setattr(processes.subprocess, 'run', ps)
     assert processes._group_running(123) is running
-    assert calls == [((['ps', '-A', '-o', 'pgid=', '-o', 'state='],),
-                      {'capture_output': True, 'text': True, 'check': True, 'timeout': .5})]
+    assert calls == [((['/bin/ps', '-A', '-o', 'pgid=', '-o', 'state='],),
+                      {'capture_output': True, 'text': True, 'check': True, 'timeout': 5})]
 
 
 @pytest.mark.parametrize('listing', ['bad row', '123', 'abc S'])
@@ -107,7 +107,7 @@ def test_group_detection_and_wait_for_live_descendant(monkeypatch, tmp_path):
     process.write_text('123 (pytest child) Z 1 123 123 0\n')
     assert not processes._group_running(123)
     alive = iter([True, False])
-    monkeypatch.setattr(processes, '_group_running', lambda group: next(alive))
+    monkeypatch.setattr(processes, '_group_running', lambda group, **kwargs: next(alive))
     monkeypatch.setattr(processes.time, 'sleep', lambda seconds: None)
     monkeypatch.setattr(processes.os, 'killpg', lambda *args: None)
     fake = SimpleNamespace(pid=123, wait=lambda **kwargs: 0)
@@ -116,8 +116,8 @@ def test_group_detection_and_wait_for_live_descendant(monkeypatch, tmp_path):
 
 def test_finalization_reports_unstopped_process_group(monkeypatch):
     monkeypatch.setattr(processes.os, 'killpg', lambda *args: None)
-    monkeypatch.setattr(processes, '_group_running', lambda group: True)
-    times = iter([0, 2])
+    monkeypatch.setattr(processes, '_group_running', lambda group, **kwargs: True)
+    times = iter([0, 5])
     monkeypatch.setattr(processes.time, 'monotonic', lambda: next(times))
     fake = SimpleNamespace(pid=123, wait=lambda **kwargs: 0)
     with pytest.raises(TimeoutError, match='did not stop after SIGKILL'):
@@ -351,3 +351,37 @@ def test_unselected_production_owner_report_is_measured_or_fails_explicitly(monk
 def test_no_production_files_summary_is_explicit():
     result=runner.UnitRunResult(0,(runner.TestResult(identity(),'passed'),),(),'')
     assert 'base: no measured code files' in runner.format_unit_summary(result)
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX process listing')
+def test_group_probe_uses_system_ps_with_empty_path(monkeypatch):
+    monkeypatch.setenv('PATH', '')
+    monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
+
+    assert processes._group_running(os.getpgrp())
+
+
+def test_group_verification_clips_every_probe_to_remaining_budget(monkeypatch):
+    monkeypatch.setattr(processes.os, 'killpg', lambda *args: None)
+    times = iter([10, 11, 14])
+    monkeypatch.setattr(processes, 'time', SimpleNamespace(
+        monotonic=lambda: next(times), sleep=lambda seconds: None))
+    probes = Mock(side_effect=[True, False])
+    monkeypatch.setattr(processes, '_group_running', probes)
+    process = SimpleNamespace(pid=123, wait=lambda **kwargs: 0)
+
+    processes.finalize(process)
+
+    assert [call.kwargs['timeout'] for call in probes.call_args_list] == [4, 1]
+    assert processes.disposal_complete(process)
+
+
+def test_failed_group_probe_never_acknowledges_disposal(monkeypatch):
+    monkeypatch.setattr(processes.os, 'killpg', lambda *args: None)
+    monkeypatch.setattr(processes, '_group_running', Mock(side_effect=RuntimeError('ps failed')))
+    process = SimpleNamespace(pid=123, wait=lambda **kwargs: 0)
+
+    with pytest.raises(RuntimeError, match='ps failed'):
+        processes.finalize(process)
+
+    assert not processes.disposal_complete(process)

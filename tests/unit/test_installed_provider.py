@@ -354,7 +354,9 @@ def _git_owned_checkout(repository):
     return result.returncode == 0 and Path(result.stdout.strip()).resolve() == repository.resolve()
 
 
-def test_wheel_snapshot_ignores_dirty_prd_and_packages_current_runtime_bytes(tmp_path, monkeypatch):
+@pytest.fixture(scope='module')
+def current_runtime_snapshot(tmp_path_factory):
+    tmp_path = tmp_path_factory.mktemp('current-runtime-snapshot')
     repository = Path(__file__).resolve().parents[2]
     first = tmp_path / 'first'
     first.mkdir()
@@ -367,7 +369,7 @@ def test_wheel_snapshot_ignores_dirty_prd_and_packages_current_runtime_bytes(tmp
     foreign_environment['GIT_INDEX_FILE'] = str(empty_index)
     subprocess.run(['git', '-C', str(foreign), 'read-tree', '--empty'], check=True,
                    capture_output=True, timeout=20, env=foreign_environment)
-    with monkeypatch.context() as hostile:
+    with pytest.MonkeyPatch.context() as hostile:
         hostile.setenv('GIT_INDEX_FILE', str(empty_index))
         hostile.setenv('GIT_DIR', str(foreign / '.git'))
         hostile.setenv('GIT_WORK_TREE', str(foreign))
@@ -391,12 +393,23 @@ def test_wheel_snapshot_ignores_dirty_prd_and_packages_current_runtime_bytes(tmp
     _wheel_source_snapshot(first, second)
     assert (second / 'src/api_agent/__init__.py').read_bytes() == updated
     assert not (second / 'docs/prds/review-notes.md').exists()
+    return first, second, updated
+
+
+def test_wheel_packages_current_runtime_bytes(current_runtime_snapshot, tmp_path):
+    _, second, updated = current_runtime_snapshot
     output = tmp_path / 'wheels'
     run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
          '--outdir', str(output), str(second)], cwd=tmp_path)
     wheel, = output.glob('*.whl')
     with zipfile.ZipFile(wheel) as installed:
         assert installed.read('api_agent/__init__.py') == updated
+
+
+@pytest.fixture(scope='module')
+def current_runtime_sdist(current_runtime_snapshot, tmp_path_factory):
+    _, second, updated = current_runtime_snapshot
+    tmp_path = tmp_path_factory.mktemp('current-runtime-sdist')
     source_archives = tmp_path / 'source-archives'
     run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--sdist',
          '--outdir', str(source_archives), str(second)], cwd=tmp_path)
@@ -407,6 +420,17 @@ def test_wheel_snapshot_ignores_dirty_prd_and_packages_current_runtime_bytes(tmp
         source.extractall(extracted, filter='data')
     unpacked, = extracted.iterdir()
     assert _git_owned_checkout(unpacked) is False
+    assert (unpacked / 'src/api_agent/__init__.py').read_bytes() == updated
+    return unpacked, updated
+
+
+def test_sdist_preserves_current_runtime_bytes(current_runtime_sdist):
+    unpacked, updated = current_runtime_sdist
+    assert (unpacked / 'src/api_agent/__init__.py').read_bytes() == updated
+
+
+def test_wheel_rebuild_from_sdist_preserves_current_runtime_bytes(current_runtime_sdist, tmp_path):
+    unpacked, updated = current_runtime_sdist
     rebuilt = tmp_path / 'rebuilt-wheels'
     run([sys.executable, '-I', '-m', 'build', '--no-isolation', '--wheel',
          '--outdir', str(rebuilt), str(unpacked)], cwd=tmp_path)
@@ -414,6 +438,10 @@ def test_wheel_snapshot_ignores_dirty_prd_and_packages_current_runtime_bytes(tmp
     with zipfile.ZipFile(rebuilt_wheel) as installed:
         assert installed.read('api_agent/__init__.py') == updated
 
+
+def test_wheel_snapshot_rejects_missing_and_symlink_runtime(current_runtime_snapshot, tmp_path):
+    first, _, _ = current_runtime_snapshot
+    runtime = first / 'src/api_agent/__init__.py'
     runtime.unlink()
     missing = tmp_path / 'missing'
     missing.mkdir()

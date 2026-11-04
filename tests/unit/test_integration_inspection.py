@@ -19,7 +19,7 @@ def test_disposed_group_is_never_signalled_again_after_later_cleanup_failure(tmp
     signals = []
     owner = ['original']
     monkeypatch.setattr(processes.os, 'killpg', lambda *args: signals.append((owner[0], args)))
-    monkeypatch.setattr(processes, '_group_running', lambda group: False)
+    monkeypatch.setattr(processes, '_group_running', lambda group, **kwargs: False)
     stream = SimpleNamespace(close=Mock(side_effect=[OSError('stream pending'), None] if failure == 'stream' else None))
     process = SimpleNamespace(pid=424242, poll=lambda: 0, wait=Mock(return_value=0), stdout=stream)
     reader = SimpleNamespace(join=Mock(), is_alive=Mock(side_effect=[True, False] if failure == 'reader' else None,
@@ -73,7 +73,9 @@ def test_real_interrupt_grace_wait_records_disposal_before_retry(tmp_path, monke
             handle.abort()
         assert caught.value is interruption
         assert len(waits) == 2 and process.returncode == 0
-        group_checks.assert_called_once_with(process.pid)
+        assert group_checks.call_count == 1
+        assert group_checks.call_args.args == (process.pid,)
+        assert 0 < group_checks.call_args.kwargs['timeout'] <= 5
         assert handle._process_reaped and not handle.closed
         reader.join.assert_not_called()
         temporary.cleanup.assert_not_called()

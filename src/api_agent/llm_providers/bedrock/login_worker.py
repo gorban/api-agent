@@ -299,7 +299,7 @@ def _snapshot_ambient(config, store, profile, implicit, session):
         else:
             return dict(material, expires_at=expiry, region=region, identity=verified)
     with tempfile.TemporaryDirectory(prefix='api-agent-snapshot-') as temporary:
-        credentials = Path(temporary) / 'credentials'
+        credentials = Path(temporary).resolve() / 'credentials'
         atomic(credentials, store.unmasked_credentials(), b'')
         previous = os.environ.get('AWS_SHARED_CREDENTIALS_FILE')
         os.environ['AWS_SHARED_CREDENTIALS_FILE'] = str(credentials)
@@ -314,7 +314,7 @@ def _snapshot_ambient(config, store, profile, implicit, session):
         # SDK refresh may have renewed native caches. Export the verified tuple.
         material = {key: result[key] for key in ('AccessKeyId', 'SecretAccessKey', 'SessionToken')}
         with tempfile.TemporaryDirectory(prefix='api-agent-persist-') as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             (root / '.aws').mkdir(mode=0o700)
             store.seed(root)
             store.publish(root, material, result['expires_at'], result['identity'])

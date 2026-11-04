@@ -12,6 +12,30 @@ import sys
 import time
 
 
+def kill_owned_group(pid: int) -> None:
+    """Signal an owned, unreaped group; tolerate only a proved zombie-only group."""
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        # Some POSIX kernels reject signaling a group containing only zombies.
+        # The caller retains its child PID with WNOWAIT throughout this check.
+        snapshot = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,pgid=,stat="], capture_output=True, text=True,
+            check=True, timeout=1.0,
+        )
+        members = []
+        for line in snapshot.stdout.splitlines():
+            member, group, state = line.split()
+            if int(group) == pid:
+                members.append((int(member), state))
+        if not any(member == pid and state.startswith("Z") for member, state in members):
+            raise
+        if any(not state.startswith("Z") for _, state in members):
+            raise
+
+
 class OwnedProcess:
     def __init__(self, argv, **streams):
         reader, self.writer = os.pipe()
@@ -86,10 +110,7 @@ def _guard(reader, argv):
                 break
     finally:
         # An unreaped leader reserves the group identity through disposal.
-        try:
-            os.killpg(helper.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        kill_owned_group(helper.pid)
         code = helper.wait()
         _reap_descendants()
         if selector is not None:
