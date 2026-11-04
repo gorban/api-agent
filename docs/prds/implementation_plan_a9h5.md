@@ -9,3 +9,5 @@
 - [ ] Human acceptance of the normal unit command on macOS. Explicitly saved worker counts remain user choices.
 
 Verification: 26,816 Linux unit tests pass at 16 workers with exact 100% line and branch coverage. Controlled identical validation workloads pass all 192 calls at 16 and eight workers; 32 workers exhaust the unchanged worker limits. Independent adversarial and external source reviews pass. This does not establish native acceptance.
+
+[Remaining native readiness and coverage controls](implementation_plan_a9h7.md).

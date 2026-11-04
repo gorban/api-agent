@@ -166,6 +166,8 @@ def test_remote_interruption_ends_spans_without_projecting_active_payloads(disco
     from unittest.mock import AsyncMock
     from uuid import uuid4
     from api_agent.providers.setup_registry import SetupRegistry
+    from api_agent.providers.progress import component_timeout
+    from api_agent.providers.control import finish_cleanup
     from api_agent.providers.setup_transport import SetupServer, _encode, _decode
     from api_agent.providers.inference import request_to_wire
     from api_agent.providers.generation_attempts import begin_transport_attempt, finish_transport_attempt
@@ -181,40 +183,44 @@ def test_remote_interruption_ends_spans_without_projecting_active_payloads(disco
         async def run():
             boundary = EmissionBoundary(ContentPolicy(False))
             trace = RemoteInferenceTrace(config(log, trace_content, TRACE_EXPORT_ENDPOINT=endpoint), boundary)
-            entered = asyncio.Event()
-            async def complete(request):
-                capture.bind_boundary(boundary)
-                await trace.astart()
-                capture.bind_inference_trace(trace)
-                token = begin_transport_attempt(1)
-                try:
-                    capture.capture_inference('input', {'prompt':'active-payload-must-not-export'}, request.request_id)
-                    entered.set()
-                    await asyncio.sleep(60)
-                finally:
-                    finish_transport_attempt(token, error=asyncio.CancelledError())
-            owner = SimpleNamespace(complete=complete, ensure_ready=AsyncMock(), aclose=trace.aclose)
-            registry = SetupRegistry('synthetic-operation', 'synthetic-selection', lambda: owner)
-            server = SetupServer(registry, CAP, timeout=3)
-            descriptor = await server.start()
-            reader, writer = await asyncio.open_connection(descriptor['host'], descriptor['port'])
             try:
-                writer.write(_encode(dict(version=1, capability=CAP, action='register', timeout=3, worker_id='worker', attempt=1)))
-                binding = _decode(await reader.readline())['binding']
-                writer.write(_encode(dict(version=1, capability=CAP, action='complete', timeout=3, binding=binding,
-                                          request=request_to_wire(REQUEST), observation_call_id=call_id)))
-                await asyncio.wait_for(entered.wait(), 2)
-                if disconnect:
+                async with component_timeout('Fixture trace provider readiness', 10):
+                    await trace.astart()
+                entered = asyncio.Event()
+                async def complete(request):
+                    capture.bind_boundary(boundary)
+                    capture.bind_inference_trace(trace)
+                    token = begin_transport_attempt(1)
+                    try:
+                        capture.capture_inference('input', {'prompt':'active-payload-must-not-export'}, request.request_id)
+                        entered.set()
+                        await asyncio.sleep(60)
+                    finally:
+                        finish_transport_attempt(token, error=asyncio.CancelledError())
+                owner = SimpleNamespace(complete=complete, ensure_ready=AsyncMock(), aclose=trace.aclose)
+                registry = SetupRegistry('synthetic-operation', 'synthetic-selection', lambda: owner)
+                server = SetupServer(registry, CAP, timeout=3)
+                descriptor = await server.start()
+                reader, writer = await asyncio.open_connection(descriptor['host'], descriptor['port'])
+                try:
+                    writer.write(_encode(dict(version=1, capability=CAP, action='register', timeout=3, worker_id='worker', attempt=1)))
+                    binding = _decode(await reader.readline())['binding']
+                    writer.write(_encode(dict(version=1, capability=CAP, action='complete', timeout=3, binding=binding,
+                                              request=request_to_wire(REQUEST), observation_call_id=call_id)))
+                    await asyncio.wait_for(entered.wait(), 2)
+                    if disconnect:
+                        writer.close()
+                        await writer.wait_closed()
+                        # Let the server observe EOF before requesting shutdown.
+                        await asyncio.sleep(.05)
+                    await server.aclose()
+                finally:
                     writer.close()
                     await writer.wait_closed()
-                    # Let the server observe EOF before requesting shutdown.
-                    await asyncio.sleep(.05)
-                await server.aclose()
+                    await server.aclose()
+                    await registry.aclose()
             finally:
-                writer.close()
-                await writer.wait_closed()
-                await server.aclose()
-                await registry.aclose()
+                await finish_cleanup(trace.aclose())
         asyncio.run(run())
     spans = [span for _, body in received
              for resource in ExportTraceServiceRequest.FromString(body).resource_spans
