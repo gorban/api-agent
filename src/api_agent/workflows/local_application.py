@@ -75,4 +75,6 @@ class LocalChatApplication:
         expected['selected_model'] = request.selected_llm
         if values.get('llm_call') != expected:
             raise WorkflowError('Local chat output does not match its declared LLM result.')
+        from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState
+        report_outcome(ExecutionOutcome(OutcomeState.SUCCESS), runtime=getattr(factory, 'trace', None))
         return results[0]

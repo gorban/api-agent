@@ -247,6 +247,11 @@ def test_output_selection_alone_controls_clickable_footer_copy(monkeypatch):
             output = screen.query_one(TextArea)
             output.selection = Selection((0, 0), (0, 6))
             await pilot.pause()
+            # Footer keys are composed after a frame. Wait for the actual
+            # mounted key without driving another repaint or key event.
+            async with asyncio.timeout(2):
+                while not [key for key in footer.query(FooterKey) if key.key == 'ctrl+c']:
+                    await asyncio.sleep(.01)
             hint, = [key for key in footer.query(FooterKey) if key.key == 'ctrl+c']
             assert hint.key_display == '^c' and hint.description == 'Copy selected output'
             assert not hint.has_class('-disabled')
@@ -255,6 +260,9 @@ def test_output_selection_alone_controls_clickable_footer_copy(monkeypatch):
             assert copied == ['public'] and field.value == 'synthetic private reply'
             output.selection = Selection((0, 0), (0, 0))
             await pilot.pause()
+            async with asyncio.timeout(2):
+                while [key for key in footer.query(FooterKey) if key.key == 'ctrl+c']:
+                    await asyncio.sleep(.01)
             assert not [key for key in footer.query(FooterKey) if key.key == 'ctrl+c']
             await pilot.press('ctrl+c')
             assert app.screen is screen and copied == ['public']

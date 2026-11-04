@@ -79,3 +79,27 @@ def current_structural_scope():
 def structural_scope(scope_id):
     """Bind structural ownership with task-local restoration on every exit."""
     return _bind(_STRUCTURAL_SCOPE, canonical_uuid(scope_id))
+
+
+_TEST_EVIDENCE = ContextVar('workflow_test_evidence_allowed', default=True)
+
+
+def test_evidence_allowed():
+    """Manual retained work cannot append to finalized test evidence channels."""
+    return _TEST_EVIDENCE.get()
+
+
+def recording_enabled():
+    import os
+    return test_evidence_allowed() and os.environ.get('API_AGENT_ALLURE_REPORTING') == '1'
+
+
+@contextmanager
+def test_evidence(allowed):
+    if type(allowed) is not bool:
+        raise TypeError('Test evidence permission must be boolean')
+    token = _TEST_EVIDENCE.set(_TEST_EVIDENCE.get() and allowed)
+    try:
+        yield
+    finally:
+        _TEST_EVIDENCE.reset(token)

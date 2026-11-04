@@ -15,8 +15,14 @@ recovery_lock = threading.RLock()
 _LIMIT = 1024 * 1024
 
 
-def recover(argv, interaction, label, timeout):
+def recover(argv, interaction, label, timeout, *, login_only=False):
     from .credentials import CredentialRecoveryError as CredentialError
+    if type(login_only) is not bool:
+        raise CredentialError('Password manager recovery mode is invalid.')
+    if login_only and (type(argv) is not list or len(argv) != 2
+                       or type(argv[0]) is not str or not argv[0] or '\0' in argv[0]
+                       or type(argv[1]) is not str or argv[1] != 'whoami'):
+        raise CredentialError('Password manager returned an unsafe login probe.')
     if os.name != 'posix':
         raise CredentialError('Interactive credential recovery requires a POSIX terminal.')
     if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
@@ -26,7 +32,7 @@ def recover(argv, interaction, label, timeout):
         while True:
             channel = interaction.open(label)
             try:
-                result = _invocation(argv, channel, deadline)
+                result = _invocation(argv, channel, deadline, login_only=login_only)
             finally:
                 channel.close()
             if result is not None:
@@ -37,7 +43,7 @@ def recover(argv, interaction, label, timeout):
         raise CredentialError('Password manager recovery interaction disconnected.') from None
 
 
-def _invocation(argv, channel, deadline):
+def _invocation(argv, channel, deadline, *, login_only=False):
     import termios
     from .credentials import CredentialRecoveryError as CredentialError
     master, slave = os.openpty()
@@ -47,6 +53,8 @@ def _invocation(argv, channel, deadline):
     captured = bytearray()
     transcript_size = 0
     terminal_text = _TerminalText()
+    guidance_text = _TerminalText()
+    guidance_size = 0
     input_sent = False
     input_ended = False
     try:
@@ -58,9 +66,10 @@ def _invocation(argv, channel, deadline):
                      'fcntl.ioctl(0,termios.TIOCSCTTY,0); '
                      'os.execv(sys.argv[1],sys.argv[1:])')
         from .owned_process import OwnedProcess
+        child_options = {'env': {**os.environ, 'PYTHONUNBUFFERED': '1'}} if login_only else {}
         process = OwnedProcess([sys.executable, '-c', bootstrap, *argv],
                                    stdin=slave, stderr=slave, stdout=subprocess.PIPE,
-                                   shell=False)
+                                   shell=False, **child_options)
         os.close(slave)
         slave = None
         os.set_blocking(master, False)
@@ -82,9 +91,17 @@ def _invocation(argv, channel, deadline):
                 if not chunk:
                     selector.unregister(key.fileobj)
                 elif key.data == 'credential':
-                    captured.extend(chunk)
-                    if len(captured) > _LIMIT:
-                        raise CredentialError('Credential CLI output exceeded its limit.')
+                    if login_only:
+                        guidance_size += len(chunk)
+                        if guidance_size > _LIMIT:
+                            raise CredentialError('Password manager recovery output exceeded its limit.')
+                        text = guidance_text.feed(chunk)
+                        if text:
+                            channel.write(text)
+                    else:
+                        captured.extend(chunk)
+                        if len(captured) > _LIMIT:
+                            raise CredentialError('Credential CLI output exceeded its limit.')
                 else:
                     transcript_size += len(chunk)
                     if transcript_size > _LIMIT:

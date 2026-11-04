@@ -15,6 +15,7 @@ from api_agent.telemetry.tracing import TraceRuntime
 from api_agent.workflows.definition import load_definition
 from api_agent.workflows.observations import WorkflowObservationFactory
 from test_local_llm import selected, request
+from test_workflow_observations import config as trace_config
 
 
 @pytest.mark.parametrize('mode', ['OTEL', 'LangFuse'])
@@ -33,8 +34,8 @@ def test_failed_local_request_preserves_selection_but_omits_model_prose_from_otl
     values = {'TRACE_MODE': mode, 'TRACELOOP_TRACE_CONTENT': False,
               'LANGFUSE_PUBLIC_KEY': 'synthetic-public-key',
               'LANGFUSE_SECRET_KEY': 'synthetic-secret-key'}
-    resolved = ConfigResult(values,
-        {'TRACELOOP_TRACE_CONTENT': ResolvedValue(False, 'cli', True)}, (), (), ())
+    values.pop('TRACE_MODE')
+    resolved = trace_config(mode=mode, **values)
     exporter = InMemorySpanExporter()
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))

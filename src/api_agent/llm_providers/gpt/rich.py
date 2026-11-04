@@ -35,8 +35,8 @@ def native_summary(items, *, openrouter=False):
     return summary or None
 
 
-def _native_state(items, message=None, *, openrouter=False):
-    """Retain exact validated native replay metadata for the selected route."""
+def _native_state(items, message=None, *, openrouter=False, outcome='completed', require_replay=True):
+    """Validate native item grammar; replay also requires assistant output/state."""
     calls, text, reasoning, metadata, identifiers = [], [], False, False, set()
     if type(items) is not list or not 1 <= len(items) <= 64:
         raise ContractError('Invalid native provider continuation')
@@ -71,6 +71,10 @@ def _native_state(items, message=None, *, openrouter=False):
             if item.get('role') != 'assistant' or type(item.get('content')) is not list:
                 raise ContractError('Invalid native provider continuation')
             for part in item['content']:
+                if ((outcome == 'refused' or not require_replay) and type(part) is dict and set(part) == {'type', 'refusal'}
+                        and part['type'] == 'refusal' and type(part['refusal']) is str):
+                    text.append(TextContent(part['refusal']))
+                    continue
                 if type(part) is not dict or set(part) - {'type', 'text', 'annotations', 'logprobs'} or part.get('type') != 'output_text' or type(part.get('text')) is not str or part.get('annotations', []) != []:
                     raise ContractError('Invalid native provider continuation')
                 _logprobs(part.get('logprobs'))
@@ -79,10 +83,11 @@ def _native_state(items, message=None, *, openrouter=False):
         else:
             raise ContractError('Invalid native provider continuation')
         identifier = _identifier(item.get('id'))
-        if set(item) - allowed or item.get('status') not in (None, 'completed') or identifier in identifiers:
+        if set(item) - allowed or item.get('status') not in ((None, 'completed', 'incomplete') if outcome == 'length' else (None, 'completed')) or identifier in identifiers:
             raise ContractError('Invalid native provider continuation')
         identifiers.add(identifier)
-    if not (reasoning or metadata) or not (calls or text) or (message is not None and (tuple(calls) != message.calls
+    if (require_replay and (not (reasoning or metadata) or not (calls or text))
+            or message is not None and (tuple(calls) != message.calls
             or ''.join(part.text for part in text) != ''.join(part.text for part in message.content))):
         raise ContractError('Provider continuation does not match assistant output')
     return items
@@ -106,6 +111,15 @@ def payload(request, mode, subscription, *, _validate_instances=True):
         text = ''.join(part.text for part in message.content)
         if message.continuation is not None:
             envelope = continuation(message.continuation)
+            if mode == 'completions' and envelope['provider'] == 'openrouter.completions':
+                from .router_reasoning import chat_state
+                try:
+                    native, = envelope['state']
+                    chat_state(native, message)
+                except (ContractError, ValueError):
+                    raise ProviderAccessError('invalid_request', 'Invalid GPT provider continuation.') from None
+                rows.append(native)
+                continue
             if mode != 'responses' or envelope['provider'] not in (_PROVIDER, 'openrouter.responses'):
                 raise ProviderAccessError('unsupported', 'GPT inference cannot replay this provider continuation.')
             try:
@@ -204,9 +218,14 @@ def tool_result(data, responses, token, *, openrouter=False):
         for call in calls:
             if _protected(object_json(call.arguments), token):
                 raise ValueError()
+        chat_summary = None
+        if not responses and openrouter and any(key in message for key in ('reasoning', 'reasoning_content', 'reasoning_details')):
+            from .router_reasoning import chat_state
+            chat_summary = chat_state(message)
+            state = json.dumps(dict(provider='openrouter.completions', state=[message]), allow_nan=False, separators=(',', ':'))
         result = LLMResult(Message('assistant', tuple(text), tuple(calls), continuation=state), _usage(data.get('usage'), responses),
                          'tool_calls', data.get('model'), data.get('service_tier'), data.get('serving_revision'),
-                         reasoning_summary=native_summary(data['output'], openrouter=openrouter) if responses else None)
+                         reasoning_summary=native_summary(data['output'], openrouter=openrouter) if responses else chat_summary)
         result_to_wire(result)
         return result
     except (ValueError, TypeError, KeyError, AttributeError, ContractError):

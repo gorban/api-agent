@@ -1,4 +1,5 @@
 """Explicit, admitted LangGraph state workflows (Workflow v3)."""
+from .run_context import recording_enabled
 from .run_context import current_structural_scope, structural_scope
 
 import asyncio
@@ -441,7 +442,7 @@ def load_stateful_catalog(definition, *, packaged_proof=None, config=None):
     """Execute only the selected, still admitted native sources."""
     definition.verify_sources()
     timeout_values, timeout_keys = _validated_timeouts(definition, config)
-    if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1':
+    if recording_enabled():
         _source_manifest(definition, packaged_proof)
     result = {}
     sources = {definition.schema_source, *(row['Source'] for row in definition.nodes),
@@ -832,6 +833,12 @@ class StatefulWorkflow:
         selected_journal = (journal if journal is not None else
                             self.journal if self.journal is not None else
                             selected_services.get('journal'))
+        automatic_observations = None
+        factory = selected_services.get('observation_factory')
+        if selected_journal is None and factory is not None and not recording_enabled():
+            from .identity import workflow_identity
+            selected_journal = automatic_observations = factory.create(self.definition, turn_id=turn_id,
+                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts, component_passes={}))
         journal_turn = getattr(selected_journal, 'turn_id', None)
         if turn_id is not None and journal_turn is not None and turn_id != journal_turn:
             raise ValueError('explicit turn identity disagrees with the active journal')
@@ -847,7 +854,7 @@ class StatefulWorkflow:
             admit_identity = getattr(selected_journal, 'admit_semantic_identity', None)
             if admit_identity is not None:
                 admit_identity(identity)
-        recorded = os.environ.get('API_AGENT_ALLURE_REPORTING') == '1'
+        recorded = recording_enabled()
         if recorded:
             proof = selected_services.get('packaged_proof')
             source_manifest = _source_manifest(self.definition, proof)
@@ -888,6 +895,8 @@ class StatefulWorkflow:
                     async with invocation_tools(self.definition, selected_services), self._scope_graph(budget):
                         yield
         finally:
+            if automatic_observations is not None:
+                automatic_observations.close()
             history.close()
             self._request.reset(token)
             self._services.reset(services_token)
@@ -916,6 +925,16 @@ class StatefulWorkflow:
             outcome = 'failed'
             try:
                 yield
+                terminal = self._services.get().get('execution_outcome')
+                if terminal is not None:
+                    from api_agent.telemetry.outcomes import ExecutionOutcome, report_outcome
+                    final = terminal()
+                    if type(final) is not ExecutionOutcome:
+                        raise ValueError('Invalid explicit execution outcome')
+                    report_outcome(final, runtime=getattr(self._journal.get(), 'trace', None))
+                    current = self._journal.get()
+                    if current is not None and hasattr(current, 'report_outcome'):
+                        current.report_outcome(budget.id, final)
                 outcome = 'passed'
             except asyncio.CancelledError:
                 outcome = ('failed' if budget.deadline is not None

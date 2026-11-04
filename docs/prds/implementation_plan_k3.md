@@ -6,7 +6,7 @@ Current routing and attribution: [endpoint-only tracing and shared collector req
 
 ## Completed declaration slice
 
-- [x] Add optional TRACE_MODE/TRACE_TARGET with generic optional-review metadata, conditional local endpoint defaults, dynamic review updates, and LOG_CONTENT=False. Live exporters, content gating and Compose lifecycle remain tasks below.
+- [x] Add optional trace mode/destination configuration with generic optional-review metadata, conditional local endpoint defaults, dynamic review updates, and LOG_CONTENT=False. Live exporters, content gating and Compose lifecycle remain tasks below.
 
 ## Live backend proof slice
 
@@ -23,7 +23,7 @@ Current routing and attribution: [endpoint-only tracing and shared collector req
 
 - [x] Add full LangFuse v3-compatible and current Jaeger v2 Compose profiles plus LocalStack storage profile, validating exact upstream storage/headless initialization variable names and controlled ownership. Planner selects a local tracer only for its conventional IPv4/localhost default endpoint, skips custom/remote targets and rejects an explicit blank target when tracing is enabled. Config-only checks are complete; exporters, started/reused lifetime and real retained traces remain below.
 
-- [x] Declare shared optional `TRACE_MODE` without a default: omitted/empty disables tracing; exact `LangFuse` or `OTEL` selects the backend. Declare optional `TRACE_TARGET` without an unconditional default. Show both fields in configuration review even when not provided. A missing optional field has a blank effective value and `Not provided` source, without a Required marker.
+- [x] The original optional trace mode/destination review supported blank `Not provided` values without a Required marker. Current provider-owned configuration supersedes the original shared declarations: blank `TRACE_MODE` disables tracing, active routes reveal complete `TRACE_EXPORT_ENDPOINT` ingestion settings, and saved explicit destinations retain precedence. See [current configuration requirements](implementation_plan_k1a2c.md).
 - [x] Use conditional target defaults: LangFuse `http://localhost:3000`; OTEL `http://localhost:4318/v1/traces` (OTLP/HTTP). Changing mode recomputes target and Source while target is still defaulted. An explicitly saved/environment/CLI target stays explicit when mode changes; unset it to resume conditional defaults. Preserve config precedence and validate backend/endpoint combinations before startup.
 - [ ] Before the first Ok integration/E2E run, wire LangGraph, node and provider tracing to the selected backend/target. Disabled mode creates no exporter or tracer containers. Correlate session/suite/test/attempt identifiers and token metrics; flush on completion, cancellation and shutdown. LangFuse may require public/secret keys; declare appropriate conditional authentication configuration when implementing, with headless local provisioning and no secrets in trace payloads.
 - [x] Design local tracing setup from the public [Langfuse Docker Compose documentation](https://langfuse.com/self-hosting/deployment/docker-compose) and [headless initialization documentation](https://langfuse.com/self-hosting/administration/headless-initialization). Pin the selected upstream release and use its documented dependency stack and initialization settings to provision a local project and API keys. Keep credentials out of committed configuration and trace payloads.

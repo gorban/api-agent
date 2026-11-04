@@ -350,10 +350,11 @@ def _terminal_stop_signals(diagnostic):
         return
     previous = signal.getsignal(signal.SIGINT)
     task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
     def interrupted(signum, frame):
         if not state['requested']:
             state['requested'] = True
-            task.cancel()
+            loop.call_soon_threadsafe(task.cancel)
         else:
             diagnostic('Cleanup pending; waiting for owned components to stop.')
     signal.signal(signal.SIGINT, interrupted)

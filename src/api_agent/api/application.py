@@ -194,7 +194,13 @@ class Runtime:
                 owner.require('ui', 'launch')
             start = getattr(owner, 'astart', None)
             if start is not None:
-                await start()
+                if owner is self.tracing:
+                    try:
+                        await start()
+                    except Exception:
+                        logging.getLogger(__name__).error('Tracing initialization failed; execution continues without tracing.')
+                else:
+                    await start()
         for owner in self.tool_owners.values():
             if self._closed:
                 raise RuntimeLifecycleError('runtime_closed')
@@ -348,23 +354,54 @@ class Application:
                     await send({"type": "lifespan.shutdown.complete"})
                     return
         elif scope["type"] == "http":
-            # The copy prevents a caller's reusable scope from retaining runtime state.
-            cleanups = []
-            try:
-                request_scope = {**scope, "api_agent_runtime": self.runtime,
-                                 "api_agent_http_cleanup": cleanups}
-                backend = (self.runtime.services or {}).get('studio_backend')
-                ingress = getattr(backend, 'handle_asgi', None)
-                if ingress is None:
-                    if (backend is not None or type(self._django_app) is not RuntimeHandler
-                            or not await self._deferred_response(request_scope, send)):
-                        await self._django_app(request_scope, receive, send)
-                else:
-                    await ingress(request_scope, receive, send, self._django_app)
-            finally:
-                await close_http_callbacks(cleanups)
+            tracing = self.runtime.tracing
+            request_owner = getattr(tracing, 'request', None)
+            if request_owner is not None:
+                async with request_owner(scope) as selected:
+                    await self._traced_http(selected, scope, receive, send)
+            else:
+                await self._traced_http(tracing, scope, receive, send)
         else:
             raise ValueError(f"Unsupported ASGI scope: {scope['type']}")
+
+    async def _traced_http(self, tracing, scope, receive, send):
+        if tracing is None:
+            return await self._http(scope, receive, send)
+        from api_agent.telemetry.operation import operation
+        with operation(tracing) as owner:
+            async def traced_send(message):
+                try:
+                    await send(message)
+                except asyncio.CancelledError:
+                    # Django can consume send cancellation inside its task.
+                    # Record it at the boundary before that handoff loses it.
+                    from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeState, OutcomeCause
+                    owner.report(ExecutionOutcome(OutcomeState.CANCELLED, OutcomeCause.CANCELLED))
+                    raise
+            async def traced_receive():
+                message = await receive()
+                if message.get('type') == 'http.disconnect':
+                    from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeState, OutcomeCause
+                    owner.report(ExecutionOutcome(OutcomeState.CANCELLED, OutcomeCause.CANCELLED))
+                return message
+            await self._http(scope, traced_receive, traced_send)
+
+    async def _http(self, scope, receive, send):
+        # The copy prevents a caller's reusable scope from retaining runtime state.
+        cleanups = []
+        try:
+            request_scope = {**scope, "api_agent_runtime": self.runtime,
+                             "api_agent_http_cleanup": cleanups}
+            backend = (self.runtime.services or {}).get('studio_backend')
+            ingress = getattr(backend, 'handle_asgi', None)
+            if ingress is None:
+                if (backend is not None or type(self._django_app) is not RuntimeHandler
+                        or not await self._deferred_response(request_scope, send)):
+                    await self._django_app(request_scope, receive, send)
+            else:
+                await ingress(request_scope, receive, send, self._django_app)
+        finally:
+            await close_http_callbacks(cleanups)
 
 
     async def _deferred_response(self, scope, send):

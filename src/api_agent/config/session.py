@@ -110,10 +110,11 @@ class ConfigSession:
         self._schema = self._bootstrap_schema(schema, provider_dotenv)
 
     def _bootstrap_schema(self, schema, dotenv, choices=None, operation_intents=()):
+        from api_agent.runtime.pack_admission import configuration_inputs
         from api_agent.providers.loading import bootstrap_schema
         provider_schema = bootstrap_schema(schema, self.argv, self.environ, dotenv, choices,
             owner_root=getattr(self.context, 'owner_root', self.context.pack_root),
-            configuration_paths=getattr(self.context, 'provider_config_paths', ()))
+            configuration_paths=getattr(self.context, 'provider_config_paths', ()), **configuration_inputs(self.context))
         if self._automatic_tool_selection:
             from api_agent.tooling.models import OperationSelection
             effective = resolve_config(provider_schema, argv=self.argv, environ=self.environ,

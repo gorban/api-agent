@@ -12,6 +12,7 @@ import tomllib
 PROVIDER_SELECTORS = {
     'upstream': 'UPSTREAM_API_PROVIDER', 'api': 'API_PROVIDER',
     'llm': 'LLM_PROVIDER', 'access': 'ACCESS_PROVIDER', 'ui': 'UI_PROVIDER',
+    'tracing': 'TRACE_PROVIDER',
 }
 
 
@@ -117,9 +118,10 @@ def inspect_relocated_pack(base_root: Path, pack_root: Path):
     shared = load_shared_schema(base_root)
     from api_agent.runtime.pack_composition import load_context_schema
     schema = load_context_schema(context, shared)
+    from api_agent.runtime.pack_admission import configuration_inputs
     from api_agent.providers.loading import bootstrap_schema
     schema = bootstrap_schema(schema, [], {}, {}, owner_root=context.owner_root,
-                              configuration_paths=context.provider_config_paths)
+                              configuration_paths=context.provider_config_paths, **configuration_inputs(context))
     # Check file-backed factory defaults after relocation; no module is loaded.
     from api_agent.config.declarations import UNSET
     from api_agent.providers.loading import provider_location

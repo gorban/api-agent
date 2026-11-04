@@ -133,7 +133,7 @@ def test_real_remote_langfuse_required_keys_are_reviewable_with_help(tmp_path):
         app.schema = load_shared_schema()
         app.session.schema = app.schema
         app.session.environ = {'TUI_MODE':'run-local', 'TRACE_MODE':'LangFuse',
-                               'TRACE_TARGET':'https://trace.example.invalid'}
+                               'TRACE_EXPORT_ENDPOINT':'https://trace.example.invalid'}
         app.session.context.anchors.update({key:tmp_path for key in ('owner_root','base_root','pack_root')})
         app.check_operation_start = Mock(side_effect=AssertionError('Missing keys must block startup'))
 
@@ -201,7 +201,7 @@ def test_remote_langfuse_secret_stays_masked_when_saved_and_reopened(tmp_path):
         app.schema = load_shared_schema()
         app.session.schema = app.schema
         app.session.environ = {'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse',
-                               'TRACE_TARGET': 'https://trace.example.invalid'}
+                               'TRACE_EXPORT_ENDPOINT': 'https://trace.example.invalid'}
         app.session.context.anchors.update({key: tmp_path for key in ('owner_root', 'base_root', 'pack_root')})
         name, secret = 'LANGFUSE_SECRET_KEY', 'synthetic-review-secret'
         async with app.run_test() as pilot:

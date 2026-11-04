@@ -1,6 +1,7 @@
 """Ordered pack contributions, with explicit responsibility replacement."""
 from dataclasses import replace
 from pathlib import Path
+import os
 from types import MappingProxyType
 import tomllib
 
@@ -24,24 +25,30 @@ def load_ordered_context(base_root, directories, launcher_root=None):
     from .resource_pack import load_launch_context
     if not directories:
         raise ResourcePackError('Ordered packs must not be empty')
-    layers = tuple(load_launch_context(base_root, Path(path), launcher_root) for path in directories)
+    from .pack_admission import admit, capture
+    manifests = tuple(capture(Path(path).resolve(), 'pack.toml') for path in directories) if len(directories) > 1 else ()
+    layers = tuple(load_launch_context(base_root, Path(path), launcher_root,
+                   **({'_manifest_body': manifests[index].body} if manifests else {}))
+                   for index, path in enumerate(directories))
     if len({layer.pack_root for layer in layers}) != len(layers):
         raise ResourcePackError('Ordered packs must have unique physical roots')
     if len({layer.pack_id for layer in layers}) != len(layers):
         raise ResourcePackError('Ordered packs must have unique ids')
     if len(layers) == 1:
         return layers[0]
+    contributions = tuple(admit(layer, manifest) for layer, manifest in zip(layers, manifests))
     workflow = None
     tooling = None
     identity = None
     declared = set()
     defaults, tests = {}, {}
-    for layer in layers:
+    for layer, contribution in zip(layers, contributions):
+        bodies = {layer.pack_root / source.relative_path: source.body for source in contribution.declarations}
         if layer is not layers[-1]:
-            _validate_auxiliary_ownership(layer)
-        fields = set(tomllib.loads(layer.config_path.read_text()).get('fields', {}))
+            _validate_auxiliary_ownership(layer, bodies)
+        fields = set(tomllib.loads(bodies[layer.config_path].decode()).get('fields', {}))
         for path in layer.provider_config_paths:
-            fields.update(tomllib.loads(path.read_text()).get('fields', {}))
+            fields.update(tomllib.loads(bodies[path].decode()).get('fields', {}))
         for responsibility, field in (('ui', 'UI_PROVIDER'), ('api', 'API_PROVIDER')):
             if field in fields or field in layer.defaults:
                 if responsibility in declared and responsibility not in layer.composition_replacements:
@@ -64,7 +71,12 @@ def load_ordered_context(base_root, directories, launcher_root=None):
         raise ResourcePackError('Tool catalog and workflow must share one pack owner')
     selected = layers[-1]
     graph = workflow or selected
-    return replace(selected, pack_layers=layers, defaults=MappingProxyType(defaults),
+    from .pack_admission import admit_project
+    project_contributions = [admit_project(selected.base_root, 'runtime-project')]
+    if graph.workflow_base_root is not None and graph.workflow_base_root != selected.base_root:
+        project_contributions.append(admit_project(graph.workflow_base_root, 'workflow-project',
+                                                   graph.workflow_library_files))
+    return replace(selected, pack_layers=layers, pack_contributions=contributions, project_contributions=tuple(project_contributions), defaults=MappingProxyType(defaults),
         tests=MappingProxyType(tests),
         provider_config_paths=_collect(layers, 'provider_config_paths'),
         production_paths=_collect(layers, 'production_paths'),
@@ -85,10 +97,10 @@ def load_ordered_context(base_root, directories, launcher_root=None):
         tool_catalog_path=tooling.tool_catalog_path if tooling is not None else None)
 
 
-def _validate_auxiliary_ownership(layer):
+def _validate_auxiliary_ownership(layer, bodies):
     """Auxiliary declarations currently have one consumer owner at bootstrap."""
     for path in layer.provider_config_paths:
-        fields = tomllib.loads(path.read_text()).get('fields', {})
+        fields = tomllib.loads(bodies[path].decode()).get('fields', {})
         if type(fields) is not dict:
             raise ResourcePackError('Auxiliary configuration requires a fields table')
         for name, spec in fields.items():
@@ -121,14 +133,18 @@ def _collect(layers, field):
 
 def load_context_schema(context, shared):
     """Resolve each declaration's defaults in its owning pack before layering."""
+    from .pack_admission import declaration_bodies, verify_composition
+    verify_composition(context)
     from api_agent.config import ConfigSchema, compose_schema, load_declarations
     from api_agent.config.declarations import UNSET
     if not context.pack_layers:
         return compose_schema(shared, load_declarations(context.config_path, base_schema=shared,
                               source='pack_default'), overrides=context.defaults)
+    bodies = declaration_bodies(context)
     schema = shared
     for layer in context.pack_layers or (context,):
-        extension = load_declarations(layer.config_path, base_schema=schema, source='pack_default')
+        extension = load_declarations(layer.config_path, base_schema=schema, source='pack_default',
+                                      body=bodies[layer.config_path])
         schema = compose_schema(schema, extension, overrides=layer.defaults)
         fields = dict(schema.fields)
         for name, declaration in fields.items():
@@ -136,10 +152,10 @@ def load_context_schema(context, shared):
                 if value is UNSET:
                     return value
                 if declaration.type == 'path' and declaration.anchor and value:
-                    return str((layer.anchors[declaration.anchor] / Path(str(value)).expanduser()).resolve())
+                    return os.path.abspath(layer.anchors[declaration.anchor] / Path(str(value)).expanduser())
                 if name.endswith('_PROVIDER') and isinstance(value, str) and ':' in value:
                     path, factory = value.rsplit(':', 1)
-                    return str((layer.owner_root / Path(path).expanduser()).resolve()) + ':' + factory
+                    return os.path.abspath(layer.owner_root / Path(path).expanduser()) + ':' + factory
                 return value
             fields[name] = replace(declaration, default=rooted(declaration.default),
                 conditional_defaults=tuple(dict(row, value=rooted(row['value']))

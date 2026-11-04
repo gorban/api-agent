@@ -159,10 +159,12 @@ def _validate_predicate(predicate, fields, *, validate_values=True, pending_cont
                 convert_value(fields[name], value, external=False, anchors=None)
 
 def load_declarations(path: str | Path, *, base_schema: ConfigSchema | None = None,
-                      source: str = 'shared_default', predicate_context: ConfigSchema | None = None) -> ConfigSchema:
-    location = Path(path).resolve()
-    with location.open('rb') as handle:
-        body = handle.read()
+                      source: str = 'shared_default', predicate_context: ConfigSchema | None = None,
+                      body: bytes | None = None) -> ConfigSchema:
+    location = Path(path).absolute() if body is not None else Path(path).resolve()
+    if body is None:
+        with location.open('rb') as handle:
+            body = handle.read()
     from .source_reads import record_file, record_link
     record_link(Path(path).absolute(), location)
     record_file(location, location.parent, body)
@@ -188,6 +190,10 @@ def load_shared_schema(base_root: Path | None = None) -> ConfigSchema:
     ui_factory = Path(__file__).resolve().parent.parent / 'ui/provider.py'
     if 'UI_PROVIDER' in fields:
         fields['UI_PROVIDER'] = replace(fields['UI_PROVIDER'], default=str(ui_factory) + ':create_provider')
+    trace_factory = Path(__file__).resolve().parent.parent / 'telemetry/trace_adapters/provider.py'
+    if 'TRACE_PROVIDER' in fields:
+        fields['TRACE_PROVIDER'] = replace(fields['TRACE_PROVIDER'],
+            default=str(trace_factory) + ':create_tracing_provider')
     return ConfigSchema(fields)
 
 def _compose_fields(shared: ConfigSchema, extension: ConfigSchema | None = None) -> ConfigSchema:

@@ -46,7 +46,7 @@ validation = "regex"
 override = true
 override_if_present = true
 default = '.+'
-help = "Full model-ID regular expression for Bedrock discovery. Filter IDs according to AWS documentation, account access, endpoint and API. Discovery does not establish invocation or feature support; explicit configuration replaces this default."
+help = "Full model-ID regular expression for Bedrock discovery. Filter IDs according to AWS documentation, account access, endpoint and API. Discovery does not establish invocation or feature support; explicit configuration replaces this default. Bundled default: .+. Non-exhaustive US-family example for GPT Luna/Terra/Sol and Claude Haiku/Sonnet/Opus; add other families intentionally: us[.](?:anthropic[.]claude-(?:(?:haiku|sonnet|opus)-.+|[0-9]+(?:-[0-9]+)*-(?:haiku|sonnet|opus)-.+)|openai[.]gpt-[0-9]+(?:[.][0-9]+)*-(?:luna|terra|sol)(?:-[0-9]{4}-[0-9]{2}-[0-9]{2})?). Replace us[.] with global[.] only for supported global profiles when worldwide routing is acceptable. Geographic profiles can cost more than corresponding global profiles; compare model/source-region pricing."
 
 [fields.BEDROCK_ENDPOINT]
 type = "str"
@@ -76,7 +76,7 @@ validation = "regex"
 override = true
 override_if_present = true
 default = 'openai\.gpt-oss-20b(?:-1:0)?'
-help = "Full model-ID regular expression for the default model. The bundled pattern selects openai.gpt-oss-20b on Mantle or openai.gpt-oss-20b-1:0 on Runtime when available. For other Runtime models select an exact supported model or profile; known closed-weight GPT Responses models use system profile IDs such as us.openai.gpt-5.6-luna (escape dots in the regular expression). Explicit configuration replaces the default and is preserved when API mode changes."
+help = "Full model-ID regular expression for the default model. Bundled pattern: openai[.]gpt-oss-20b(?:-1:0)?. The bundled pattern selects openai.gpt-oss-20b on Mantle or openai.gpt-oss-20b-1:0 on Runtime when available. For other Runtime models select an exact supported model or profile; known closed-weight GPT Responses models use system profile IDs such as us.openai.gpt-5.6-luna (escape dots in the regular expression). Explicit configuration replaces the default and is preserved when API mode changes. US profiles constrain routing to that geography; supported global profiles allow worldwide routing and can have lower token prices. Compare the exact model and source-region rates before selecting a geographic profile."
 
 [fields.BEDROCK_LOGIN_EXPECTED_ACCOUNT_ID]
 type = "str"

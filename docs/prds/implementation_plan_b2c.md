@@ -50,3 +50,8 @@ This is a separate engine behavior proof, not completion of the useful API demo.
 - [x] Acquire the synthetic API through [pack-declared prerequisites](implementation_plan_o1.md). Demonstrate the GraphQL tool against that target without requiring a particular database engine. Preserve query-verification, partial-error and lifecycle acceptance above.
 
 - [x] Show the bundled `API_ENDPOINT` default in configuration Review. Allow editing it to a nonempty remote endpoint and clearing its saved `.env` value to restore the blank local synthetic API default.
+
+## Reviewer tool evidence
+
+- [x] Supply the reviewer the same selected tool name, description and argument schema used by the planner, plus the successful owner pre-execution validation result. Obtain this from the prepared call passed to the relevance callback; do not add undeclared tool operations or require the user to supply the API schema. Treat the specification as data, preserve original-request authority and do not imply that a validated query has executed or returned data.
+- [x] Keep tool context stable in the reviewer history across retries. Preserve correctness, grounding and relevance rejection, query validation before reviewer admission, and optional no-tool behavior. Verify positive context delivery and independent rejection controls, then exercise the actual selected graph and trace its tool invocation with an authorized provider.

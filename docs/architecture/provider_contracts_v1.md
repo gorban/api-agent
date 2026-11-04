@@ -162,3 +162,19 @@ Failed factories may still own resources. `ProviderError.retained_owners` and ca
 Deterministic units exercise synthetic transports, browser/process doubles and local configuration; they make no real provider call. The prior checkpoint's 1,656-unit result describes the earlier foundation only. Current joined metrics and independent review evidence are recorded outside this public document.
 
 Real adapters, selected-provider dependency manifests, installed-pack relocation, declaration authority, callback forwarding, worker IPC/debug survival and TUI/runner consumer wiring remain tasks. These contracts do not authorize live login, inference or E2E acceptance.
+
+### Optional tracing identity
+
+An admitted LLM adapter may declare `telemetry_provider_name` as a public semantic
+identifier matching `[a-z][a-z0-9_.-]{0,63}`. This is metadata, not a provider
+selector, endpoint, credential or authority grant. The shared validated provider
+owner forwards it through the existing observation owner and live credential
+boundary before SDK publication. Missing, malformed or credential-bearing values
+are omitted. A compatible HTTP API does not establish the service identity:
+adapters should declare only routes whose provider they know explicitly.
+
+The validated result supplies the served model separately from the selected
+catalog identity. Raw span payloads cannot establish either identity. Remote host
+owned generations consume these facts at the provider source. Authoritative
+worker metrics omit provider labels unavailable through a trusted local source;
+they never infer the provider from model-name text.

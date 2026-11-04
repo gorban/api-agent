@@ -1,6 +1,7 @@
 """Readiness and dashboard authentication owned by one local operation."""
 import asyncio
 import math
+from collections.abc import Mapping
 from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPSHandler, HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -9,7 +10,6 @@ from api_agent.providers.progress import component_timeout
 from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.contracts import ContractError
 from api_agent.runtime.client_tls import verified_client_context
-from api_agent.runtime.compose import ComposeError, selected_profiles
 from api_agent.runtime.local_status import safe_destination
 
 
@@ -38,19 +38,27 @@ def _probe(url, ca_file):
 
 class LocalTracing:
     """No infrastructure or browser allocation; credentials never enter snapshots."""
-    def __init__(self, config, *, emissions, probe=None, cleanup_timeout=5):
+    def __init__(self, config, *, emissions, probe=None, cleanup_timeout=5, binding=None, owner_root=None):
         if type(cleanup_timeout) not in (int, float) or not math.isfinite(cleanup_timeout) or cleanup_timeout <= 0:
             raise ContractError('Invalid cleanup timeout')
         self.cleanup_timeout = cleanup_timeout
         self._probe_task = None
         self._closed = False
-        self.config, self.emissions = config, emissions
+        self.config = config if isinstance(config, Mapping) else config.values
+        resolved = config if hasattr(config, 'fields') else self.config
+        self.emissions = emissions
         self.probe = probe or _probe
         self.viewer_url = None
         self.state = 'disabled'
         self.authentication = 'not_attempted'
         self.diagnostic = None
         self._credentials = None
+        self._binding = binding
+        self._admission_lock = asyncio.Lock()
+        self._provider_selected = bool(self.config.get('TRACE_PROVIDER'))
+        self._resolved, self._owner_root = resolved, owner_root
+        if self._binding is not None:
+            self.config = self._binding.values
 
     @staticmethod
     def _probe_finished(task):
@@ -60,40 +68,50 @@ class LocalTracing:
     async def start(self):
         if self._closed:
             raise DashboardError('Tracing dashboard owner is closed.')
-        mode = self.config.get('TRACE_MODE', '')
-        if not mode:
+        async with self._admission_lock:
+            if self._binding is None and self._provider_selected:
+                from api_agent.telemetry.tracing_providers import effective_selection, admit_binding
+                selected = effective_selection(self._resolved, owner_root=self._owner_root, require_export=False)
+                if selected is not None:
+                    from api_agent.telemetry.privacy import register_secret_async
+                    for name in selected.declaration.secret_fields:
+                        value = selected.values.get(name)
+                        if type(value) is str and value:
+                            await register_secret_async(self.emissions, value)
+                    self._binding = admit_binding(self._resolved, owner_root=self._owner_root, boundary=self.emissions,
+                                                  require_export=False)
+                    self.config = self._binding.values
+        if self._binding is not None:
+            return await self._start_provider()
+        if self._provider_selected:
             return self
-        if mode not in {'LangFuse', 'OTEL'}:
-            raise DashboardError('Unsupported tracing dashboard mode.')
-        try:
-            local = selected_profiles(self.config)
-        except ComposeError:
-            raise DashboardError('Invalid tracing destination configuration.') from None
-        if mode == 'LangFuse':
-            url = self.config['TRACE_TARGET'].rstrip('/')
-            email, password = (self.config.get(key) for key in ('LANGFUSE_ADMIN_EMAIL', 'LANGFUSE_ADMIN_PASSWORD'))
-            if not all(isinstance(value, str) and value.strip() and '\x00' not in value for value in (email, password)):
-                raise DashboardError('Configure the LangFuse dashboard admin email and password.')
-            self._credentials = email, password
+        return self
+
+    async def _start_provider(self):
+        declaration = self._binding.declaration.dashboard
+        if declaration is None:
+            self.state = 'unavailable'
+            self.diagnostic = 'The selected tracing provider has no dashboard capability.'
+            return self
+        url = self.config.get(declaration.url_field)
+        readiness = (self.config.get(declaration.readiness_field) if declaration.readiness_field
+                     else url.rstrip('/') + declaration.readiness_path if type(url) is str else url)
+        if safe_destination(url) is None or safe_destination(readiness) is None or _origin(url) != _origin(readiness):
+            raise DashboardError('Tracing dashboard requires admitted same-origin HTTP(S) destinations.')
+        if declaration.username_field is not None:
+            values = tuple(self.config.get(field) for field in (declaration.username_field, declaration.password_field))
+            if any(type(value) is not str or not value.strip() or '\x00' in value for value in values):
+                raise DashboardError('Configure the explicitly declared dashboard human login fields.')
+            self._credentials = values
             from api_agent.telemetry.privacy import register_secret_async
-            for value in self._credentials:
+            for value in values:
                 await register_secret_async(self.emissions, value)
-            path = '/auth/sign-in'
-        else:
-            url = self.config.get('TRACE_VIEWER_URL')
-            if not url and 'otel' in local:
-                url = 'http://localhost:' + str(self.config.get('JAEGER_VIEWER_PORT', 16686))
-            path = '/'
+        if declaration.login == 'provider':
+            async with component_timeout('Tracing dashboard capability admission', 30):
+                await self._binding.dashboard_adapter()
         self.state = 'unavailable'
-        if not url:
-            self.diagnostic = ('Tracing viewer is unavailable: set TRACE_VIEWER_URL for the custom OTEL collector, '
-                               'or use the managed local OTLP traces endpoint on port 4318.')
-            return self
-        if safe_destination(url) is None:
-            raise DashboardError('Tracing viewer requires an HTTP(S) URL without credentials, query or fragment.')
         if self._probe_task is None:
-            self._probe_task = asyncio.create_task(asyncio.to_thread(self.probe,
-                url.rstrip('/') + path, self.config.get('CLIENT_CA_FILE') or None))
+            self._probe_task = asyncio.create_task(asyncio.to_thread(self.probe, readiness, self.config.get('CLIENT_CA_FILE') or None))
             self._probe_task.add_done_callback(self._probe_finished)
         async with component_timeout('Tracing dashboard readiness', 15):
             try:
@@ -101,15 +119,11 @@ class LocalTracing:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                raise DashboardError('Tracing dashboard readiness failed; check its configured address.') from None
+                raise DashboardError('Tracing dashboard readiness failed.') from None
         if ready and not self._closed:
             self.viewer_url, self.state = url.rstrip('/'), 'ready'
         elif not self._closed:
-            self.diagnostic = (
-                'Tracing viewer readiness failed: check TRACE_VIEWER_URL or the managed local '
-                'Jaeger service and JAEGER_VIEWER_PORT; no dashboard tab was opened.' if mode == 'OTEL' else
-                'Tracing viewer readiness failed: check TRACE_TARGET and the LangFuse service; '
-                'no dashboard tab was opened.')
+            self.diagnostic = 'The selected tracing dashboard is not ready.'
         return self
 
     def interactive_credentials(self):
@@ -128,40 +142,29 @@ class LocalTracing:
         await page.route('**/*', guard)
         try:
             async with component_timeout('Tracing dashboard login', 45):
-                if self.config['TRACE_MODE'] == 'OTEL':
-                    response = await page.goto(self.viewer_url, wait_until='domcontentloaded')
-                    if response is None or response.status != 200 or _origin(page.url) != allowed:
-                        raise DashboardError('Tracing viewer did not load at its configured origin.')
+                response = await page.goto(self.viewer_url, wait_until='domcontentloaded')
+                if response is None or response.status != 200 or _origin(page.url) != allowed:
+                    raise DashboardError('Tracing dashboard did not load at its admitted origin.')
+                declaration = self._binding.declaration.dashboard
+                if declaration.login == 'none':
                     return
                 self.authentication = 'failed'
-                await page.goto(self.viewer_url + '/auth/sign-in', wait_until='domcontentloaded')
+                adapter = await self._binding.dashboard_adapter()
+                username, password = self._credentials
+                await adapter.prepare_dashboard(page, url=self.viewer_url, username=username, password=password)
                 if _origin(page.url) != allowed:
-                    raise DashboardError('LangFuse dashboard redirected outside its configured origin.')
-                email, password = self._credentials
-                await page.get_by_label('Email', exact=True).fill(email)
-                continue_button = page.get_by_role('button', name='Continue', exact=True)
-                if await continue_button.is_visible():
-                    await continue_button.click()
-                if _origin(page.url) != allowed:
-                    raise DashboardError('LangFuse dashboard redirected outside its configured origin.')
-                await page.get_by_label('Password', exact=False).fill(password)
-                await page.get_by_role('button', name='Sign in', exact=True).click()
-                await page.wait_for_url(lambda url: _origin(str(url)) == allowed and '/auth/' not in urlsplit(str(url)).path)
-                # Verify the authenticated identity independently of navigation.
-                response = await page.request.get(self.viewer_url + '/api/auth/session', max_redirects=0)
-                if response.status != 200:
-                    raise DashboardError('LangFuse dashboard account could not be verified.')
-                session = await response.json()
-                if session.get('user', {}).get('email') != email:
-                    raise DashboardError('LangFuse dashboard account could not be verified.')
-                await page.get_by_role('link', name='Go to project', exact=True).first.wait_for(state='visible')
+                    raise DashboardError('Tracing dashboard login left its admitted origin.')
+                identity = await adapter.dashboard_identity(page, url=self.viewer_url)
+                if identity != username or _origin(page.url) != allowed:
+                    raise DashboardError('Tracing dashboard identity could not be verified.')
                 self.authentication = 'authenticated'
+                return
         except asyncio.CancelledError:
             raise
         except DashboardError:
             raise
         except Exception:
-            raise DashboardError('LangFuse dashboard login failed; verify the configured account and dashboard readiness.') from None
+            raise DashboardError('Tracing dashboard login failed; verify the configured account and dashboard readiness.') from None
         # Retain the origin guard while this dashboard page is alive.
 
     async def aclose(self):
@@ -172,5 +175,7 @@ class LocalTracing:
             if not done:
                 raise CleanupPendingError((self,), self.aclose)
         self._probe_task = None
+        if self._binding is not None:
+            await self._binding.aclose()
         self._credentials = None
         self.viewer_url = None

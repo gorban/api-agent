@@ -67,28 +67,44 @@ def test_recording_preparation_is_lazy_and_skips_inactive_selections(tmp_path, m
     owner.finish()
 
 
-@pytest.mark.parametrize('values,expected', [
-    ({'TUI_MODE': 'unit'}, set()),
-    ({'TUI_MODE': 'integration', 'COLLECT_ONLY': True}, set()),
-    ({'TUI_MODE': 'run-local', 'HELP': True}, set()),
-    ({'TUI_MODE': 'run-local', 'RUN_UI': False}, {'api', 'llm', 'access', 'upstream'}),
-    ({'TUI_MODE': 'run-local', 'RUN_UI': True}, {'api', 'llm', 'access', 'upstream', 'ui'}),
+@pytest.mark.parametrize('values,expected,required_kinds', [
+    ({'TUI_MODE': 'unit'}, set(), None),
+    ({'TUI_MODE': 'integration', 'COLLECT_ONLY': True}, set(), None),
+    ({'TUI_MODE': 'run-local', 'HELP': True}, set(), None),
+    ({'TUI_MODE': 'run-local', 'RUN_UI': False}, {'api', 'llm', 'access', 'upstream', 'tracing'}, None),
+    ({'TUI_MODE': 'run-local', 'RUN_UI': True}, {'api', 'llm', 'access', 'upstream', 'ui', 'tracing'}, None),
+    ({'TUI_MODE': 'unit'}, {'llm', 'tracing'}, {'llm'}),
 ])
-def test_local_operation_environment_uses_activation_contract(tmp_path, monkeypatch, values, expected):
+def test_local_operation_environment_uses_activation_contract(tmp_path, monkeypatch, values, expected, required_kinds):
     from api_agent.runtime.operation import local_operation
     from api_agent.providers.distribution import PROVIDER_SELECTORS
     for kind, field in PROVIDER_SELECTORS.items():
         values[field] = provider(tmp_path, kind) if kind in expected else 'unavailable.py:factory'
+    if 'tracing' in expected:
+        (tmp_path / 'tracing/tracing-provider.toml').write_text(
+            'version=1\nid="fixture-tracing"\nsignals=["traces"]\n'
+            'input_attribute="input.value"\noutput_attribute="output.value"\n')
+        values['TRACE_EXPORT_ENDPOINT'] = 'https://traces.example/v1/traces'
     context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, external_pack=False)
-    result = SimpleNamespace(values=values, errors=(), missing=())
+    from api_agent.config.resolve import ConfigResult, ResolvedValue
+    result = ConfigResult(values, {name: ResolvedValue(value, 'fixture', True)
+                                  for name, value in values.items()}, (), (), ())
+    from api_agent.runtime import tracing_services
+    inspection = Mock(wraps=tracing_services.effective_selection)
+    monkeypatch.setattr(tracing_services, 'effective_selection', inspection)
     ensure = Mock(return_value=None)
     monkeypatch.setattr('api_agent.runtime.dependencies.active_environment', lambda path: True)
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', ensure)
     owner = local_operation(context, resolve=lambda: result, argv=(), scope='scope',
-                            ownership_directory=tmp_path)
+                            ownership_directory=tmp_path, required_kinds=required_kinds)
     ensure.assert_not_called()
 
     owner.prepare_dependencies(result)
 
     manifests = ensure.call_args.kwargs.get('selected_provider_manifests', ())
     assert {manifest.root.name for manifest in manifests} == expected
+    if expected:
+        inspection.assert_called_once()
+    else:
+        inspection.assert_not_called()
+        assert 'tracing' not in ensure.call_args.kwargs['groups']

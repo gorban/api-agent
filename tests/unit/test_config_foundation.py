@@ -411,7 +411,8 @@ def test_local_frontend_flag_retains_config_and_provenance(tmp_path,dotenv,envir
 @pytest.mark.parametrize('following', [(), ('--no-std-in',)])
 def test_missing_enum_option_value_lists_declared_choices(option, values, following):
     from api_agent.config.resolve import format_enum_values
-    schema = load_shared_schema()
+    from api_agent.providers.loading import bootstrap_schema
+    schema = bootstrap_schema(load_shared_schema(), (), {}, {})
     name = option[2:].replace('-', '_').upper()
     # The declaration remains the single source of permitted values.
     assert set(schema.fields[name].enum) == set(values)

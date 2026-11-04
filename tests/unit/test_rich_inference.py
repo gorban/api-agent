@@ -428,15 +428,12 @@ def test_validation_defensively_refuses_remote_retrieval_even_without_schema_pre
 def test_openrouter_cached_tool_history_preflight_is_safe_and_never_keyerror(mode,cache):
     original=request(history=True)
     req=LLMRequest('openai/gpt-6-luna',CompletionRequest(original.payload.messages,original.payload.tools,GenerationOptions(cache_policy=cache)))
-    if mode=='responses':
-        with pytest.raises(ProviderAccessError) as caught:
-            inference.validate_text_request(base_url='https://openrouter.ai/api/v1',access_token=TOKEN,subscription=False,api_mode=mode,request=req)
-        assert caught.value.kind=='unsupported'
-        assert 'nonempty final text' in str(caught.value)
-        assert TOKEN not in str(caught.value)
-    else:
-        _,body=inference.validate_text_request(base_url='https://openrouter.ai/api/v1',access_token=TOKEN,subscription=False,api_mode=mode,request=req)
-        assert body['messages'][-1]['content'][0]['text']=='answer'
+    _,body=inference.validate_text_request(base_url='https://openrouter.ai/api/v1',access_token=TOKEN,subscription=False,api_mode=mode,request=req)
+    rows=body['input' if mode=='responses' else 'messages']
+    field='output' if mode=='responses' else 'content'
+    assert rows[-1][field]==[{'type':'input_text' if mode=='responses' else 'text',
+                             'text':'answer','prompt_cache_breakpoint':{'mode':'explicit'}}]
+    assert TOKEN not in json.dumps(body)
 
 
 @pytest.mark.parametrize('value',['{}','{"provider":"x","state":[]}','{"provider":"x","state":[1]}','{"provider":"x","state":{}}','{"provider":"x","state":[{}],"extra":1}'])

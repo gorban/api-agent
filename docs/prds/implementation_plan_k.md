@@ -1,10 +1,12 @@
 # Tracing
 
-Tracing uses optional TRACE_MODE and TRACE_TARGET configuration. Empty mode
-disables exporters and local tracer services. OTEL selects a complete OTLP HTTP
-traces endpoint; LangFuse selects its server address. Conventional loopback
-targets can acquire verified managed infrastructure; custom endpoints remain
-externally owned. Viewer and ingestion addresses are distinct.
+Tracing uses a bundled default provider whose contributed TRACE_MODE selects
+blank (disabled), OTEL or LangFuse profiles. TRACE_EXPORT_ENDPOINT is always a
+complete ingestion URL. Conventional loopback ingestion and matching dashboard
+settings can acquire verified managed infrastructure; custom endpoints remain
+externally owned. Viewer and ingestion addresses are distinct. See
+[provider-owned configuration](implementation_plan_k1a2c.md) for progressive
+visibility, explicit endpoint semantics and metric capability requirements.
 
 ## Delivery and remaining work
 

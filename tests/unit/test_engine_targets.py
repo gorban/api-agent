@@ -8,6 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from api_agent.config import load_shared_schema
+
 from api_agent.runtime.engine_targets import EngineTarget, EngineTargetError, EngineTargetRegistry
 from api_agent.runtime.containers import ContainerError, ContainerRuntime
 from api_agent.runtime.ownership import StackScope
@@ -232,7 +234,7 @@ def bound_manager(engines, tmp_path):
     (target, _), identities, _ = engines
     clock, engine = Clock(), Engine()
     scope = StackScope('0123456789abcdef')
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, scope, executable=target.executable,
+    plan = plan_compose({'TRACE_MODE': 'OTEL', 'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default, 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces', 'JAEGER_VIEWER_PORT': 16686}, scope, executable=target.executable,
                         engine_environment=target.environment)
     registry = EngineTargetRegistry(tmp_path / 'private')
     manager = PrerequisiteManager(plan, scope, tmp_path / 'ownership', engine_target=target,
@@ -446,7 +448,7 @@ def test_same_binding_execution_variants_share_active_lease_exclusion(bound_mana
     variant.verify()
     assert variant.key != target.key
     root = manager.directory.parent.parent
-    plan = plan_compose({'TRACE_MODE': 'OTEL'}, manager.scope, executable=variant.executable,
+    plan = plan_compose({'TRACE_MODE': 'OTEL', 'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default, 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces', 'JAEGER_VIEWER_PORT': 16686}, manager.scope, executable=variant.executable,
                         engine_environment=variant.environment)
     alternate = PrerequisiteManager(plan, manager.scope, root, engine_target=variant)
     assert alternate.directory == manager.directory

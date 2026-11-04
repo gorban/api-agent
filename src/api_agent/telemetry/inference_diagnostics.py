@@ -46,7 +46,8 @@ _ENUMS = {
                         '$.output.message.content[].toolUse.type', '$.serviceTier',
                         '$.serviceTier.type'},
 }
-_STOPS = {'stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'other'}
+_STOPS = {'stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'other',
+          'end_turn', 'max_tokens', 'stop_sequence', 'tool_use', 'guardrail_intervened', 'content_filtered'}
 _IDENTIFIERS = {'request_id', 'response_id', 'validation_location'}
 _BOOLEANS = {'error_present', 'encrypted_reasoning_present'}
 _VERSION_KEYS = {'openai', 'httpx'}
@@ -113,7 +114,14 @@ def sdk_observation(wire, phase):
     """Count admitted SDK fields before content filtering; no generated text retained."""
     if type(wire) is not dict:
         return {}
-    raw = wire.get('provider_response') if phase == 'response' else wire.get('provider_payload')
+    wrapper = 'provider_response' if phase == 'response' else 'provider_payload'
+    if wrapper in wire:
+        raw = wire[wrapper]
+    else:
+        markers = ('choices', 'output') if phase == 'response' else ('messages', 'input', 'inferenceConfig')
+        if not any(type(wire.get(key)) in (list, dict) for key in markers):
+            return {}
+        raw = wire
     if type(raw) is not dict:
         return {}
     data = {'version': 1, 'observation': 'sdk_decoded'}
@@ -171,6 +179,8 @@ def sdk_observation(wire, phase):
             _text_counts(item, data, reasoning=kind == 'reasoning')
     elif type(output) is dict and type(output.get('message')) is dict:
         data['api'] = 'converse'
+        if type(raw.get('stopReason')) is str and raw['stopReason'] in _STOPS:
+            data['finish_reasons'] = [raw['stopReason']]
         blocks = output['message'].get('content')
         if type(blocks) is list:
             data.update(output_items=len(blocks), message_items=0, reasoning_items=0,

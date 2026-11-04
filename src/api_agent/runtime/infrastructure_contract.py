@@ -169,7 +169,7 @@ def _freeze_json(value: object) -> object:
 
 
 def _service(spec: object, *, owner: str, root: Path, source: Path,
-             declaration_source: CapturedAsset) -> InfrastructureService:
+             declaration_source: CapturedAsset, capture=_capture) -> InfrastructureService:
     allowed = {"id", "when", "dependencies", "compose", "assets", "readiness", "endpoints", "seed"}
     if type(spec) is not dict or set(spec) - allowed or not {"id", "compose", "readiness"} <= set(spec):
         raise InfrastructureDeclarationError("invalid infrastructure service fields")
@@ -192,7 +192,7 @@ def _service(spec: object, *, owner: str, root: Path, source: Path,
                    for item in dependencies) or len(set(dependencies)) != len(dependencies)):
         raise InfrastructureDeclarationError("invalid service dependencies")
     compose_path = spec["compose"]
-    compose_source = _capture(root, compose_path, MAX_DECLARATION_BYTES)
+    compose_source = capture(root, compose_path, MAX_DECLARATION_BYTES)
     try:
         def pairs(items):
             result = {}
@@ -220,7 +220,7 @@ def _service(spec: object, *, owner: str, root: Path, source: Path,
             or any(type(item) is not str for item in assets)
             or len(set(assets)) != len(assets)):
         raise InfrastructureDeclarationError("invalid infrastructure assets")
-    captured = tuple(_capture(root, item, MAX_ASSET_BYTES) for item in assets)
+    captured = tuple(capture(root, item, MAX_ASSET_BYTES) for item in assets)
     readiness = _readiness(spec["readiness"])
     endpoints = spec.get("endpoints", [])
     if type(endpoints) is not list or len(endpoints) > 16:
@@ -263,13 +263,21 @@ def load_infrastructure_contributions(context, *, selected_provider_locations=()
             raise InfrastructureDeclarationError("provider infrastructure declaration is symlinked")
         if declaration.exists():
             sources.append((path.parent, "infrastructure.toml"))
+    expected = {Path(root): layer.pack_id for root, _ in sources
+        for layer in (getattr(context, 'pack_layers', ()) or (context,))
+        if Path(root).resolve() == layer.pack_root.resolve()}
+    return parse_infrastructure_sources(sources, capture=_capture, expected_owners=expected)
+
+
+def parse_infrastructure_sources(sources, *, capture, expected_owners, selected_ids=None):
+    """Parse explicitly captured inputs with no implicit filesystem fallback."""
     if len(sources) > MAX_DECLARATIONS:
         raise InfrastructureDeclarationError("too many infrastructure declarations")
     services = []
     total = 0
     seen = set()
     for root, relative in sources:
-        declaration = _capture(root, relative, MAX_DECLARATION_BYTES)
+        declaration = capture(root, relative, MAX_DECLARATION_BYTES)
         total += len(declaration.body)
         try:
             data = tomllib.loads(declaration.body.decode("utf-8"))
@@ -280,18 +288,21 @@ def load_infrastructure_contributions(context, *, selected_provider_locations=()
                 or type(data["services"]) is not list):
             raise InfrastructureDeclarationError("unsupported infrastructure declaration")
         owner = _identifier(data["owner"], "infrastructure owner")
-        expected_owner = next((layer.pack_id for layer in
-            (getattr(context, 'pack_layers', ()) or (context,))
-            if Path(root).resolve() == layer.pack_root.resolve()), None)
+        expected_owner = expected_owners.get(Path(root))
         if expected_owner is not None and owner != expected_owner:
             raise InfrastructureDeclarationError("pack infrastructure owner differs from pack id")
         source = Path(root) / relative
         for spec in data["services"]:
-            item = _service(spec, owner=owner, root=root, source=source,
-                            declaration_source=declaration)
-            if item.id in seen:
+            identity = owner + '/' + _identifier(spec.get('id') if isinstance(spec, dict) else None, 'service id')
+            if identity in seen:
                 raise InfrastructureDeclarationError("duplicate infrastructure service id")
-            seen.add(item.id)
+            seen.add(identity)
+            if len(seen) > MAX_SERVICES:
+                raise InfrastructureDeclarationError("infrastructure capture exceeds budget")
+            if selected_ids is not None and identity not in selected_ids:
+                continue
+            item = _service(spec, owner=owner, root=root, source=source,
+                            declaration_source=declaration, capture=capture)
             services.append(item)
             total += len(item.compose_source.body) + sum(len(asset.body) for asset in item.assets)
             if len(services) > MAX_SERVICES or total > MAX_CAPTURE_BYTES:

@@ -62,8 +62,17 @@ _OPENROUTER_NATIVE_REASONING = {
 
 def native_reasoning(selection, *, base_url, api_mode):
     """Admit qualified native state independently of readable explanations."""
-    return (api_mode == 'responses' and base_url == 'https://openrouter.ai/api/v1'
-            and type(selection) is str and selection in _OPENROUTER_NATIVE_REASONING)
+    if (api_mode not in ('responses', 'completions')
+            or base_url != 'https://openrouter.ai/api/v1'
+            or type(selection) is not str or not selection.startswith('openai/')):
+        return False
+    model = selection[7:]
+    if model in ('gpt-oss-20b', 'gpt-oss-120b'):
+        return True
+    parsed = gpt_version(model)
+    # Native wire preservation is a documented gateway contract, independent of
+    # which effort values are supported or whether plaintext is returned.
+    return parsed is not None and parsed[1] in ('luna', 'terra', 'sol', 'astra')
 
 
 def display_reasoning(selection, *, base_url, api_mode):

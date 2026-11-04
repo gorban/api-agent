@@ -23,8 +23,8 @@ def resolve(*, argv=(), environ=None, dotenv=None):
 def test_disabled_and_custom_collectors_are_rejected(mode, target):
     environ = {'TRACE_MODE': mode}
     if target is not None:
-        environ['TRACE_TARGET'] = target
-    with pytest.raises(ConfigError, match='managed local'):
+        environ['TRACE_EXPORT_ENDPOINT'] = target
+    with pytest.raises(ConfigError, match='enabled tracing|dashboard capability|valid selected dashboard'):
         resolve(environ=environ)
 
 
@@ -33,7 +33,7 @@ def test_trace_config_uses_cli_environment_and_dotenv_precedence():
                      environ={'TRACE_MODE': 'LangFuse', 'UNRELATED_REQUIRED': ''},
                      dotenv={'TRACE_MODE': 'OTEL', 'JAEGER_VIEWER_PORT': '16686'})
     assert values['TRACE_MODE'] == 'OTEL'
-    assert values['TRACE_TARGET'] == 'http://localhost:4318/v1/traces'
+    assert values['TRACE_EXPORT_ENDPOINT'] == 'http://localhost:4318/v1/traces'
     assert values['JAEGER_VIEWER_PORT'] == 16687
 
 
@@ -52,11 +52,19 @@ def test_langfuse_project_keys_honor_configuration():
     assert values['LANGFUSE_SECRET_KEY'] == 'secret-test'
 
 
-@pytest.mark.parametrize('url', ['https://example.invalid/', 'http://localhost:1234/',
-                                 'http://user:password@localhost:16686/', 'http://localhost:bad/'])
-def test_remote_or_invalid_dashboard_url_is_rejected(url):
-    with pytest.raises(ConfigError, match='managed local'):
+@pytest.mark.parametrize('url', ['http://user:password@localhost:16686/', 'http://localhost:bad/'])
+def test_invalid_dashboard_url_is_rejected(url):
+    with pytest.raises(ConfigError, match='valid HTTP'):
         resolve(environ={'TRACE_MODE': 'OTEL', 'TRACE_VIEWER_URL': url})
+
+
+@pytest.mark.parametrize('url', ['https://example.invalid/', 'http://localhost:1234/'])
+def test_explicit_remote_dashboard_is_preserved_without_managed_stack(url):
+    from api_agent.telemetry.tracing_providers import effective_selection
+    values = resolve(environ={'TRACE_MODE': 'OTEL', 'TRACE_VIEWER_URL': url})
+    selection = effective_selection(values, owner_root=ROOT)
+    assert selection.values['TRACE_VIEWER_URL'] == url
+    assert selection.declaration.managed_compose_profile is None
 
 
 @pytest.mark.parametrize('endpoint', ['http://127.0.0.1:1234', None])
@@ -169,7 +177,7 @@ def test_bootstrap_selects_viewer_before_provider_and_workflow_discovery(monkeyp
     observed = []
     monkeypatch.setattr(api_agent.config, 'read_dotenv', lambda path: {})
     monkeypatch.setattr(api_agent.runtime.hook_assurance, 'assure_hook', lambda root: None)
-    monkeypatch.setattr(api_agent.providers.loading, 'bootstrap_schema', lambda *a, **k: pytest.fail('provider discovery'))
+    monkeypatch.setattr('api_agent.tooling.admission.capture_tool_factory', lambda *a, **k: pytest.fail('factory admission'))
     monkeypatch.setattr(bootstrap, '_prepare_workflow_discovery', lambda *a, **k: pytest.fail('workflow discovery'))
     monkeypatch.setattr(api_agent.runtime.dependencies, 'ensure_environment', lambda *a, **k: handoff_status)
     monkeypatch.setattr(trace_viewer, 'run_trace_viewer', lambda context, values: observed.append(values) or 0)
@@ -191,8 +199,19 @@ def test_trace_help_is_lazy(monkeypatch, capsys):
 
 
 def test_invalid_collector_and_positional_inputs_fail():
-    with pytest.raises(ConfigError, match='Invalid trace destination'):
-        resolve(environ={'TRACE_MODE': 'OTEL', 'TRACE_TARGET': 'http://localhost:bad/v1/traces'})
+    with pytest.raises(ConfigError, match='no dashboard capability'):
+        resolve(environ={'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': 'http://localhost:bad/v1/traces'})
+    selected=resolve(environ={'TRACE_MODE':'OTEL', 'TRACE_EXPORT_ENDPOINT':'http://localhost:bad/v1/traces',
+        'TRACE_VIEWER_URL':'https://viewer.example.test'})
+    assert selected['TRACE_VIEWER_URL']=='https://viewer.example.test'
+    from api_agent.telemetry.tracing_providers import admit_binding
+    from api_agent.telemetry.privacy import EmissionBoundary
+    from api_agent.telemetry.genai_metrics import MetricConfigurationError
+    with pytest.raises(MetricConfigurationError,match='nonempty explicit endpoint'):
+        admit_binding(selected,owner_root=ROOT,boundary=EmissionBoundary(),environ={})
+    original = dict(selected, TRACE_EXPORT_ENDPOINT='http://localhost:bad/v1/traces')
+    with pytest.raises(MetricConfigurationError,match='valid HTTP'):
+        admit_binding(original,owner_root=ROOT,boundary=EmissionBoundary(),environ={})
     with pytest.raises(ConfigError, match='positional'):
         resolve(argv=['unexpected'], environ={'TRACE_MODE': 'OTEL'})
 
@@ -287,14 +306,8 @@ def test_missing_local_collector_is_rejected_before_opening_browser(monkeypatch)
 
 
 def test_local_dashboard_requires_effective_admin_credentials():
-    from dataclasses import replace
-    from api_agent.config.declarations import ConfigSchema
-    schema = load_shared_schema(ROOT)
-    fields = dict(schema.fields)
-    fields['LANGFUSE_ADMIN_PASSWORD'] = replace(fields['LANGFUSE_ADMIN_PASSWORD'], conditional_defaults=())
-    with pytest.raises(ConfigError, match='dashboard credentials'):
-        trace_viewer.resolve_viewer_config(ConfigSchema(fields), argv=(),
-            environ={'TRACE_MODE': 'LangFuse'}, dotenv={}, anchors={'owner_root': ROOT})
+    with pytest.raises(ConfigError, match='valid selected dashboard'):
+        resolve(environ={'TRACE_MODE': 'LangFuse', 'LANGFUSE_ADMIN_PASSWORD': ''})
 
 
 def test_subset_schema_without_optional_ca_is_supported():
@@ -424,3 +437,8 @@ def test_malformed_raw_urls_are_rejected_before_collector_acquisition(monkeypatc
                           base_root=ROOT, _worktrees_verified=True) == 2
     assert acquisitions == []
     assert value not in capsys.readouterr().err
+
+
+def test_explicit_empty_provider_disables_viewer_even_with_enabled_mode():
+    with pytest.raises(ConfigError, match='enabled tracing provider'):
+        resolve(environ={'TRACE_PROVIDER':'', 'TRACE_MODE':'OTEL'})

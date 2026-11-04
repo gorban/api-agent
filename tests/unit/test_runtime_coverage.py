@@ -89,7 +89,7 @@ def test_dependency_handoff_returns_child_status(argv):
 
 def test_non_unit_no_stdin_and_stdout_terminal_required():
     with patch.dict(os.environ, {}, clear=True), patch.object(gate, 'verify_worktrees'):
-        assert boot.main(['--no-std-in', '--tui-mode=allure'], base_root=ROOT) == 3
+        assert boot.main(['--no-std-in', '--tui-mode=deployment-logs'], base_root=ROOT) == 3
         with patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', return_value=False):
             assert boot.main([], base_root=ROOT) == 2
 

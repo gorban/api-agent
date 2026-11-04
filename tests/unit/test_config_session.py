@@ -312,34 +312,31 @@ def test_resource_pack_token_is_reviewed_before_mode_selection(session):
     assert 'PACK_TEST_TOKEN' not in demo.result(_review=True).missing
 
 
-def test_trace_conditional_defaults_preserve_explicit_target(session):
-    from api_agent.config.declarations import load_shared_schema, UNSET
+def test_trace_conditional_defaults_preserve_explicit_endpoint(session):
+    from api_agent.config.declarations import load_shared_schema
     session.schema = load_shared_schema()
-    assert session.schema.fields['TRACE_MODE'].default is UNSET
-    assert session.schema.fields['TRACE_TARGET'].default is UNSET
-    assert not {'TRACE_MODE', 'TRACE_TARGET'} & set(session.result().values)
+    assert session.result().values['TRACE_MODE'] == ''
+    assert 'TRACE_EXPORT_ENDPOINT' not in session.result().values
     assert session.result().values['LOG_CONTENT'] is False
     assert not session.result().fields['LOG_CONTENT'].explicit
     with pytest.raises(ConfigError):
-        session.save_defaults(['TRACE_MODE'])
-    with pytest.raises(ConfigError):
-        session.save_defaults(['TRACE_TARGET'])
+        session.save_defaults(['TRACE_EXPORT_ENDPOINT'])
     session.set_value('TRACE_MODE', 'LangFuse')
-    assert session.result().values['TRACE_TARGET'] == 'http://localhost:3000'
-    assert session.result().fields['TRACE_TARGET'].source == 'shared_default'
+    assert session.result().values['TRACE_EXPORT_ENDPOINT'] == 'http://localhost:3000/api/public/otel/v1/traces'
+    assert session.result().fields['TRACE_EXPORT_ENDPOINT'].source == 'pack_default'
     session.set_value('TRACE_MODE', 'OTEL')
-    assert session.result().values['TRACE_TARGET'] == 'http://localhost:4318/v1/traces'
-    session.set_value('TRACE_TARGET', 'https://collector.example/traces', persist=True)
+    assert session.result().values['TRACE_EXPORT_ENDPOINT'] == 'http://localhost:4318/v1/traces'
+    session.set_value('TRACE_EXPORT_ENDPOINT', 'https://collector.example/traces', persist=True)
     session.set_value('TRACE_MODE', 'LangFuse')
-    assert session.result().values['TRACE_TARGET'] == 'https://collector.example/traces'
-    assert session.result().fields['TRACE_TARGET'].explicit
+    assert session.result().values['TRACE_EXPORT_ENDPOINT'] == 'https://collector.example/traces'
+    assert session.result().fields['TRACE_EXPORT_ENDPOINT'].explicit
     session.set_value('TRACE_MODE', '')
-    assert 'TRACE_TARGET' not in session.result().values
-    assert 'TRACE_TARGET' not in session.result(_review=True).active_fields
-    assert read_dotenv(session.dotenv_path)['TRACE_TARGET'] == 'https://collector.example/traces'
-    assert next(row for row in session.cleanup_rows() if row.name == 'TRACE_TARGET').present
+    assert 'TRACE_EXPORT_ENDPOINT' not in session.result().values
+    assert 'TRACE_EXPORT_ENDPOINT' not in session.result(_review=True).active_fields
+    assert read_dotenv(session.dotenv_path)['TRACE_EXPORT_ENDPOINT'] == 'https://collector.example/traces'
+    assert next(row for row in session.cleanup_rows() if row.name == 'TRACE_EXPORT_ENDPOINT').present
     session.set_value('TRACE_MODE', 'OTEL')
-    assert session.result().values['TRACE_TARGET'] == 'https://collector.example/traces'
+    assert session.result().values['TRACE_EXPORT_ENDPOINT'] == 'https://collector.example/traces'
     with pytest.raises(ConfigError):
         session.set_value('TRACE_MODE', 'otel')
 

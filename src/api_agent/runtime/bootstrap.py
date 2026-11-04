@@ -187,7 +187,7 @@ def _prepare_workflow_discovery(context, argv, **handoff_options):
     return None
 
 
-def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=None, _worktrees_verified=False, _replace_process=False):
+def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=None, _worktrees_verified=False, _replace_process=False, _composition_identity=None):
     """Validate foundation contracts; later segments provide actual operations."""
     from api_agent.config import (compose_schema, load_declarations, load_shared_schema,
                                       read_dotenv, resolve_config)
@@ -220,6 +220,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                  'with mise, or use a resource-pack launcher with API_AGENT_DIR.')
             base_root = candidate
         context = load_launch_context(Path(base_root).resolve(), resource_pack_dir, launcher_root)
+        from api_agent.runtime.pack_admission import verify_composition
+        verify_composition(context, _composition_identity)
         context = _bind_runtime_directory(context, argv, os.environ)
         from api_agent.runtime.hook_assurance import assure_hook
         assure_hook(context.base_root)
@@ -242,7 +244,12 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             values = resolve_viewer_config(schema, argv=trace_arguments, environ=os.environ,
                                            dotenv=dotenv, anchors=context.anchors)
             from api_agent.runtime.dependencies import ensure_environment
-            status = ensure_environment(context, ['--trace-viewer', *argv], groups=('browser',), **handoff_options)
+            tracing_options = {}
+            from api_agent.providers.distribution import selected_manifests
+            manifests = selected_manifests(values, owner_root=context.owner_root, active_kinds={'tracing'})
+            if manifests:
+                tracing_options['selected_provider_manifests'] = manifests
+            status = ensure_environment(context, ['--trace-viewer', *argv], groups=('browser',), **tracing_options, **handoff_options)
             if status is not None:
                 return status
             from api_agent.runtime.trace_viewer import run_trace_viewer
@@ -271,10 +278,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                   context.dotenv_path)):
             dotenv.update(read_dotenv(path))
         foundation_schema = schema
+        from api_agent.runtime.pack_admission import configuration_inputs
         from api_agent.providers.loading import bootstrap_schema
         schema = bootstrap_schema(schema, argv, os.environ, dotenv,
                                   owner_root=context.owner_root,
-                                  configuration_paths=context.provider_config_paths)
+                                  configuration_paths=context.provider_config_paths, **configuration_inputs(context))
         result = resolve_config(schema, argv=argv, environ=os.environ,
                                 dotenv=dotenv, anchors=context.anchors,
                                 interactive=True, pack_launcher=context.external_pack,
@@ -314,11 +322,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                     and not automatically_started(result)):
                 if mode == 'e2e':
                     errors.append('NO_STD_IN=True with TUI_MODE=e2e requires explicit START=E2E. '
-                                  'Use --start=E2E to accept execution, or --no-std-in=False for interactive acceptance; '
+                                  'Obtain explicit human approval before execution. Only after approval, use --start=E2E; otherwise use --no-std-in=False for interactive acceptance; '
                                   'collection-only is still allowed via --collect-only.')
                 else:
                     errors.append('NO_STD_IN=True with TUI_MODE=integration requires START=True/E2E or DEBUG=True. '
-                                  'Use --start to execute, --debug for browser investigation, or --no-std-in=False for interactive selection; '
+                                  'Obtain explicit human approval before execution. Only after approval, use --start (or --debug for browser investigation); otherwise use --no-std-in=False for interactive selection; '
                                   'collection-only is still allowed via --collect-only.')
             if result.values.get('NO_STD_IN') and mode in {'config-cleanup', 'cleanup-containers', 'unattended-auth'}:
                 errors.append(f'{mode} requires the interactive TUI; NO_STD_IN=True is incompatible.')
@@ -493,6 +501,14 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 return 1
             finally:
                 presentation.close()
+        if result.values.get('NO_STD_IN') and mode == 'allure':
+            from api_agent.runtime.dependencies import ensure_environment
+            status = ensure_environment(context, argv, collect=True, groups=('dev', 'browser'), **handoff_options)
+            if status is not None:
+                return status
+            import asyncio
+            from api_agent.runtime.allure_terminal import run_allure_terminal
+            return asyncio.run(run_allure_terminal(context, result))
         if result.values.get('NO_STD_IN') and mode == 'run-local':
             from api_agent.auth.extensions import validate_operation
             try:

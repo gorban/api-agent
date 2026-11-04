@@ -347,6 +347,33 @@ def test_openrouter_final_block_preserves_multipart_unicode_long_text(mode, role
     assert req.payload.messages[-1].content == (TextContent(text), TextContent('尾'))
 
 
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+@pytest.mark.parametrize('policy', [None, 'off', 'medium', 'high'])
+def test_openrouter_cache_boundary_preserves_tool_continuation(mode, policy):
+    from api_agent.llm_providers.gpt.inference import validate_text_request
+    from api_agent.providers.llm import Tool, ToolCall, ToolResult
+    tools = (Tool('lookup', 'Read a value', '{"type":"object","properties":{},"required":[],"additionalProperties":false}'),)
+    messages = (Message('user', (TextContent('Read both values.'),)),
+                Message('assistant', calls=(ToolCall('call-1', 'lookup', '{}'), ToolCall('call-2', 'lookup', '{}'))),
+                Message('tool', results=(ToolResult('call-1', (TextContent('First'),)),
+                                         ToolResult('call-2', (TextContent('Second λ'), TextContent('尾'))))))
+    req = LLMRequest('openai/gpt-6-luna', CompletionRequest(messages, tools, GenerationOptions(cache_policy=policy)))
+    original = request_to_wire(req)
+
+    _, body = validate_text_request(base_url=OPENROUTER, access_token='synthetic-token',
+                                   subscription=False, api_mode=mode, request=req)
+
+    rows = body['input' if mode == 'responses' else 'messages']
+    field = 'output' if mode == 'responses' else 'content'
+    expected = ([{'type': 'input_text' if mode == 'responses' else 'text', 'text': 'Second λ尾',
+                  'prompt_cache_breakpoint': {'mode': 'explicit'}}] if policy in ('medium', 'high') else 'Second λ尾')
+    assert rows[-1] == ({'type': 'function_call_output', 'call_id': 'call-2', field: expected}
+                       if mode == 'responses' else {'role': 'tool', 'tool_call_id': 'call-2', field: expected})
+    assert rows[-2][field] == 'First'
+    assert rows[0] == {'role': 'user', 'content': 'Read both values.'}
+    assert request_to_wire(req) == original
+
+
 @pytest.mark.parametrize('suffix', ['2099-99-99', '20999999', '２０９９９９９９', '2026-02-29', '20260229', '0000-01-01', '2026-13-01'])
 @pytest.mark.parametrize('policy', ['off', 'medium', 'high'])
 def test_openrouter_invalid_calendar_or_nonascii_snapshot_rejects(suffix, policy):

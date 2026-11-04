@@ -1,6 +1,7 @@
 """Managed integration collectors precede inference and outlive exporter flush."""
 import asyncio
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -11,10 +12,29 @@ from api_agent.testing.prerequisites import local_trace_prerequisites
 from api_agent.testing.setup_backend import _SetupOwner
 
 
+BASE = Path(__file__).resolve().parents[2]
+PROVIDER = str(BASE / 'src/api_agent/telemetry/trace_adapters/provider.py') + ':create_tracing_provider'
+
+
+def trace_config(mode, target=None):
+    from api_agent.config.resolve import ConfigResult
+    from api_agent.telemetry.tracing_providers import effective_selection
+    endpoint = target if target is not None else ('http://localhost:4318/v1/traces' if mode == 'OTEL' else 'http://localhost:3000/api/public/otel/v1/traces')
+    values = dict(TRACE_PROVIDER=PROVIDER, TRACE_MODE=mode, TRACE_EXPORT_ENDPOINT=endpoint, JAEGER_VIEWER_PORT=16686)
+    selected = effective_selection(ConfigResult(values, {}, (), (), ()), environ={})
+    return dict(selected.values) if selected is not None else values
+
+
+def trace_context(tmp_path):
+    from test_pack_composition import pack
+    from api_agent.runtime.resource_pack import load_launch_context
+    return load_launch_context(BASE, pack(tmp_path, 'application'))
+
+
 @pytest.mark.parametrize('mode,target,profiles', [
     ('LangFuse', None, ('langfuse',)),
-    ('LangFuse', 'http://localhost:3000', ('langfuse',)),
-    ('LangFuse', 'http://127.0.0.1:3000/', ('langfuse',)),
+    ('LangFuse', 'http://localhost:3000/api/public/otel/v1/traces', ('langfuse',)),
+    ('LangFuse', 'http://127.0.0.1:3000/api/public/otel/v1/traces', ('langfuse',)),
     ('OTEL', None, ('otel',)),
     ('OTEL', 'http://127.0.0.1:4318/v1/traces', ('otel',)),
     ('LangFuse', 'https://tracing.example.test', ()),
@@ -24,11 +44,11 @@ from api_agent.testing.setup_backend import _SetupOwner
 def test_trace_plan_selects_only_conventional_collector(monkeypatch, tmp_path, mode, target, profiles):
     from threading import Event
     from api_agent.runtime import prerequisites
-    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
-    config = dict(TRACE_MODE=mode, ALLURE_S3_USE_LOCALSTACK=True, RUN_UI=True,
+    context = trace_context(tmp_path)
+    config = dict(trace_config(mode, target), ALLURE_S3_USE_LOCALSTACK=True, RUN_UI=True,
                   LANGFUSE_PUBLIC_KEY='public-test', LANGFUSE_SECRET_KEY='secret-test')
     if target is not None:
-        config['TRACE_TARGET'] = target
+        config['TRACE_EXPORT_ENDPOINT'] = target
     made = Mock()
     monkeypatch.setattr(prerequisites, 'PrerequisiteManager', made)
     cancelled = Event()
@@ -43,7 +63,7 @@ def test_trace_plan_selects_only_conventional_collector(monkeypatch, tmp_path, m
     plan, scope, directory = made.call_args.args
     assert plan.profiles == profiles
     assert 'localstack' not in plan.services
-    assert directory == tmp_path / 'artifacts' / 'prerequisites'
+    assert directory == context.owner_root / 'artifacts' / 'prerequisites'
     assert plan.environment['SA_SCOPE'] == scope.id
     assert not made.call_args.kwargs['cancelled']()
     cancelled.set()
@@ -55,8 +75,8 @@ def test_trace_plan_without_cancel_event(monkeypatch, tmp_path):
     from api_agent.runtime import prerequisites
     made = Mock()
     monkeypatch.setattr(prerequisites, 'PrerequisiteManager', made)
-    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
-    local_trace_prerequisites(context, {'TRACE_MODE': 'OTEL'})
+    context = trace_context(tmp_path)
+    local_trace_prerequisites(context, trace_config('OTEL'))
     assert made.call_args.kwargs['cancelled']() is False
 
 
@@ -86,8 +106,8 @@ async def setup_owner(monkeypatch, tmp_path, log):
                    acquire=Mock(side_effect=lambda **kwargs: log.append('acquire')),
                    release=Mock(side_effect=lambda **kwargs: log.append('release')))
     monkeypatch.setattr(provider_setup, 'IntegrationLLM', lambda *args, **kwargs: provider)
-    monkeypatch.setattr(remote_inference, 'RemoteInferenceTrace', lambda *args: trace)
-    backend = SimpleNamespace(config={'TRACE_MODE': 'LangFuse'}, owner_root=tmp_path,
+    monkeypatch.setattr(remote_inference, 'RemoteInferenceTrace', lambda *args, **kwargs: trace)
+    backend = SimpleNamespace(config=trace_config('LangFuse'), owner_root=tmp_path,
         unattended_index_source=None, password_manager_registry=None, interaction=None,
         quota_observer=None, authority=None, capture_sources={},
         trace_prerequisites_factory=Mock(return_value=manager))
@@ -344,7 +364,8 @@ def test_unfinished_exporter_keeps_collector_until_cleanup_retry(monkeypatch, tm
     async def run():
         owner, manager, trace = await setup_owner(monkeypatch, tmp_path, log)
         trace.aclose.side_effect = [RuntimeError('still closing'), None]
-        with pytest.raises(RuntimeError, match='still closing'):
+        from api_agent.testing.trace_cleanup import OptionalTraceCleanupPending
+        with pytest.raises(OptionalTraceCleanupPending):
             await owner.aclose()
         manager.release.assert_not_called()
         await owner.aclose()
@@ -358,7 +379,8 @@ def test_failed_collector_release_is_retried(monkeypatch, tmp_path):
     async def run():
         owner, manager, trace = await setup_owner(monkeypatch, tmp_path, log)
         manager.release.side_effect = [RuntimeError('still owned'), None]
-        with pytest.raises(RuntimeError, match='still owned'):
+        from api_agent.testing.trace_cleanup import OptionalTraceCleanupPending
+        with pytest.raises(OptionalTraceCleanupPending):
             await owner.aclose()
         await owner.aclose()
         return manager, trace
@@ -368,16 +390,16 @@ def test_failed_collector_release_is_retried(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('mode,target,expected', [
-    ('LangFuse', 'http://localhost:3000', 90),
+    ('LangFuse', 'http://localhost:3000/api/public/otel/v1/traces', 90),
     ('OTEL', 'http://localhost:4318/v1/traces', 90),
     ('LangFuse', 'https://tracing.example.test', 5),
     ('', None, 5),
 ])
 def test_backend_budgets_exporter_and_managed_collector_disposal(tmp_path, mode, target, expected):
     from api_agent.testing.setup_backend import SetupBackend
-    config = {'TRACE_MODE': mode}
+    config = trace_config(mode, target)
     if target is not None:
-        config['TRACE_TARGET'] = target
+        config['TRACE_EXPORT_ENDPOINT'] = target
     backend = SetupBackend(config, tmp_path, trace_prerequisites_factory=Mock())
     assert backend.cleanup_timeout == expected
     assert backend.thread is None

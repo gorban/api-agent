@@ -84,6 +84,29 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
         data['password_manager_pack_root'] = str(context.pack_root)
     from .workflow_capture import capture_sources
     data['capture_sources'] = capture_sources(config, config_fields)
+    from .studio_tracing import capture_collector_plan
+    from api_agent.runtime.prerequisites import PrerequisiteCancelled
+    try:
+        from api_agent.config.resolve import ConfigResult
+        from api_agent.telemetry.tracing_providers import effective_selection
+        trace_selection = effective_selection(ConfigResult(dict(config), config_fields or {}, (), (), ()),
+                                              owner_root=context.owner_root)
+        trace_config = trace_selection.values if trace_selection is not None else config
+        if trace_selection is not None:
+            from api_agent.runtime.tracing_context import capture_trace_context
+            data['trace_context'] = capture_trace_context(trace_selection)
+        data['config'] = dict(trace_config)
+        from api_agent.runtime.tracing_context import restore_trace_context
+        trace_plan = capture_collector_plan(context, trace_config, tool_plan,
+                                             trace_context=restore_trace_context(data, config=trace_config))
+    except PrerequisiteCancelled:
+        raise
+    except Exception:
+        import logging
+        logging.getLogger(__name__).error('Tracing collector capture failed; continuing without tracing.')
+        trace_plan = {}
+    if trace_plan is not None:
+        data['trace_collector_plan'] = trace_plan
     if unattended_index_source is not None:
         data['unattended_index_source'] = unattended_index_source
     if setup_backend is not None:
@@ -129,7 +152,7 @@ def _read_snapshot():
             raise ValueError
         data = json.loads(raw)
         required = {'version', 'owner_root', 'config', 'password_manager_definitions'}
-        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles', 'test_profile_rate_cards', 'capture_sources'}
+        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles', 'test_profile_rate_cards', 'capture_sources', 'trace_collector_plan', 'trace_context'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or not isinstance(data['password_manager_definitions'], list)
                 or type(data['version']) is not int
@@ -138,6 +161,8 @@ def _read_snapshot():
             raise ValueError
         from .workflow_capture import capture_config
         capture_config(data['config'], data.get('capture_sources', {}))
+        if 'trace_collector_plan' in data and type(data['trace_collector_plan']) is not dict:
+            raise ValueError
         if ('password_manager_pack_root' in data and
                 (not isinstance(data['password_manager_pack_root'], str)
                  or not Path(data['password_manager_pack_root']).is_absolute())):
@@ -300,7 +325,8 @@ class IntegrationLLM:
             self._shared_setup = SharedSetupOwner(self._operation_id, identity, make_owner,
                                                  credentials=credentials, describe=getattr(implementation, 'adescribe', None),
                                                  complete=complete if callable(getattr(implementation, 'acomplete', None)) else None,
-                                                 captures_effective_payload=getattr(implementation, 'captures_effective_payload', False) is True,
+                                                 telemetry_provider_name=getattr(implementation, 'telemetry_provider_name', None),
+            captures_effective_payload=getattr(implementation, 'captures_effective_payload', False) is True,
                                                  validate_request=lambda request: self._validate_request(implementation, request),
                                                  catalog_ttl=self._provider_config.get('LLM_CATALOG_CACHE_TTL_SECONDS', 3600),
                                                  max_attempts=self._provider_config.get('LLM_MAX_ATTEMPTS', 5),
@@ -564,6 +590,33 @@ class IntegrationLLM:
             self.loop.close()
 
 
+def _trace_offer(visit, call_id):
+    if visit is None:
+        return None
+    owner, visit_id, _ = visit
+    callback = getattr(owner, 'remote_offer', None)
+    if not callable(callback):
+        return None
+    losses = getattr(owner, 'trace_losses', None)
+    try:
+        return callback(call_id, visit_id)
+    except Exception:
+        if losses is None:
+            raise
+        losses.record()
+        from api_agent.telemetry.worker_trace import WorkerTraceOffer
+        receipt = WorkerTraceOffer(owner, call_id, {})
+        receipt._lost = True
+        return receipt
+
+
+def _trace_publish(offer, publish, *args, **kwargs):
+    if offer is None:
+        return publish(*args, **kwargs)
+    with offer.completion():
+        return publish(*args, **kwargs)
+
+
 class RemoteIntegrationLLM:
     """Only readiness, bounded catalog metadata and lease disposal cross the backend boundary."""
     timeout = 300
@@ -599,6 +652,7 @@ class RemoteIntegrationLLM:
         from .inference_usage import publish
         call_id = publish(request) or str(uuid4())
         result = None
+        offer = _trace_offer(visit, call_id)
         packet = dict(transport_attempts=None, cost_quote=None, response_evidence=None, evidence=[])
 
         def invoke():
@@ -606,14 +660,16 @@ class RemoteIntegrationLLM:
             with self.client._lock:
                 try:
                     if scope is not None:
-                        return self.client.complete(request, authority_scope=scope, observation_call_id=call_id)
-                    return self.client.complete(request, observation_call_id=call_id)
+                        return self.client.complete(request, authority_scope=scope, observation_call_id=call_id, **(offer.kwargs if offer is not None else {}))
+                    return self.client.complete(request, observation_call_id=call_id, **(offer.kwargs if offer is not None else {}))
                 finally:
+                    if offer is not None:
+                        offer.receipt(getattr(self.client, 'trace_ownership', None))
                     for name in packet:
                         packet[name] = deepcopy(getattr(self.client, name, packet[name]))
         try:
             result = self._request(invoke, admission=admission) if admission is not None else self._request(invoke)
-            publish(request, result, call_id=call_id, quote=packet['cost_quote'])
+            _trace_publish(offer, publish, request, result, call_id=call_id, quote=packet['cost_quote'])
             return result
         except BaseException as error:
             from api_agent.providers.generation_attempts import attach_transport_attempts, validate_transport_attempts
@@ -629,7 +685,7 @@ class RemoteIntegrationLLM:
             except ContractError as conflict:
                 terminal_error = conflict
                 attach_transport_attempts(conflict, snapshot)
-            publish(request, result, call_id=call_id, failed=True, error=terminal_error)
+            _trace_publish(offer, publish, request, result, call_id=call_id, failed=True, error=terminal_error)
             if terminal_error is not error:
                 raise terminal_error from None
             raise
@@ -637,7 +693,10 @@ class RemoteIntegrationLLM:
             from .inference_content import publish_content
             from api_agent.workflows.inference_capture import capture_rows
             rows = packet['evidence']
-            capture_rows(rows, call_id)
+            if offer is None:
+                capture_rows(rows, call_id)
+            else:
+                offer.finalize_evidence(lambda: capture_rows(rows, call_id))
             publish_content(rows, call_id)
 
     def _complete_background(self, request, scope, visit):
@@ -657,6 +716,7 @@ class RemoteIntegrationLLM:
         if boundaries:
             asyncio.run(admit_boundaries())
         call_id = publish(request) or str(uuid4())
+        offer = _trace_offer(visit, call_id)
         ready = Future()
         context = copy_context()
         job = Future()
@@ -666,7 +726,7 @@ class RemoteIntegrationLLM:
             slot = self._evidence_slots.acquire(self.timeout)
         except BaseException as error:
             job.set_result(None)
-            publish(request, None, call_id=call_id, failed=True, error=error)
+            _trace_publish(offer, publish, request, None, call_id=call_id, failed=True, error=error)
             raise
 
         def run(client):
@@ -675,6 +735,8 @@ class RemoteIntegrationLLM:
             early_value = None
             def result_ready(result):
                 nonlocal delivered, early_value
+                if offer is not None:
+                    offer.receipt(getattr(client, 'trace_ownership', None))
                 if client.response_evidence != result.response:
                     raise ContractError('Conflicting dispatched response policy')
                 validate_response_evidence(request, result)
@@ -691,6 +753,8 @@ class RemoteIntegrationLLM:
                 delivered = True
             def error_ready(error):
                 nonlocal delivered, announced_error
+                if offer is not None:
+                    offer.receipt(getattr(client, 'trace_ownership', None))
                 from api_agent.workflows.inference_capture import retain_response_failure
                 retain_response_failure(error, client.response_evidence)
                 attach_transport_attempts(error, client.transport_attempts)
@@ -699,7 +763,7 @@ class RemoteIntegrationLLM:
                 delivered = True
             try:
                 final_result = client.complete(request, authority_scope=scope, result_ready=result_ready,
-                                               error_ready=error_ready, observation_call_id=call_id)
+                                               error_ready=error_ready, observation_call_id=call_id, **(offer.kwargs if offer is not None else {}))
                 if early_value != final_result:
                     raise ContractError('Conflicting final inference response')
             except BaseException as error:
@@ -712,7 +776,10 @@ class RemoteIntegrationLLM:
                                      for phase in ('request', 'response')], call_id)
                     return
             rows = deepcopy(client.evidence)
-            capture_rows(rows, call_id)
+            if offer is None:
+                capture_rows(rows, call_id)
+            else:
+                offer.finalize_evidence(lambda: capture_rows(rows, call_id))
             publish_content(rows, call_id)
 
         def owned():
@@ -752,20 +819,22 @@ class RemoteIntegrationLLM:
                                 _report_capture_loss(call_id, 'output')
                             context.run(report_unconfirmed)
                 finally:
+                    if offer is not None:
+                        context.run(offer.finalize_evidence, lambda: None)
                     job.set_result(None)
         try:
             self._evidence_pool.submit(owned)
         except BaseException as error:
             self._evidence_slots.release(slot)
             job.set_result(None)
-            publish(request, None, call_id=call_id, failed=True, error=error)
+            _trace_publish(offer, publish, request, None, call_id=call_id, failed=True, error=error)
             raise
         try:
             result, quote = ready.result()
         except BaseException as error:
-            publish(request, None, call_id=call_id, failed=True, error=error)
+            _trace_publish(offer, publish, request, None, call_id=call_id, failed=True, error=error)
             raise
-        publish(request, result, call_id=call_id, quote=quote)
+        _trace_publish(offer, publish, request, result, call_id=call_id, quote=quote)
         return result
 
     def describe(self):
@@ -1032,10 +1101,18 @@ def finish_ui_browser_inspection(loop, inspection, *, owners=(), transfers=(), c
     else:
         try:
             owner.close()
-        except BaseException:
+        except BaseException as error:
             if os.environ.get('API_AGENT_INTEGRATION_EVENTS'):
                 owner.close_loop = True
                 _inspection_providers.append(owner)
+                from .studio_http import studio_trace_pending
+                from .ui_runtime import UIIntegrationOwner
+                if (studio_trace_pending(error) and owner._owners
+                        and all(type(child) is UIIntegrationOwner and child._nontrace_settled is True
+                                and child._backend_cleanup is error for child in owner._owners)):
+                    import logging
+                    logging.getLogger(__name__).error('Studio tracing cleanup remains pending; its original UI owner and loop are retained for retry.')
+                    return owner
             raise
     return owner
 

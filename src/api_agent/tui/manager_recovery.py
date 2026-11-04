@@ -138,8 +138,12 @@ class ManagerRecoveryScreen(FocusNavigation, Screen):
         text = transcript_text(value)
         self.transcript = (self.transcript + text)[-_LIMIT:]
         if self.is_mounted:
-            self.query_one('#manager-output', TextArea).load_text(self.transcript)
-            self.query_one('#manager-output', TextArea).scroll_end(animate=False)
+            output = self.query_one('#manager-output', TextArea)
+            output.load_text(self.transcript)
+            # Replacing an existing line may leave document geometry unchanged.
+            # Invalidate the painted content even when no resize/scroll occurs.
+            output.refresh()
+            output.scroll_end(animate=False)
             # Enter echoes and formatting-only output are not a new prompt.
             if text.strip() and self.awaiting_output:
                 self.awaiting_output = False

@@ -83,28 +83,11 @@ enum = ["", "off", "medium", "high"]
 default = ""
 help = "Prompt-cache policy. Empty uses upstream automatic defaults. Off disables caching; medium/high request supported retention. Supported GPT-5.6/6/6.1 API-key families use 30m on official OpenAI and canonical https://openrouter.ai/api/v1 (namespaced openai/ IDs, including openai/gpt-6-luna). OpenRouter marks the final text block as a cache breakpoint; OpenAI GPT caching requires at least 1024 prompt tokens. Eligible older official models use in_memory/24h. GPT subscription medium permits automatic caching without explicit controls or a guaranteed lifetime; empty keeps upstream defaults, while off/high are unsupported. Unsupported policies fail before inference. This controls prompt caching, not login state or answer reuse."
 
-[fields.TRACE_MODE]
+[fields.TRACE_PROVIDER]
 type = "str"
-enum = ["", "LangFuse", "OTEL"]
+default = ""
 review_optional = true
-help = "Trace exporter mode. Empty disables tracing; LangFuse and OTEL select an exporter."
-
-[fields.TRACE_TARGET]
-type = "str"
-review_optional = true
-conditional_defaults = [{when = {TRACE_MODE = "LangFuse"}, value = "http://localhost:3000"}, {when = {TRACE_MODE = "OTEL"}, value = "http://localhost:4318/v1/traces"}]
-help = "Optional trace destination. Defaults to the selected trace mode's local endpoint. Managed LangFuse recognizes exactly http://localhost:3000 or http://127.0.0.1:3000, each with zero or one trailing slash. Other valid LangFuse URL spellings are custom endpoints: supply explicit credentials; no local stack is started."
-
-[fields.TRACE_TARGET.applies_when]
-TRACE_MODE = ["LangFuse", "OTEL"]
-
-[fields.JAEGER_VIEWER_PORT]
-type = "int"
-default = 16686
-review_optional = true
-help = "Loopback host port for the locally managed Jaeger trace viewer; OTLP ingestion remains on port 4318."
-[fields.JAEGER_VIEWER_PORT.applies_when]
-TRACE_MODE = "OTEL"
+help = "Owner-relative tracing provider file.py:create_tracing_provider. The bundled default contributes TRACE_MODE and its applicable exporter/dashboard settings. Custom providers contribute their own configuration. Factories remain lazy during help and review."
 
 [fields.LOG_CONTENT]
 type = "bool"
@@ -135,40 +118,6 @@ type = "bool"
 default = false
 help = "Default False keeps local content previews and downstream 16,384-character owner/TUI presentation cuts. True shows complete admitted local records, including in the interactive TUI. Payload content still requires LOG_CONTENT=True; credential scrubbing and source admission limits remain. Old scrollback may expire; the latest full record is retained. Container polling still admits only its 100-line/16-KiB source tail. Does not enable trace content or guarantee lossless terminal delivery."
 
-[fields.LANGFUSE_ADMIN_EMAIL]
-type = "str"
-conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "admin@local.dev"}]
-help = "Administrator email for managed local LangFuse provisioning across Run local and test modes, and Run local dashboard sign-in."
-[fields.LANGFUSE_ADMIN_EMAIL.applies_when]
-TRACE_MODE = "LangFuse"
-TUI_MODE = ["run-local", "integration", "e2e"]
-COLLECT_ONLY = false
-[fields.LANGFUSE_ADMIN_EMAIL.required_when]
-TRACE_MODE = "LangFuse"
-TUI_MODE = "run-local"
-COLLECT_ONLY = false
-
-[fields.LANGFUSE_ADMIN_PASSWORD]
-type = "str"
-conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "Local-LF-9vQ7!mR2#xK8@pT4"}]
-help = "Administrator password for managed local LangFuse provisioning across Run local and test modes, and Run local dashboard sign-in. Configure the actual existing account; initialization does not reset it."
-[fields.LANGFUSE_ADMIN_PASSWORD.applies_when]
-TRACE_MODE = "LangFuse"
-TUI_MODE = ["run-local", "integration", "e2e"]
-COLLECT_ONLY = false
-[fields.LANGFUSE_ADMIN_PASSWORD.required_when]
-TRACE_MODE = "LangFuse"
-TUI_MODE = "run-local"
-COLLECT_ONLY = false
-
-[fields.TRACE_VIEWER_URL]
-type = "str"
-default = ""
-review_optional = true
-help = "Optional OTEL trace viewer URL, separate from TRACE_TARGET ingestion. Local managed Jaeger derives its viewer URL from JAEGER_VIEWER_PORT when omitted or explicitly empty."
-[fields.TRACE_VIEWER_URL.applies_when]
-TRACE_MODE = "OTEL"
-
 [fields.CLIENT_CA_FILE]
 acknowledge_default = false
 type = "path"
@@ -178,31 +127,6 @@ help = "Optional public CA bundle added to verified HTTP clients. Local HTTPS pr
 [fields.CLIENT_CA_FILE.applies_when]
 TUI_MODE = ["run-local", "integration", "e2e"]
 COLLECT_ONLY = false
-
-[fields.LANGFUSE_PUBLIC_KEY]
-acknowledge_default = true
-type = "str"
-conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "pk-lf-local-dev-0000000000"}]
-help = "LangFuse project public API key for trace ingestion, paired with LANGFUSE_SECRET_KEY; obtain both from the target project settings. Required for an external LangFuse TRACE_TARGET; dashboard email/password do not replace API keys. Managed local LangFuse provisions development defaults automatically. No external default is supplied, so a missing key stops startup."
-[fields.LANGFUSE_PUBLIC_KEY.applies_when]
-TRACE_MODE = "LangFuse"
-TUI_MODE = ["run-local", "integration", "e2e"]
-COLLECT_ONLY = false
-[fields.LANGFUSE_PUBLIC_KEY.required_when]
-TRACE_MODE = "LangFuse"
-
-[fields.LANGFUSE_SECRET_KEY]
-acknowledge_default = true
-sensitive = true
-type = "str"
-conditional_defaults = [{when = {TRACE_TARGET = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3000/", "http://127.0.0.1:3000/"]}, value = "sk-lf-local-dev-0000000000"}]
-help = "LangFuse project secret API key for trace ingestion, paired with LANGFUSE_PUBLIC_KEY; obtain both from the target project settings. Required for an external LangFuse TRACE_TARGET; dashboard email/password do not replace API keys. Managed local LangFuse provisions development defaults automatically. No external default is supplied, so a missing key stops startup. Keep the secret private."
-[fields.LANGFUSE_SECRET_KEY.applies_when]
-TRACE_MODE = "LangFuse"
-TUI_MODE = ["run-local", "integration", "e2e"]
-COLLECT_ONLY = false
-[fields.LANGFUSE_SECRET_KEY.required_when]
-TRACE_MODE = "LangFuse"
 
 [fields.HELP]
 type = "bool"

@@ -34,8 +34,8 @@ def test_local_plan_merges_selected_tool_contributions_once(local, monkeypatch, 
 
     capture.assert_called_once_with(plan)
     inventory_capture.assert_called_once_with(local.owner.context, plan)
-    planner.assert_called_once_with(local.config, schema, (selected, extra), 'scope',
-                                    engine_environment=None, inventory=catalog)
+    planner.assert_called_once_with(local.config.values, schema, (selected, extra), 'scope',
+        engine_environment=None, inventory=catalog, tracing_profiles=(), tracing_destination=None)
 
 
 def test_local_plan_rejects_conflicting_selected_infrastructure_before_planning(local, monkeypatch):
@@ -90,9 +90,12 @@ def test_local_operation_prepares_selected_tool_manifests_with_provider_manifest
     from api_agent.runtime import dependencies
     from api_agent.providers import distribution
     from api_agent.tooling import services
-    config = local.config
+    from api_agent.config.resolve import ResolvedValue
+    config = ConfigResult(dict(local.config.values),
+        {name: ResolvedValue(value, 'fixture', True) for name, value in local.config.values.items()},
+        (), (), ())
     selected = SimpleNamespace(tools=('selected',))
-    config.tool_plan = selected
+    config = replace(config, tool_plan=selected)
     monkeypatch.setattr(dependencies, 'active_environment', Mock(return_value=True))
     prepare = Mock(return_value=None)
     monkeypatch.setattr(dependencies, 'ensure_environment', prepare)

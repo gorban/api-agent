@@ -10,8 +10,14 @@ from api_agent.telemetry.tracing import TraceDeliveryError, TraceError, TraceRun
 
 
 def config(mode='OTEL', content=None, **values):
-    fields={} if content is None else {'TRACELOOP_TRACE_CONTENT':ResolvedValue(content,'cli',True)}
-    return ConfigResult({'TRACE_MODE':mode, **({} if content is None else {'TRACELOOP_TRACE_CONTENT':content}), **values},fields,(),(),())
+    from pathlib import Path
+    provider = Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/provider.py'
+    defaults = {'TRACE_PROVIDER': str(provider) + ':create_tracing_provider',
+                'TRACE_EXPORT_ENDPOINT': 'http://localhost:3000/api/public/otel/v1/traces' if mode == 'LangFuse' else 'http://localhost:4318/v1/traces',
+                'JAEGER_VIEWER_PORT': 16686}
+    resolved = {**defaults, 'TRACE_MODE': mode, **({} if content is None else {'TRACELOOP_TRACE_CONTENT': content}), **values}
+    fields = {name: ResolvedValue(value, 'cli', True) for name, value in resolved.items()}
+    return ConfigResult(resolved, fields, (), (), ())
 
 
 def fake():
@@ -60,11 +66,11 @@ def test_disabled_no_factory_or_sdk_imports():
 
 def test_langfuse_auth_and_credential_redaction():
     _,tracer,span,factory=fake()
-    runtime=TraceRuntime(config('LangFuse',True,TRACE_TARGET='https://example.invalid/',LANGFUSE_PUBLIC_KEY='pk-lf-test',LANGFUSE_SECRET_KEY='sk-lf-test'),factory=factory)
+    runtime=TraceRuntime(config('LangFuse',True,TRACE_EXPORT_ENDPOINT='https://example.invalid/api/public/otel/v1/traces',LANGFUSE_PUBLIC_KEY='pk-lf-test',LANGFUSE_SECRET_KEY='sk-lf-test'),factory=factory)
     asyncio.run(runtime.astart())
     endpoint,headers,resource=factory.call_args.args
     assert endpoint=='https://example.invalid/api/public/otel/v1/traces'
-    assert headers=={'Authorization':'Basic cGstbGYtdGVzdDpzay1sZi10ZXN0'} and resource=={}
+    assert headers=={'Authorization':'Basic cGstbGYtdGVzdDpzay1sZi10ZXN0'} and resource=={'service.name': 'api-agent'}
     runtime.event({'payload':headers['Authorization']+' pk-lf-test sk-lf-test'})
     assert 'sk-lf-test' not in str(tracer.mock_calls)
     assert span.add_event.call_args.kwargs['attributes']['payload']=='[REDACTED] [REDACTED] [REDACTED]'
@@ -72,11 +78,10 @@ def test_langfuse_auth_and_credential_redaction():
 
 @pytest.mark.parametrize('values,message',[
     ({'TRACE_MODE':'wrong'},'Unsupported'),
-    ({'TRACE_TARGET':'file:///tmp/foo'},'Invalid'),
-    ({'TRACE_TARGET':'https://user:secret@example.invalid'},'Invalid'),
-    ({'TRACE_TARGET':'http://localhost:wrong'},'Invalid'),
-    ({'TRACE_TARGET':123},'Invalid'),
-    ({'TRACE_MODE':'LangFuse'},'API keys'),
+    ({'TRACE_EXPORT_ENDPOINT':'file:///tmp/foo'},'valid HTTP'),
+    ({'TRACE_EXPORT_ENDPOINT':'https://user:secret@example.invalid'},'valid HTTP'),
+    ({'TRACE_EXPORT_ENDPOINT':'http://localhost:wrong'},'valid HTTP'),
+    ({'TRACE_EXPORT_ENDPOINT':123},'valid HTTP'),
 ])
 def test_invalid_configuration_never_allocates_exporter(values,message):
     factory=Mock()
@@ -86,9 +91,127 @@ def test_invalid_configuration_never_allocates_exporter(values,message):
     factory.assert_not_called()
 
 
+def test_missing_langfuse_keys_reject_before_exporter_allocation():
+    factory = Mock()
+    runtime = TraceRuntime(config('LangFuse'), factory=factory)
+    with pytest.raises(TraceError, match='initialization failed'):
+        asyncio.run(runtime.astart())
+    factory.assert_not_called()
+    asyncio.run(runtime.aclose())
+
+
 def test_factory_failure_sanitized():
     with pytest.raises(TraceError,match='^Tracing initialization failed.$'):
         asyncio.run(TraceRuntime(config(),factory=Mock(side_effect=RuntimeError('secret'))).astart())
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_calls_share_one_exporter_startup():
+    provider, tracer, _, _ = fake()
+    entered, release = Event(), Event()
+    def create(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return provider, tracer
+    factory = Mock(side_effect=create)
+    runtime = TraceRuntime(config(), factory=factory)
+    first = asyncio.create_task(runtime.astart())
+    second = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        second = asyncio.create_task(runtime.astart())
+        await asyncio.sleep(0)
+        assert not second.done(), 'A concurrent caller must wait for the shared exporter'
+        release.set()
+        assert await asyncio.gather(first, second) == [None, None]
+        assert runtime.active
+        factory.assert_called_once()
+    finally:
+        release.set()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_exporter_startup_before_disposal():
+    provider, tracer, _, _ = fake()
+    entered, release = Event(), Event()
+    def create(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return provider, tracer
+    runtime = TraceRuntime(config(), factory=Mock(side_effect=create))
+    starting = asyncio.create_task(runtime.astart())
+    closing = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        closing = asyncio.create_task(runtime.aclose())
+        await asyncio.sleep(0)
+        assert not closing.done()
+        release.set()
+        await starting
+        assert await closing is True
+        assert not runtime.active
+        provider.shutdown.assert_called_once()
+    finally:
+        release.set()
+        await asyncio.gather(starting, *([closing] if closing is not None else []), return_exceptions=True)
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_is_reported_to_queued_callers():
+    entered, release = Event(), Event()
+    def create(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        raise RuntimeError('private SDK diagnostic')
+    factory = Mock(side_effect=create)
+    runtime = TraceRuntime(config(), factory=factory)
+    first = asyncio.create_task(runtime.astart())
+    second = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        second = asyncio.create_task(runtime.astart())
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.gather(first, second, return_exceptions=True)
+        assert all(type(result) is TraceError for result in results)
+        assert all(str(result) == 'Tracing initialization failed.' for result in results)
+        assert not runtime.active
+        factory.assert_called_once()
+    finally:
+        release.set()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_startup_is_not_success_for_a_queued_caller():
+    provider, tracer, _, _ = fake()
+    entered, release = Event(), Event()
+    def create(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return provider, tracer
+    runtime = TraceRuntime(config(), factory=Mock(side_effect=create))
+    first = asyncio.create_task(runtime.astart())
+    second = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        second = asyncio.create_task(runtime.astart())
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        with pytest.raises(TraceError, match='^Tracing initialization failed.$'):
+            await second
+        assert not runtime.active
+    finally:
+        release.set()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+        await runtime.aclose()
+    provider.shutdown.assert_called_once()
 
 
 def test_exception_is_classification_only_and_original_propagates():
@@ -119,7 +242,7 @@ def test_flush_failures_and_bounded_shutdown():
     blocker=Event()
     runtime=TraceRuntime(config(),factory=fake()[3])
     asyncio.run(runtime.astart())
-    runtime._provider.force_flush.side_effect=lambda **kwargs:blocker.wait()
+    runtime._binding.handles.provider.force_flush.side_effect=lambda **kwargs:blocker.wait()
     try:
         assert runtime.shutdown(timeout=.01) is False
         worker=runtime._worker
@@ -145,8 +268,8 @@ def test_real_owned_sdk_factory_uses_no_global_provider_or_environment_resource(
     from opentelemetry.sdk.resources import Resource
     with patch.object(trace,'set_tracer_provider') as global_hook,patch.object(Resource,'create') as detectors,patch('requests.Session') as session:
         provider,tracer=_sdk_factory('https://example.invalid/v1/traces',{}, {})
-        assert provider.resource.attributes == {'service.name':'api-agent'}
-        exporter=provider._active_span_processor._span_processors[0].span_exporter
+        assert provider.provider.resource.attributes == {'service.name':'api-agent'}
+        exporter=provider.exporter
         session.return_value.post.return_value.status_code=200
         span=tracer.start_span('api_agent.span',attributes={'status':'ok'})
         span.end()
@@ -195,8 +318,8 @@ def test_invalid_config_blocks_lazy_sdk_creation(issue):
 
 
 def test_explicit_blank_target_rejected_and_shutdown_failure_reported():
-    with pytest.raises(TraceError,match='Invalid'):
-        TraceRuntime(config(TRACE_TARGET=''))
+    with pytest.raises(TraceError,match='nonempty explicit endpoint'):
+        TraceRuntime(config(TRACE_EXPORT_ENDPOINT=''))
     provider,_,_,factory=fake()
     runtime=TraceRuntime(config(),factory=factory)
     asyncio.run(runtime.astart())
@@ -271,14 +394,10 @@ def test_ambient_sdk_disabled_conflict_allocates_no_owned_resources():
     with patch.dict('os.environ', {'OTEL_SDK_DISABLED':' True '}), \
          patch('requests.Session') as session, \
          patch('opentelemetry.sdk.trace.TracerProvider') as provider:
-        runtime=TraceRuntime(config())
-        with pytest.raises(TraceError,match=r'^Tracing initialization failed\.$'):
-            asyncio.run(runtime.astart())
+        with pytest.raises(TraceError, match='SDK disable policy'):
+            TraceRuntime(config())
         session.assert_not_called()
         provider.assert_not_called()
-        assert runtime._provider is None
-        assert runtime._worker is None
-        assert runtime.shutdown()
         disabled=TraceRuntime(config(''))
         asyncio.run(disabled.astart())
         assert asyncio.run(disabled.aclose())

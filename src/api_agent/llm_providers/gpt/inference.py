@@ -182,13 +182,22 @@ def _result_body(data, responses, token, *, openrouter=False):
             raise _invalid('GPT inference returned an invalid reasoning summary.') from None
         if summary and (token in summary or token in ''.join(character for character in summary if character.isprintable())):
             raise _invalid('GPT inference returned protected authentication content.')
-    if responses and outcome == 'completed' and any(item.get('encrypted_content') is not None or openrouter and item.get('type') == 'reasoning' for item in data['output']):
+    if responses and any(item.get('encrypted_content') is not None or openrouter and item.get('type') == 'reasoning' for item in data['output']):
         from .rich import _native_state
         try:
-            rows = _native_state(data['output'], openrouter=openrouter)
-            state = json.dumps({'provider': 'openrouter.responses' if openrouter else 'openai.responses', 'state': rows}, allow_nan=False, separators=(',', ':'))
+            rows = _native_state(data['output'], openrouter=openrouter, outcome=outcome)
+            if outcome == 'completed':
+                state = json.dumps({'provider': 'openrouter.responses' if openrouter else 'openai.responses', 'state': rows}, allow_nan=False, separators=(',', ':'))
         except ContractError as error:
             raise _invalid('GPT inference returned invalid continuation state: ' + str(error)) from None
+    if not responses and openrouter and any(key in message for key in ('reasoning', 'reasoning_content', 'reasoning_details')):
+        from .router_reasoning import chat_state
+        try:
+            summary = chat_state(message)
+            if outcome == 'completed':
+                state = json.dumps(dict(provider='openrouter.completions', state=[message]), allow_nan=False, separators=(',', ':'))
+        except ContractError:
+            raise _invalid('GPT inference returned invalid continuation state.') from None
     return LLMResult(Message('assistant', (TextContent(joined),), continuation=state), _usage(data.get('usage'), responses), outcome, model, tier, revision, reasoning_summary=summary)
 
 
@@ -382,15 +391,15 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
         body['provider'] = {'require_parameters': True}
     from .reasoning import reasoning_fields
     body.update(reasoning_fields(request, base_url=base_url, api_mode=api_mode))
-    if base_url == 'https://openrouter.ai/api/v1' and request.payload.generation.max_output_tokens is not None:
+    if base_url == 'https://openrouter.ai/api/v1' and (request.payload.generation.max_output_tokens is not None or request.payload.tools):
         body.setdefault('provider', {}).update(require_parameters=True, allow_fallbacks=False)
     from .rich import _protected
     from api_agent.providers.rich_inference import continuation
     for message in request.payload.messages:
         if message.continuation is not None:
             provider = continuation(message.continuation)['provider']
-            router = base_url == 'https://openrouter.ai/api/v1'
-            if (provider == 'openrouter.responses' and not router
+            from .reasoning import native_reasoning
+            if (provider in ('openrouter.responses', 'openrouter.completions') and not native_reasoning(request.selected_llm, base_url=base_url, api_mode=api_mode)
                     or provider == 'openai.responses' and base_url != 'https://api.openai.com/v1'):
                 raise ProviderAccessError('unsupported', 'Native continuation requires its original route.')
     if any(message.continuation is not None and _protected(continuation(message.continuation), access_token) for message in request.payload.messages):
@@ -399,10 +408,11 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
                                   base_url=base_url, subscription=subscription))
     if base_url == 'https://openrouter.ai/api/v1' and request.payload.generation.cache_policy in ('medium', 'high'):
         rows = body['input' if api_mode == 'responses' else 'messages']
-        if not rows[-1].get('content'):
+        field = 'output' if api_mode == 'responses' and rows[-1].get('type') == 'function_call_output' else 'content'
+        if not rows[-1].get(field):
             raise ProviderAccessError('unsupported', 'OpenRouter enabled prompt-cache presets require a nonempty final text message.')
-        rows[-1]['content'] = [{'type': 'input_text' if api_mode == 'responses' else 'text',
-                               'text': rows[-1]['content'], 'prompt_cache_breakpoint': {'mode': 'explicit'}}]
+        rows[-1][field] = [{'type': 'input_text' if api_mode == 'responses' else 'text',
+                           'text': rows[-1][field], 'prompt_cache_breakpoint': {'mode': 'explicit'}}]
     return base_url, body
 
 
@@ -418,7 +428,7 @@ async def async_validate_text_request(*, base_url, access_token, subscription, a
     return admitted
 
 
-async def _guard_content(value, access_token, authority=None, *, commit=None, decoded=None, router_native=False, rejected=False):
+async def _guard_content(value, access_token, authority=None, *, commit=None, decoded=None, router_native=False, rejected=False, native_normalized=None):
     from api_agent.providers.credential_guard import async_guard_json, CredentialProtectionError
     async def inspect(secrets):
         await async_guard_json(value, secrets)
@@ -433,25 +443,30 @@ async def _guard_content(value, access_token, authority=None, *, commit=None, de
         if decoded is not None:
             import json
             from api_agent.providers.response_carriers import observable_response_carriers
-            from .router_reasoning import carriers, MAX_CARRIERS
+            from .router_reasoning import carriers, projected_carriers, MAX_CARRIERS
             from api_agent.providers.contracts import ContractError
             try:
                 state = decoded.payload.continuation
-                router_state = state is not None and json.loads(state)['provider'] == 'openrouter.responses'
+                router_state = state is not None and json.loads(state)['provider'] in ('openrouter.responses', 'openrouter.completions')
                 arguments = tuple(json.loads(call.arguments) for call in decoded.payload.calls)
                 visible = [*(part.text for part in decoded.payload.content), decoded.reasoning_summary or '']
                 native = carriers(value, state, arguments=arguments, maximum=MAX_CARRIERS - len(visible)) if router_native or router_state else ()
-                if native:
+                if router_native or router_state:
+                    normalized = (native_normalized if native_normalized is not None
+                                  else not ('output' in value or 'choices' in value))
+                    projected = projected_carriers(value, normalized=normalized)
                     from api_agent.providers.rejected_evidence import _guard_response_fragments
                     from api_agent.runtime.tasks import offload
-                    # Native state may split a credential over more than two
-                    # fields. Reuse the bounded fragment guard before capture.
+                    # Native/parsed and projected representations each retain
+                    # their own carrier bound. Match them jointly under the
+                    # unchanged shared work bound before capture.
                     await offload(_guard_response_fragments,
-                        [*native, *visible], secrets, max_leaves=MAX_CARRIERS)
+                        [*native, *visible, *projected], secrets, max_leaves=2 * MAX_CARRIERS)
                     # JSON credentials also require semantic comparison of
                     # pairs across all carriers, including argument keys/values.
                     from .router_reasoning import guard_semantic_carriers
-                    await offload(guard_semantic_carriers, [*native, *visible], secrets)
+                    await offload(guard_semantic_carriers,
+                        [*native, *visible, *projected_carriers(value, semantic=True, normalized=normalized)], secrets)
                     return
                 for carrier in observable_response_carriers(
                         ''.join(part.text for part in decoded.payload.content),
@@ -475,7 +490,7 @@ async def _guard_content(value, access_token, authority=None, *, commit=None, de
         raise _invalid('GPT inference contains protected authentication content.') from None
 
 
-async def _capture_safe_response(value, request_id, access_token, authority, *, partial=False, router_responses=False):
+async def _capture_safe_response(value, request_id, access_token, authority, *, partial=False, router_route=False, responses=True):
     """Project and validate provider response before handing it to evidence."""
     from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
     from api_agent.workflows.inference_capture import capture_inference
@@ -491,10 +506,11 @@ async def _capture_safe_response(value, request_id, access_token, authority, *, 
                 EmissionBoundary(ContentPolicy(True)))
     snapshot.register_secret(access_token)
     from .router_reasoning import evidence_payload
-    clean = snapshot.content_export(evidence_payload(value) if router_responses else value)
+    clean = snapshot.content_export(evidence_payload(value) if router_route else value)
     await _guard_observed(clean, access_token, authority,
         usage=decoded.usage if decoded is not None else None, decoded=decoded,
-        **({'rejected': True} if router_responses else {}),
+        reported=value.get('usage'), responses=responses,
+        **({'rejected': True} if router_route else {}),
         commit=lambda: capture_inference('output', clean, request_id, auth=access_token, partial=partial))
 
 
@@ -535,12 +551,13 @@ async def _guard_error(error, access_token, authority=None):
         raise protected from None
 
 
-async def _guard_observed(value, access_token, authority, *, usage=None, reported=None, responses=True, commit=None, decoded=None, router_native=False, rejected=False):
+async def _guard_observed(value, access_token, authority, *, usage=None, reported=None, responses=True, commit=None, decoded=None, router_native=False, rejected=False, native_normalized=None):
     """Keep validated accounting when a received success cannot be released."""
     try:
         await _guard_content(value, access_token, authority, commit=commit,
             **({} if decoded is None else {'decoded': decoded}),
             **({'router_native': True} if router_native else {}),
+            **({'native_normalized': native_normalized} if native_normalized is not None else {}),
             **({'rejected': True} if rejected else {}))
     except ProviderAccessError as error:
         if usage is not None:
@@ -555,10 +572,18 @@ async def _guard_observed(value, access_token, authority, *, usage=None, reporte
         raise
 
 
+def _normalized_native_guard(request, base_url, api_mode):
+    """Bind normalized admission to the selected route, never response fields."""
+    from .reasoning import native_reasoning
+    return ({'router_native': True, 'native_normalized': True}
+            if native_reasoning(request.selected_llm, base_url=base_url, api_mode=api_mode) else {})
+
+
 async def complete_text(*, client, base_url, access_token, subscription, api_mode, request, cache_session_id=None, authority=None):
     """Perform one bounded physical inference attempt."""
     base_url, body = await async_validate_text_request(base_url=base_url, access_token=access_token,
         subscription=subscription, api_mode=api_mode, request=request)
+    normalized_guard = _normalized_native_guard(request, base_url, api_mode)
     headers = {'Authorization': 'Bearer ' + access_token, 'Accept-Encoding': 'identity'}
     if subscription and cache_session_id is not None:
         try:
@@ -587,7 +612,7 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
         from api_agent.providers.inference import result_to_wire
         released = []
         await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage,
-                              commit=lambda: released.append(result), decoded=result)
+                              commit=lambda: released.append(result), decoded=result, **normalized_guard)
         return released[0]
     except (ProviderAccessError, OperationalError, CancelledError) as error:
         error.response = dispatch['response']
@@ -629,6 +654,7 @@ def _admission_rejection(status, data, subscription):
 async def _complete_attempt(*, client, base_url, headers, body, subscription, api_mode,
                             request, access_token, budget, dispatch, authority=None):
     """Own and close one HTTP response before the caller decides to retry."""
+    normalized_guard = _normalized_native_guard(request, base_url, api_mode)
     from .response_policy import prepare_response
     from api_agent.llm_providers.response_policy import capture_payload
     _, evidence = prepare_response(request, base_url=base_url, api_mode=api_mode, subscription=subscription)
@@ -636,8 +662,8 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
         raise TimeoutError('GPT inference deadline expired before dispatch.')
     await _guard_content(body, access_token, authority)
     from .router_reasoning import evidence_payload
-    router_responses = base_url == 'https://openrouter.ai/api/v1' and api_mode == 'responses'
-    capture_payload(request, evidence_payload(body) if router_responses else body, evidence, auth=access_token)
+    router_route = base_url == 'https://openrouter.ai/api/v1'
+    capture_payload(request, evidence_payload(body, source='request') if router_route else body, evidence, auth=access_token)
     if budget.remaining == 0:
         raise TimeoutError('GPT inference deadline expired before dispatch.')
     # Capture can register credentials; check again after it completes.
@@ -675,7 +701,7 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                     await _guard_error(limit_error, access_token, authority)
                     raise limit_error
                 if type(data) is dict:
-                    await _capture_safe_response(data, request.request_id, access_token, authority, router_responses=router_responses)
+                    await _capture_safe_response(data, request.request_id, access_token, authority, router_route=router_route, responses=api_mode == 'responses')
                 error = _rejection(response.status_code, data, request_id, access_token,
                                    _authentication_type(response.headers.get('www-authenticate')), responses=api_mode == 'responses')
                 await _guard_error(error, access_token, authority)
@@ -709,7 +735,8 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                 raise
             from api_agent.providers.generation_attempts import snapshot_transport_result
             from api_agent.providers.inference import result_to_wire
-            await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage, decoded=result)
+            await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage, decoded=result,
+                                  **normalized_guard)
             for terminal in terminals:
                 await _capture_safe_response(terminal, request.request_id, access_token, authority, partial=True)
             snapshot_transport_result(result)
@@ -718,18 +745,23 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
         await _guard_observed(data, access_token, authority,
                               reported=data.get('usage') if type(data) is dict else None,
                               responses=api_mode == 'responses')
-        from .reasoning import native_reasoning
-        router_native = native_reasoning(request.selected_llm, base_url=base_url, api_mode=api_mode)
+        router_native = bool(normalized_guard)
         if (base_url == 'https://openrouter.ai/api/v1' and api_mode == 'responses'
                 and not router_native and type(data) is dict and type(data.get('output')) is list
                 and any(type(item) is dict and item.get('type') == 'reasoning' for item in data['output'])):
             raise _reported_usage(_invalid('OpenRouter native reasoning is not qualified for this selection.'), data.get('usage'), True)
+        if (base_url == 'https://openrouter.ai/api/v1' and api_mode == 'completions'
+                and not router_native and type(data) is dict and type(data.get('choices')) is list
+                and any(type(row) is dict and type(row.get('message')) is dict
+                    and any(key in row['message'] for key in ('reasoning', 'reasoning_content', 'reasoning_details'))
+                    for row in data['choices'])):
+            raise _reported_usage(_invalid('OpenRouter native reasoning is not qualified for this selection.'), data.get('usage'), False)
         result = _result(data, api_mode == 'responses', access_token, openrouter=router_native)
         from api_agent.providers.inference import result_to_wire
         from api_agent.workflows.inference_capture import capture_inference
         await _guard_observed(data, access_token, authority, usage=result.usage, decoded=result,
-            **({'router_native': True} if router_native else {}),
-            commit=lambda: capture_inference('output', evidence_payload(data) if router_responses else data, request.request_id, auth=access_token))
+            **({'router_native': True, 'native_normalized': False} if router_native else {}),
+            commit=lambda: capture_inference('output', evidence_payload(data) if router_route else data, request.request_id, auth=access_token))
         if base_url == 'https://openrouter.ai/api/v1':
             usage = _usage(data.get('usage'), api_mode == 'responses', router=True)
             try:
@@ -742,6 +774,7 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
         result = replace(result, response=evidence)
         from api_agent.providers.generation_attempts import snapshot_transport_result
         from api_agent.providers.inference import result_to_wire
-        await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage, decoded=result)
+        await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage, decoded=result,
+            **normalized_guard)
         snapshot_transport_result(result)
         return await async_validate_result(request, result, access_token)

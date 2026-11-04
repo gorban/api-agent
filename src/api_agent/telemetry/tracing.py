@@ -6,13 +6,11 @@ with enabled tracing and fails initialization without allocating SDK resources. 
 but owns transport diagnostics so backend response bodies cannot reach logs.
 """
 import asyncio
-from base64 import b64encode
 from contextlib import contextmanager
 import json
 import os
 import re
 from threading import Event, Lock, Thread
-from urllib.parse import urlsplit
 
 from .privacy import ContentPolicy, EmissionBoundary
 
@@ -85,23 +83,60 @@ def _structural(boundary, payload, model_identities=frozenset()):
         elif key in identifiers:
             if type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', value):
                 clean[key] = value
-        elif key in ('api_agent.attempt', 'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens'):
+        elif key in ('api_agent.attempt', 'gen_ai.usage.input_tokens', 'gen_ai.usage.output_tokens',
+                     'gen_ai.usage.cache_read.input_tokens', 'gen_ai.usage.cache_write.input_tokens',
+                     'gen_ai.usage.reasoning.output_tokens', 'gen_ai.request.max_tokens',
+                     'api_agent.transport.usage.input_tokens', 'api_agent.transport.usage.output_tokens',
+                     'api_agent.transport.usage.cache_read.input_tokens', 'api_agent.transport.usage.cache_write.input_tokens',
+                     'api_agent.transport.usage.reasoning.output_tokens'):
             if type(value) is int and 0 <= value <= (1 << 53) - 1:
                 clean[key] = value
+        elif key in ('gen_ai.response.id', 'api_agent.response.serving_revision'):
+            if type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
+                if boundary.content_export({'value':value}).get('value') == value:
+                    clean[key] = value
+        elif key == 'api_agent.llm.outcome' and value in ('completed','length','tool_calls','refused'):
+            clean[key] = value
+        elif key == 'api_agent.response.status' and value in ('completed','incomplete','failed','cancelled','in_progress','queued'):
+            clean[key] = value
+        elif key == 'api_agent.response.service_tier' and value in ('auto','default','flex','priority','scale'):
+            clean[key] = value
+        elif key == 'gen_ai.request.reasoning.level' and value in ('none','off','minimal','low','medium','high','xhigh','max','auto'):
+            clean[key] = value
+        elif key == 'gen_ai.provider.name':
+            if (type(value) is str and re.fullmatch(r'[a-z][a-z0-9_.-]{0,63}', value)
+                    and re.fullmatch(r'(?:(?:sk|pk|ghp|gho|ghs)[_-]|bearer[.])[a-z0-9_.-]{16,}', value) is None):
+                safe = boundary.content_export({'value': value}).get('value')
+                if safe == value:
+                    clean[key] = value
+        elif key == 'gen_ai.request.temperature':
+            if type(value) in (int, float) and __import__('math').isfinite(value) and 0 <= value <= (1 << 53) - 1:
+                clean[key] = float(value)
+        elif key == 'gen_ai.response.finish_reasons':
+            if type(value) is list and len(value) <= 8 and all(type(item) is str and item in
+                    ('stop', 'length', 'tool_calls', 'content_filter', 'end_turn', 'max_tokens', 'stop_sequence', 'tool_use', 'guardrail_intervened', 'content_filtered', 'other') for item in value):
+                clean[key] = value
+        elif key == 'error.type' and value in ('unknown', 'deadline', 'unavailable', 'network', 'rate_limit', 'authentication', 'authorization', 'invalid_request', 'server'):
+            clean[key] = value
         elif key in ('api_agent.transport_index', 'api_agent.transport_attempt_count'):
             if type(value) is int and 0 <= value <= 20:
                 clean[key] = value
         elif key == 'api_agent.transport_status':
             if type(value) is int and 100 <= value <= 599:
                 clean[key] = value
-        elif key in ('api_agent.transport_complete', 'api_agent.transport_recovered'):
+        elif key in ('api_agent.transport_complete', 'api_agent.transport_recovered', 'api_agent.usage.complete', 'api_agent.transport.terminal_known'):
             if type(value) is bool:
                 clean[key] = value
         elif key == 'api_agent.transport_outcome' and value in ('started', 'observed', 'completed', 'failed'):
             clean[key] = value
+        elif key == 'langfuse.observation.type' and value in ('generation', 'tool', 'chain', 'span'):
+            clean[key] = value
+        elif key in ('gen_ai.tool.name', 'gen_ai.tool.call.id', 'api_agent.tool.instance'):
+            if type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', value):
+                clean[key] = value
         elif key == 'gen_ai.operation.name' and value in ('chat', 'execute_tool'):
             clean[key] = value
-        elif key == 'api_agent.capture.reason' and value in ('captured', 'partial', 'truncated', 'unavailable', 'withheld'):
+        elif key == 'api_agent.capture.reason' and value in ('captured', 'partial', 'truncated', 'unavailable', 'withheld', 'terminal_unknown'):
             clean[key] = value
         elif key == 'api_agent.capture.phase' and value in ('request', 'response'):
             clean[key] = value
@@ -116,15 +151,67 @@ def _span_name(boundary, name, model_identities=frozenset()):
         return 'chat'
     if type(name) is not str or not (
             re.fullmatch(r'(?:graph|component|node) [A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', name)
-            or name in ('execute_tool', 'transport attempt')
+            or name in ('execute_tool', 'transport attempt', 'request')
             or (name.startswith('chat ') and _model_identity(name[5:], model_identities))):
         return 'api_agent.span'
     return boundary.content_export({'name': name}).get('name', 'api_agent.span')
 
-def _sdk_factory(endpoint, headers, resource):
+class _TraceSDKOwner:
+    """Retain successful allocations and acknowledge each disposal phase."""
+    def __init__(self):
+        from .operation import TraceLoss
+        self.trace_loss_owner = TraceLoss()
+        self.session = self.exporter = self.processor = self.provider = None
+        self.acknowledged = set()
+        self.disposed = False
+        self._dispose_lock = Lock()
+
+    def force_flush(self, timeout_millis=5000):
+        return self.provider.force_flush(timeout_millis=timeout_millis) if self.provider is not None else True
+
+    def shutdown(self):
+        with self._dispose_lock:
+            if self.disposed:
+                return
+            # Drain active HTTP use before stopping the worker. Explicit lower
+            # phases remain retryable even when an SDK shutdown is one-shot.
+            for name in ('exporter', 'processor', 'provider', 'session'):
+                if name in self.acknowledged:
+                    continue
+                component = getattr(self, name)
+                if component is not None:
+                    if name == 'session':
+                        component.close()
+                    else:
+                        component.shutdown()
+                self.acknowledged.add(name)
+            self.disposed = True
+
+
+def _sdk_factory(endpoint, headers, resource, *, own=None, environ=None):
+    """Retain partial startup before any later SDK construction can fail."""
     # Honor the SDK disable policy without silent data loss or modifying globals.
-    if os.environ.get('OTEL_SDK_DISABLED', '').strip().lower() == 'true':
+    environment = os.environ if environ is None else environ
+    if environment.get('OTEL_SDK_DISABLED', '').strip().lower() == 'true':
         raise TraceError('Trace SDK disable flag conflicts with enabled tracing.')
+    if environ is not None and os.environ.get('OTEL_SDK_DISABLED', '').strip().lower() == 'true':
+        raise TraceError('Ambient SDK disable policy conflicts with captured tracing.')
+    owner = _TraceSDKOwner()
+    try:
+        if own is not None:
+            own(owner)
+        return _build_sdk(endpoint, headers, resource, owner)
+    except BaseException as error:
+        error.cleanup_owner = owner
+        if own is None:
+            try:
+                owner.shutdown()
+            except BaseException:
+                pass
+        raise
+
+
+def _build_sdk(endpoint, headers, resource, owner):
     # Lazy imports: disabled tracing has no optional dependency or backend I/O.
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
@@ -133,18 +220,39 @@ def _sdk_factory(endpoint, headers, resource):
     from opentelemetry.sdk.trace.sampling import ALWAYS_ON
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExportResult
     from requests import Session
+    from threading import Condition
+
+    pending = [0]
+    pending_lock = Lock()
+    queue_capacity = 1024
+
+    owner.session = Session()
+    owner.session.trust_env = False
 
     class OwnedHTTPExporter(OTLPSpanExporter):
         def __init__(self):
-            self.session = Session()
-            self.session.trust_env = False
+            self.session = owner.session
             self.closed = False
             self.failed = Event()
+            self._condition = Condition()
+            self._active = 0
 
         def export(self, spans):
-            if self.closed:
-                self.failed.set()
-                return SpanExportResult.FAILURE
+            with self._condition:
+                if self.closed:
+                    self.failed.set()
+                    return SpanExportResult.FAILURE
+                self._active += 1
+            try:
+                return self._export(spans)
+            finally:
+                with self._condition:
+                    self._active -= 1
+                    self._condition.notify_all()
+                with pending_lock:
+                    pending[0] = max(0, pending[0] - len(spans))
+
+        def _export(self, spans):
             try:
                 data = encode_spans(spans).SerializeToString()
                 response = self.session.post(endpoint, data=data,
@@ -165,10 +273,13 @@ def _sdk_factory(endpoint, headers, resource):
             return True
 
         def shutdown(self):
-            self.closed = True
-            self.session.close()
+            with self._condition:
+                self.closed = True
+                if not self._condition.wait_for(lambda: self._active == 0, timeout=5):
+                    raise TraceError('Trace export disposal remains pending.')
 
     exporter = OwnedHTTPExporter()
+    owner.exporter = exporter
     class OwnedTracerProvider(TracerProvider):
         def force_flush(self, timeout_millis=5000):
             # SDK flush reports queue drainage, not successful delivery. Keep
@@ -176,49 +287,147 @@ def _sdk_factory(endpoint, headers, resource):
             drained = super().force_flush(timeout_millis=timeout_millis)
             return drained and not exporter.failed.is_set()
 
+    class CountedBatchSpanProcessor(BatchSpanProcessor):
+        # The SDK's bounded queue reports overflow only through SDK diagnostics.
+        # Admit outstanding records before its public on_end hook instead, so
+        # queue rejection has the same explicit application loss ownership.
+        def on_end(self, span):
+            if not (span.context and span.context.trace_flags.sampled):
+                return
+            with pending_lock:
+                rejected = pending[0] >= queue_capacity
+                if not rejected:
+                    pending[0] += 1
+                    super().on_end(span)
+            if rejected:
+                owner.trace_loss_owner.record()
+
     provider = OwnedTracerProvider(resource=Resource({'service.name': 'api-agent', **resource}),
         sampler=ALWAYS_ON, shutdown_on_exit=False)
-    provider.add_span_processor(BatchSpanProcessor(exporter, max_queue_size=256,
-        max_export_batch_size=32, schedule_delay_millis=500, export_timeout_millis=5000))
-    return provider, provider.get_tracer('api_agent')
+    owner.provider = provider
+    processor = CountedBatchSpanProcessor(exporter, max_queue_size=queue_capacity,
+        max_export_batch_size=32, schedule_delay_millis=500, export_timeout_millis=5000)
+    owner.processor = processor
+    provider.add_span_processor(processor)
+    return owner, provider.get_tracer('api_agent')
+
 
 
 class TraceSpan:
-    def __init__(self, span, boundary, model_identity=None):
+    def __init__(self, span, boundary, model_identity=None, mapping=None, operation=None, losses=None):
+        from .operation import TraceLoss
+        self._losses = losses or TraceLoss()
         self._span = span
         self._boundary = boundary
         self._model_identity = model_identity
+        self._operation = operation
+        self._outcome = None
+        from .trace_mapping import TraceMapping, admit_mapping
+        self._mapping = admit_mapping(mapping or TraceMapping())
+
+    def export_context(self):
+        """Export only this explicit SDK span's bounded identity, never ambient state."""
+        if self._span is None:
+            return None
+        context = self._span.get_span_context()
+        if not context.is_valid:
+            return None
+        return {'version': 1, 'trace_id': format(context.trace_id, '032x'),
+                'span_id': format(context.span_id, '016x'),
+                'trace_flags': int(context.trace_flags) & 1}
 
     def end(self, *, end_time=None):
         if self._span is not None:
-            self._span.end(end_time=end_time)
-            self._span = None
+            span, self._span = self._span, None
+            self._losses.run(lambda: span.end(end_time=end_time))
 
     def attributes(self, payload):
         clean = _attributes(self._boundary, payload, model_identity=self._model_identity)
         if self._span is not None:
-            self._span.set_attributes(clean)
-            if clean.get('status') in ('error', 'cancelled'):
+            self._losses.run(lambda: self._span.set_attributes(clean))
+            if clean.get('status') == 'error':
                 from opentelemetry.trace import StatusCode
-                self._span.set_status(StatusCode.ERROR)
+                self._losses.run(lambda: self._span.set_status(StatusCode.ERROR))
+
+    def structural(self, payload):
+        models = frozenset(value for key, value in payload.items() if key in
+            ('gen_ai.request.model', 'gen_ai.response.model') and self._model_identity is not None
+            and self._model_identity(value))
+        clean = _structural(self._boundary, payload, models)
+        if self._span is not None:
+            self._losses.run(lambda: self._span.set_attributes(clean))
+
+    def outcome(self, outcome):
+        from .outcomes import ExecutionOutcome, OutcomeState
+        if type(outcome) is not ExecutionOutcome:
+            raise TypeError('Expected a versioned execution outcome')
+        if self._outcome is not None and self._outcome.state in (OutcomeState.FAILURE, OutcomeState.PARTIAL):
+            if outcome.state != OutcomeState.FAILURE or self._outcome.state == OutcomeState.FAILURE:
+                return
+        self._outcome = outcome
+        if self._span is not None:
+            clean = self._boundary.for_policy(ContentPolicy(True)).export({
+                'api_agent.outcome.version': outcome.version,
+                'api_agent.outcome.state': outcome.state.value,
+                **({'api_agent.outcome.cause_id': outcome.cause_id} if outcome.cause_id else {}),
+                **({'error.type': outcome.cause.value} if outcome.state in
+                   (OutcomeState.FAILURE, OutcomeState.PARTIAL) else {})})
+            self._losses.run(lambda: self._span.set_attributes(clean))
+            if outcome.state in (OutcomeState.FAILURE, OutcomeState.PARTIAL):
+                from opentelemetry.trace import StatusCode
+                self._losses.run(lambda: self._span.set_status(StatusCode.ERROR))
+
+    def capture_loss(self, count):
+        """Structural incomplete-delivery marker independent of content permission."""
+        if type(count) is not int or not 0 < count <= (1 << 53) - 1:
+            raise ValueError('Invalid trace loss count')
+        if self._span is not None:
+            clean = self._boundary.for_policy(ContentPolicy(True)).export({
+                'api_agent.trace.loss_count': count, 'api_agent.trace.complete': False})
+            self._losses.run(lambda: self._span.set_attributes(clean))
+
+    def native_io(self, direction, values):
+        """Native observation panels use the same mandatory pre-queue boundary."""
+        if direction not in ('input', 'output'):
+            raise ValueError('Invalid observation direction')
+        # Project structure before JSON encoding: hidden carriers cannot hide in
+        # a serialized attribute and content opt-in never grants secret access.
+        clean = self._boundary.export({'values': values})
+        if 'values' in clean and self._span is not None:
+            self._losses.run(lambda: self._span.set_attribute(self._mapping.io_attribute(direction),
+                json.dumps(clean['values'], ensure_ascii=False, allow_nan=False)))
+            from .trace_mapping import genai_messages
+            messages = genai_messages(direction, clean['values']) if self._operation == 'chat' else None
+            if messages is not None:
+                self._losses.run(lambda: self._span.set_attribute('gen_ai.' + direction + '.messages',
+                    json.dumps(messages, ensure_ascii=False, allow_nan=False)))
 
     def event(self, payload, *, structural=None, timestamp=None):
         clean = _attributes(self._boundary, payload, model_identity=self._model_identity)
         clean.update(_structural(self._boundary, structural, ()))
         if self._span is not None:
-            self._span.add_event('api_agent.event', attributes=clean,
-                                 **({'timestamp': timestamp} if timestamp is not None else {}))
+            self._losses.run(lambda: self._span.add_event('api_agent.event', attributes=clean,
+                                 **({'timestamp': timestamp} if timestamp is not None else {})))
 
 
 class TraceRuntime:
-    def __init__(self, config, *, boundary=None, factory=None, model_identities=()):
+    def __init__(self, config, *, boundary=None, factory=None, model_identities=(), mapping=None, binding=None, environ=None, explicit_fields=None):
+        from .trace_mapping import TraceMapping, admit_mapping
+        self._binding = binding
+        self._binding_close_task = None
+        self._binding_closed = False
+        self.mapping = admit_mapping(binding.mapping if binding is not None else mapping or TraceMapping())
+        from .operation import TraceLoss
+        self.losses = TraceLoss()
+        self._catalog_model_identities = frozenset()
+        self._response_model_identities = frozenset()
         self.bind_model_identities(model_identities)
         policy = ContentPolicy.from_config(config, field_name="TRACELOOP_TRACE_CONTENT")
         self.boundary = (boundary or EmissionBoundary()).for_policy(policy)
         self._provider = self._tracer = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._startup_failed = False
         self._closed = False
-        self._factory = factory or _sdk_factory
-        self._plan = None
         self._worker = None
         self._work_lock = Lock()
         self._done = Event()
@@ -229,33 +438,26 @@ class TraceRuntime:
         if config.errors or config.missing:
             raise TraceError('Tracing requires valid complete configuration.')
         values = config.values
-        mode = values.get('TRACE_MODE', '')
-        if mode == '':
+        if binding is not None:
             return
-        if mode not in ('OTEL', 'LangFuse'):
-            raise TraceError('Unsupported trace mode.')
-        endpoint = values.get('TRACE_TARGET')
-        if endpoint is None:
-            endpoint = 'http://localhost:3000' if mode == 'LangFuse' else 'http://localhost:4318/v1/traces'
+        from .tracing_providers import admit_binding
         try:
-            parsed = urlsplit(endpoint)
-            if (parsed.scheme not in ('http', 'https') or not parsed.hostname
-                    or parsed.username or parsed.password or parsed.query or parsed.fragment):
-                raise ValueError
-            parsed.port
-        except (ValueError, TypeError, AttributeError):
-            raise TraceError('Invalid trace endpoint.') from None
-        headers = {}
-        if mode == 'LangFuse':
-            public, secret = values.get('LANGFUSE_PUBLIC_KEY'), values.get('LANGFUSE_SECRET_KEY')
-            if any(type(key) is not str or not key for key in (public, secret)):
-                raise TraceError('LangFuse tracing requires API keys.')
-            auth = 'Basic ' + b64encode(f'{public}:{secret}'.encode()).decode()
-            for credential in (public, secret, auth, auth[6:]):
-                self.boundary.register_secret(credential)
-            headers['Authorization'] = auth
-            endpoint = endpoint.rstrip('/') + '/api/public/otel/v1/traces'
-        self._plan = (endpoint, headers, _attributes(self.boundary, {}))
+            self._binding = admit_binding(config, owner_root=None, boundary=self.boundary, environ=environ, explicit_fields=explicit_fields)
+        except ValueError as error:
+            raise TraceError(str(error)) from None
+        if self._binding is not None:
+            self._binding.exporter_factory = factory
+            self.mapping = admit_mapping(self._binding.mapping)
+
+    @property
+    def enabled(self):
+        """Whether this owner has an explicitly selected export plan."""
+        return self._binding is not None
+
+    @property
+    def active(self):
+        """Admit observations only after startup and before disposal."""
+        return self._tracer is not None and not self._closed
 
     def bind_model_identities(self, model_identities):
         """Replace the trusted catalog snapshot; span payloads cannot admit identities."""
@@ -266,19 +468,88 @@ class TraceRuntime:
                 or any(type(value) is not str or not 0 < len(value) <= 200
                        or not value.isprintable() for value in model_identities)):
             raise TraceError('Trace model identities must be a bounded collection of identifiers.')
-        self._model_identities = frozenset(model_identities)
+        self._catalog_model_identities = frozenset(model_identities)
+        self._model_identities = self._catalog_model_identities | self._response_model_identities
+
+    def admit_provider_model(self, result):
+        """Admit a served alias from the validated shared provider result only."""
+        from api_agent.providers.llm import LLMResult
+        if not isinstance(result, LLMResult) or result.actual_model is None or not self.active:
+            return
+        if result.actual_model not in self._response_model_identities and len(self._response_model_identities) >= 256:
+            self.losses.record()
+            return
+        self._response_model_identities = self._response_model_identities | {result.actual_model}
+        self._model_identities = self._catalog_model_identities | self._response_model_identities
 
     def is_model_identity(self, value):
         """Return whether the owner catalog currently admits this exact identity."""
         return _model_identity(value, self._model_identities)
 
     async def astart(self):
-        if self._plan is None or self._provider is not None or self._closed:
+        async with self._lifecycle_lock:
+            await self._start()
+
+    async def _start(self):
+        if not self.enabled or self._closed:
+            return
+        if self._startup_failed:
+            raise TraceError('Tracing initialization failed.')
+        if self._provider is not None:
             return
         try:
-            self._provider, self._tracer = self._factory(*self._plan)
-        except Exception:
+            resource = self.boundary.content_export({'service.name': 'api-agent'})
+            self._provider, self._tracer = await self._binding.open(resource)
+            from .operation import TraceLoss
+            trace_provider = self._binding.handles.provider if self._binding.handles is not None else self._provider
+            if type(getattr(trace_provider, 'trace_loss_owner', None)) is TraceLoss:
+                trace_provider.trace_loss_owner = self.losses
+        except BaseException as error:
+            self._startup_failed = True
+            if self._provider is None:
+                # The binding has already retained any partial startup owner.
+                # Its ledger must acknowledge disposal once for both lifetimes.
+                self._provider = self._binding.signal_owner
+                if getattr(error, 'cleanup_owner', None) is not None:
+                    self._delivery_failed = True
+            if not isinstance(error, Exception):
+                raise
             raise TraceError('Tracing initialization failed.') from None
+
+    @property
+    def pipeline_id(self):
+        """Opaque account/pipeline compatibility proof for authenticated handoff."""
+        if not self.enabled:
+            return None
+        identity = getattr(self._binding, 'pipeline_identity', None)
+        return identity if type(identity) is str and re.fullmatch(r'[0-9a-f]{64}', identity) else None
+
+    def import_parent(self, parent):
+        from .trace_ownership import validate_parent
+        parent = validate_parent(parent)
+        if not self.active:
+            return TraceSpan(None, self.boundary, self.is_model_identity, self.mapping, losses=self.losses)
+        from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+        context = SpanContext(int(parent['trace_id'], 16), int(parent['span_id'], 16),
+                              True, TraceFlags(parent['trace_flags']))
+        return TraceSpan(NonRecordingSpan(context), self.boundary, self.is_model_identity,
+                         self.mapping, losses=self.losses)
+
+    def record_call(self, structural, elapsed, outcome, *, attempts=None):
+        """One terminal logical-call trigger; physical usage stays in its ledger."""
+        if not self.active or self._binding is None:
+            return
+        import math
+        if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or elapsed < 0:
+            elapsed = None
+        if outcome not in ('completed', 'failed', 'failure', 'partial', 'cancelled',
+                           'success', 'unknown', 'length', 'tool_calls', 'refused'):
+            outcome = 'unknown'
+        if attempts is not None:
+            from api_agent.providers.generation_attempts import validate_transport_attempts
+            attempts = validate_transport_attempts(attempts)
+        clean = _structural(self.boundary, structural, self._model_identities)
+        self.losses.run(lambda: self._binding.record_call(clean, elapsed, outcome, attempts=attempts))
 
     def begin(self, name, structural, *, payload=None, parent=None, kind="INTERNAL", start_time=None):
         """Begin a manually admitted operation without installing process globals."""
@@ -286,14 +557,18 @@ class TraceRuntime:
         # Structural is supplied only by the admitted observation adapter. Scrub
         # it unconditionally; content opt-in does not authorize resource labels.
         clean.update(_structural(self.boundary, structural, self._model_identities))
+        if type(structural) is dict and structural.get('gen_ai.operation.name') in ('chat', 'execute_tool'):
+            clean.update(_structural(self.boundary, {'langfuse.observation.type':
+                'generation' if structural['gen_ai.operation.name'] == 'chat' else 'tool'}))
         span = None
         if self._tracer is not None and not self._closed:
             from opentelemetry.trace import SpanKind, set_span_in_context
             from opentelemetry.context import Context
-            span = self._tracer.start_span(_span_name(self.boundary, name, self._model_identities), attributes=clean,
+            from .operation import safe_trace
+            span = self.losses.run(lambda: self._tracer.start_span(_span_name(self.boundary, name, self._model_identities), attributes=clean,
                 context=set_span_in_context(parent._span, Context()) if parent is not None and parent._span is not None else Context(),
-                kind=getattr(SpanKind, kind), start_time=start_time)
-        return TraceSpan(span, self.boundary, self.is_model_identity)
+                kind=getattr(SpanKind, kind), start_time=start_time))
+        return TraceSpan(span, self.boundary, self.is_model_identity, self.mapping, clean.get('gen_ai.operation.name'), self.losses)
 
     @contextmanager
     def span(self, payload=None):
@@ -301,7 +576,8 @@ class TraceRuntime:
         span = None
         if self._tracer is not None and not self._closed:
             from opentelemetry.context import Context
-            span = self._tracer.start_span('api_agent.span', attributes=clean, context=Context())
+            from .operation import safe_trace
+            span = self.losses.run(lambda: self._tracer.start_span('api_agent.span', attributes=clean, context=Context()))
         safe = TraceSpan(span, self.boundary, self.is_model_identity)
         try:
             yield safe
@@ -309,8 +585,7 @@ class TraceRuntime:
             safe.attributes(self.boundary.exception(error))
             raise
         finally:
-            if span is not None:
-                span.end()
+            safe.end()
 
     def event(self, payload):
         with self.span() as span:
@@ -390,12 +665,21 @@ class TraceRuntime:
             return self._shutdown_complete
 
     async def aclose(self, timeout=5):
-        # Cancellation stops the awaiter; owned cleanup still completes in its
-        # one worker and the caller receives the original cancellation.
-        if not await asyncio.shield(asyncio.to_thread(self.shutdown, timeout)):
-            if self.disposal_confirmed:
-                if self._delivery_failed:
-                    raise TraceDeliveryError(TRACE_DELIVERY_WARNING)
-                return True
+        async with self._lifecycle_lock:
+            return await self._close(timeout)
+
+    async def _close(self, timeout):
+        # SDK disposal precedes factory/meter ownership release. Retrying an
+        # unacknowledged binding close never replays export or reopens the SDK.
+        completed = await asyncio.shield(asyncio.to_thread(self.shutdown, timeout))
+        if not completed and not self.disposal_confirmed and self._provider is not None:
             raise TraceError('Tracing shutdown failed.')
+        if self._binding is not None and not self._binding_closed:
+            if (self._binding_close_task is None or self._binding_close_task.done()
+                    and (self._binding_close_task.cancelled() or self._binding_close_task.exception() is not None)):
+                self._binding_close_task = asyncio.create_task(self._binding.aclose())
+            await asyncio.shield(self._binding_close_task)
+            self._binding_closed = True
+        if self._delivery_failed:
+            raise TraceDeliveryError(TRACE_DELIVERY_WARNING)
         return True

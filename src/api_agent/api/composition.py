@@ -59,7 +59,9 @@ def compose_runtime(context, values, *, callback_origin, tls_material=None, requ
     for key in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'):
         if values.get(key): emissions.register_secret(values[key])
     trace_config = replace(result, values=values) if result is not None else ConfigResult(values, {}, (), (), ())
-    tracing = TraceRuntime(trace_config, boundary=emissions)
+    from api_agent.telemetry.tracing_providers import admit_binding
+    binding = admit_binding(trace_config if result is not None else values, owner_root=(getattr(context, 'owner_root', None) or getattr(context, 'pack_root', None)), boundary=emissions)
+    tracing = TraceRuntime(trace_config, boundary=emissions, **({'binding': binding} if binding is not None else {}))
     # Health/deferred application composition need not instantiate an LLM.
     # Executable LLM operations must call require_llm_provider first.
     plan = []

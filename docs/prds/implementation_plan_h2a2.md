@@ -32,7 +32,7 @@ the combined Reporting menu.
 - [ ] Finish or synchronously cancel the quitting session's operations, settle accounting/publication and flush reporting before releasing its lease. Stop only verified managed containers when no remaining consumer needs them; retain every named volume. Respect dependency order and report incomplete cleanup with recoverable retry duties.
 - [ ] Process death releases ownership without requiring an exit handler. A crash may leave containers running; the next launch and management screen discover verified leftovers. Do not claim automatic shutdown after the last process is killed or lossless unflushed writes after a crash.
 
-For tracing, `TRACE_MODE` selects the backend and `TRACE_TARGET` supplies its address. Production collector and LangFuse addresses can be Kubernetes service URLs. Emit application/environment attribution through [endpoint-only tracing requirements](implementation_plan_k1.md); sharing a collector does not require separate targets for each application. Backend authentication remains conditional on its documented protocol.
+For tracing, the bundled provider-contributed `TRACE_MODE` selects the backend and `TRACE_EXPORT_ENDPOINT` supplies its complete ingestion URL. Production collector and LangFuse addresses can be Kubernetes service URLs. Emit application/environment attribution through [endpoint-only tracing requirements](implementation_plan_k1.md); sharing a collector does not require separate targets for each application. Backend authentication remains conditional on its documented protocol.
 
 ## 2. Durable reporting storage
 

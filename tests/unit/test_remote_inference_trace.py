@@ -94,6 +94,22 @@ def test_trace_rejects_invalid_or_ownerless_projection(trace_call, row):
         trace_call.publish([((), 'evidence', raw)], ledger())
 
 
+def test_unfinished_ledger_without_interruption_retains_terminal_unknown(trace_call):
+    attempts = ledger()
+    attempts['attempts'][0].update(stopped_ms=None, status=None, outcome='active')
+    trace_call.publish([], attempts)
+    trace_call.loss('unavailable')
+    child = trace_call.runtime.spans[1]
+    assert trace_call.runtime.begin.call_args.args[1]['api_agent.transport.terminal_known'] is False
+    trace_call.runtime.losses.record.assert_called_once_with()
+    trace_call.span.capture_loss.assert_called_once_with(1)
+    child.capture_loss.assert_called_once_with(1)
+    trace_call.span.event.assert_called_once_with(
+        {'values': {}, 'reason': 'terminal_unknown'},
+        structural={'api_agent.capture.reason': 'terminal_unknown'})
+    child.end.assert_called_once_with()
+
+
 def test_trace_rejects_incomplete_chunk_sequence(trace_call):
     frames = SetupServer._prepare_evidence([dict(phase='response', content={'text': 'x' * 200000}, reason='captured')])
     assert frames[0][1] == 'evidence_start'
@@ -172,6 +188,7 @@ def test_withholding_veto_cannot_be_elevated_by_trace_permission():
 
 @pytest.mark.parametrize('settled,raw,caller,reason', [(False,True,(),'unavailable'), (True,True,None,'withheld')])
 def test_unsettled_or_unadmitted_call_cannot_export_payload(settled, raw, caller, reason):
+    from unittest.mock import call as unittest_call
     async def run():
         server = SetupServer(Registry(), CAPABILITY)
         call = Mock()
@@ -183,6 +200,10 @@ def test_unsettled_or_unadmitted_call_cannot_export_payload(settled, raw, caller
         server._publish_evidence.assert_not_called()
         call.loss.assert_called_once_with(reason)
         assert call.publish.call_count == int(not settled)
+        if not settled:
+            assert call.method_calls[:2] == [
+                unittest_call.loss('unavailable'), unittest_call.publish([], {'attempts': []})]
+
         call.end.assert_called_once_with(failed=True, cancelled=False)
     asyncio.run(run())
 
@@ -292,7 +313,7 @@ def test_backend_owns_trace_start_and_both_publication_and_close(monkeypatch, tm
         factory = Mock(return_value=trace)
         monkeypatch.setattr(provider_setup, 'IntegrationLLM', lambda *args, **kwargs: provider)
         monkeypatch.setattr(remote_inference, 'RemoteInferenceTrace', factory)
-        backend = SimpleNamespace(config={'TRACE_MODE':'OTEL' if enabled else ''}, owner_root=tmp_path,
+        backend = SimpleNamespace(config=config(mode='OTEL' if enabled else '').values, owner_root=tmp_path,
             unattended_index_source=None, password_manager_registry=None, interaction=None,
             quota_observer=None, authority=None, capture_sources={})
         owner = _SetupOwner(backend)
@@ -333,7 +354,7 @@ def test_provider_reasoning_survives_each_direct_workflow_destination(log, trace
     from test_workflow_observations import collector, definition
     from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
     with collector() as (endpoint, received):
-        resolved = config(log, trace, TRACE_TARGET=endpoint)
+        resolved = config(log, trace, TRACE_EXPORT_ENDPOINT=endpoint)
         boundary = EmissionBoundary(secrets=('selected-secret',))
         runtime = TraceRuntime(resolved, boundary=boundary)
         asyncio.run(runtime.astart())

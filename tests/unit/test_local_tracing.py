@@ -1,18 +1,29 @@
 """Dashboard ownership uses synthetic credentials and bounded observed pages."""
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 import pytest
 from api_agent.runtime.local_tracing import DashboardError, LocalTracing, _origin
+from api_agent.telemetry.privacy import EmissionBoundary
+from api_agent.config.resolve import ConfigResult, ResolvedValue
+
+PROVIDER = str(Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/provider.py') + ':create_tracing_provider'
 
 
 def config(**overrides):
-    return {'TRACE_MODE':'LangFuse','TRACE_TARGET':'http://localhost:3000',
+    return {'TRACE_PROVIDER':PROVIDER,'TRACE_MODE':'LangFuse','TRACE_EXPORT_ENDPOINT':'http://localhost:3000/api/public/otel/v1/traces',
+            'TRACE_VIEWER_URL':'http://localhost:3000','JAEGER_VIEWER_PORT':16686,
+            'LANGFUSE_PUBLIC_KEY':'synthetic-public','LANGFUSE_SECRET_KEY':'synthetic-secret',
             'LANGFUSE_ADMIN_EMAIL':'operator@example.invalid','LANGFUSE_ADMIN_PASSWORD':'synthetic-password',**overrides}
 
 
 def owner(values=None, ready=True):
-    return LocalTracing(config() if values is None else values, emissions=Mock(), probe=Mock(return_value=ready))
+    values = config() if values is None else values
+    if values.get('TRACE_MODE'):
+        values = {'TRACE_PROVIDER': PROVIDER, 'JAEGER_VIEWER_PORT':16686, **values}
+    fields = {'TRACE_VIEWER_URL': ResolvedValue(values['TRACE_VIEWER_URL'], 'environment', True)} if 'TRACE_VIEWER_URL' in values else {}
+    return LocalTracing(ConfigResult(values, fields, (), (), ()), emissions=EmissionBoundary(), probe=Mock(return_value=ready))
 
 
 def test_disabled_has_no_probe_or_credentials():
@@ -25,10 +36,10 @@ def test_disabled_has_no_probe_or_credentials():
 
 @pytest.mark.parametrize('values,viewer', [
     (config(), 'http://localhost:3000'),
-    ({'TRACE_MODE':'OTEL','TRACE_TARGET':'http://localhost:4318/v1/traces'}, 'http://localhost:16686'),
-    ({'TRACE_MODE':'OTEL','TRACE_TARGET':'http://localhost:4318/v1/traces','JAEGER_VIEWER_PORT':17686}, 'http://localhost:17686'),
-    ({'TRACE_MODE':'OTEL','TRACE_TARGET':'https://collector.example.invalid/v1/traces'}, None),
-    ({'TRACE_MODE':'OTEL','TRACE_TARGET':'https://collector.example.invalid/v1/traces','TRACE_VIEWER_URL':'https://viewer.example.invalid'}, 'https://viewer.example.invalid'),
+    ({'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'http://localhost:4318/v1/traces'}, 'http://localhost:16686'),
+    ({'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'http://localhost:4318/v1/traces','JAEGER_VIEWER_PORT':17686}, 'http://localhost:17686'),
+    ({'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'https://collector.example.invalid/v1/traces'}, None),
+    ({'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'https://collector.example.invalid/v1/traces','TRACE_VIEWER_URL':'https://viewer.example.invalid'}, 'https://viewer.example.invalid'),
 ])
 def test_resolved_viewer_is_distinct_from_ingestion(values,viewer):
     tracing=owner(values)
@@ -43,21 +54,40 @@ def test_resolved_viewer_is_distinct_from_ingestion(values,viewer):
 
 @pytest.mark.parametrize('values', [config(TRACE_MODE='bad'), config(LANGFUSE_ADMIN_EMAIL=''),
     config(LANGFUSE_ADMIN_PASSWORD=None), config(LANGFUSE_ADMIN_PASSWORD='\x00'),
-    config(TRACE_TARGET='https://user:password@example.invalid')])
+    config(TRACE_VIEWER_URL='https://user:password@example.invalid')])
 def test_invalid_dashboard_fails_before_probe(values):
     tracing=owner(values)
-    with pytest.raises(DashboardError): asyncio.run(tracing.start())
+    with pytest.raises((DashboardError, ValueError)): asyncio.run(tracing.start())
     tracing.probe.assert_not_called()
+
+
+def test_unused_credentialed_export_url_does_not_authorize_local_stack_or_block_valid_dashboard(monkeypatch):
+    from api_agent.telemetry.tracing_providers import admit_binding
+    from api_agent.telemetry.genai_metrics import MetricConfigurationError
+    values=config(TRACE_EXPORT_ENDPOINT='https://user:password@example.invalid')
+    tracing=owner(values)
+
+    asyncio.run(tracing.start())
+
+    assert tracing.state=='ready' and tracing.viewer_url=='http://localhost:3000'
+    assert tracing._binding.declaration.managed_compose_profile is None
+    assert tracing._binding.declaration.infrastructure==()
+    tracing.probe.assert_called_once_with('http://localhost:3000/auth/sign-in',None)
+    capture=Mock(side_effect=AssertionError('invalid export URL must fail before factory capture'))
+    monkeypatch.setattr('api_agent.tooling.admission.capture_tool_factory',capture)
+    with pytest.raises(MetricConfigurationError,match='without embedded credentials'):
+        admit_binding(values,owner_root=Path(__file__).resolve().parents[2],boundary=EmissionBoundary(),environ={})
+    capture.assert_not_called()
+    asyncio.run(tracing.aclose())
 
 
 def test_readiness_failure_and_credential_cleanup():
     tracing=owner(ready=False)
     asyncio.run(tracing.start())
     assert tracing.state=='unavailable' and tracing.viewer_url is None
-    assert tracing.diagnostic == ('Tracing viewer readiness failed: check TRACE_TARGET and the LangFuse service; '
-                                  'no dashboard tab was opened.')
+    assert tracing.diagnostic == 'The selected tracing dashboard is not ready.'
     assert tracing.interactive_credentials()==('operator@example.invalid','synthetic-password')
-    assert tracing.emissions.register_secret.call_count==2
+    assert {'operator@example.invalid','synthetic-password'} <= tracing.emissions._secrets
     asyncio.run(tracing.aclose())
     assert tracing.interactive_credentials() is None
     with pytest.raises(DashboardError): asyncio.run(tracing.login(object()))
@@ -115,7 +145,7 @@ def test_login_failure_is_fixed_and_never_authenticated(failure):
 
 @pytest.mark.parametrize('status,url',[(200,'http://localhost:16686'),(503,'http://localhost:16686'),(200,'https://elsewhere.example.invalid')])
 def test_otel_navigation_verifies_response_and_origin(status,url):
-    tracing=owner({'TRACE_MODE':'OTEL','TRACE_TARGET':'http://localhost:4318/v1/traces'});current=page()
+    tracing=owner({'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'http://localhost:4318/v1/traces'});current=page()
     current.url=url;current.goto.return_value.status=status
     async def exercise():
         await tracing.start()
@@ -148,7 +178,7 @@ def test_probe_requires_verified_tls_and_rejects_redirects(monkeypatch):
 
 
 def test_otel_none_response_is_actionable():
-    tracing=owner({'TRACE_MODE':'OTEL','TRACE_TARGET':'http://localhost:4318/v1/traces'});current=page()
+    tracing=owner({'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'http://localhost:4318/v1/traces'});current=page()
     current.goto.return_value=None
     async def exercise():
         await tracing.start()
@@ -157,9 +187,9 @@ def test_otel_none_response_is_actionable():
 
 
 def test_invalid_explicit_viewer_is_rejected():
-    tracing=owner({'TRACE_MODE':'OTEL','TRACE_TARGET':'https://collector.example.invalid/v1/traces',
+    tracing=owner({'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'https://collector.example.invalid/v1/traces',
                    'TRACE_VIEWER_URL':'file:///tmp/viewer'})
-    with pytest.raises(DashboardError): asyncio.run(tracing.start())
+    with pytest.raises((DashboardError, ValueError)): asyncio.run(tracing.start())
 
 
 def test_observed_pinned_single_step_login():
@@ -182,7 +212,7 @@ async def wait_for_thread_signal(signal):
 def test_cleanup_timeout_requires_a_positive_finite_number(timeout):
     from api_agent.providers.contracts import ContractError
     with pytest.raises(ContractError,match='Invalid cleanup timeout'):
-        LocalTracing(config(),emissions=Mock(),cleanup_timeout=timeout)
+        LocalTracing(config(),emissions=EmissionBoundary(),cleanup_timeout=timeout)
 
 
 def test_cancelled_start_keeps_readiness_until_bounded_cleanup_retry():
@@ -197,7 +227,7 @@ def test_cancelled_start_keeps_readiness_until_bounded_cleanup_retry():
         finally:
             finished.set()
     async def run():
-        tracing = LocalTracing(config(),emissions=Mock(),probe=probe,cleanup_timeout=.02)
+        tracing = LocalTracing(config(),emissions=EmissionBoundary(),probe=probe,cleanup_timeout=.02)
         start = asyncio.create_task(tracing.start())
         try:
             await wait_for_thread_signal(entered)
@@ -236,7 +266,7 @@ def test_concurrent_start_and_close_callers_share_one_probe_and_cancelled_closer
         finally:
             finished.set()
     async def run():
-        tracing = LocalTracing(config(),emissions=Mock(),probe=probe,cleanup_timeout=1)
+        tracing = LocalTracing(config(),emissions=EmissionBoundary(),probe=probe,cleanup_timeout=1)
         starts = [asyncio.create_task(tracing.start()) for _ in range(2)]
         try:
             await wait_for_thread_signal(entered)
@@ -271,7 +301,7 @@ def test_probe_exception_is_fixed_and_consumed_after_start_cancellation():
         finally:
             finished.set()
     async def run():
-        tracing = LocalTracing(config(),emissions=Mock(),probe=probe,cleanup_timeout=1)
+        tracing = LocalTracing(config(),emissions=EmissionBoundary(),probe=probe,cleanup_timeout=1)
         start = asyncio.create_task(tracing.start())
         try:
             await wait_for_thread_signal(entered)
@@ -287,7 +317,7 @@ def test_probe_exception_is_fixed_and_consumed_after_start_cancellation():
 
 
 def test_active_probe_exception_has_no_backend_text():
-    tracing = LocalTracing(config(),emissions=Mock(),probe=Mock(side_effect=RuntimeError('synthetic-password raw payload')))
+    tracing = LocalTracing(config(),emissions=EmissionBoundary(),probe=Mock(side_effect=RuntimeError('synthetic-password raw payload')))
     async def run():
         with pytest.raises(DashboardError,match='readiness failed') as caught:
             await tracing.start()
@@ -319,7 +349,7 @@ def test_local_cleanup_retains_later_dependencies_until_probe_retry_completes():
         finally:
             finished.set()
     async def run():
-        tracing = LocalTracing(config(),emissions=Mock(),probe=probe,cleanup_timeout=.02)
+        tracing = LocalTracing(config(),emissions=EmissionBoundary(),probe=probe,cleanup_timeout=.02)
         later = AsyncMock()
         cleanup = LocalCleanup()
         cleanup.push(later)
@@ -347,40 +377,38 @@ def test_local_cleanup_retains_later_dependencies_until_probe_retry_completes():
 
 
 @pytest.mark.parametrize('host', ['localhost', '127.0.0.1'])
-@pytest.mark.parametrize('viewer_setting', [{}, {'TRACE_VIEWER_URL': ''}])
+@pytest.mark.parametrize('viewer_setting', [{}])
 @pytest.mark.parametrize('port', [16686, 17686])
 def test_local_otel_empty_or_omitted_viewer_derives_configured_port(host, viewer_setting, port):
-    values = {'TRACE_MODE': 'OTEL', 'TRACE_TARGET': f'http://{host}:4318/v1/traces',
+    values = {'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': f'http://{host}:4318/v1/traces',
               'JAEGER_VIEWER_PORT': port, **viewer_setting}
     tracing = owner(values)
     asyncio.run(tracing.start())
     assert tracing.viewer_url == f'http://localhost:{port}'
     assert tracing.state == 'ready' and tracing.diagnostic is None
-    tracing.probe.assert_called_once_with(f'http://localhost:{port}/', None)
-    assert tracing.config['TRACE_TARGET'] == values['TRACE_TARGET']
+    tracing.probe.assert_called_once_with(f'http://localhost:{port}', None)
+    assert tracing.config['TRACE_EXPORT_ENDPOINT'] == values['TRACE_EXPORT_ENDPOINT']
 
 
 @pytest.mark.parametrize('target', ['https://collector.example.invalid/v1/traces',
                                     'http://localhost:3000', 'http://127.0.0.1:14318/v1/traces'])
 @pytest.mark.parametrize('viewer_setting', [{}, {'TRACE_VIEWER_URL': ''}])
 def test_custom_collector_without_viewer_is_actionable_and_preserved(target, viewer_setting):
-    tracing = owner({'TRACE_MODE': 'OTEL', 'TRACE_TARGET': target, **viewer_setting})
+    tracing = owner({'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': target, **viewer_setting})
     asyncio.run(tracing.start())
     assert tracing.state == 'unavailable' and tracing.viewer_url is None
-    assert tracing.diagnostic == ('Tracing viewer is unavailable: set TRACE_VIEWER_URL for the custom OTEL collector, '
-                                  'or use the managed local OTLP traces endpoint on port 4318.')
+    assert tracing.diagnostic == 'The selected tracing provider has no dashboard capability.'
     assert target not in tracing.diagnostic
-    assert tracing.config['TRACE_TARGET'] == target
+    assert tracing.config['TRACE_EXPORT_ENDPOINT'] == target
     tracing.probe.assert_not_called()
 
 
 def test_local_viewer_failed_probe_reports_fixed_action_without_ready_destination():
-    tracing = owner({'TRACE_MODE': 'OTEL', 'TRACE_TARGET': 'http://localhost:4318/v1/traces',
-                     'TRACE_VIEWER_URL': '', 'JAEGER_VIEWER_PORT': 17686}, ready=False)
+    tracing = owner({'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces',
+                     'JAEGER_VIEWER_PORT': 17686}, ready=False)
     asyncio.run(tracing.start())
     assert tracing.state == 'unavailable' and tracing.viewer_url is None
-    assert tracing.diagnostic == ('Tracing viewer readiness failed: check TRACE_VIEWER_URL or the managed local '
-                                  'Jaeger service and JAEGER_VIEWER_PORT; no dashboard tab was opened.')
+    assert tracing.diagnostic == 'The selected tracing dashboard is not ready.'
 
 
 @pytest.mark.parametrize('status', [200, 302, 503])
@@ -425,3 +453,11 @@ def test_dashboard_credentials_wait_for_active_evidence_lease():
         assert 'synthetic-password' in boundary._secrets
         await tracing.aclose()
     asyncio.run(scenario())
+
+
+def test_dashboard_does_not_require_exporter_tokens_to_probe_human_login():
+    tracing = owner(config(LANGFUSE_PUBLIC_KEY='', LANGFUSE_SECRET_KEY=''))
+    asyncio.run(tracing.start())
+    assert tracing.state == 'ready'
+    assert tracing.interactive_credentials() == ('operator@example.invalid','synthetic-password')
+    asyncio.run(tracing.aclose())

@@ -1,6 +1,6 @@
 from api_agent.providers.control import CleanupPendingError
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import sys
 from types import SimpleNamespace
 import time
@@ -16,6 +16,17 @@ class Config:
     values: dict
     errors: tuple = ()
     missing: tuple = ()
+    fields: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        from api_agent.config import load_shared_schema
+        from api_agent.config.resolve import ResolvedValue
+        explicit = set(self.values)
+        self.values = {'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default,
+                       'TRACE_MODE': '', 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces',
+                       'JAEGER_VIEWER_PORT': 16686, **self.values}
+        self.fields = {name: ResolvedValue(value, 'fixture' if name in explicit else 'pack_default',
+                                          name in explicit) for name, value in self.values.items()}
 
 
 @pytest.mark.parametrize('argv,environ,dotenv,expected,source', [
@@ -497,7 +508,7 @@ def test_local_factory_wires_helpers_without_io_at_initialization(monkeypatch, t
     import api_agent.auth.extensions as extensions
     events = []
     config = Config({'AGENT_DJANGO_URL': 'https://agent.example/cb'})
-    context = SimpleNamespace(base_root=tmp_path)
+    context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path)
     def preflight(selected, values):
         assert selected is context and values is config.values
         events.append('preflight')
@@ -560,7 +571,7 @@ def test_local_factory_pack_preflight_checks_fresh_valid_config_before_side_effe
     calls = []
     configs = iter((Config({'AGENT_DJANGO_URL': 'https://agent.example/cb'}, errors=('bad',)),
                     Config({'AGENT_DJANGO_URL': 'https://agent.example/cb', 'API_ENDPOINT': ''})))
-    context = SimpleNamespace(base_root=tmp_path)
+    context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path)
     def preflight(selected, values):
         calls.append(('preflight', selected, values))
         raise PermissionError('pack blocked operation')
@@ -588,7 +599,7 @@ def test_factory_handoff_status_is_explicit(monkeypatch, tmp_path):
     import api_agent.runtime.dependencies as dependencies
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda *a, **kw: 0)
     monkeypatch.setattr('api_agent.runtime.operation.sys.prefix', str(tmp_path / '.venv'))
-    runner = local_operation(SimpleNamespace(base_root=tmp_path),
+    runner = local_operation(SimpleNamespace(base_root=tmp_path, owner_root=tmp_path),
         resolve=lambda: Config({'AGENT_DJANGO_URL': 'https://agent.example/cb'}),
         argv=(), scope='scope', ownership_directory=tmp_path)
     async def scenario():
@@ -733,7 +744,7 @@ def test_factory_rejects_wrong_interpreter_before_nested_handoff(monkeypatch, tm
     calls = []
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda *a, **kw: calls.append('nested-launch'))
     monkeypatch.setattr('api_agent.runtime.operation.sys.prefix', str(tmp_path / 'wrong'))
-    runner = local_operation(SimpleNamespace(base_root=tmp_path),
+    runner = local_operation(SimpleNamespace(base_root=tmp_path, owner_root=tmp_path),
         resolve=lambda: Config({'AGENT_DJANGO_URL': 'https://agent.example/cb'}),
         argv=(), scope='scope', ownership_directory=tmp_path)
     async def scenario():
@@ -762,10 +773,15 @@ def test_factory_requests_recording_and_tracing_dependencies(monkeypatch, tmp_pa
     calls = []
     monkeypatch.setattr('api_agent.runtime.operation.sys.prefix', str(tmp_path / '.venv'))
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda *a, **kw: calls.append(kw))
-    runner = local_operation(SimpleNamespace(base_root=tmp_path), resolve=lambda: None,
+    runner = local_operation(SimpleNamespace(base_root=tmp_path, owner_root=tmp_path), resolve=lambda: None,
         argv=(), scope='scope', ownership_directory=tmp_path, groups=('reports', 'browser'))
     runner.prepare_dependencies(Config({'TUI_MODE': 'integration', 'TRACE_MODE': 'OTEL'}))
-    assert calls == [{'collect': False, 'groups': ('reports', 'browser', 'tracing')}]
+    assert len(calls) == 1
+    assert calls[0]['collect'] is False
+    assert calls[0]['groups'] == ('reports', 'browser', 'tracing')
+    manifest, = calls[0]['selected_provider_manifests']
+    assert manifest.root.name == 'trace_adapters'
+    assert manifest.dependencies == ()
     runner.prepare_dependencies(Config({'TUI_MODE': 'run-local'}))
     assert calls[-1]['groups'] == ('reports', 'browser')
 

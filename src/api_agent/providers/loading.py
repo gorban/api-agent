@@ -386,14 +386,15 @@ class _PendingContribution:
     owner_root: object
 
 
-def contribution_schema(declaration, base_schema, *, deferred=None, _provider=False, _owner_root=None):
+def contribution_schema(declaration, base_schema, *, deferred=None, _provider=False, _owner_root=None, body=None):
     """Expose compatible provider defaults as effective pack declarations."""
     from api_agent.config.declarations import ConfigSchema, load_declarations, compose_schema
     prior = ConfigSchema({name: value for batch in (deferred or ())
         for name, value in batch.overrides.fields.items()})
     contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default',
-                                    predicate_context=prior)
-    contributed = ConfigSchema({name: replace(value, contribution_origin=Path(declaration).resolve())
+                                    predicate_context=prior, **({'body': body} if body is not None else {}))
+    origin = Path(declaration).absolute() if body is not None else Path(declaration).resolve()
+    contributed = ConfigSchema({name: replace(value, contribution_origin=origin)
                                 for name, value in contributed.fields.items()})
     pending = ConfigSchema({})
     if deferred is not None:
@@ -611,17 +612,18 @@ async def aload_provider(location, config, services, *, kind=None):
 
 
 def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
-                     owner_root=None, configuration_paths=()):
+                     owner_root=None, configuration_paths=(), configuration_bodies=None):
     """Select the provider before parsing its additional CLI/config fields."""
     from api_agent.config.options import parse_options
     from api_agent.config.declarations import UNSET
     schema = base_schema
     deferred = []
-    selectors = ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER')
+    selectors = ('LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER', 'ACCESS_PROVIDER', 'UPSTREAM_API_PROVIDER', 'TRACE_PROVIDER')
     owners = {name: owner_root for name in selectors}
     for path in configuration_paths:
         previous = set(schema.fields)
-        schema = contribution_schema(path, schema, deferred=deferred, _owner_root=owner_root)
+        schema = contribution_schema(path, schema, deferred=deferred, _owner_root=owner_root,
+                                     **({'body': configuration_bodies[path]} if configuration_bodies is not None else {}))
         for name in set(schema.fields) - previous:
             if name.endswith('_PROVIDER'):
                 owners[name] = owner_root
@@ -793,6 +795,10 @@ def _validate_tool(adapter):
 
 
 async def aload_tool(admission, config, services):
+    return await aload_captured_provider(admission, config, services, validator=_validate_tool)
+
+
+async def aload_captured_provider(admission, config, services, *, validator):
     """Create a captured tool with the same retained rollback receipt as providers."""
     from api_agent.tooling.admission import verify_tool_dependencies
     import importlib
@@ -826,7 +832,7 @@ async def aload_tool(admission, config, services):
             owner = LoadedTool(adapter, namespace, finder, services=services)
             raise ProviderError('tool_factory_must_be_synchronous')
         owner = LoadedTool(adapter, namespace, finder, services=services)
-        _validate_tool(adapter)
+        validator(adapter)
         owner.admission = admission
         return owner
     except BaseException as primary:

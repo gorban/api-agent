@@ -32,6 +32,10 @@ connections, start local services, run tests and inspect failures.
   accounting, Allure reports, optional OpenTelemetry/GenAI or LangFuse tracing,
   and retained DEBUG browsers for human or coding-agent inspection.
 
+- **Tracing configuration:** the [bundled tracing provider](docs/tracing.md)
+  contributes disabled, OTEL and LangFuse routes with applicable settings in
+  Review. [Custom providers](docs/tracing-providers.md) use the same lazy discovery
+  and can declare independent export, dashboard and infrastructure capabilities.
 - **Assisted authentication:** optional password-manager adapters for supported
   UI and LLM sign-in steps; some challenges still require human approval.
 
@@ -124,7 +128,7 @@ arbitrary child output, which may contain credentials even with `LOG_CONTENT=Tru
 - [Settings and TUI controls](docs/workbench.md)
 - [Credentials and LLM connections](docs/connections.md)
 - [Amazon Bedrock: setup, authentication and support matrix](docs/bedrock.md)
-- [Resource packs: tools, LLM/UI providers and configuration](docs/resource-packs.md)
+- [Resource packs: tools, LLM/UI/tracing providers and configuration](docs/resource-packs.md)
 - [Provider-owned integration test profiles](docs/integration_test_profiles.md)
 - [Running, debugging and testing](docs/development.md)
 - [Workflow diagrams and browser inspection](docs/workflow_viewer.md)
@@ -171,8 +175,8 @@ choose False and supply a bucket; unit coverage needs neither.
 
 All tests start selected. Add positional selectors to preselect tests, or adjust
 selection in the TUI. Append `--no-std-in` for terminal automation, or export
-`NO_STD_IN=True` for multiple commands. Integration requires `--start=True` or `--debug`;
-E2E requires `--start=E2E` as human acceptance. The first executor requires
+`NO_STD_IN=True` for multiple commands. Obtain explicit human approval before
+using `--start=True` or `--debug` for integration, or `--start=E2E` for E2E. The first executor requires
 `--e2e-reruns 0`; confirmation attempts remain pending. The bundled selection is:
 
 ```bash
@@ -186,6 +190,10 @@ With `DEBUG=True` and more than one distinct integration or E2E test selected,
 execution asks for literal `y` before opening browsers, including with `--no-std-in`.
 Set `DEBUG=False` and omit `--debug` to avoid the prompt.
 See [test controls and automation](docs/development.md#testing).
+
+View recorded history without menus with `./launch.sh --tui-mode allure --no-std-in`.
+The launcher prints the history URL and browser CDP endpoint. Ctrl+C closes its
+owned viewer, browser and reporting resources; see [Allure viewing](docs/development.md#viewing-allure-results).
 See [reasoning and explanation tests](docs/testing_reasoning.md) for the optional
 summary graph, browser assertions, provider/model examples and replay limitations.
 

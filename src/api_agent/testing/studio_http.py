@@ -4,6 +4,7 @@ import re
 import secrets
 import socket
 import sys
+from pathlib import Path
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from api_agent.api import Runtime, create_application
@@ -18,7 +19,7 @@ from api_agent.testing.studio_retained import StudioCleanup
 _DEFAULT_TIMEOUT = object()
 
 @asynccontextmanager
-async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None, timeout=_DEFAULT_TIMEOUT, application=None):
+async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, reasoning_default=None, policy_config=None, timeout=_DEFAULT_TIMEOUT, application=None, tracing=None):
     """Own the real Agent HTTP bridge for the selected UI runtime."""
     import uvicorn
     graph_timeout = getattr(application, 'timeouts', {}).get('GRAPH')
@@ -26,7 +27,7 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
         timeout = graph_timeout if graph_timeout is not None else 120
     async with AsyncExitStack() as cleanup:
         duties = StudioCleanup()
-        cleanup.push_async_callback(_cleanup, duties.aclose)
+        cleanup.push_async_exit(lambda kind, value, traceback: _endpoint_cleanup(duties, value))
         if listener is None:
             listener = socket.socket()
             duties.push(_close_socket, listener)
@@ -39,7 +40,10 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
         if retained:
             duties.push(provider.aclose)
         async def describe(*, auth):
-            return await provider.describe() if retained else await offload(provider.describe)
+            selections = await provider.describe() if retained else await offload(provider.describe)
+            if tracing is not None:
+                tracing.bind_catalog(selections)
+            return selections
         async def provider_complete(request, *, context):
             call = provider.complete(request) if retained else offload(provider.complete, request)
             return await context.run(call)
@@ -54,9 +58,12 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
                                          'LLM_DEFAULT_MODEL': re.escape(selection), **(policy_config or {})}),
             origin=origin, nonce=nonce, scrub=lambda _: 'Selected provider rejected the request.',
             reasoning_default=reasoning_default, timeout=timeout,
-            on_error=lambda error: _execution_error(provider, nonce, error))
+            on_error=lambda error: _execution_error(provider, nonce, error), trace_owner=tracing)
         duties.push(backend.aclose)
-        runtime = Runtime('demo', services={'studio_backend': backend})
+        if tracing is not None:
+            tracing.bind_http(origin, nonce)
+        runtime = Runtime('demo', services={'studio_backend': backend}, tracing=tracing)
+        duties.push(_close_runtime, runtime)
         asgi_application = create_application(runtime)
         server = uvicorn.Server(uvicorn.Config(asgi_application, log_level='error', access_log=False, timeout_graceful_shutdown=1))
         # A long-lived listener must not inherit completed UI startup budgets.
@@ -69,6 +76,62 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
                 assert not task.done(), 'Agent listener stopped before readiness.'
                 await asyncio.sleep(.01)
         yield endpoint
+
+
+_TRACE_RECEIPT = object()
+
+
+class StudioTraceCleanupReceipt(CleanupPendingError):
+    """Only an owned Studio runtime may classify its stopped trace-only duty."""
+    def __init__(self, owners, retry, *, runtime, admission=None):
+        self.runtime, self._admission = runtime, admission
+        super().__init__(owners, retry)
+
+
+def studio_trace_pending(error):
+    from .studio_tracing import StudioTraceOwner
+    return (type(error) is StudioTraceCleanupReceipt and error._admission is _TRACE_RECEIPT
+            and type(error.runtime) is Runtime and type(error.runtime.tracing) is StudioTraceOwner
+            and error.runtime.tracing._cleanup_fatal is False)
+
+
+async def _close_runtime(runtime):
+    try:
+        await runtime.aclose()
+    except CleanupPendingError as error:
+        from .studio_tracing import StudioTraceOwner
+        trace = runtime.tracing
+        if (type(trace) is StudioTraceOwner and error.owners == (trace,)
+                and trace._cleanup_fatal is False):
+            raise StudioTraceCleanupReceipt((runtime,), runtime.aclose, runtime=runtime,
+                                            admission=_TRACE_RECEIPT) from None
+        raise
+
+
+async def _endpoint_cleanup(duties, primary):
+    try:
+        await _cleanup(duties.aclose)
+    except BaseException as error:
+        if studio_trace_pending(duties.pending):
+            error = StudioTraceCleanupReceipt((duties,), duties.aclose,
+                runtime=duties.pending.runtime, admission=_TRACE_RECEIPT)
+        if primary is not None:
+            from .suite_lock import _cleanup_receipts
+            previous = tuple(_cleanup_receipts(primary))
+            if previous:
+                following = getattr(primary, 'cleanup_pending', None)
+                receipts = tuple({id(receipt): receipt for receipt in
+                                  (*previous, *_cleanup_receipts(error))}.values())
+                joined = StudioCleanup(tuple((lambda selected=receipt: selected.retry())
+                                             for receipt in receipts))
+                pending = CleanupPendingError(receipts, joined.aclose)
+                pending.cleanup_pending = (following if isinstance(primary, CleanupPendingError)
+                                           else previous[0])
+                error = pending
+            primary.cleanup_pending = error
+            return False
+        raise error
+    return False
 
 
 def _execution_error(provider, nonce, error):
@@ -142,12 +205,23 @@ def studio_backend_factory(llm_provider, llm_selection, *, backend_config=None, 
             provider = RetainedStudio(llm_provider,
                 retained_provider_factory(data, _worker_manager_registry(data)), manual_accounting_ready)
             retained.append(provider)
+        tracing = None
+        from api_agent.runtime.tracing_services import tracing_requested
+        if tracing_requested(values):
+            from .provider_setup import _read_snapshot
+            from .studio_tracing import StudioTraceOwner, collector_from_snapshot
+            from api_agent.workflows.capture_authority import resolve_capture_services
+            snapshot = _read_snapshot()
+            tracing = StudioTraceOwner(values,snapshot.get('capture_sources',{}),provider,
+                owner_root=Path(snapshot['owner_root']), collector_snapshot=snapshot,
+                capture_services=resolve_capture_services({}),
+                collector_factory=lambda selected:collector_from_snapshot(snapshot,selected))
         async with agent_endpoint(provider, llm_selection,
                                   values['UI_LISTENER_URL'], nonce,
                                   reasoning_default=values.get('LLM_REASONING_EFFORT') or None,
                                   policy_config={key: values[key] for key in
                                     ('LLM_ALLOWED_MODELS', 'LLM_DEFAULT_MODEL') if key in values},
-                                  application=application) as endpoint:
+                                  application=application, tracing=tracing) as endpoint:
             try:
                 yield {'agent_url': endpoint, 'access_token': nonce}
             finally:

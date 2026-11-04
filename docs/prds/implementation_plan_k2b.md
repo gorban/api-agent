@@ -3,13 +3,13 @@
 [Dashboard startup](implementation_plan_k2.md) · [Local operation](implementation_plan_h1a1.md) · [Diagnostic output](implementation_plan_b1c4a.md)
 
 - [x] Default TRACE_VIEWER_URL to an empty string so Review configuration offers the ordinary default-acceptance action. Verify acknowledgement, dotenv persistence and restart without recurring review. Preserve managed Jaeger derivation and explicit custom viewer precedence.
-- [x] Replace the earlier interactive dashboard credential display: the TUI must neither request nor render the LangFuse account/password. Under NO_STD_IN, display the configured dashboard account/password through terminal status on stderr only. Keep them out of structured stdout, shared events, home/status JSON, traces and test artifacts. Deliberately redirecting stderr also redirects that literal status; it is not a scrubbed event channel.
+- [x] Show the same ready component destinations and applicable LangFuse dashboard account/password in interactive Run local status and NO_STD_IN terminal status. Fetch only the existing presentation-only dashboard login contract after successful startup; never request exporter/API keys. Render literal credentials in the markup-disabled TUI status; NO_STD_IN uses stderr only. Keep them out of structured stdout, shared events, home/status JSON, traces and test artifacts. Deliberately redirecting stderr also redirects that literal status; it is not a scrubbed event channel.
 - [x] Terminate readiness/status text with a newline before structured diagnostic events arrive. Preserve valid JSON-line boundaries, ordinary selected-source logs and stdout/stderr ownership.
 - [x] Show an early startup list and a visible shutdown list before waiting for owned work. Include agent, enabled UI/API and admitted infrastructure service/profile names, including pack contributions, without hardcoded database types or credentials. Distinguish selected components from resources actually acquired; a remote endpoint alone is not a managed service.
 - [x] Diagnose the reported NO_STD_IN streaming-chat HTTP 502 through the real local composition and selected-provider lifetime. Add a causal regression for any proven defect and preserve correct interactive behavior. Synthetic successful requests do not close a provider-specific reported failure; record any unavailable evidence without claiming repair.
 - [x] For interactive Stop/confirmed Quit and terminal Ctrl+C, settle existing cleanup and asynchronous-context exit tasks before the launcher discards its loop. Repeated cancellation must not race asynchronous-generator closure or abandon owned resources. Preserve actual cleanup failures, bounded timeout policy and actionable retry ownership; do not suppress CleanupPendingError to manufacture success.
 - [x] Close independent source/causal review, applicable exact line/branch coverage, installed/package and public-boundary checks, then external review before the next human checkpoint.
-- [ ] Human retest: accept the empty viewer default, verify interactive versus terminal credential presentation, startup/shutdown lists, terminal message streaming and one Ctrl+C cleanup.
+- [ ] Human retest: accept the empty viewer default, verify matching interactive and terminal startup summaries and applicable dashboard credential presentation, startup/shutdown lists, terminal message streaming and one Ctrl+C cleanup.
 
 ## Explicit provider recovery
 
@@ -89,3 +89,7 @@ Earlier cleanup approval remains accepted. Outstanding implementation, external 
 ## Startup diagnostics and account selection
 
 - [ ] Complete [startup diagnostics and explicit local account selection](implementation_plan_k2b9.md). Safe failure logs and listener classification are delivered and independently reviewed; account selection and the original initiating cause remain open. Preserve lazy authentication and earlier cleanup ownership.
+
+## Ready-summary visibility after authentication
+
+- [x] Repair [persistent, bounded startup summary](implementation_plan_k2b10.md). Earlier cleanup and authentication acceptance retain their original scope.

@@ -79,8 +79,9 @@ class SharedSetupOwner(_Owner):
     Wrapped completions may explicitly preserve provider-owned payload capture;
     None retains marker discovery on an ordinary bound completion method.
     """
-    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600, max_attempts=5, inference_timeout=None, withhold_inference_content=False, max_output_tokens=200000, output_limit_cache_ttl=3600, supports_output_limit=None):
+    def __init__(self, operation_id, selected_identity, owner_factory, *, credentials=None, describe=None, complete=None, telemetry_provider_name=None, captures_effective_payload=None, validate_request=None, timeout=5, catalog_ttl=3600, max_attempts=5, inference_timeout=None, withhold_inference_content=False, max_output_tokens=200000, output_limit_cache_ttl=3600, supports_output_limit=None):
         super().__init__(timeout)
+        self._telemetry_provider_name = telemetry_provider_name
         if type(catalog_ttl) not in (int, float):
             raise ContractError('Invalid shared setup binding')
         try:
@@ -321,6 +322,9 @@ class SharedSetupOwner(_Owner):
                 self._check()
                 from .rich_inference import async_validate_result
                 await async_validate_result(request, result, selection=selection)
+                from api_agent.workflows.inference_capture import record_provider_fields
+                record_provider_fields(cause_id, token, request, result,
+                    provider_name=self._telemetry_provider_name)
                 return result
         from api_agent.workflows.inference_capture import withholding_inference_content
         with withholding_inference_content(self._withhold_inference_content):

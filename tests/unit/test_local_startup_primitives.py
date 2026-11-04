@@ -480,9 +480,12 @@ def test_tracing_tab_between_home_and_actual_flow(run_ui,debug):
     ui_page.context=context;ui_page.is_closed=lambda:False;ui_page.url='http://localhost:9443';ui_page.bring_to_front=AsyncMock()
     owner_browser=SimpleNamespace(start=AsyncMock(return_value=session),aclose=AsyncMock())
     from api_agent.runtime.local_tracing import LocalTracing
-    tracing = LocalTracing({'TRACE_MODE': 'OTEL', 'TRACE_TARGET': 'http://127.0.0.1:4318/v1/traces',
-                            'TRACE_VIEWER_URL': '', 'JAEGER_VIEWER_PORT': 17686},
-                           emissions=Mock(), probe=Mock(return_value=True))
+    from pathlib import Path
+    from api_agent.telemetry.privacy import EmissionBoundary
+    provider = str(Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/provider.py') + ':create_tracing_provider'
+    tracing = LocalTracing({'TRACE_PROVIDER':provider,'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': 'http://127.0.0.1:4318/v1/traces',
+                            'TRACE_VIEWER_URL': 'http://localhost:17686', 'JAEGER_VIEWER_PORT': 17686},
+                           emissions=EmissionBoundary(), probe=Mock(return_value=True))
     tracing_page.url = 'http://localhost:17686'
     tracing_page.route = AsyncMock()
     async def prepare_ui(*,browser_owner):

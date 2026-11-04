@@ -321,7 +321,7 @@ def _factory_binding_changed(tree, factory):
             pending.extend(ast.iter_child_nodes(node))
     return False
 
-def _check_factory_source(body, filename):
+def _check_factory_source(body, filename, factory_name='create_tool'):
     """Admit the bounded direct factory signature without executing its module."""
     try:
         tree = ast.parse(body, filename=filename)
@@ -330,7 +330,7 @@ def _check_factory_source(body, filename):
         raise ToolAdmissionError('Invalid selected tool source') from None
     definitions = [node for node in tree.body
                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                   and node.name == 'create_tool']
+                   and node.name == factory_name]
     if len(definitions) != 1 or not isinstance(definitions[0], ast.FunctionDef):
         raise ToolAdmissionError('Tool entry requires a direct synchronous create_tool factory')
     function = definitions[0]
@@ -349,14 +349,16 @@ def _check_factory_source(body, filename):
         raise ToolAdmissionError('Tool factory cannot be rebound after its declaration')
     return tree
 
-def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path) -> FactoryAdmission:
+def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path, *,
+                         interface='verified-read@1') -> FactoryAdmission:
     """Capture the selected package, including sibling modules and initializers.
 
     Third-party imports must be installed distributions; their package receipts
     are pinned and checked again before executing the captured package.
     """
     factory, owner_root = Path(factory).absolute(), Path(owner_root).absolute()
-    if factory_name != 'create_tool' or factory.suffix != '.py' or not factory.is_relative_to(owner_root):
+    expected = {'verified-read@1': 'create_tool', 'tracing-provider@1': 'create_tracing_provider'}.get(interface)
+    if factory_name != expected or factory.suffix != '.py' or not factory.is_relative_to(owner_root):
         raise ToolAdmissionError('Invalid selected tool factory')
     package = factory.parent
     # The containing package subtree is finite; every relative import consumes
@@ -388,7 +390,7 @@ def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path) -> 
                     imported.add(node.module.split('.')[0])
     if factory.relative_to(package).as_posix() not in sources:
         raise ToolAdmissionError('Selected factory is absent from captured closure')
-    _check_factory_source(sources[factory.relative_to(package).as_posix()], str(factory))
+    _check_factory_source(sources[factory.relative_to(package).as_posix()], str(factory), factory_name)
     dependencies = []
     local_roots = {name.partition('/')[0].removesuffix('.py') for name in sources}
     for name in sorted(imported - sys.stdlib_module_names):
@@ -411,9 +413,18 @@ def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path) -> 
     record_optional(manifest, present)
     if present:
         assets[manifest] = _read_bounded(manifest, owner_root)
+    if interface == 'tracing-provider@1':
+        for relative in ('tracing-provider.toml', 'cfg/config.toml'):
+            path = package / relative
+            present = path.exists()
+            record_optional(path, present)
+            if present:
+                assets[path] = _read_bounded(path, owner_root)
+    if sum(len(body) for body in sources.values()) + sum(len(body) for body in assets.values()) > MAX_TOOL_BYTES:
+        raise ToolAdmissionError('Tool executable closure is too large')
     sources, dependencies, assets = MappingProxyType(sources), tuple(dependencies), MappingProxyType(assets)
     return FactoryAdmission(factory_name, factory.relative_to(package).as_posix(),
-                            sources, dependencies, _identity(sources, dependencies, assets), assets=assets)
+                            sources, dependencies, _identity(sources, dependencies, assets), interface=interface, assets=assets)
 
 
 def _identity(sources, dependencies, assets):
@@ -427,12 +438,13 @@ def _identity(sources, dependencies, assets):
 
 
 def _check_admission(admission):
-    if not isinstance(admission, FactoryAdmission) or admission.interface != 'verified-read@1':
+    if not isinstance(admission, FactoryAdmission) or admission.interface not in {'verified-read@1', 'tracing-provider@1'}:
         raise ToolAdmissionError('Tool factory admission is required')
-    if (admission.factory != 'create_tool' or admission.entry not in admission.sources
+    expected = {'verified-read@1': 'create_tool', 'tracing-provider@1': 'create_tracing_provider'}[admission.interface]
+    if (admission.factory != expected or admission.entry not in admission.sources
             or admission.identity != _identity(admission.sources, admission.dependencies, admission.assets)):
         raise ToolAdmissionError('Tool executable admission identity changed')
-    _check_factory_source(admission.sources[admission.entry], admission.entry)
+    _check_factory_source(admission.sources[admission.entry], admission.entry, admission.factory)
 
 
 

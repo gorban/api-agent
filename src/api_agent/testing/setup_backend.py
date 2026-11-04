@@ -26,14 +26,29 @@ class _SetupOwner:
             authority=backend.authority)
         self.trace = None
         self._trace_unavailable = False
+        self._nontrace_settled = self._trace_cleanup_failed = False
+        self._trace_cleanup_reported = False
         self._stderr_sink = getattr(backend, 'capture_stderr', None)
-        factory = getattr(backend, 'trace_prerequisites_factory', None)
-        self.trace_prerequisites = factory(backend.config) if factory is not None else None
-        if backend.config.get('TRACE_MODE', ''):
-            from api_agent.telemetry.remote_inference import RemoteInferenceTrace
-            from .workflow_capture import capture_config
-            self.trace = RemoteInferenceTrace(capture_config(backend.config, backend.capture_sources),
-                                              self.provider.emissions)
+        self.trace_prerequisites = None
+        from api_agent.runtime.tracing_services import tracing_requested
+        if tracing_requested(backend.config, owner_root=backend.owner_root):
+            from api_agent.runtime.prerequisites import PrerequisiteCancelled
+            try:
+                factory = getattr(backend, 'trace_prerequisites_factory', None)
+                if factory is not None:
+                    self.trace_prerequisites = factory(backend.config)
+                from api_agent.telemetry.remote_inference import RemoteInferenceTrace
+                from .workflow_capture import capture_config
+                from api_agent.runtime.tracing_context import restore_trace_context
+                trace_context = restore_trace_context({'trace_context': getattr(backend, 'trace_context', None)},
+                                                      config=backend.config)
+                self.trace = RemoteInferenceTrace(capture_config(backend.config, backend.capture_sources),
+                    self.provider.emissions, **({'owner_root':backend.owner_root} if backend.config.get('TRACE_PROVIDER') else {}),
+                    **trace_context)
+            except PrerequisiteCancelled:
+                raise
+            except Exception as error:
+                self._trace_failure('collector planning or SDK admission', error)
 
     async def _ensure_tracing(self):
         if self.trace_prerequisites is not None and not self._trace_unavailable:
@@ -70,11 +85,36 @@ class _SetupOwner:
         self._trace_unavailable = True
 
     async def _close_tracing(self):
-        if self.trace is not None:
-            await self.trace.aclose()
-        if self.trace_prerequisites is not None:
-            from api_agent.runtime.tasks import offload
-            await offload(self.trace_prerequisites.release, retain=False)
+        try:
+            if self.trace is not None:
+                try:
+                    await self.trace.aclose()
+                except Exception:
+                    runtime = getattr(self.trace, 'runtime', None)
+                    if (getattr(getattr(runtime, 'losses', None), '_diagnostic_failed', False) is True
+                            or getattr(runtime, 'disposal_confirmed', False) is True
+                            and (getattr(runtime, '_binding', None) is None or getattr(runtime, '_binding_closed', False) is True)):
+                        raise
+                    self._pending_trace_cleanup()
+            if self.trace_prerequisites is not None:
+                from api_agent.runtime.tasks import offload
+                try:
+                    await offload(self.trace_prerequisites.release, retain=False)
+                except Exception:
+                    self._pending_trace_cleanup()
+        except BaseException:
+            raise
+        else:
+            self._trace_cleanup_failed = False
+
+    def _pending_trace_cleanup(self):
+        if not self._trace_cleanup_reported:
+            from api_agent.telemetry.tracing import TraceError
+            self._trace_failure('resource cleanup', TraceError('Tracing cleanup remains pending; resources are retained for retry.'))
+            self._trace_cleanup_reported = True
+        self._trace_cleanup_failed = True
+        from .trace_cleanup import OptionalTraceCleanupPending
+        raise OptionalTraceCleanupPending((self,), self._close_tracing, origin=self) from None
 
     async def ensure_ready(self):
         await self._ensure_tracing()
@@ -104,6 +144,8 @@ class _SetupOwner:
         # Inference notices belong to the caller, not to every test sharing
         # setup. Keep them on the operation's terminal channel; only readiness
         # and catalog notices are copied into shared setup details.
+        from api_agent.telemetry.trace_ownership import settle_trace_ownership
+        settle_trace_ownership()
         return await self.provider._complete(request)
 
     def quote_cost(self, request, result):
@@ -114,12 +156,16 @@ class _SetupOwner:
         await self.provider._preflight(request)
 
     async def aclose(self):
+        self._nontrace_settled = self._trace_cleanup_failed = False
         await self.provider._close()
+        self._nontrace_settled = True
         await self._close_tracing()
         self.provider.closed = True
 
     async def finish_execution(self):
+        self._nontrace_settled = self._trace_cleanup_failed = False
         await self.provider._finish_execution()
+        self._nontrace_settled = True
         await self._close_tracing()
 
 
@@ -138,7 +184,7 @@ class SetupBackend(CleanupLeaseOwner):
 
     def __init__(self, config, owner_root, *, unattended_index_source=None,
                  password_manager_registry=None, interaction=None, quota_observer=None, authority=None,
-                 capture_sources=None, trace_prerequisites_factory=None):
+                 capture_sources=None, trace_prerequisites_factory=None, trace_context=None):
         from api_agent.providers.setup_transport import _timeout
         self.timeout = _timeout(config.get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', self.timeout))
         self.trace_prerequisites_factory = trace_prerequisites_factory
@@ -149,11 +195,16 @@ class SetupBackend(CleanupLeaseOwner):
             raise ContractError('Invalid integration credential authority')
         self.authority = authority
         self._config = deepcopy(dict(config))
+        from api_agent.runtime.tracing_context import restore_trace_context
+        self.trace_context = deepcopy(trace_context)
+        trace_options = restore_trace_context({'trace_context': self.trace_context}, config=self._config)
         if trace_prerequisites_factory is not None:
-            from api_agent.runtime.compose import selected_profiles
-            trace_values = {key: self._config[key] for key in ('TRACE_MODE', 'TRACE_TARGET')
-                            if key in self._config}
-            if selected_profiles(trace_values):
+            from api_agent.telemetry.tracing_providers import effective_selection
+            try:
+                selection = effective_selection(self._config, owner_root=owner_root, **trace_options)
+            except (ValueError, OSError):
+                selection = None
+            if selection is not None and (selection.declaration.infrastructure or selection.declaration.managed_compose_profile):
                 # Provider/SDK disposal precedes the whole collector-stack stop (60s).
                 # Retain the ordinary short IPC budget for remote/disabled tracing.
                 self.cleanup_timeout = 90
@@ -170,7 +221,8 @@ class SetupBackend(CleanupLeaseOwner):
         managers = [(item.id, str(item.implementation), item.cli_default)
                     for item in self._password_manager_registry.definitions]
         frozen = json.dumps({'config': self._config, 'owner_root': str(self._owner_root),
-                             'password_managers': managers, 'capture_sources': self._capture_sources},
+                             'password_managers': managers, 'capture_sources': self._capture_sources,
+                             'trace_context': self.trace_context},
                             sort_keys=True, separators=(',', ':'), default=str)
         self._selected_identity = hashlib.sha256(frozen.encode()).hexdigest()
         self.loop = self.thread = self.registry = self.server = None
@@ -267,8 +319,19 @@ class SetupBackend(CleanupLeaseOwner):
             self.descriptor = await self.server.start()
             return deepcopy(self.descriptor)
 
-    def _receipt(self):
-        error = CleanupPendingError((self,), self.aclose)
+    def _receipt(self, cause=None, *, trace_only=False):
+        from .trace_cleanup import OptionalTraceCleanupPending
+        origin = getattr(self.registry, '_owner', None)
+        admitted = (type(origin) is _SetupOwner and getattr(origin, '_nontrace_settled', False) is True
+                    and getattr(origin, '_trace_cleanup_failed', False) is True)
+        previous = getattr(self, '_optional_trace_receipt', None)
+        if admitted and (trace_only or type(cause) is OptionalTraceCleanupPending and cause.origin is origin
+                         or cause is None and type(previous) is OptionalTraceCleanupPending and previous.origin is origin):
+            from .trace_cleanup import admit_optional_trace_receipt
+            error = admit_optional_trace_receipt(self, origin)
+            self._optional_trace_receipt = error
+        else:
+            error = CleanupPendingError((self,), self.aclose)
         error.inspections = (self,)
         return error
 
@@ -303,14 +366,22 @@ class SetupBackend(CleanupLeaseOwner):
                 except Exception:
                     pass
             failure = None
+            trace_only = False
             interruption = None
             for owner in (self.server, self.registry):
                 if owner is not None:
                     try:
+                        if owner is self.registry:
+                            source = getattr(owner, '_owner', None)
+                            if type(source) is _SetupOwner:
+                                source._nontrace_settled = source._trace_cleanup_failed = False
                         await owner.aclose()
                     except BaseException as error:
-                        if failure is None:
-                            failure = error
+                        source = getattr(self.registry, '_owner', None)
+                        only_trace = (owner is self.registry and type(source) is _SetupOwner
+                                      and source._nontrace_settled is True and source._trace_cleanup_failed is True)
+                        if failure is None or trace_only and not only_trace:
+                            failure, trace_only = error, only_trace
                         if not isinstance(error, Exception):
                             interruption = interruption or error
             if interruption is not None:
@@ -318,7 +389,7 @@ class SetupBackend(CleanupLeaseOwner):
                 # Return it for the synchronous owner to preserve after disposal.
                 return interruption
             if failure is not None:
-                raise self._receipt() from failure
+                raise self._receipt(failure, trace_only=trace_only) from failure
 
     def _inspector(self):
         owner = getattr(self.registry, '_owner', None)
@@ -356,7 +427,7 @@ class SetupBackend(CleanupLeaseOwner):
                     error.inspections = (self,)
                     error.cleanup_pending = self._receipt()
                     raise
-                raise self._receipt() from error
+                raise self._receipt(error) from error
             self._publication_prepared = True
 
     def finish_run(self):
@@ -386,7 +457,7 @@ class SetupBackend(CleanupLeaseOwner):
                         error.inspections = (self,)
                         error.cleanup_pending = self._receipt()
                         raise
-                    raise self._receipt() from error
+                    raise self._receipt(error) from error
                 self._disposed = True
             inspector = self._inspector()
             self.inspection_open = bool(inspector is not None and inspector.sessions)
@@ -497,7 +568,7 @@ class SetupBackend(CleanupLeaseOwner):
             except BaseException as error:
                 self.pending = True
                 if isinstance(error, Exception):
-                    raise self._receipt() from error
+                    raise self._receipt(error) from error
                 error.inspections = (self,)
                 error.cleanup_pending = self._receipt()
                 raise

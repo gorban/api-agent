@@ -4,6 +4,9 @@ from api_agent.runtime.compose import plan_compose
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.prerequisites import PrerequisiteManager
 from test_prerequisites import Clock, Engine
+from pathlib import Path
+from api_agent.providers.loading import bootstrap_schema
+from api_agent.telemetry.tracing_providers import effective_selection
 
 import pytest
 
@@ -21,14 +24,18 @@ def test_cross_mode_retained_stack_reuses_exact_provisioning(tmp_path, test_mode
     engine, clock = Engine(), Clock()
     managers = []
     for mode in modes:
-        result = resolve_config(load_shared_schema(), environ={
+        environment = {
             'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse',
-            'ALLURE_S3_BUCKET': 'synthetic-results', **credentials},
-            anchors={'owner_root': tmp_path})
+            'ALLURE_S3_BUCKET': 'synthetic-results', **credentials}
+        root = Path(__file__).resolve().parents[2]
+        schema = bootstrap_schema(load_shared_schema(root), (), environment, {}, owner_root=tmp_path)
+        result = resolve_config(schema, environ=environment,
+            anchors={'base_root': root, 'owner_root': tmp_path})
         assert not result.errors and not result.missing
         assert result.values['LANGFUSE_ADMIN_EMAIL'] == credentials.get('LANGFUSE_ADMIN_EMAIL', 'admin@local.dev')
         assert result.values['LANGFUSE_ADMIN_PASSWORD'] == credentials.get('LANGFUSE_ADMIN_PASSWORD', 'Local-LF-9vQ7!mR2#xK8@pT4')
-        plan = plan_compose(result.values, scope)
+        selection = effective_selection(result, owner_root=tmp_path, environ={})
+        plan = plan_compose(selection.values, scope)
         managers.append(PrerequisiteManager(plan, scope, tmp_path / 'ownership',
             command_runner=engine.run, readiness_probe=lambda *args: True,
             now=clock.now, sleep=clock.sleep, identity=lambda pid: 'boot:start'))

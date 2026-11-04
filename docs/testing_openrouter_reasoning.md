@@ -2,7 +2,13 @@
 
 [Reasoning tests](testing_reasoning.md) · [Qualification requirements](prds/implementation_plan_f4o3b3.md)
 
-## OpenRouter overlap
+## Native reasoning qualification
+
+[Native parsing, ordered replay and measured matrix](testing_openrouter_native_reasoning.md)
+records the shared carrier contract, exact tested IDs, ordinary versus native
+replay, tool continuations, malformed-carrier protection and independent limits.
+
+## Earlier OpenRouter overlap
 
 The same model can be offered by several backends with different IDs and wire
 behavior. OpenRouter lists `openai/gpt-6-luna`, `openai/gpt-oss-20b` and
@@ -77,7 +83,8 @@ GPT_API_MODE=responses
 
 Responses extracts native plaintext reasoning separately from the final answer
 and retains the original native items for ordered replay. Completions effort
-controls work independently; its native display/replay remains unqualified.
+controls work independently; its native display/replay is now covered by the
+[common native qualification](testing_openrouter_native_reasoning.md).
 Neither effort acceptance nor reasoning-token usage proves visible text delivery.
 Empty effort uses upstream defaults; it does not disable reasoning. Exact IDs
 are qualified independently of official OpenAI routes or suffixed aliases.
@@ -124,7 +131,7 @@ do not certify every future model or API combination.
 Bounded live checks accepted all four common efforts for exact GPT-5.6 Luna,
 Terra and Sol on both Responses and Completions. The outgoing requests retained
 the selected effort, required parameter support and disabled routing fallbacks.
-These short exact-Ok checks establish control acceptance, not puzzle correctness,
+These short normalized-answer checks establish control acceptance, not puzzle correctness,
 visible reasoning or a promise of nonzero reasoning tokens.
 
 The documented GPT-5.6+ cache rule also replaces per-release cache admission.
@@ -177,7 +184,9 @@ be displayed without altering its spacing or native replay representation.
 
 This route does not advertise guaranteed readable native explanations. Continue
 using the separate summary fixture when testing generated node explanations.
-The effort version ranges do not extend native-state admission to other IDs.
+Effort version ranges do not determine native-state admission. The [common
+OpenRouter native contract and measured matrix](testing_openrouter_native_reasoning.md) supersede the former
+exact-ID native admission list.
 
 Retained integration bridge errors now produce credential-scrubbed stderr
 diagnostics and stack locations. A missing credential authority permits only

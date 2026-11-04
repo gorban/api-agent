@@ -16,7 +16,12 @@ from api_agent.workflows.observations import WorkflowObservationFactory
 
 
 def config(log=False, trace=False, mode='OTEL', **overrides):
-    values = {'LOG_CONTENT': log, 'TRACELOOP_TRACE_CONTENT': trace,
+    from pathlib import Path
+    provider = Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/provider.py'
+    values = {'TRACE_PROVIDER': str(provider) + ':create_tracing_provider',
+              'TRACE_EXPORT_ENDPOINT': 'http://localhost:3000/api/public/otel/v1/traces' if mode == 'LangFuse' else 'http://localhost:4318/v1/traces',
+              'JAEGER_VIEWER_PORT': 16686,
+              'LOG_CONTENT': log, 'TRACELOOP_TRACE_CONTENT': trace,
               'TRACE_MODE': mode, **overrides}
     fields = {key: ResolvedValue(value, 'cli', True) for key, value in values.items()}
     return ConfigResult(values, fields, (), (), ())
@@ -58,7 +63,7 @@ def collector():
 def test_independent_projections_and_real_serialized_ancestry(log, trace, mode):
     from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
     with collector() as (endpoint, received):
-        resolved = config(log, trace, mode, TRACE_TARGET=endpoint,
+        resolved = config(log, trace, mode, TRACE_EXPORT_ENDPOINT=endpoint + ('/api/public/otel/v1/traces' if mode == 'LangFuse' else ''),
             LANGFUSE_PUBLIC_KEY='synthetic-public', LANGFUSE_SECRET_KEY='synthetic-secret')
         # Deliberately permissive injection cannot elevate resolved trace policy.
         credentials = EmissionBoundary(ContentPolicy(True))
@@ -294,7 +299,7 @@ def test_withheld_failed_model_identity_does_not_change_callable_kind(call_kind,
 def test_real_serialized_tool_span_has_error_status_without_model_accounting():
     from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
     with collector() as (endpoint, received):
-        resolved = config(TRACE_TARGET=endpoint)
+        resolved = config(TRACE_EXPORT_ENDPOINT=endpoint)
         runtime = TraceRuntime(resolved, model_identities=('example-model',))
         asyncio.run(runtime.astart())
         adapter = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(),

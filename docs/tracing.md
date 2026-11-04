@@ -1,48 +1,65 @@
 # Local tracing and content controls
 
-Run local supports optional tracing through the application-owned OTLP exporter.
-Leave TRACE_MODE empty to disable it. Set TRACE_MODE=OTEL for an OTLP HTTP traces
-endpoint, or TRACE_MODE=LangFuse for a LangFuse server. The normal configuration
-review exposes the applicable settings and validates their values before startup.
+The bundled default `TRACE_PROVIDER` contributes `TRACE_MODE` and its nested
+settings through ordinary configuration discovery. Leave `TRACE_MODE` empty to
+disable tracing without allocating an exporter, dashboard or collector. Select
+`OTEL` or `LangFuse` to reveal that route's settings in Review configuration.
+A custom provider replaces the bundled settings with its own declarations.
+Help and Review read declarations without executing provider factories.
 
-For resource-pack extension boundaries and planned provider support, see
-[tracing extensions](resource-packs.md#tracing-extensions-planned).
+For extension boundaries, see [tracing providers](tracing-providers.md).
 
 ## Destinations and dashboard login
 
-TRACE_TARGET identifies the collector's complete traces URL for OTEL, or the
-LangFuse server base URL. Conventional loopback targets select the existing
-managed local infrastructure profiles. Managed LangFuse recognizes exactly
-`http://localhost:3000` and `http://127.0.0.1:3000`, each with zero or one trailing
-slash. Other valid LangFuse spellings are custom and require explicit credentials.
-A custom or remote target starts no local tracing stack. Remote HTTPS uses certificate verification and the configured
-CLIENT_CA_FILE when supplied; credentials must never be embedded in URLs.
+`TRACE_EXPORT_ENDPOINT` is always the complete trace ingestion URL:
 
-When changing TRACE_MODE, also choose the matching TRACE_TARGET default in Review
-configuration. A previously saved target remains explicit: local LangFuse uses
-`http://localhost:3000`, while managed local OTEL uses
-`http://localhost:4318/v1/traces`. The application does not silently replace a
-saved custom collector.
+| Bundled mode | Default ingestion URL |
+| --- | --- |
+| LangFuse | `http://localhost:3000/api/public/otel/v1/traces` |
+| OTEL | `http://localhost:4318/v1/traces` |
 
-The local OTEL profile exposes a separate Jaeger browser interface on
-JAEGER_VIEWER_PORT, default 16686. TRACE_VIEWER_URL supplies an optional explicit
-OTEL dashboard address. Omitted and explicitly empty values both select the
-managed local viewer on JAEGER_VIEWER_PORT when TRACE_TARGET is the conventional
-loopback OTLP traces endpoint (port 4318, path /v1/traces). A custom collector,
-including a loopback target on another port, does not imply a browser address or
-start local infrastructure. Set TRACE_VIEWER_URL explicitly for that collector.
-Without a verified viewer, no dashboard tab opens and startup logs an actionable
-fixed diagnostic. Readiness requires HTTP 200 without redirects; a failed probe
-keeps the viewer unavailable. The collector target is preserved.
+Adapters use that URL unchanged. CLI, environment, saved and interactive settings
+follow normal configuration precedence. An explicit empty endpoint stays empty
+and is rejected when active tracing needs a usable destination. Changing modes
+does not replace an explicitly saved endpoint; update or clear it in configuration.
+Remote HTTPS verifies certificates and uses `CLIENT_CA_FILE` when supplied.
+Credentials must never be embedded in URLs.
+
+`TRACE_VIEWER_URL` is the separate dashboard address. Omitted viewer settings
+can derive the managed local dashboard for an exact conventional local ingestion
+URL: LangFuse on port 3000, or Jaeger on `JAEGER_VIEWER_PORT` (default 16686).
+An explicit empty viewer disables dashboard presentation. Remote/custom ingestion
+requires an explicit viewer URL if a dashboard is wanted; the application does
+not infer a remote dashboard from an ingestion path. A remote/custom ingestion
+or dashboard does not start a local collector stack. Readiness and authenticated
+dashboard identity remain separately verified.
+
+Only HTTP/protobuf export is supported. Review offers that protocol or an empty
+setting that permits the supported OTEL environment default. Explicit gRPC or
+HTTP/JSON requests fail actionably before exporter allocation.
+
+The OTEL route reveals `TRACE_METRICS` as an opt-in for a separate supported
+metrics destination. Managed Jaeger's trace ingestion does not accept metrics.
+After opt-in, configure the complete `TRACE_METRICS_ENDPOINT` or the explicit
+signal-specific `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`; the bundled provider does
+not derive metrics from a general OTLP base. Temporality and metric vocabulary
+settings appear only after opt-in. LangFuse remains trace-only and hides these
+controls. Saved inactive fields from the selected provider remain removable
+through Clear `.env`.
+
+Inactive saved, environment or CLI settings follow ordinary configuration
+applicability and remain inert. Capability rejection applies to active admitted
+requests; a hidden metrics value does not enable an unsupported signal.
 
 For LangFuse, configure LANGFUSE_ADMIN_EMAIL and LANGFUSE_ADMIN_PASSWORD for Run
 local dashboard sign-in. These dashboard credentials are distinct from the
 LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY ingestion credentials. New local
 provisioning and browser login consume the same configured account. Changing
 initialization values does not reset an account in an existing database; use the
-installation's actual credentials. Dashboard account credentials appear as
-literal text only in NO_STD_IN terminal status on stderr; the interactive TUI
-omits them. Redirecting stderr captures that literal status. Structured stdout,
+installation's actual credentials. Applicable dashboard account credentials appear
+as literal text in the interactive Run local summary and in NO_STD_IN terminal
+status on stderr. The summary scrolls independently above the logs; use Tab to
+move between panels. Redirecting stderr captures that literal terminal status. Structured stdout,
 home/status JSON, log events, trace payloads and inspection descriptors exclude
 them independently of content settings.
 

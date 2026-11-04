@@ -1,0 +1,8 @@
+version = 1
+id = "langfuse-otlp-http"
+signals = ["traces"]
+input_attribute = "langfuse.observation.input"
+output_attribute = "langfuse.observation.output"
+endpoint_field = "TRACE_EXPORT_ENDPOINT"
+secret_fields = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"]
+otlp_environment = false

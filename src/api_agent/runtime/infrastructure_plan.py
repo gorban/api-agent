@@ -228,7 +228,8 @@ def _compose_fragment(service, name, profile, scope, all_profiles, assets, used_
 
 
 def plan_infrastructure(config, schema, contributions, scope, *, compose_directory=None,
-                        executable='docker', engine_environment=None, inventory=None) -> ComposePlan:
+                        executable='docker', engine_environment=None, inventory=None, base_assets=None,
+                        tracing_profiles=None, tracing_destination=None) -> ComposePlan:
     """Merge active captured services into an immutable, side-effect-free Compose plan."""
     values = config.values if not isinstance(config, Mapping) and hasattr(config, 'values') else config
     if not isinstance(values, Mapping) or not hasattr(schema, 'fields'):
@@ -236,7 +237,10 @@ def plan_infrastructure(config, schema, contributions, scope, *, compose_directo
     if hasattr(config, 'errors') and (config.errors or config.help_requested):
         raise ComposeError('Infrastructure planning requires a completed configuration.')
     base = plan_compose(values, scope, compose_directory=compose_directory,
-                        executable=executable, engine_environment=engine_environment)
+                        executable=executable, engine_environment=engine_environment,
+                        tracing_profiles=tracing_profiles,
+                        tracing_destination=tracing_destination,
+                        **({'captured_assets': base_assets} if base_assets is not None else {}))
     if inventory is not None:
         from .inventory import InventoryCatalog
         if type(inventory) is not InventoryCatalog or inventory.scope_id != scope.id:

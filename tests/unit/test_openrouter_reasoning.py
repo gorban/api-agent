@@ -223,7 +223,7 @@ async def test_other_openrouter_models_do_not_gain_native_admission():
     raw['usage'] = {'input_tokens': 2, 'output_tokens': 3}
     async with httpx.AsyncClient(transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json=raw))) as client:
-        request = LLMRequest('openai/gpt-7-terra', CompletionRequest((Message('user', (TextContent('Question'),)),)))
+        request = LLMRequest('openai/gpt-7-unknown', CompletionRequest((Message('user', (TextContent('Question'),)),)))
         with pytest.raises(ProviderAccessError, match='not qualified') as caught:
             await complete_text(client=client, base_url=BASE, access_token='credential-sentinel',
                 subscription=False, api_mode='responses', request=request)
@@ -293,7 +293,7 @@ async def test_terra_encrypted_items_preserve_order_without_a_blank_explanation(
             await complete_text(client=client, base_url=BASE, access_token='credential-sentinel',
                 subscription=False, api_mode='responses', request=following)
     assert native_reasoning(model, base_url=BASE, api_mode='responses')
-    assert not native_reasoning(model, base_url=BASE, api_mode='completions')
+    assert native_reasoning(model, base_url=BASE, api_mode='completions')
     assert not native_reasoning(model, base_url='https://api.openai.com/v1', api_mode='responses')
     assert not display_reasoning(model, base_url=BASE, api_mode='responses')
     assert first.reasoning_summary is None
@@ -321,11 +321,12 @@ def test_evidence_projection_is_contextual_and_leaves_native_input_unchanged():
     before = copy.deepcopy(raw)
     projected = evidence_payload(raw)
     for name in ('input', 'output'):
-        item = next(item for item in projected[name] if type(item) is dict and item['type'] == 'reasoning')
+        item = next(item for item in projected[name] if type(item) is dict and item.get('type') == 'reasoning')
         assert not {'signature', 'format', 'encrypted_content'} & item.keys()
         assert item['content'] == before['output'][0]['content']
-    assert projected['metadata'] == before['metadata']
-    assert projected['input'][1]['signature'] == 'ordinary-message-data'
+    assert projected['metadata'] == {'format': 'ordinary-format'}
+    assert 'signature' not in projected['metadata']
+    assert projected['input'][1] == {}  # A typed message without its required fields is withheld.
     assert raw == before
     assert evidence_payload({'input': 'plain-input'}) == {'input': 'plain-input'}
 
@@ -523,3 +524,213 @@ def test_semantic_pair_budget_includes_normalization_work():
                                 {'{"password":"hunter2"}'})
     guard_semantic_carriers(['{"safe":"value"}', '{"also":"safe"}'], {'{"a":1,"b":2}'})
     guard_semantic_carriers(['ordinary', 'safe'], {'100'})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('destination', ['tool_name', 'nested_value', 'nested_key', 'argument_key', 'argument_value', 'escaped_argument'])
+async def test_all_projected_native_carriers_are_jointly_guarded(mode, reverse, destination):
+    from api_agent.llm_providers.gpt.inference import complete_text
+    from api_agent.workflows.inference_capture import collect_inference
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    import httpx
+    first, second = ('ntial', 'crede') if reverse else ('crede', 'ntial')
+    name = second if destination == 'tool_name' else 'lookup'
+    if mode == 'responses':
+        raw = native_response(tools=True)
+        raw['output'][1].update(call_id=first, name=name)
+    else:
+        raw = {'choices': [{'index': 0, 'finish_reason': 'tool_calls', 'message': {
+            'role': 'assistant', 'content': None, 'reasoning': 'Consider.',
+            'tool_calls': [{'id': first, 'type': 'function',
+                            'function': {'name': name, 'arguments': '{}'}}]}}]}
+    if destination.startswith('argument_') or destination == 'escaped_argument':
+        arguments = json.dumps({second: 'ordinary'} if destination == 'argument_key' else {'ordinary': second})
+        if destination == 'escaped_argument':
+            arguments = arguments.replace(second, ''.join('\\u%04x' % ord(char) for char in second))
+        if mode == 'responses':
+            raw['output'][1]['arguments'] = arguments
+        else:
+            raw['choices'][0]['message']['tool_calls'][0]['function']['arguments'] = arguments
+    elif destination != 'tool_name':
+        raw['metadata'] = {'nested': [{second: 'ordinary'} if destination == 'nested_key' else {'ordinary': second}]}
+    tool = Tool(name, 'Lookup', '{"type":"object"}', strict=False)
+    request = LLMRequest(MODEL, CompletionRequest((Message('user', (TextContent('Question'),)),), tools=(tool,)))
+    with collect_inference(EmissionBoundary(ContentPolicy(True)), retain_raw=True) as evidence:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=raw))) as client:
+            with pytest.raises(ProviderAccessError, match='protected authentication'):
+                await complete_text(client=client, base_url=BASE, access_token='credential',
+                    subscription=False, api_mode=mode, request=request)
+    assert not [row for row in evidence['rows'] if row['phase'] == 'response']
+
+
+def test_projected_carriers_share_the_existing_collection_bound():
+    raw = native_response()
+    raw['metadata'] = {'nested': ['ordinary'] * 4096}
+    with pytest.raises(ContractError, match='carrier limit'):
+        from api_agent.llm_providers.gpt.router_reasoning import projected_carriers
+        projected_carriers(raw)
+
+
+def test_projection_collection_can_be_disabled_for_legacy_native_inspection():
+    raw = native_response(tools=True)
+    raw['metadata'] = {'nested': ['external-value']}
+    from api_agent.llm_providers.gpt.router_reasoning import projected_carriers
+    assert 'external-value' in projected_carriers(raw)
+    assert 'external-value' not in carriers(raw)
+
+
+def test_projected_semantic_arguments_omit_only_encoded_output_representation():
+    from api_agent.llm_providers.gpt.router_reasoning import projected_carriers
+    raw = native_response(tools=True)
+    encoded = '{"ordinary":"value"}'
+    raw['output'][1]['arguments'] = encoded
+    raw['metadata'] = {'arguments': encoded}
+    assert projected_carriers(raw).count(encoded) == 2
+    assert projected_carriers(raw, semantic=True).count(encoded) == 1
+    assert 'arguments' in projected_carriers(raw, semantic=True)
+
+
+def test_joint_representation_matching_retains_shared_work_bound():
+    from api_agent.providers.rejected_evidence import _guard_response_fragments
+    with pytest.raises(ContractError, match='carrier protection limit'):
+        _guard_response_fragments(['x' * (8 * 1024 * 1024 + 1)],
+                                  {'credential'}, max_leaves=8192)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+async def test_normalized_native_result_rechecks_late_credential_registration(mode):
+    from api_agent.providers.inference import result_to_wire
+    from api_agent.telemetry.privacy import EmissionBoundary
+    raw = native_response(tools=True)
+    if mode == 'responses':
+        raw['output'][1].update(call_id='crede', name='ntial')
+    else:
+        raw = {'choices': [{'finish_reason': 'tool_calls', 'message': {
+            'role': 'assistant', 'content': None, 'reasoning': 'Consider.',
+            'tool_calls': [{'id': 'crede', 'type': 'function',
+                            'function': {'name': 'ntial', 'arguments': '{}'}}]}}]}
+    result = _result(raw, mode == 'responses', 'other-key', openrouter=True)
+    boundary = EmissionBoundary()
+    await _guard_content(raw, 'other-key', boundary, decoded=result, router_native=True)
+    boundary.register_secret('credential')
+    captured = []
+    with pytest.raises(ProviderAccessError, match='protected authentication'):
+        await _guard_content(result_to_wire(result), 'other-key', boundary,
+                             decoded=result, commit=lambda: captured.append(True))
+    assert not captured
+
+
+def test_normalized_projection_preserves_visible_calls_and_excludes_only_continuation():
+    from api_agent.providers.inference import result_to_wire
+    from api_agent.llm_providers.gpt.router_reasoning import projected_carriers
+    raw = native_response(tools=True)
+    raw['output'][0]['encrypted_content'] = 'opaque-encrypted'
+    raw['output'][1]['arguments'] = '{"ordinary":"value"}'
+    result = _result(raw, True, 'other-key', openrouter=True)
+    wire = result_to_wire(result)
+    literal = projected_carriers(wire, normalized=True)
+    semantic = projected_carriers(wire, normalized=True, semantic=True)
+    assert wire['message']['continuation'] not in literal
+    assert not any('opaque-encrypted' in carrier for carrier in literal)
+    assert 'call-1' in literal and 'lookup' in literal
+    assert raw['output'][1]['arguments'] in literal
+    assert raw['output'][1]['arguments'] not in semantic
+    assert 'arguments' in semantic
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+async def test_tool_only_transport_preserves_route_for_late_final_guard(mode, monkeypatch):
+    from api_agent.llm_providers.gpt import inference
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.inference_capture import collect_inference
+    import httpx
+    if mode == 'responses':
+        raw = {'status': 'completed', 'output': [{'type': 'function_call', 'id': 'fn-1',
+            'call_id': 'crede', 'name': 'ntial', 'arguments': '{}', 'status': 'completed'}]}
+    else:
+        raw = {'choices': [{'index': 0, 'finish_reason': 'tool_calls', 'message': {
+            'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'crede',
+                'type': 'function', 'function': {'name': 'ntial', 'arguments': '{}'}}]}}]}
+    raw.update(native_normalized=True, source='request')
+    decoded = _result(raw, mode == 'responses', 'other-key', openrouter=True)
+    assert decoded.payload.continuation is None
+    boundary = EmissionBoundary(ContentPolicy(True))
+    stages = []
+    original = inference._guard_observed
+    async def observe(*args, **kwargs):
+        if 'native_normalized' in kwargs:
+            stages.append(kwargs['native_normalized'])
+        await original(*args, **kwargs)
+        if kwargs.get('native_normalized') is False:
+            boundary.register_secret('credential')
+    monkeypatch.setattr(inference, '_guard_observed', observe)
+    request = LLMRequest(MODEL, CompletionRequest((Message('user', (TextContent('Question'),)),),
+        tools=(Tool('ntial', 'Lookup', '{"type":"object"}', strict=False),)))
+    with collect_inference(boundary, retain_raw=True):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=raw))) as client:
+            with pytest.raises(ProviderAccessError, match='protected authentication'):
+                await inference.complete_text(client=client, base_url=BASE,
+                    access_token='other-key', subscription=False, api_mode=mode, request=request, authority=boundary)
+    assert stages == [False, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['responses', 'completions'])
+@pytest.mark.parametrize('stage', ['raw', 'inner', 'validation'])
+@pytest.mark.parametrize('destination', ['name', 'argument_key', 'argument_value'])
+@pytest.mark.parametrize('protected', [False, True])
+async def test_every_publication_stage_keeps_native_route_authority(mode, stage, destination, protected, monkeypatch):
+    from api_agent.llm_providers.gpt import inference, rich
+    from api_agent.telemetry.privacy import EmissionBoundary
+    import httpx
+    name = 'ntial' if destination == 'name' else 'lookup'
+    arguments = ({} if destination == 'name' else
+                 {'ntial': 'ordinary'} if destination == 'argument_key' else {'ordinary': 'ntial'})
+    encoded = json.dumps(arguments)
+    raw = ({'status': 'completed', 'output': [{'type': 'function_call', 'id': 'fn-1',
+        'call_id': 'crede', 'name': name, 'arguments': encoded, 'status': 'completed'}]}
+        if mode == 'responses' else {'choices': [{'index': 0, 'finish_reason': 'tool_calls',
+        'message': {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'crede',
+        'type': 'function', 'function': {'name': name, 'arguments': encoded}}]}}]})
+    raw.update(native_normalized=True, router_native=True, source='request')
+    authority = EmissionBoundary()
+    admissions = []
+    original_guard = inference._guard_observed
+    async def observe(*args, **kwargs):
+        current = ('raw' if kwargs.get('native_normalized') is False else
+                   'outer' if kwargs.get('commit') is not None else 'inner')
+        if kwargs.get('decoded') is not None:
+            admissions.append(current)
+        await original_guard(*args, **kwargs)
+        if protected and stage == current and kwargs.get('decoded') is not None:
+            authority.register_secret('credential')
+    original_validate = rich.async_validate_result
+    async def validate(*args, **kwargs):
+        result = await original_validate(*args, **kwargs)
+        assert result.payload.continuation is None
+        if protected and stage == 'validation':
+            authority.register_secret('credential')
+        return result
+    monkeypatch.setattr(inference, '_guard_observed', observe)
+    monkeypatch.setattr(rich, 'async_validate_result', validate)
+    request = LLMRequest(MODEL, CompletionRequest((Message('user', (TextContent('Question'),)),),
+        tools=(Tool(name, 'Lookup', '{"type":"object"}', strict=False),)))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=raw))) as client:
+        async def perform():
+            return await inference.complete_text(client=client, base_url=BASE, access_token='other-key',
+                subscription=False, api_mode=mode, request=request, authority=authority)
+        if protected:
+            with pytest.raises(ProviderAccessError, match='protected authentication'):
+                await perform()
+        else:
+            result = await perform()
+            assert result.payload.calls[0].call_id == 'crede'
+    expected = ['raw', 'inner'] if protected and stage == 'raw' else ['raw', 'inner', 'outer']
+    assert admissions == expected

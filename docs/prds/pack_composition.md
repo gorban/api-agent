@@ -24,3 +24,8 @@ including conditional defaults, are rejected before startup when ownership would
 be ambiguous. Use absolute auxiliary defaults or move those defaults into the
 owning pack's main configuration. A per-auxiliary-owner bootstrap protocol remains
 an explicit future interface change.
+
+The broader [ordered composition contract](implementation_plan_m4.md) retains
+open declaration-admission, relaunch integrity, multi-pack dotenv precedence and
+write-authority requirements. The completed PoC requirements above do not close
+those additional gates.

@@ -2,6 +2,8 @@
 import asyncio
 import threading
 
+import pytest
+
 from textual.app import App
 from textual.widgets import Button, Input, TextArea
 
@@ -19,6 +21,51 @@ async def open_channel(app, label='Keeper'):
     channel = await asyncio.to_thread(app.transport.open, label)
     await asyncio.sleep(.05)
     return channel
+
+
+@pytest.mark.parametrize('chunks', [('Enter Security Key PIN: ',), ('Enter Security ', 'Key PIN: ')])
+def test_pin_prompt_repaints_without_more_keyboard_input(chunks):
+    class PaintedApp(RecoveryApp):
+        def __init__(self):
+            super().__init__()
+            self.pin_painted = asyncio.Event()
+
+        def _display(self, screen, renderable):
+            if renderable is not None:
+                painted = transcript_text(renderable.render_segments(self.console))
+                if 'Enter Security Key PIN:' in painted:
+                    self.pin_painted.set()
+            return super()._display(screen, renderable)
+
+    async def scenario():
+        app = PaintedApp()
+        async with app.run_test(size=(85, 30)) as pilot:
+            channel = await open_channel(app)
+            screen = channel.screen
+            await asyncio.to_thread(channel.write,
+                'Select authentication method:\n'
+                '  1. SMS\n'
+                '  2. Security key authentication\n'
+                '  q. Cancel\n\n')
+            screen.query_one(Input).value = '2'
+            await pilot.press('enter')
+            assert channel.read(.01) == Reply('input', '2')
+            output = screen.query_one(TextArea)
+            original_size = output.virtual_size
+
+            # No pilot key, pause, screenshot or forced refresh after output:
+            # verify the frame sent to the terminal, not just the document.
+            for chunk in chunks:
+                await asyncio.to_thread(channel.write, chunk)
+            await asyncio.wait_for(app.pin_painted.wait(), timeout=2)
+
+            assert output.virtual_size == original_size
+            assert not screen.awaiting_output
+            assert screen.query_one(Input).password
+            assert screen.query_one(Input).value == ''
+            assert channel.read(.01) is None
+            await asyncio.to_thread(channel.close)
+    asyncio.run(scenario())
 
 
 def test_recovery_send_cancel_focus_and_cleanup():
@@ -247,13 +294,22 @@ def test_shared_backend_recovery_outlives_startup_deadline(tmp_path, monkeypatch
     from test_tui import fixture
 
     cli = tmp_path / 'synthetic-keeper'
+    marker = tmp_path / 'authenticated'
     cli.write_text('#!' + sys.executable + '\n'
-        'import os,sys\n'
-        'if not os.isatty(0):\n'
-        ' sys.stderr.write("Keeper Persistent login is not working in this non-interactive environment\\n"); sys.exit(1)\n'
-        'sys.stderr.write("Password: "); sys.stderr.flush()\n'
-        'if sys.stdin.readline().strip() != "synthetic answer": sys.exit(2)\n'
-        'sys.stdout.write("private synthetic credential\\n")\n')
+        'import os,sys,pathlib\n'
+        f'marker=pathlib.Path({str(marker)!r})\n'
+        'if sys.argv[1:] == ["whoami"]:\n'
+        ' assert os.isatty(0) and os.isatty(2) and not os.isatty(1)\n'
+        ' print("Touch your security key", flush=True)\n'
+        ' sys.stderr.write("Password: "); sys.stderr.flush()\n'
+        ' if sys.stdin.readline().strip() != "synthetic answer": sys.exit(2)\n'
+        ' marker.touch()\n'
+        'else:\n'
+        ' assert sys.argv[1:] == ["find-password", "fixture/fixture"]\n'
+        ' assert not os.isatty(0) and sys.stdin.read() == ""\n'
+        ' if not marker.exists():\n'
+        '  sys.stderr.write("Keeper Persistent login is not working in this non-interactive environment\\n"); sys.exit(1)\n'
+        ' sys.stdout.write("private synthetic credential\\n")\n')
     cli.chmod(0o700)
     config = {'LLM_CREDENTIAL_ROLE': 'LLM User', 'UNATTENDED_AUTH': {
         'password_manager': {'manager': 'keeper', 'cli_path': str(cli)},
@@ -293,6 +349,7 @@ def test_shared_backend_recovery_outlives_startup_deadline(tmp_path, monkeypatch
             await pilot.pause(6)
             assert app.screen is screen and app.test_run_active()
             assert 'Password:' in screen.transcript
+            assert 'Touch your security key' in screen.transcript
             assert not received
             screen.query_one(Input).value = 'synthetic answer'
             await pilot.press('enter')

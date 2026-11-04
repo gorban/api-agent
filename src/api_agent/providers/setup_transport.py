@@ -14,6 +14,7 @@ import re
 import secrets
 import sys
 import threading
+import time
 from uuid import uuid4
 
 from .contracts import (ContractError, InteractionRequiredError, SessionClosedError,
@@ -636,6 +637,10 @@ class SetupServer(_Owner):
             keys.add('authority_required')
             if frame['authority_required'] is not True or self._authority_channel is None:
                 raise ContractError('Invalid authority requirement')
+        if action == 'complete' and 'trace_offer' in frame:
+            from api_agent.telemetry.trace_ownership import validate_offer
+            keys.add('trace_offer')
+            validate_offer(frame['trace_offer'])
         if action == 'complete' and 'background' in frame:
             keys.add('background')
             if frame['background'] is not True:
@@ -653,7 +658,7 @@ class SetupServer(_Owner):
         if set(frame) != keys or type(frame['version']) is not int or frame['version'] != 1 or action not in ('register', 'ready', 'describe', 'complete', 'revoke'):
             raise ContractError('Invalid setup request')
         capability = _capability(frame['capability'])
-        expected = _request_auth(self._capability, frame) if self._authority_channel is not None else self._capability
+        expected = _request_auth(self._capability, frame) if self._authority_channel is not None or 'trace_offer' in frame else self._capability
         if not hmac.compare_digest(capability, expected):
             raise ContractError('Setup capability rejected')
         _timeout(frame['timeout'])
@@ -1100,7 +1105,13 @@ class SetupServer(_Owner):
             async def invoke():
                 from .call_authority import bind_call_authority
                 local_lease = None if local_entry is None else local_entry['lease']
-                with bind_call_authority(self._operation_authority, caller_values, local_lease):
+                from api_agent.telemetry.trace_ownership import RemoteHandoff, bind_handoff, receipt
+                offer = frame.get('trace_offer')
+                def acknowledge(state):
+                    peer.writer.write(_encode(receipt(self._capability, offer, peer.complete_count,
+                                                       frame['request'], peer.binding, state)))
+                handoff = RemoteHandoff(offer, acknowledge) if offer is not None else None
+                with bind_call_authority(self._operation_authority, caller_values, local_lease), bind_handoff(handoff):
                     return await self._ready(peer, action, request)
             ready = _spawn(invoke())
         else:
@@ -1114,6 +1125,8 @@ class SetupServer(_Owner):
             if disconnected in done:
                 raise ContractError('Setup connection disconnected')
             result = await ready
+            if action == 'complete':
+                collector['trace_terminal_ns'] = time.time_ns()
             self._check()
             if action == 'complete':
                 from .inference import result_to_wire
@@ -1128,6 +1141,8 @@ class SetupServer(_Owner):
         except BaseException as error:
             failed = True
             cancelled = isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit))
+            if action == 'complete' and ready.done() and not ready.cancelled():
+                collector.setdefault('trace_terminal_ns', time.time_ns())
             if isinstance(error, Exception) and action == 'complete' and frame.get('background') is True:
                 early_error(error)
                 await peer.writer.drain()
@@ -1239,12 +1254,16 @@ class SetupServer(_Owner):
             if not settled:
                 # Content may still be changing. Retain only the ledger's
                 # content-free physical-attempt identities, never active rows.
-                call.publish([], collector['trace_ledger'].snapshot())
+                # Preserve the operation's safe loss reason before publication
+                # marks any unfinished physical attempt as terminal-unknown.
                 call.loss('unavailable')
+                call.publish([], collector['trace_ledger'].snapshot())
                 return
             if trace is None or type(boundary) is not EmissionBoundary:
                 call.loss('unavailable')
                 return
+            if cancelled and collector.get('trace_terminal_ns') is None:
+                call.loss('unavailable')
             raw = collector['retain_raw']
             if raw:
                 if caller_values is None:
@@ -1268,7 +1287,8 @@ class SetupServer(_Owner):
                 pass
         finally:
             try:
-                call.end(failed=failed, cancelled=cancelled)
+                call.end(failed=failed, cancelled=cancelled,
+                    **({'end_time':collector['trace_terminal_ns']} if collector.get('trace_terminal_ns') is not None else {}))
             except Exception:
                 pass
 
@@ -1378,6 +1398,8 @@ class SetupClient:
         self.response_evidence = None
         self.transport_attempts = None
         self._complete_count = 0
+        self._trace_offer = None
+        self.trace_ownership = None
         self._authority_scope = None
         self._authority_lease = None
         self._authority_ticket = None
@@ -1500,6 +1522,8 @@ class SetupClient:
             frame['binding'] = self._binding
         if action == 'complete':
             frame['request'] = request
+            if self._trace_offer is not None:
+                frame['trace_offer'] = self._trace_offer
             if self._observation_call_id is not None:
                 frame['observation_call_id'] = self._observation_call_id
             if self._result_ready is not None:
@@ -1522,7 +1546,7 @@ class SetupClient:
                     frame['timeout'] = min(self._timeout, remaining)
         if action == 'complete':
             self._complete_count += 1
-        if 'authority_path' in self._descriptor:
+        if 'authority_path' in self._descriptor or 'trace_offer' in frame:
             frame['capability'] = _request_auth(self._descriptor['capability'], frame)
         self._writer.write(_encode(frame))
         await self._writer.drain()
@@ -1626,6 +1650,14 @@ class SetupClient:
                 self.evidence.append(_evidence_omission(start, 'truncated'))
                 incomplete_phases.add(_evidence_key(start))
                 evidence_receiver.pending = None
+            if status == 'trace_ownership' and action == 'complete':
+                from api_agent.telemetry.trace_ownership import accept_receipt
+                previous_ownership, self.trace_ownership = self.trace_ownership, None
+                if self._trace_offer is None or previous_ownership is not None:
+                    raise ContractError('Unexpected trace ownership receipt')
+                self.trace_ownership = accept_receipt(response, self._descriptor['capability'],
+                    self._trace_offer, self._complete_count, request, self._binding)
+                continue
             if status in ('transport_attempt', 'transport_terminal') and action == 'complete':
                 from .generation_attempts import validate_transport_attempts
                 expected = {'version', 'status', 'call_sequence', 'request_sha256', 'binding_sha256'}
@@ -1835,12 +1867,18 @@ class SetupClient:
     def describe(self):
         return self._run_request('describe')
 
-    def complete(self, request, *, authority_scope=None, result_ready=None, error_ready=None, observation_call_id=None):
+    def complete(self, request, *, authority_scope=None, result_ready=None, error_ready=None, observation_call_id=None, observation_parent=None, observation_pipeline=None):
         from .inference import request_to_wire
         with self._lock:
             from api_agent.workflows.inference_capture import _valid_attempt_id
             if observation_call_id is not None and not _valid_attempt_id(observation_call_id):
                 raise ContractError('Invalid inference observation identity')
+            from api_agent.telemetry.trace_ownership import validate_offer
+            self.trace_ownership = None
+            self._trace_offer = None
+            if observation_parent is not None or observation_pipeline is not None:
+                self._trace_offer = validate_offer(dict(parent=observation_parent, pipeline=observation_pipeline,
+                                                       nonce=secrets.token_hex(32)))
             self._observation_call_id = observation_call_id
             self._authority_scope = authority_scope
             self._result_ready = result_ready

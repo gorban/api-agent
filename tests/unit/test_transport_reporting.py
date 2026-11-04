@@ -8,6 +8,15 @@ from api_agent.testing.workflow_accounting import apply_frozen_steps, include_un
 from api_agent.providers.generation_attempts import validate_transport_attempts
 
 
+
+def observation_owner(trace, boundary):
+    from api_agent.workflows.observations import WorkflowObservationFactory
+    from test_workflow_observations import definition
+    trace.boundary = boundary
+    trace.is_model_identity = lambda value: False
+    return WorkflowObservationFactory({}, boundary=boundary, trace=trace).create(definition())
+
+
 def ledger():
     def row(index, outcome, delay):
         return dict(id=str(uuid4()), index=index, execution='possibly_executed' if outcome == 'failed' else 'completed',
@@ -79,6 +88,8 @@ def test_trace_keeps_retry_structure_and_truthful_physical_status_independent_of
     from api_agent.workflows.observations import WorkflowObservations
 
     snapshot = ledger()
+    snapshot['attempts'][0]['usage'] = dict(input_tokens=5,output_tokens=1,cached_input_tokens=None,cache_write_tokens=None,reasoning_tokens=None)
+    snapshot['attempts'][1]['usage'] = dict(input_tokens=7,output_tokens=2,cached_input_tokens=None,cache_write_tokens=None,reasoning_tokens=None)
     boundary = EmissionBoundary(ContentPolicy(content))
     spans = []
     class Trace:
@@ -86,10 +97,7 @@ def test_trace_keeps_retry_structure_and_truthful_physical_status_independent_of
             span = Mock()
             spans.append((name, _structural(boundary, structural), kwargs, span))
             return span
-    observer = object.__new__(WorkflowObservations)
-    observer.trace = Trace()
-    observer._spans = {}
-    observer._visit_call_kinds = {}
+    observer = observation_owner(Trace(), boundary)
     observer._trace_row(dict(event='call', call_id=str(uuid4()), event_id=str(uuid4()),
                              visit_id=str(uuid4()), outcome='completed', transport_attempts=snapshot))
     logical, first, second = spans
@@ -98,6 +106,14 @@ def test_trace_keeps_retry_structure_and_truthful_physical_status_independent_of
     assert first[1]['api_agent.transport_status'] == 503
     assert first[1]['api_agent.transport_id'] == snapshot['attempts'][0]['id']
     assert first[2]['parent'] is logical[3] and second[2]['parent'] is logical[3]
+    assert logical[1]['gen_ai.usage.input_tokens'] == 12
+    assert logical[1]['gen_ai.usage.output_tokens'] == 3
+    assert first[1]['api_agent.transport.usage.input_tokens'] == 5
+    assert second[1]['api_agent.transport.usage.input_tokens'] == 7
+    assert not any(key.startswith('gen_ai.usage.') for child in (first,second) for key in child[1])
+    assert first[2]['start_time'] == 1_000_000 and second[2]['start_time'] == 2_000_000
+    first[3].end.assert_called_once_with(end_time=2_000_000)
+    second[3].end.assert_called_once_with(end_time=3_000_000)
     first[3].attributes.assert_called_once_with({'status': 'error'})
     logical[3].attributes.assert_called_once_with({'duration_seconds': None, 'status': 'ok'})
 
@@ -230,12 +246,14 @@ def test_open_physical_attempt_has_no_fabricated_status_or_end_time():
             span = Mock()
             spans.append(span)
             return span
-    observer = object.__new__(WorkflowObservations)
-    observer.trace, observer._spans, observer._visit_call_kinds = Trace(), {}, {}
+    from api_agent.telemetry.privacy import EmissionBoundary
+    observer = observation_owner(Trace(), EmissionBoundary())
     observer._trace_row(dict(event='call', call_id=str(uuid4()), event_id=str(uuid4()),
                              visit_id=str(uuid4()), outcome='partial', transport_attempts=snapshot))
     spans[-1].attributes.assert_not_called()
     spans[-1].end.assert_called_once_with(end_time=None)
+    spans[-1].capture_loss.assert_called_once_with(1)
+    assert observer.trace_losses.count == 1
 
 
 def test_complete_physical_billing_is_reported_as_authoritative_charge():

@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from api_agent.config import load_shared_schema, resolve_config
+from api_agent.config import load_shared_schema as load_base_schema, resolve_config
+from api_agent.providers.loading import bootstrap_schema
+
+
+def load_shared_schema():
+    return bootstrap_schema(load_base_schema(), (), {}, {})
 from api_agent.runtime.dependencies import requirements
 
 
@@ -22,7 +27,7 @@ def test_local_keys_and_public_ca_configuration(mode, tmp_path):
 
 def test_remote_keys_have_no_default_and_both_are_required():
     schema = load_shared_schema()
-    env = {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': 'https://trace.example',
+    env = {'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse', 'TRACE_EXPORT_ENDPOINT': 'https://trace.example',
            'LANGFUSE_ADMIN_EMAIL': 'admin@example.invalid', 'LANGFUSE_ADMIN_PASSWORD': 'synthetic-password'}
     missing = resolve_config(schema, environ=env)
     assert missing.missing == ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY')
@@ -52,8 +57,8 @@ def test_tracing_dependencies_selected_only_by_operation_preflight():
 
 @pytest.mark.parametrize('mode', ['OTEL', '', 'LangFuse'])
 @pytest.mark.parametrize('target, expected', [
-    ('http://localhost:3000', ('admin@local.dev', 'Local-LF-9vQ7!mR2#xK8@pT4')),
-    ('http://127.0.0.1:3000/', ('admin@local.dev', 'Local-LF-9vQ7!mR2#xK8@pT4')),
+    ('http://localhost:3000/api/public/otel/v1/traces', ('admin@local.dev', 'Local-LF-9vQ7!mR2#xK8@pT4')),
+    ('http://127.0.0.1:3000/api/public/otel/v1/traces', ('admin@local.dev', 'Local-LF-9vQ7!mR2#xK8@pT4')),
     ('https://trace.example.invalid', (None, None)),
 ])
 def test_session_review_admin_defaults_follow_target_without_writes(tmp_path, mode, target, expected):
@@ -62,7 +67,7 @@ def test_session_review_admin_defaults_follow_target_without_writes(tmp_path, mo
         dotenv_path=tmp_path / '.env', external_pack=False,
         anchors={'base_root': tmp_path, 'pack_root': tmp_path, 'owner_root': tmp_path})
     session = ConfigSession(context, load_shared_schema(), environ={
-        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'TRACE_MODE': mode, 'TRACE_TARGET': target})
+        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': 'run-local', 'TRACE_MODE': mode, 'TRACE_EXPORT_ENDPOINT': target})
 
     result = session.result(_review=True)
 
@@ -103,7 +108,7 @@ def test_session_explicit_empty_admin_credentials_do_not_restore_defaults(tmp_pa
 def test_remote_test_mode_does_not_require_dashboard_login(mode, tmp_path):
     result = resolve_config(load_shared_schema(), environ={
         'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse',
-        'TRACE_TARGET': 'https://trace.example.invalid',
+        'TRACE_EXPORT_ENDPOINT': 'https://trace.example.invalid',
         'LANGFUSE_PUBLIC_KEY': 'synthetic-public', 'LANGFUSE_SECRET_KEY': 'synthetic-secret',
         'ALLURE_S3_BUCKET': 'synthetic-results', 'UI_SOURCE_DIR': '/example/frontend'},
         anchors={'owner_root': tmp_path})
@@ -129,13 +134,13 @@ def test_dashboard_provisioning_credentials_remain_dormant_when_inactive(env):
 
 
 MANAGED_LANGFUSE_TARGETS = (
-    'http://localhost:3000', 'http://127.0.0.1:3000',
-    'http://localhost:3000/', 'http://127.0.0.1:3000/',
+    'http://localhost:3000/api/public/otel/v1/traces',
+    'http://127.0.0.1:3000/api/public/otel/v1/traces',
 )
 CUSTOM_LANGFUSE_TARGETS = (
     'http://LOCALHOST:3000', 'HTTP://localhost:3000',
     'http://localhost:3000//', 'http://127.0.0.1:3000///',
-    'http://localhost:3000/?viewer=1', 'http://localhost:3001',
+    'http://localhost:3001',
 )
 LANGFUSE_CREDENTIAL_FIELDS = (
     'LANGFUSE_ADMIN_EMAIL', 'LANGFUSE_ADMIN_PASSWORD',
@@ -150,7 +155,7 @@ def test_managed_langfuse_defaults_declare_exact_profile_target_inventory():
         declaration = schema.fields[name]
         assert len(declaration.conditional_defaults) == 1
         assert declaration.conditional_defaults[0]['when'] == {
-            'TRACE_TARGET': list(MANAGED_LANGFUSE_TARGETS)}
+            'TRACE_EXPORT_ENDPOINT': list(MANAGED_LANGFUSE_TARGETS)}
 
 
 @pytest.mark.parametrize('mode', ['run-local', 'integration', 'e2e'])
@@ -158,12 +163,14 @@ def test_managed_langfuse_defaults_declare_exact_profile_target_inventory():
 def test_resolver_and_managed_langfuse_profiles_admit_same_targets(tmp_path, mode, target):
     from api_agent.runtime.compose import selected_profiles
     result = resolve_config(load_shared_schema(), environ={
-        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': target,
+        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'TRACE_EXPORT_ENDPOINT': target,
         'ALLURE_S3_BUCKET': 'synthetic-results', 'UI_SOURCE_DIR': '/example/frontend'},
         anchors={'owner_root': tmp_path}, interactive=True)
 
     assert not result.errors
-    assert selected_profiles(result.values) == (('langfuse',) if target in MANAGED_LANGFUSE_TARGETS else ())
+    from api_agent.telemetry.tracing_selection import effective_selection
+    selected = effective_selection(result, environ={})
+    assert selected_profiles(dict(selected.values)) == (('langfuse',) if target in MANAGED_LANGFUSE_TARGETS else ())
     assert all(name in result.values for name in LANGFUSE_CREDENTIAL_FIELDS) is (target in MANAGED_LANGFUSE_TARGETS)
 
 
@@ -174,12 +181,29 @@ def test_custom_langfuse_credentials_preserve_explicit_values_and_target(tmp_pat
     credentials = dict(zip(LANGFUSE_CREDENTIAL_FIELDS,
         ('operator@example.invalid', 'synthetic-password', 'synthetic-public', 'synthetic-secret')))
     result = resolve_config(load_shared_schema(), environ={
-        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'TRACE_TARGET': target,
+        'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse', 'TRACE_EXPORT_ENDPOINT': target,
         'ALLURE_S3_BUCKET': 'synthetic-results', 'UI_SOURCE_DIR': '/example/frontend', **credentials},
         anchors={'owner_root': tmp_path})
 
     assert not result.errors and not result.missing
-    assert result.values['TRACE_TARGET'] == target
+    assert result.values['TRACE_EXPORT_ENDPOINT'] == target
     assert {name: result.values[name] for name in credentials} == credentials
     assert all(result.fields[name].explicit for name in credentials)
-    assert selected_profiles(result.values) == (('langfuse',) if target in MANAGED_LANGFUSE_TARGETS else ())
+    from api_agent.telemetry.tracing_selection import effective_selection
+    selected = effective_selection(result, environ={})
+    assert selected_profiles(dict(selected.values)) == (('langfuse',) if target in MANAGED_LANGFUSE_TARGETS else ())
+
+
+def test_langfuse_export_endpoint_rejects_query_before_profile_selection(tmp_path):
+    from api_agent.telemetry.genai_metrics import MetricConfigurationError
+    from api_agent.telemetry.tracing_selection import effective_selection
+    result = resolve_config(load_shared_schema(), environ={
+        'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse',
+        'TRACE_EXPORT_ENDPOINT': 'http://localhost:3000/?viewer=1',
+        'LANGFUSE_ADMIN_EMAIL': 'operator@example.invalid',
+        'LANGFUSE_ADMIN_PASSWORD': 'synthetic-password',
+        'LANGFUSE_PUBLIC_KEY': 'synthetic-public',
+        'LANGFUSE_SECRET_KEY': 'synthetic-secret'}, anchors={'owner_root': tmp_path})
+
+    with pytest.raises(MetricConfigurationError):
+        effective_selection(result, environ={})

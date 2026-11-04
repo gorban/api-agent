@@ -611,3 +611,50 @@ def test_case(workflow_tools):
     assert len(recorded['attachments']) == 1
     content = json.loads((recorder.directory / recorded['attachments'][0]['source']).read_text())
     assert content == report
+
+
+@pytest.mark.parametrize('custom', [False, True])
+@pytest.mark.parametrize('managed_tools', [False, True])
+def test_normal_resolved_tracing_never_becomes_tool_infrastructure(packet,monkeypatch,custom,managed_tools):
+    from unittest.mock import Mock
+    from api_agent.config import load_shared_schema
+    from api_agent.providers.loading import bootstrap_schema
+    from api_agent.runtime import reporting_engine
+    base = Path(__file__).resolve().parents[2]
+    environment = {'TRACE_MODE':''}
+    if custom:
+        factory = write(packet.root,'custom-trace/provider.py', 'raise AssertionError("tracing factory must stay lazy")\n')
+        write(packet.root,'custom-trace/tracing-provider.toml','version=1\nid="custom-trace"\nsignals=["traces"]\nendpoint_field="CUSTOM_TRACE_URL"\n')
+        write(packet.root,'custom-trace/cfg/config.toml','version=1\n[fields.CUSTOM_TRACE_URL]\ntype="str"\ndefault="https://collector.example/v1/traces"\n')
+        environment={'TRACE_PROVIDER':str(factory)+':create_tracing_provider'}
+    schema=bootstrap_schema(load_shared_schema(base),(),environment,{},owner_root=packet.root)
+    resolved=resolve_config(schema,environ=environment,dotenv={},anchors={'base_root':base,'owner_root':packet.root},interactive=True)
+    assert not resolved.errors
+    assert resolved.values['TRACE_PROVIDER']
+    if managed_tools:
+        managed_packet(packet)
+    packet.data['config']={**resolved.values,**packet.data['config']}
+    packet.data=json.loads(json.dumps(packet.data,default=str))
+    packet.path.write_text(json.dumps(packet.data))
+    forbidden=Mock(side_effect=AssertionError('tool runtime consulted tracing provider or collector'))
+    monkeypatch.setattr('api_agent.telemetry.tracing_selection.read_declaration',forbidden)
+    monkeypatch.setattr('api_agent.telemetry.tracing_providers.admit_binding',forbidden)
+    transports=[]
+    monkeypatch.setattr(reporting_engine,'verified_engine_binding',lambda env:transports.append(env) or ('engine','unix:///run/synthetic/engine.sock'))
+    events=[]
+    factory,managers=manager_factory(events)
+    plans=[]
+    def captured_manager(plan,*args,**kwargs):
+        plans.append(plan)
+        return factory(plan,*args,**kwargs)
+    prepared=owner(packet,manager_factory=captured_manager)
+    async def scenario():
+        async with prepared.open(prepared.definition) as operation:
+            assert await operation.tools.for_port(scope_kind='node',scope='read',port='reader').invoke(None)=='one'
+            assert operation.receipt['service_count']==(2 if managed_tools else 0)
+            assert not set(plans[0].profiles) & {'otel','langfuse'}
+        assert operation.receipt['released'] is True
+        await prepared.aclose()
+    prepared.run(scenario())
+    assert len(transports)==(1 if managed_tools else 0)
+    forbidden.assert_not_called()

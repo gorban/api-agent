@@ -81,6 +81,15 @@ class GPTProvider:
     inference_timeout = 120
     capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"))
 
+    @property
+    def telemetry_provider_name(self):
+        """Declare only exact provider-owned public routes; compatible routes vary."""
+        if self.auth_mode == 'subscription' or self.base_url == 'https://api.openai.com/v1':
+            return 'openai'
+        if self.base_url == 'https://openrouter.ai/api/v1':
+            return 'openrouter'
+        return None
+
     def __init__(self, config, *, inspection=None, emissions=None):
         self.inspection = inspection
         self._reasoning_catalog = {}

@@ -97,16 +97,44 @@ class RetainedStudio:
         started = datetime.now(timezone.utc).isoformat()
         self._record(request, call_id, started)
         result = error = None
+        import time
+        from api_agent.providers.generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger, attach_transport_attempts
+        quote_interruptions = []
+        def attempt_quote(observed):
+            from api_agent.providers.llm import LLMResult
+            if not isinstance(observed, LLMResult):
+                return None
+            try:
+                return provider.emissions.content_export(
+                    quote_cost(provider.provider.implementation, request, observed))
+            except BaseException as interruption:
+                if not isinstance(interruption, Exception):
+                    quote_interruptions.append(interruption)
+                raise
+        def safe_quote(observed):
+            try:
+                return attempt_quote(observed)
+            except BaseException as interruption:
+                if isinstance(interruption, Exception):
+                    raise
+                return None
+        ledger = TransportAttemptLedger(provider.config.get('LLM_MAX_ATTEMPTS', 5), quote=safe_quote)
+        clock_started = time.monotonic()
         try:
-            result = await provider._complete(request)
+            with bind_transport_attempt_ledger(ledger):
+                result = await provider._complete(request)
+            result = attach_transport_attempts(result, ledger.snapshot())
+            if quote_interruptions:
+                raise quote_interruptions[0]
             return result
         except BaseException as failure:
             error = failure
             raise
         finally:
-            self._record(request, call_id, started, result=result, error=error, finished=True)
+            self._record(request, call_id, started, result=result, error=error, finished=True,
+                         transport_attempts=ledger.snapshot(), elapsed=time.monotonic()-clock_started)
 
-    def _record(self, request, call_id, started, *, result=None, error=None, finished=False):
+    def _record(self, request, call_id, started, *, result=None, error=None, finished=False, transport_attempts=None, elapsed=None):
         reported = error.usage if isinstance(error, ProviderAccessError) else None
         usage = result.usage if result is not None else reported
         row = dict(call_id=call_id, selection=request.selected_llm,
@@ -114,6 +142,8 @@ class RetainedStudio:
             started_at=started, finished_at=datetime.now(timezone.utc).isoformat() if finished else None,
             attempt=1, turn_id=call_id, turn_kind='initial',
             outcome=result.outcome if result is not None else 'failed' if finished else 'unknown')
+        if transport_attempts is not None:
+            row['transport_attempts'] = transport_attempts
         effort = request.payload.generation.reasoning_effort
         if effort is not None:
             row['reasoning_effort'] = effort or None
@@ -122,7 +152,9 @@ class RetainedStudio:
                 if getattr(result, name) is not None:
                     row[name] = getattr(result, name)
         try:
-            if result is not None:
+            if result is not None and transport_attempts is not None and transport_attempts['attempts']:
+                row['quote'] = transport_attempts['attempts'][-1]['quote']
+            elif result is not None:
                 try:
                     quote = self.manual.emissions.content_export(
                         quote_cost(self.manual.provider.implementation, request, result))
@@ -134,6 +166,15 @@ class RetainedStudio:
         finally:
             # Even an interrupted quote must retain terminal outcome and usage.
             capture(SimpleNamespace(text=json.dumps(row, allow_nan=False), identity=self.identity), self.usage)
+            if finished:
+                from api_agent.workflows.attribution import current_workflow_visit
+                visit = current_workflow_visit()
+                if visit is not None:
+                    journal, visit_id, attempt_id = visit
+                    journal.record_call(call_id=call_id, visit_id=visit_id, attempt_id=attempt_id,
+                        elapsed=elapsed, selection=request.selected_llm, usage=row['usage'],
+                        outcome=row['outcome'], actual_model=row.get('actual_model'),
+                        reasoning_effort=row.get('reasoning_effort'), transport_attempts=transport_attempts)
 
     async def aclose(self):
         self.phase = 'closed'

@@ -33,7 +33,10 @@ usage and credential-protection contracts.
 - [x] Verify Studio admission with medium caching and an explicit output ceiling.
 - [x] Close causal regression, exact applicable unit line/branch coverage, package,
   public-boundary and independent/external review before publication.
-- [ ] Human acceptance of the selected model controls and cache behavior.
+- [x] Human acceptance of GPT-5.6 family effort selectors and Sol 6.1 no-Off
+  controls on November 3, 2026. This does not infer additional native-route qualification.
+- [x] Human acceptance of Terra 6.1 Medium and High cache presets on November 3,
+  2026. This does not establish retention lifetime or qualify other model routes.
 
 Contracts: [OpenRouter model catalog](https://openrouter.ai/api/v1/models),
 [reasoning](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens),

@@ -49,6 +49,7 @@ def cost_config(context, config):
             result['_COST_PROVIDER_IDENTITY'] = sha256((fingerprint + ':' + factory).encode()).hexdigest()
     try:
         from api_agent.config.declarations import load_shared_schema, load_declarations, compose_schema
+        from api_agent.runtime.pack_admission import configuration_inputs
         from api_agent.providers.loading import bootstrap_schema
         from api_agent.config.resolve import _matches
         from api_agent.telemetry.privacy import _credential_key
@@ -61,7 +62,7 @@ def cost_config(context, config):
                                     getattr(context, 'default_overrides', {}))
         choices = {name: value for name, value in config.items() if not name.startswith('_')}
         schema = bootstrap_schema(schema, (), {}, {}, choices, owner_root=context.owner_root,
-                                  configuration_paths=getattr(context, 'provider_config_paths', ()))
+                                  configuration_paths=getattr(context, 'provider_config_paths', ()), **configuration_inputs(context))
         selected = {}
         ignored = tuple(name for name, field in schema.fields.items() if not field.cost_affecting)
         for name, field in schema.fields.items():

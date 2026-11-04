@@ -11,10 +11,11 @@ from api_agent.providers.control import CleanupPendingError
 from api_agent.runtime.local_run import LocalRunOwner
 from api_agent.runtime.operation import OperationCleanup
 from api_agent.telemetry.tracing import TraceDeliveryError, TraceError, TraceRuntime, TRACE_DELIVERY_WARNING
+from test_workflow_observations import config as trace_config
 
 
 def tracing(provider):
-    config = SimpleNamespace(errors=(), missing=(), values={'TRACE_MODE': 'OTEL'})
+    config = trace_config()
     return TraceRuntime(config, factory=lambda *args: (provider, Mock()))
 
 
@@ -363,7 +364,7 @@ def test_closed_flush_remains_false_while_successful_export_awaits_shutdown_ackn
 def test_closed_disabled_tracing_flush_is_inert_success_without_factory_calls():
     async def exercise():
         factory = Mock()
-        config = SimpleNamespace(errors=(), missing=(), values={'TRACE_MODE': ''})
+        config = trace_config(mode='')
         trace = TraceRuntime(config, factory=factory)
         await trace.astart()
         assert await trace.aclose()
