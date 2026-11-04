@@ -31,7 +31,7 @@ from uuid import uuid4
 
 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment, snapshot_compose
 from api_agent.runtime.ownership import PROFILES
-from api_agent.testing.processes import disposal_complete, finalize
+from api_agent.testing.processes import disposal_complete, finalize, observe_exit, wait_owned
 
 CONFIG_LABEL = 'api-agent.config'
 _ID = re.compile(r'[0-9a-f]{64}')
@@ -141,6 +141,7 @@ def run_command(command, *, environment, directory, deadline, cancelled,
     captured = {'stdout': bytearray(), 'stderr': bytearray()}
     totals = {'stdout': 0, 'stderr': 0}
     process = None
+    observed_exit_code = None
 
     def evidence():
         from api_agent.testing.diagnostics import CredentialScrubber, scrub_command
@@ -153,6 +154,8 @@ def run_command(command, *, environment, directory, deadline, cancelled,
         if omitted:
             command_text += f' [truncated: {omitted} command characters omitted]'
         status = process.returncode if process is not None else None
+        if status is None:
+            status = observed_exit_code
         lines = [f'Command: {command_text}', f'Exit code: {status if status is not None else "unavailable"}']
         for stream in ('stdout', 'stderr'):
             # Keep the complete bounded capture until scrubbing so a registered
@@ -182,12 +185,12 @@ def run_command(command, *, environment, directory, deadline, cancelled,
     stdout, size = [], 0
     primary_error = None
     try:
-        while selector.get_map() or process.poll() is None:
+        while selector.get_map() or observe_exit(process) is None:
             _check(deadline, cancelled, now)
             timeout = min(.1, max(.001, deadline - now()))
             if not selector.get_map():
                 try:
-                    process.wait(timeout=timeout)
+                    wait_owned(process, timeout=timeout)
                 except subprocess.TimeoutExpired:
                     continue
             for key, _ in selector.select(timeout):
@@ -202,8 +205,9 @@ def run_command(command, *, environment, directory, deadline, cancelled,
                     raise PrerequisiteError('Prerequisite command response exceeds the safe bound.')
                 if key.data == 'stdout':
                     stdout.append(chunk)
-        if process.returncode:
-            raise PrerequisiteError(f'Prerequisite command failed (exit {process.returncode}).')
+        exit_code = observed_exit_code = observe_exit(process)
+        if exit_code:
+            raise PrerequisiteError(f'Prerequisite command failed (exit {exit_code}).')
         if combine_output:
             from api_agent.testing.diagnostics import CredentialScrubber
             scrubber = output_scrubber if output_scrubber is not None else CredentialScrubber(environment)

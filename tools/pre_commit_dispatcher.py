@@ -36,6 +36,20 @@ def _kill_group(group):
         os.killpg(group, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Both callers retain the owned leader with WNOWAIT. The hook is
+        # self-contained, so inspect trusted system ps without repository imports.
+        report = subprocess.run(['/bin/ps', '-axo', 'pid=,pgid=,stat='],
+                                capture_output=True, text=True, check=True, timeout=1)
+        members = []
+        for line in report.stdout.splitlines():
+            member, pgid, state = line.split()
+            if int(pgid) == group:
+                members.append((int(member), state))
+        if not any(member == group and state.startswith('Z') for member, state in members):
+            raise
+        if any(not state.startswith('Z') for _, state in members):
+            raise
 
 
 def _finish(process, deadline):

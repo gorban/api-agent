@@ -1,4 +1,5 @@
 """Worker inspection control. Only lifecycle facts cross the process boundary."""
+from api_agent.testing.processes import observe_exit
 import json
 import os
 from pathlib import Path
@@ -122,7 +123,7 @@ class IntegrationInspection(CleanupLeaseOwner):
             with self._lock:
                 if self.closed:
                     return
-                if self.process.poll() is not None:
+                if observe_exit(self.process) is not None:
                     rows = self._rows()
                     acknowledged = (any(row.get('kind') == 'inspection_closed' for row in rows)
                                     and not any(row.get('kind') == 'inspection_lost' for row in rows))
@@ -147,7 +148,7 @@ class IntegrationInspection(CleanupLeaseOwner):
                 self._acknowledge_closed()
                 self.pending = False
                 return True
-            if self.process.poll() is not None:
+            if observe_exit(self.process) is not None:
                 rows = self._rows()
                 acknowledged = (any(row.get('kind') == 'inspection_closed' for row in rows)
                                 and not any(row.get('kind') == 'inspection_lost' for row in rows))

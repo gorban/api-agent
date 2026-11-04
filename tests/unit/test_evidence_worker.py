@@ -3,6 +3,7 @@ import json
 import threading
 
 import pytest
+from api_agent.providers import evidence_watchdog
 
 from api_agent.providers.setup_transport import MAX_EVIDENCE_BYTES, SetupServer, _EvidenceReceiver
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
@@ -94,13 +95,13 @@ def test_isolated_projection_preserves_large_capture_and_overlapping_secret():
 
 def test_cancelled_projection_kills_and_reaps_owned_process(monkeypatch):
     async def scenario():
-        original = asyncio.create_subprocess_exec
+        original = evidence_watchdog.spawn
         created = []
         async def hanging(executable, *_args, **kwargs):
             process = await original(executable, '-c', 'import time; time.sleep(30)', **kwargs)
             created.append(process)
             return process
-        monkeypatch.setattr(asyncio, 'create_subprocess_exec', hanging)
+        monkeypatch.setattr(evidence_watchdog, 'spawn', hanging)
         projection = EmissionBoundary(ContentPolicy(True), secrets=('synthetic-secret',))
         task = asyncio.create_task(SetupServer._prepare_isolated(
             [dict(phase='request', content={'text': 'hello'}, reason='captured')], projection))
@@ -132,7 +133,7 @@ def test_isolated_projection_preserves_structured_carrier_redaction():
 
 def test_cancellation_during_spawn_still_reaps_child(monkeypatch):
     async def scenario():
-        original = asyncio.create_subprocess_exec
+        original = evidence_watchdog.spawn
         started = asyncio.Event()
         allow_return = asyncio.Event()
         created = []
@@ -142,7 +143,7 @@ def test_cancellation_during_spawn_still_reaps_child(monkeypatch):
             started.set()
             await allow_return.wait()
             return process
-        monkeypatch.setattr(asyncio, 'create_subprocess_exec', delayed)
+        monkeypatch.setattr(evidence_watchdog, 'spawn', delayed)
         projection = EmissionBoundary(ContentPolicy(True))
         task = asyncio.create_task(SetupServer._prepare_isolated([], projection))
         await started.wait()
@@ -274,7 +275,7 @@ def test_cancelled_spawn_kills_descendant_after_leader_exits(monkeypatch):
     import sys
 
     async def scenario():
-        original = asyncio.create_subprocess_exec
+        original = evidence_watchdog.spawn
         entered = asyncio.Event()
         release = asyncio.Event()
         children = []
@@ -285,13 +286,14 @@ def test_cancelled_spawn_kills_descendant_after_leader_exits(monkeypatch):
                     'sys.exit(0)')
             process = await original(executable, '-c', code, **kwargs)
             children.append(process)
-            while process.returncode is None:
+            from api_agent.testing.processes import observe_exit
+            while observe_exit(process.process) is None:
                 await asyncio.sleep(.01)
             entered.set()
             await release.wait()
             return process
 
-        monkeypatch.setattr(asyncio, 'create_subprocess_exec', delayed)
+        monkeypatch.setattr(evidence_watchdog, 'spawn', delayed)
         projection = EmissionBoundary(ContentPolicy(True))
         task = asyncio.create_task(SetupServer._prepare_isolated([], projection))
         await asyncio.wait_for(entered.wait(), 5)
@@ -302,12 +304,6 @@ def test_cancelled_spawn_kills_descendant_after_leader_exits(monkeypatch):
         except asyncio.CancelledError:
             pass
         assert children[0].returncode == 0
-        try:
-            os.killpg(children[0].pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            # A killed descendant may briefly remain as an unreaped zombie;
-            # its held stdout pipe must nevertheless be closed.
-            assert await asyncio.wait_for(children[0].stdout.read(), 2) == b''
+        from api_agent.testing.processes import disposal_complete
+        assert disposal_complete(children[0].process)
     asyncio.run(scenario())

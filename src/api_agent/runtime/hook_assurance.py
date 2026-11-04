@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 MARKER = '# api-agent managed pre-commit dispatcher v1'
-DISPATCHER_SHA256 = 'cededf3fd6d38156a5a868987591f7f24154be3dc6c2144e81ce2186b39f9f2b'
+DISPATCHER_SHA256 = 'ee8a6311873df766ed3091e548c8b6aa7c12b4ab8109514fa99bebf5738623e8'
 MAX_DISPATCHER_BYTES = 1024 * 1024
 
 

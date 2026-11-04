@@ -415,7 +415,10 @@ def test_active_lease_on_one_engine_does_not_protect_identical_id_on_other(bound
     record = {**engine.records[identifier], 'Name': '/service'}
     monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
     seen = []
+    original_run = __import__('subprocess').run
     def run(command, **options):
+        if command[0] != target.executable:
+            return original_run(command, **options)
         seen.append((command[1], options['env']['DOCKER_HOST']))
         return SimpleNamespace(returncode=0, stdout=json.dumps([record]) if command[1] == 'inspect' else '')
     monkeypatch.setattr('api_agent.runtime.containers.subprocess.run', run)
@@ -460,7 +463,12 @@ def test_same_binding_execution_variants_share_active_lease_exclusion(bound_mana
     monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
     dispatch = Mock(return_value=SimpleNamespace(returncode=0, stdout=json.dumps([
         {**engine.records[identifier], 'Name': '/service'}])))
-    monkeypatch.setattr('api_agent.runtime.containers.subprocess.run', dispatch)
+    original_run = __import__('subprocess').run
+    def selected_run(command, **options):
+        if command[0] == variant.executable:
+            return dispatch(command, **options)
+        return original_run(command, **options)
+    monkeypatch.setattr('api_agent.runtime.containers.subprocess.run', selected_run)
     with pytest.raises(ContainerError, match='active invocation'):
         recovered.stop((identifier,))
     dispatch.assert_not_called()

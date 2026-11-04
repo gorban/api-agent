@@ -197,9 +197,24 @@ def test_install_failure_does_not_forward_arbitrary_output(fake_mise, monkeypatc
 def test_timeout_drains_installer(fake_mise, monkeypatch, tmp_path):
     marker = tmp_path / 'waiting'
     monkeypatch.setenv('TOOL_MISE_WAIT', str(marker))
+    from api_agent.providers import progress
+    import time
+    started = None
+    startup = time.monotonic()
+    def clock():
+        nonlocal started
+        now = time.monotonic()
+        if marker.exists() and started is None:
+            started = now
+        # Bound startup separately; the short work deadline begins at readiness.
+        if started is None and now - startup > 10:
+            raise AssertionError('Synthetic installer did not become ready')
+        return 0 if started is None else now - started
+    monkeypatch.setattr(progress, '_clock', clock)
     with pytest.raises(TimeoutError, match='timed out'):
         e.prepare_environment({'core:rust': '1.90.0'}, timeout=.3)
     assert marker.exists()
+    assert started is not None
 
 
 def test_async_preparation_deduplicates_per_tool_not_globally(monkeypatch):

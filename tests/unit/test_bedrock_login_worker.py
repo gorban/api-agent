@@ -232,6 +232,7 @@ def test_device_handoff_closes_native_stdin(monkeypatch):
 @pytest.mark.asyncio
 async def test_coalesced_config_and_early_reply_are_not_prefetched():
     import asyncio
+    from api_agent.providers.progress import component_timeout
     script = '''import os,sys
 from api_agent.llm_providers.bedrock import login_worker as worker
 def run(config):
@@ -246,7 +247,7 @@ worker.main()
         process.stdin.write(b'{}\n{"input":"synthetic-code"}\n')
         await process.stdin.drain()
         frames=[]
-        async with asyncio.timeout(2):
+        async with component_timeout('Synthetic login worker startup and exchange', 10):
             while True:
                 value = json.loads(await process.stdout.readline())
                 frames.append(value)

@@ -932,7 +932,11 @@ class SetupServer(_Owner):
             raise
         if os.name != 'posix' or sys.platform not in ('linux', 'darwin'):
             raise ContractError('Evidence projection platform unavailable')
-        starting = asyncio.create_task(asyncio.create_subprocess_exec(
+        from . import evidence_watchdog
+        async def dispose_projection(process):
+            await process.dispose()
+
+        starting = asyncio.create_task(evidence_watchdog.spawn(
             sys.executable, '-m', 'api_agent.providers.evidence_worker',
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=(os.name == 'posix'),
@@ -944,12 +948,8 @@ class SetupServer(_Owner):
             # Spawn owns a child even if its waiter is cancelled mid-creation.
             from api_agent.runtime.tasks import settle
             process = await settle(starting)
-            import signal
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            await settle(asyncio.create_task(process.wait()))
+            from .control import finish_cleanup
+            await finish_cleanup(dispose_projection(process))
             raise
         try:
             from . import evidence_watchdog
@@ -967,13 +967,8 @@ class SetupServer(_Owner):
                 result.append((tuple(item[0]), item[1], item[2].encode('utf-8')))
             return result
         finally:
-            import signal
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            from api_agent.runtime.tasks import settle
-            await settle(asyncio.create_task(process.wait()))
+            from .control import finish_cleanup
+            await finish_cleanup(dispose_projection(process))
 
     async def _publish_evidence(self, peer, rows, boundary=None, *, raw=False, destination=None):
         # A cancelled waiter cannot release a slot while its thread still runs.

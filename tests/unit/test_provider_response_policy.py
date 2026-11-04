@@ -785,6 +785,23 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
     from api_agent.providers.inference import error_usage
     from api_agent.providers.llm import Usage
     from api_agent.workflows.inference_capture import bind_response_dispatch
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from api_agent.providers import progress
+    timers = []
+    original_timeout = asyncio.timeout
+    @asynccontextmanager
+    async def fixture_timeout(delay):
+        async with original_timeout(delay) as timer:
+            timers.append(timer)
+            try:
+                yield timer
+            finally:
+                timers.remove(timer)
+    proxy = SimpleNamespace(**vars(asyncio))
+    proxy.timeout = fixture_timeout
+    monkeypatch.setattr(progress, 'asyncio', proxy)
+    armed = []
     usage = Usage(3, 2) if reported else None
     closed = []
     started = []
@@ -792,6 +809,9 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
         if 'on_dispatch' in kwargs:
             kwargs['on_dispatch']()
         started.append(True)
+        assert timers
+        timers[-1].reschedule(asyncio.get_running_loop().time() + .02)
+        armed.append(True)
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError as error:
@@ -808,7 +828,7 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
         with (bind_response_dispatch() if bound else nullcontext(None)) as dispatch:
             if provider == 'gpt':
                 from api_agent.llm_providers.gpt import inference
-                monkeypatch.setattr(inference, '_TIMEOUT', 0.02)
+                monkeypatch.setattr(inference, '_TIMEOUT', 120)
                 async with httpx.AsyncClient(transport=httpx.MockTransport(stall)) as client:
                     with pytest.raises(ProviderAccessError) as caught:
                         await inference.complete_text(client=client, base_url=BASE, access_token='synthetic-token',
@@ -818,7 +838,7 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
                 from api_agent.llm_providers.bedrock import factory as module
                 monkeypatch.setattr(module, 'SDKTransport', lambda **kw: SimpleNamespace(call=stall, stream=stream))
                 implementation = module.factory({'BEDROCK_API_MODE': 'completions', 'BEDROCK_ENDPOINT': 'mantle'}, {})
-                implementation.inference_timeout = 0.02
+                implementation.inference_timeout = 120
                 with pytest.raises(TimeoutError) as caught:
                     req = request('json', model='zai.glm-5')
                     if provider == 'bedrock_stream':
@@ -830,5 +850,9 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
             if dispatch is not None:
                 assert dispatch['usage'] == usage
                 assert dispatch['response'].actual_mode == ('json' if provider == 'gpt' else 'prompted_json')
-    asyncio.run(run())
+    async def bounded():
+        async with original_timeout(10):
+            await run()
+    asyncio.run(bounded())
+    assert armed == [True]
     assert started == [True] and closed == [True]

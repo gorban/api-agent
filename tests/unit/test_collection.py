@@ -20,6 +20,13 @@ def suite(root, name='unit'):
     return path
 
 
+def assert_process_stopped(pid):
+    report = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'state='],
+                            capture_output=True, text=True, timeout=5)
+    assert report.returncode in (0, 1)
+    assert all(state.startswith('Z') for state in report.stdout.split())
+
+
 def test_real_collection_combines_deduplicates_and_never_executes(tmp_path):
     base, pack = tmp_path / 'base', tmp_path / 'pack'
     units = suite(base)
@@ -157,8 +164,7 @@ def test_successful_collection_reaps_child_with_closed_output(tmp_path):
         'def test_one(): pass\n'
     )
     assert len(collect_tests(context(tmp_path), 'unit')) == 1
-    stat = Path('/proc') / pid_file.read_text() / 'stat'
-    assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+    assert_process_stopped(int(pid_file.read_text()))
 
 
 def test_successful_collection_reaps_child_holding_output_pipe(tmp_path):
@@ -177,8 +183,7 @@ def test_successful_collection_reaps_child_holding_output_pipe(tmp_path):
     start = time.monotonic()
     assert len(collect_tests(context(tmp_path), 'unit')) == 1
     assert time.monotonic() - start < 5
-    stat = Path('/proc') / pid_file.read_text() / 'stat'
-    assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+    assert_process_stopped(int(pid_file.read_text()))
 
 
 def test_finished_collector_leader_does_not_wait_for_inherited_pipe(tmp_path):
@@ -197,8 +202,7 @@ def test_finished_collector_leader_does_not_wait_for_inherited_pipe(tmp_path):
     result = _run_collection([sys.executable, '-c', source], tmp_path, os.environ.copy(), 'repo', None)
     assert result.returncode == 0 and result.stdout.strip() == 'collected'
     assert time.monotonic() - start < 5
-    stat = Path('/proc') / marker.read_text() / 'stat'
-    assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+    assert_process_stopped(int(marker.read_text()))
 
 
 def test_precancel_does_not_spawn_and_timeout_reaps(tmp_path, monkeypatch):
@@ -270,3 +274,59 @@ def test_collector_implicit_roots_keep_unique_effective_repository_labels(tmp_pa
     assert collection.repository_label(context(base), base) == ('api-agent' if installed else base.name)
     other = tmp_path / 'provider'; other.mkdir()
     assert collection.repository_label(context(base, owner), other) == ('pack' if base_name == owner_name else other.name)
+
+
+def test_cancellation_arriving_during_spawn_disposes_before_exchange(tmp_path, monkeypatch):
+    import os
+    import sys
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from api_agent.testing import collection, processes
+    cancel = threading.Event()
+    original = subprocess.Popen
+    children = []
+    def spawn(*args, **kwargs):
+        child = original(*args, **kwargs)
+        children.append(child)
+        cancel.set()
+        return child
+    monkeypatch.setattr(collection, 'subprocess', SimpleNamespace(**(vars(subprocess) | {'Popen': spawn})))
+    exchange = Mock(side_effect=AssertionError('cancelled collector entered exchange'))
+    monkeypatch.setattr(collection, 'communicate_owned', exchange)
+    try:
+        with pytest.raises(CollectionError, match='cancelled'):
+            collection._run_collection([sys.executable, '-c', 'import time; time.sleep(30)'],
+                tmp_path, os.environ.copy(), 'sample', cancel)
+        exchange.assert_not_called()
+        assert len(children) == 1 and processes.disposal_complete(children[0])
+    finally:
+        for child in children:
+            processes.finalize(child)
+
+
+def test_expired_collection_budget_disposes_before_exchange(tmp_path, monkeypatch):
+    import os
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from api_agent.testing import collection, processes
+    original = subprocess.Popen
+    children = []
+    def spawn(*args, **kwargs):
+        child = original(*args, **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(collection, 'subprocess', SimpleNamespace(**(vars(subprocess) | {'Popen': spawn})))
+    monkeypatch.setattr(collection, 'time', SimpleNamespace(monotonic=Mock(side_effect=[0, 1])))
+    exchange = Mock(side_effect=AssertionError('expired collector entered exchange'))
+    monkeypatch.setattr(collection, 'communicate_owned', exchange)
+    try:
+        with pytest.raises(CollectionError, match='exceeded'):
+            collection._run_collection([sys.executable, '-c', 'import time; time.sleep(30)'],
+                tmp_path, os.environ.copy(), 'sample', None, timeout=.5)
+        exchange.assert_not_called()
+        assert len(children) == 1 and processes.disposal_complete(children[0])
+    finally:
+        for child in children:
+            processes.finalize(child)

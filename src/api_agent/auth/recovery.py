@@ -81,9 +81,15 @@ def _invocation(argv, channel, deadline, *, login_only=False):
             if remaining is not None and remaining <= 0:
                 raise CredentialError('Password manager recovery deadline expired.')
             interval = .05 if remaining is None else min(.05, remaining)
-            for key, _ in selector.select(interval):
+            selector.select(interval)
+            # Terminal/pipe readiness notifications are advisory. Sweep the
+            # two nonblocking streams so a missed hangup or data event cannot
+            # strand a prompt, private output, or EOF until the deadline.
+            for key in tuple(selector.get_map().values()):
                 try:
                     chunk = os.read(key.fd, 4096)
+                except BlockingIOError:
+                    continue
                 except OSError as error:
                     if error.errno != errno.EIO:
                         raise
@@ -146,6 +152,8 @@ def _invocation(argv, channel, deadline, *, login_only=False):
         except ProcessLookupError:
             pass
         code = process.wait()
+        if deadline is not None and time.monotonic() >= deadline:
+            raise CredentialError('Password manager recovery deadline expired.')
         if code:
             if input_ended:
                 raise CredentialError('Password manager recovery input ended; log into the CLI and retry.')

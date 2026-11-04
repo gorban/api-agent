@@ -1068,7 +1068,11 @@ async def test_native_window_is_bounded_and_archive_still_lists_older_launches(t
             assert all(row['run_id'] in archive.text for row in rows)
             route = next(route for route, binding in owner._history_routes.items()
                          if binding[1]['run_id'] == rows[0]['run_id'])
-            previous = await client.get(f'http://127.0.0.1:{port}' + route)
+            # This route generates a report before redirecting. The client's
+            # default five-second socket idle limit is not a generation budget.
+            async with viewer.report_timeout('Synthetic archived report request', 15) as budget:
+                previous = await client.get(f'http://127.0.0.1:{port}' + route,
+                                            timeout=budget.remaining)
             assert previous.status_code == 302
             assert rows[0]['run_id'] in previous.headers['Location']
         older = SimpleNamespace(url=previous.headers['Location'])

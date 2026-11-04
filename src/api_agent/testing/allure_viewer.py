@@ -25,7 +25,7 @@ from api_agent.runtime.managed_browser import managed_browser
 from api_agent.runtime.tasks import offload
 from .allure_source import (PreviewSnapshot, RunSource, ViewerError, validate_manifest,
                             verified_files)
-from .processes import finalize
+from .processes import finalize, wait_owned
 from .storage import RunStorage
 
 HISTORY_LAUNCHES = 20
@@ -202,9 +202,9 @@ class ManagedAllureViewer:
                     raise ViewerError('Allure could not start; install Allure 2 and check Java on PATH') from None
                 self._processes.append(process)
                 try:
-                    await asyncio.to_thread(process.wait, timeout=budget.remaining)
-                    if process.returncode != 0:
-                        raise ViewerError(f'Allure command failed (exit {process.returncode}); check ALLURE_CLI, its host PATH and Java installation')
+                    code = await asyncio.to_thread(wait_owned, process, timeout=budget.remaining)
+                    if code != 0:
+                        raise ViewerError(f'Allure command failed (exit {code}); check ALLURE_CLI, its host PATH and Java installation')
                     output.seek(0)
                     return output.read(4096).decode('utf-8', errors='replace').strip()
                 except subprocess.TimeoutExpired:

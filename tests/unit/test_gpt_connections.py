@@ -438,11 +438,37 @@ def test_ancestor_symlink(tmp_path, record):
     assert saved.load(key) == record
 
 
+def tracked_connection_fds(monkeypatch):
+    """Track this store's actual descriptors without a platform proc filesystem."""
+    from api_agent.llm_providers.gpt import connections
+    opened = set()
+    original_open, original_close = os.open, os.close
+    def open_fd(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        opened.add(fd)
+        return fd
+    def close_fd(fd):
+        original_close(fd)
+        opened.discard(fd)
+    provider_os = SimpleNamespace(**vars(os))
+    provider_os.open, provider_os.close = open_fd, close_fd
+    monkeypatch.setattr(connections, 'os', provider_os)
+    return provider_os, opened
+
+
+def assert_connection_fds_closed(opened):
+    import errno
+    for fd in opened:
+        with pytest.raises(OSError) as failure:
+            os.fstat(fd)
+        assert failure.value.errno == errno.EBADF
+
+
 @pytest.mark.parametrize('which', ['directory', 'file'])
 def test_fstat_failure_closes(store, record, monkeypatch, which):
     from api_agent.llm_providers.gpt import connections
     key = store.save(record)
-    count = len(os.listdir('/proc/self/fd'))
+    provider_os, opened = tracked_connection_fds(monkeypatch)
     original = os.fstat
     failures = []
     def fail(fd):
@@ -451,7 +477,6 @@ def test_fstat_failure_closes(store, record, monkeypatch, which):
             failures.append(fd)
             raise OSError('failure')
         return info
-    provider_os = SimpleNamespace(**vars(os))
     provider_os.fstat = fail
     monkeypatch.setattr(connections, 'os', provider_os)
     for _ in range(5):
@@ -459,7 +484,7 @@ def test_fstat_failure_closes(store, record, monkeypatch, which):
             store.load(key)
     assert len(failures) == 5
     assert os.fstat is original
-    assert len(os.listdir('/proc/self/fd')) == count
+    assert_connection_fds_closed(opened)
 
 
 def test_cancel_disposal_retains_acquisition(store, record):
@@ -489,17 +514,17 @@ def test_cancel_disposal_retains_acquisition(store, record):
 @pytest.mark.parametrize('rotation_fails', [False, True])
 def test_cleanup_fault_closes_directory(store, record, monkeypatch, rotation_fails):
     key = store.save(record)
-    before = len(os.listdir('/proc/self/fd'))
+    provider_os, opened = tracked_connection_fds(monkeypatch)
     def unlink_fault(*args, **kwargs):
         raise OSError('private cleanup failure')
-    monkeypatch.setattr(os, 'unlink', unlink_fault)
+    monkeypatch.setattr(provider_os, 'unlink', unlink_fault)
     if rotation_fails:
         def replace_fault(*args, **kwargs):
             raise OSError('private replacement failure')
-        monkeypatch.setattr(os, 'replace', replace_fault)
+        monkeypatch.setattr(provider_os, 'replace', replace_fault)
     with pytest.raises(AuthError, match='^invalid_connection$'):
         store.save(replace(record, access_token='next'))
-    assert len(os.listdir('/proc/self/fd')) == before
+    assert_connection_fds_closed(opened)
     assert store.load(key) == (record if rotation_fails else replace(record, access_token='next'))
     if rotation_fails:
         assert len(tuple(store.root.glob('.*'))) == 1

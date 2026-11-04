@@ -424,3 +424,67 @@ def test_head_check_bounds_committed_diagram_before_read(tmp_path, monkeypatch):
         return original(command, *args, **kwargs)
     monkeypatch.setattr(checks.subprocess, 'run', observed)
     assert checks.check_head(root) is True
+
+
+def test_hook_group_permission_accepts_only_reserved_zombie_leader(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    monkeypatch.setattr(dispatcher.os, 'killpg', Mock(side_effect=PermissionError('refused')))
+    probe = Mock(return_value=SimpleNamespace(stdout='123 123 Z\n124 123 Z\n'))
+    monkeypatch.setattr(dispatcher.subprocess, 'run', probe)
+
+    dispatcher._kill_group(123)
+
+    assert probe.call_args.args == (['/bin/ps', '-axo', 'pid=,pgid=,stat='],)
+    assert probe.call_args.kwargs['timeout'] == 1
+
+
+@pytest.mark.parametrize('listing', ['123 123 S\n', '124 123 Z\n', '123 123 Z\n124 123 S\n', ''])
+def test_hook_group_permission_rejects_live_or_unreserved_group(monkeypatch, listing):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    monkeypatch.setattr(dispatcher.os, 'killpg', Mock(side_effect=PermissionError('refused')))
+    monkeypatch.setattr(dispatcher.subprocess, 'run', Mock(return_value=SimpleNamespace(stdout=listing)))
+
+    with pytest.raises(PermissionError):
+        dispatcher._kill_group(123)
+
+
+@pytest.mark.parametrize('result', ['malformed', 'failed'])
+def test_hook_group_permission_rejects_unverifiable_group(monkeypatch, result):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    monkeypatch.setattr(dispatcher.os, 'killpg', Mock(side_effect=PermissionError('refused')))
+    probe = Mock(return_value=SimpleNamespace(stdout='invalid'),
+                 side_effect=OSError('ps unavailable') if result == 'failed' else None)
+    monkeypatch.setattr(dispatcher.subprocess, 'run', probe)
+
+    with pytest.raises((ValueError, OSError)):
+        dispatcher._kill_group(123)
+
+
+def test_hook_group_permission_ignores_unrelated_ps_rows(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    monkeypatch.setattr(dispatcher.os, 'killpg', Mock(side_effect=PermissionError('refused')))
+    monkeypatch.setattr(dispatcher.subprocess, 'run', Mock(return_value=SimpleNamespace(
+        stdout='123 123 Z\n999 999 S\n')))
+
+    dispatcher._kill_group(123)
+
+
+def test_hook_finish_waits_without_reaping_before_group_cleanup(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    observations = iter([None, object()])
+    monkeypatch.setattr(dispatcher.os, 'waitid', lambda *args: next(observations))
+    monkeypatch.setattr(dispatcher.time, 'sleep', Mock())
+    signals = Mock()
+    monkeypatch.setattr(dispatcher, '_kill_group', signals)
+    process = SimpleNamespace(pid=123, wait=Mock(return_value=0))
+
+    assert dispatcher._finish(process, dispatcher.time.monotonic() + 5) == 0
+
+    dispatcher.time.sleep.assert_called_once()
+    signals.assert_called_once_with(123)
+    process.wait.assert_called_once()

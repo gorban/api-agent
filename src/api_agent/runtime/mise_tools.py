@@ -1,4 +1,5 @@
 """Prepare selected launcher-managed executables on demand."""
+from api_agent.testing.processes import wait_owned
 import os
 from pathlib import Path
 import shutil
@@ -62,11 +63,11 @@ def ensure_tools(*names, timeout=300, cancellation=None):
                     if budget.remaining is not None and budget.remaining <= 0:
                         raise TimeoutError('Managed executable preparation timed out')
                     try:
-                        process.wait(timeout=min(.1, budget.remaining or .1))
+                        code = wait_owned(process, timeout=min(.1, budget.remaining or .1))
                         break
                     except subprocess.TimeoutExpired:
                         continue
-                if process.returncode:
+                if code:
                     raise OSError('Managed executable preparation failed; check mise and retry')
                 output.seek(0)
                 return output.read(4097)

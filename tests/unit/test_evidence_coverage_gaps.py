@@ -293,60 +293,60 @@ def test_two_manifest_bound_payloads_cannot_share_chunk_owner(tmp_path):
     resolver.close()
 
 
-def test_watchdog_process_group_lookup_race_falls_back_to_child_kill(monkeypatch):
+def test_watchdog_deadline_delegates_disposal_and_finishes_exchange(monkeypatch):
     from api_agent.providers import evidence_watchdog as watchdog
     from api_agent.providers.contracts import ContractError
     async def scenario():
-        entered = asyncio.Event()
-        done = asyncio.Event()
+        entered, done = asyncio.Event(), asyncio.Event()
         class Process:
-            pid = 42
             returncode = None
-            kills = 0
-            async def communicate(self, _payload):
+            disposals = 0
+            async def communicate(self, payload):
                 entered.set()
                 await done.wait()
                 self.returncode = -9
                 return b'', None
-            def kill(self):
-                self.kills += 1
+            async def dispose(self):
+                self.disposals += 1
                 done.set()
         process = Process()
-        def missing(*_args):
-            raise ProcessLookupError()
-        monkeypatch.setattr(watchdog.os, 'killpg', missing)
         monkeypatch.setattr(watchdog, '_WALL_SECONDS', .05)
         task = asyncio.create_task(watchdog.communicate(process, b''))
-        await entered.wait()
-        with pytest.raises(ContractError, match='timed out'):
-            await task
-        assert process.kills == 1 and process.returncode == -9
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            with pytest.raises(ContractError, match='timed out'):
+                await asyncio.wait_for(task, 3)
+            assert process.disposals == 1 and process.returncode == -9
+        finally:
+            done.set()
+            await asyncio.gather(task, return_exceptions=True)
     asyncio.run(scenario())
 
 
-def test_watchdog_handles_simulated_group_and_child_disappearance(monkeypatch):
+def test_watchdog_drain_error_during_disposal_preserves_original_timeout(monkeypatch):
     from api_agent.providers import evidence_watchdog as watchdog
     from api_agent.providers.contracts import ContractError
     async def scenario():
         ready, exited = asyncio.Event(), asyncio.Event()
         class Process:
-            pid = 43
             returncode = None
-            async def communicate(self, _payload):
+            async def communicate(self, payload):
                 ready.set()
                 await exited.wait()
                 raise BrokenPipeError('child exited')
-            def kill(self):
+            async def dispose(self):
                 exited.set()
-                raise ProcessLookupError()
         process = Process()
-        monkeypatch.setattr(watchdog.os, 'killpg', lambda *_: (_ for _ in ()).throw(ProcessLookupError()))
         monkeypatch.setattr(watchdog, '_WALL_SECONDS', .05)
         task = asyncio.create_task(watchdog.communicate(process, b''))
-        await ready.wait()
-        with pytest.raises(ContractError, match='timed out'):
-            await task
-        assert exited.is_set()
+        try:
+            await asyncio.wait_for(ready.wait(), 3)
+            with pytest.raises(ContractError, match='timed out'):
+                await asyncio.wait_for(task, 3)
+            assert exited.is_set()
+        finally:
+            exited.set()
+            await asyncio.gather(task, return_exceptions=True)
     asyncio.run(scenario())
 
 
@@ -416,7 +416,7 @@ def test_watchdog_measurement_and_exit_check_failure_kills_process(monkeypatch):
     from api_agent.providers import evidence_watchdog as watchdog
     from api_agent.providers.contracts import ContractError
     async def scenario():
-        process = await asyncio.create_subprocess_exec(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
+        process = await watchdog.spawn(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True)
         def fail(*args):
@@ -636,13 +636,14 @@ def test_payload_indexes_enforce_aggregate_limit_across_independent_indexes(tmp_
 def test_darwin_watchdog_accepts_bounded_resident_measurement(monkeypatch):
     from api_agent.providers import evidence_watchdog as watchdog
     async def scenario():
-        process = await asyncio.create_subprocess_exec(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
+        process = await watchdog.spawn(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True)
         measured = asyncio.Event()
+        loop = asyncio.get_running_loop()
         def observe(pid):
             assert pid == process.pid
-            measured.set()
+            loop.call_soon_threadsafe(measured.set)
             return 1024
         monkeypatch.setattr(watchdog.sys, 'platform', 'darwin')
         monkeypatch.setattr(watchdog, '_POLL_SECONDS', .01)
@@ -651,13 +652,11 @@ def test_darwin_watchdog_accepts_bounded_resident_measurement(monkeypatch):
         try:
             await asyncio.wait_for(measured.wait(), 3)
             assert not task.done()
-            process.kill()
+            await process.dispose()
             assert await task == (b'', None)
             assert process.returncode is not None
         finally:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
+            await process.dispose()
     asyncio.run(scenario())
 
 
@@ -769,7 +768,7 @@ def test_watchdog_reaps_child_if_deadline_expires_before_first_poll(monkeypatch)
     from api_agent.providers import evidence_watchdog as watchdog, progress
     from api_agent.providers.contracts import ContractError
     async def scenario():
-        process = await asyncio.create_subprocess_exec(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
+        process = await watchdog.spawn(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True)
         times = iter([0.0, 11.0])
@@ -779,9 +778,7 @@ def test_watchdog_reaps_child_if_deadline_expires_before_first_poll(monkeypatch)
                 await watchdog.communicate(process, b'')
             assert process.returncode is not None
         finally:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
+            await process.dispose()
     asyncio.run(scenario())
 
 
@@ -819,7 +816,7 @@ def test_failure_channel_expired_partial_read_rejects_without_reporting(monkeypa
 def test_watchdog_kills_and_reaps_real_child_after_communication_failure():
     from api_agent.providers import evidence_watchdog as watchdog
     async def scenario():
-        child = await asyncio.create_subprocess_exec(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
+        child = await watchdog.spawn(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True)
         class FailedCommunication:
@@ -829,18 +826,14 @@ def test_watchdog_kills_and_reaps_real_child_after_communication_failure():
                 return child.returncode
             async def communicate(self, payload):
                 raise BrokenPipeError('synthetic pipe failure')
-            def kill(self):
-                child.kill()
-            async def wait(self):
-                return await child.wait()
+            async def dispose(self):
+                await child.dispose()
         try:
             with pytest.raises(BrokenPipeError, match='synthetic pipe failure'):
                 await watchdog.communicate(FailedCommunication(), b'')
             assert child.returncode is not None
         finally:
-            if child.returncode is None:
-                child.kill()
-                await child.wait()
+            await child.dispose()
     asyncio.run(scenario())
 
 
@@ -991,104 +984,75 @@ def test_guard_nested_carrier_rejects_credential_and_preserves_safe_control():
 
 
 @pytest.mark.parametrize('disappeared', [False, True])
-def test_watchdog_reaps_real_child_when_kill_races_with_disappearance(disappeared):
-    """Inject the disappearance race while retaining actual child ownership."""
+def test_watchdog_reaps_owned_child_when_group_signal_races_with_disappearance(monkeypatch, disappeared):
+    import os
     from api_agent.providers import evidence_watchdog as watchdog
     async def scenario():
-        child = await asyncio.create_subprocess_exec(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
+        child = await watchdog.spawn(__import__('sys').executable, '-c', 'import time; time.sleep(30)',
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True)
+        original = os.killpg
         calls = []
+        def signal_group(pid, signum):
+            assert pid == child.pid and child.returncode is None
+            calls.append(signum)
+            original(pid, signum)
+            if disappeared:
+                raise ProcessLookupError('synthetic group disappearance after signal')
+        monkeypatch.setattr(os, 'killpg', signal_group)
         class CommunicationFailure:
-            pid = child.pid
             @property
-            def returncode(self):
-                return child.returncode
+            def returncode(self): return child.returncode
             async def communicate(self, payload):
                 raise BrokenPipeError('synthetic communication failure')
-            def kill(self):
-                calls.append('kill')
-                child.kill()
-                if disappeared:
-                    # Model an OS lookup race after the preceding returncode
-                    # check; the real child still must be waited and reaped.
-                    raise ProcessLookupError('synthetic disappearance race')
-            async def wait(self):
-                calls.append('wait')
-                return await child.wait()
+            async def dispose(self):
+                await child.dispose()
         try:
             with pytest.raises(BrokenPipeError, match='synthetic communication failure'):
                 await watchdog.communicate(CommunicationFailure(), b'')
-            assert calls == ['kill', 'wait']
+            assert calls
             assert child.returncode is not None
         finally:
-            if child.returncode is None:
-                child.kill()
-                await child.wait()
+            await child.dispose()
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('group_lookup', ['unavailable', 'missing'])
-def test_watchdog_waits_for_descendant_pipe_after_exited_leader(monkeypatch, group_lookup):
-    """A disappeared leader does not justify discarding a still-open pipe."""
-    import os
-    import signal
+def test_watchdog_waits_for_owned_exchange_after_descendant_disposal():
     import sys
     from api_agent.providers import evidence_watchdog as watchdog
+    from api_agent.testing.processes import wait_owned, disposal_complete
     async def scenario():
         code = ('import subprocess,sys; '
                 'subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"])')
-        child = await asyncio.create_subprocess_exec(sys.executable, '-c', code,
+        child = await watchdog.spawn(sys.executable, '-c', code,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
-        group_kill = os.killpg
-        branch_entered = asyncio.Event()
-        kill_calls = []
+        assert await asyncio.to_thread(wait_owned, child.process, timeout=5) == 0
+        assert child.returncode is None
+        disposed, drain = asyncio.Event(), asyncio.Event()
         class ChildOwner:
-            pid = child.pid
             @property
-            def returncode(self):
-                result = child.returncode
-                if group_lookup == 'unavailable' and result is not None:
-                    branch_entered.set()
-                return result
+            def returncode(self): return child.returncode
             async def communicate(self, payload):
-                return await child.communicate(payload)
-            def kill(self):
-                kill_calls.append('individual')
-                child.kill()
-            async def wait(self):
-                return await child.wait()
-        def missing_group(pid, sig):
-            assert pid == child.pid and sig == signal.SIGKILL
-            branch_entered.set()
-            raise ProcessLookupError('synthetic vanished process group')
-        simulated_os = (SimpleNamespace(name='nt') if group_lookup == 'unavailable' else
-                        SimpleNamespace(name='posix', killpg=missing_group))
-        monkeypatch.setattr(watchdog, 'os', simulated_os)
+                await drain.wait()
+                return b'', None
+            async def dispose(self):
+                await child.dispose()
+                disposed.set()
         task = asyncio.create_task(watchdog.communicate(ChildOwner(), b''))
         try:
-            async with asyncio.timeout(5):
-                while child.returncode is None:
-                    await asyncio.sleep(.01)
-            assert child.returncode == 0 and not task.done()
+            await asyncio.sleep(0)
             task.cancel()
-            await asyncio.wait_for(branch_entered.wait(), 3)
-            assert not task.done() and kill_calls == []
-            # The test still owns the real group, including its live descendant.
-            group_kill(child.pid, signal.SIGKILL)
+            await asyncio.wait_for(disposed.wait(), 5)
+            assert child.returncode == 0 and disposal_complete(child.process)
+            assert not task.done()
+            drain.set()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 3)
-            assert child.returncode == 0
+                await asyncio.wait_for(task, 5)
         finally:
-            try:
-                group_kill(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            drain.set()
             if not task.done():
                 task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            if child.returncode is None:
-                child.kill()
-                await child.wait()
+            await asyncio.gather(task, return_exceptions=True)
+            await child.dispose()
     asyncio.run(scenario())

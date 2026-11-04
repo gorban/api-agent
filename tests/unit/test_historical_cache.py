@@ -170,7 +170,9 @@ def test_adapter_policy_qualified(tmp_path, monkeypatch):
 def test_oversized_manifest_and_user_default_cache(tmp_path, monkeypatch):
     monkeypatch.delenv('XDG_CACHE_HOME', raising=False)
     monkeypatch.setattr('api_agent.telemetry.history.Path.home', lambda: tmp_path)
-    assert cache_path() == tmp_path / '.cache/api-agent/cost-history.sqlite3'
+    from api_agent.telemetry import history
+    expected = ('Library/Caches' if history.sys.platform == 'darwin' else '.cache')
+    assert cache_path() == tmp_path / expected / 'api-agent/cost-history.sqlite3'
     cache = HistoryCache(tmp_path / 'cache')
     manifest, payload = fixture()
     manifest['padding'] = ' ' * MAX_BYTES
