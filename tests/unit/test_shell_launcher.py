@@ -33,7 +33,17 @@ def main(*, base_root, _replace_process):
     fake = tools / 'mise'
     fake.write_text('''#!/bin/sh
 [ "$1" = --version ] && { printf '%s\\n' 'mise test'; exit 0; }
+if [ "$1" = --no-env ]; then
+  [ "$2" = --no-hooks ] && [ "$3" = --quiet ] && [ "$4" = trust ] && [ "$#" = 5 ] || exit 94
+  if [ -n "${FAKE_TRUST_RECEIPT:-}" ]; then
+    printf '%s\\n' "$5" "${MISE_STATE_DIR-}" "${MISE_CONFIG_DIR-}" > "$FAKE_TRUST_RECEIPT"
+  fi
+  exit "${FAKE_TRUST_STATUS:-0}"
+fi
 [ "$1" = --cd ] || exit 90
+if [ -n "${FAKE_TRUST_RECEIPT:-}" ]; then
+  printf '%s\\n' "$MISE_STATE_DIR" "$MISE_CONFIG_DIR" > "$FAKE_TRUST_RECEIPT.exec"
+fi
 cd "$2" || exit 93
 while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
 [ "$#" -gt 0 ] || exit 91
@@ -87,3 +97,34 @@ def test_broken_mise_reports_actionable_error_before_launch(checkout, tmp_path):
                             env={'PATH': str(tools)}, capture_output=True, text=True, timeout=10)
     assert result.returncode == 2
     assert 'mise could not run' in result.stderr and 'installing-mise' in result.stderr
+
+
+def test_shell_trusts_only_checkout_in_callers_state_before_isolation(checkout, tmp_path):
+    root, tools = checkout
+    receipt = tmp_path / 'trust-receipt'
+    state, config = str(tmp_path / 'caller state'), str(tmp_path / 'caller config')
+    env = dict(os.environ, PATH=str(tools) + os.pathsep + '/usr/bin:/bin',
+               FAKE_PYTHON=sys.executable, FAKE_TRUST_RECEIPT=str(receipt),
+               MISE_STATE_DIR=state, MISE_CONFIG_DIR=config)
+
+    result = subprocess.run(['/bin/sh', str(root / 'launch.sh')], cwd=tmp_path,
+                            env=env, capture_output=True, text=True, timeout=20)
+
+    assert result.returncode == 37, result.stderr
+    assert receipt.read_text().splitlines() == [str(root / 'mise.toml'), state, config]
+    isolated = root / '.api-agent/bootstrap/mise'
+    assert receipt.with_suffix('.exec').read_text().splitlines() == [str(isolated / 'state'), str(isolated / 'config')]
+
+
+def test_failed_shell_trust_stops_before_tool_execution(checkout, tmp_path):
+    root, tools = checkout
+    env = dict(os.environ, PATH=str(tools) + os.pathsep + '/usr/bin:/bin',
+               FAKE_PYTHON=sys.executable, FAKE_TRUST_STATUS='1')
+
+    result = subprocess.run(['/bin/sh', str(root / 'launch.sh')], cwd=tmp_path,
+                            env=env, capture_output=True, text=True, timeout=20)
+
+    assert result.returncode == 2
+    assert result.stdout == ''
+    assert 'Could not trust the project mise.toml' in result.stderr
+    assert 'state-directory permissions' in result.stderr
