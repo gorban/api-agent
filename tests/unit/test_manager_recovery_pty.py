@@ -200,21 +200,44 @@ def test_disconnected_transport_is_safe():
 
 
 @pytest.mark.parametrize('action', ['cancel', 'eof', 'retry', None])
-def test_closed_streams_still_poll_transport_and_budget(action):
+def test_closed_streams_still_poll_transport_and_budget(action, monkeypatch):
+    import time
+    from api_agent.auth import recovery, owned_process
+    now = [0.0]
+    polls = []
+    children = []
+    started = time.monotonic()
+    def clock():
+        assert time.monotonic() - started < 10, 'closed-stream fixture exceeded wall guard'
+        return now[0]
+    original = owned_process.OwnedProcess
+    def owned(*args, **kwargs):
+        child = original(*args, **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(recovery, 'time', SimpleNamespace(monotonic=clock, sleep=time.sleep))
+    monkeypatch.setattr(owned_process, 'OwnedProcess', owned)
     class Closed:
         attempts = 0
         def open(self, label):
             self.attempts += 1
             class Waiting(Channel):
                 def read(self, timeout):
-                    if timeout > 0 and action is not None:
-                        return Reply(action)
+                    if timeout > 0:
+                        # This poll occurs only after both real streams reach EOF
+                        # while the retained guardian is still pending.
+                        polls.append(timeout)
+                        now[0] += .05
+                        if action is not None:
+                            return Reply(action)
                     return None
             return Waiting([])
     interaction = Closed()
     script = "import os,time; os.close(0); os.close(1); os.close(2); time.sleep(10)"
     with pytest.raises(CredentialError, match='cancelled|deadline'):
         recover([sys.executable, '-c', script], interaction, 'Keeper', .15)
+    assert polls and all(value == .05 for value in polls)
+    assert children and all(child.returncode is not None for child in children)
     if action == 'retry':
         assert interaction.attempts > 1
 
@@ -421,7 +444,7 @@ def test_terminal_io_failure_disposes_process(monkeypatch):
     monkeypatch.setattr(recovery, 'os', SimpleNamespace(**(vars(recovery.os) | {'read': read})))
     interaction = Interaction([])
     with pytest.raises(CredentialError, match='disconnected'):
-        recover([sys.executable, '-c', "import sys,time;print('prompt',file=sys.stderr);time.sleep(10)"], interaction, 'Keeper', _NORMAL_RECOVERY_SECONDS)
+        recover([sys.executable, '-c', 'pass'], interaction, 'Keeper', None)
     assert interaction.channel.closed
 
 

@@ -301,3 +301,22 @@ def test_publish(monkeypatch):
     assert result.exit_code == 1
     assert result.tests[0].status == 'error'
     assert 'not acknowledged' in result.tests[0].traceback
+
+
+def test_failure_channel_accept_error_stops_without_fabricating_receipts():
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    channel = framing.EvidenceFailureChannel(['test'])
+    channel._stop = threading.Event()
+    accept = Mock(side_effect=[OSError('controlled listener failure'),
+                               AssertionError('listener retried a failed accept')])
+    channel._socket = SimpleNamespace(accept=accept)
+
+    channel._serve()
+
+    accept.assert_called_once_with()
+    assert not channel._stop.is_set()
+    assert channel.reported() == set()
+    assert channel.reported_scopes() == set()

@@ -9,6 +9,7 @@ from urllib.parse import unquote
 import pytest
 
 from api_agent.runtime.viewer_host import start_viewer_host, _files, _close_writer, _style_policy
+from api_agent.providers.progress import component_timeout
 from api_agent.runtime import viewer_host
 from api_agent.providers.progress import component_timeout as original_timeout
 from api_agent.workflows.viewer_render import ViewBundle, ViewFile, ViewSource, ViewRoute
@@ -117,7 +118,12 @@ def test_shutdown_drains_stalled_partial_client():
         reader, writer = await asyncio.open_connection('127.0.0.1', host.port)
         writer.write(b'GET /r/base/flow.md.html HTTP/1.1\r\nHost:')
         await writer.drain()
+        async with component_timeout('Viewer registered-client prerequisite', 5):
+            while not host.clients:
+                await asyncio.sleep(0)
+        clients = tuple(host.clients)
         await asyncio.wait_for(host.aclose(), timeout=2)
+        assert all(task.cancelled() for task in clients)
         assert not host.clients
         try:
             assert await reader.read() == b''
@@ -405,4 +411,40 @@ def test_host_binds_recorded_repository_snapshot_before_listening(tmp_path):
             assert response.startswith(b'HTTP/1.1 200 OK')
         finally:
             await host.aclose()
+    asyncio.run(exercise())
+
+
+def test_shutdown_waits_for_registered_client_cleanup():
+    from api_agent.runtime.viewer_host import OwnedViewerHost
+    async def exercise():
+        entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def client():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+        async def server_closed():
+            pass
+        task = asyncio.create_task(client())
+        host = OwnedViewerHost(SimpleNamespace(close=lambda: None, wait_closed=server_closed),
+                               {}, 0, '', {task})
+        closing = None
+        try:
+            async with component_timeout('Viewer cancellation cleanup prerequisite', 5):
+                await entered.wait()
+                closing = asyncio.create_task(host.aclose())
+                await cleaning.wait()
+                await asyncio.sleep(0)
+                assert not closing.done(), 'Host released before client cleanup completed'
+                release.set()
+                await closing
+            assert task.cancelled() and host._closed
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if closing is not None:
+                await asyncio.gather(closing, return_exceptions=True)
     asyncio.run(exercise())

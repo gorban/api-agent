@@ -91,22 +91,51 @@ class ConnectionStore:
 
     def _open(self, path, flags, directory=None):
         owned = directory is None
-        if owned:
-            directory = self._directory()
         fd = None
+        stage = 'directory_open'
         try:
-            fd = os.open(path.name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
-                _fail()
-            return fd
-        except BaseException:
-            if fd is not None:
-                os.close(fd)
-            _fail()
-        finally:
             if owned:
-                os.close(directory)
+                directory = self._directory()
+            stage = 'open'
+            fd = os.open(path.name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            stage = 'metadata'
+            info = os.fstat(fd)
+            stage = 'file_type'
+            if not stat.S_ISREG(info.st_mode):
+                _fail()
+            stage = 'owner'
+            if info.st_uid != os.getuid():
+                _fail()
+            stage = 'permissions'
+            if stat.S_IMODE(info.st_mode) != 0o600:
+                _fail()
+            stage = 'link_count'
+            if info.st_nlink != 1:
+                _fail()
+            if owned:
+                stage = 'directory_close'
+                closing, directory = directory, None
+                os.close(closing)
+            return fd
+        except BaseException as error:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            failure = AuthError('invalid_connection')
+            note = 'Connection-store file check failed: stage=' + stage
+            number = error.errno if isinstance(error, OSError) else None
+            if type(number) is int and 0 <= number <= 65535:
+                note += '; errno=' + str(number)
+            failure.add_note(note + '.')
+            raise failure from None
+        finally:
+            if owned and directory is not None:
+                try:
+                    os.close(directory)
+                except OSError:
+                    pass
 
     def _read(self, path):
         with os.fdopen(self._open(path, os.O_RDONLY), "rb") as stream:

@@ -123,24 +123,42 @@ def test_prompt_like_successful_credentials_remain_private(tmp_path, password, c
     assert capsys.readouterr() == ("", "")
 
 
-def test_timeout_kills_owned_descendant_holding_pipes(tmp_path):
+def test_timeout_kills_owned_descendant_holding_pipes(tmp_path, monkeypatch):
     import os
+    from api_agent.auth import owned_process
+    from api_agent.testing import processes
     if os.name != 'posix':
         pytest.skip('Process group regression requires POSIX')
     marker = tmp_path / 'child.pid'
     body = f"import subprocess\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\nopen({str(marker)!r}, 'w').write(str(child.pid))\ntime.sleep(30)"
     path = fake_cli(tmp_path, body)
+    original = owned_process.OwnedProcess
+    admitted = []
+    def ready_process(*args, **kwargs):
+        process = original(*args, **kwargs)
+        try:
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            child_pid = int(marker.read_text())
+            group = os.getpgid(child_pid)
+            assert processes._group_running(group)
+            admitted.append((process, child_pid, group))
+            return process
+        except BaseException:
+            process.dispose()
+            process.wait()
+            raise
+    monkeypatch.setattr(owned_process, 'OwnedProcess', ready_process)
+
     with pytest.raises(CredentialError, match='timed out'):
         get_password(source(path), timeout=.3)
-    child_pid = int(marker.read_text())
-    # A dead child can briefly remain as a zombie until the container init reaps it.
-    stat = Path(f'/proc/{child_pid}/stat')
-    def running():
-        try:
-            return stat.read_text().split()[2] != 'Z'
-        except (FileNotFoundError, ProcessLookupError):
-            return False
+
+    assert len(admitted) == 1
+    process, child_pid, group = admitted[0]
+    assert child_pid == int(marker.read_text())
+    assert process.returncode is not None
     deadline = time.monotonic() + .5
-    while running() and time.monotonic() < deadline:
+    while processes._group_running(group) and time.monotonic() < deadline:
         time.sleep(.01)
-    assert not running()
+    assert not processes._group_running(group)
