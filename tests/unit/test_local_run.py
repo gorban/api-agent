@@ -480,6 +480,12 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
         context = object()
         assert await result.services['studio_backend'].complete('request', auth=None, context=context) == 'graph-result'
         local.owner._graph.complete.assert_awaited_once_with('request', llm=llm, context=context)
+        scoped_llm, scoped_context = object(), object()
+        assert await result.services['workflow_complete']('scoped-request', llm=scoped_llm,
+                                                         context=scoped_context) == 'graph-result'
+        assert local.owner._graph.complete.await_count == 2
+        local.owner._graph.complete.assert_awaited_with('scoped-request', llm=scoped_llm, context=scoped_context)
+        assert result.services['studio_backend'].owner is llm
         llm.ensure_ready.assert_not_called()
         await result.services['studio_backend'].aclose()
     asyncio.run(run())
@@ -529,10 +535,11 @@ def test_runtime_uses_selected_application_graph_deadline(local, monkeypatch, en
     assert result.services['studio_backend'].timeout == expected
 
 
-def test_optional_ui_uses_one_prepared_owner_and_then_llm(local, monkeypatch):
+@pytest.mark.parametrize('owns_sessions', [False, True])
+def test_optional_ui_uses_one_prepared_owner_and_then_llm(local, monkeypatch, owns_sessions):
     from api_agent.runtime import local_run
     local.config.values['RUN_UI'] = True
-    prepared = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock())
+    prepared = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock(), owns_llm_sessions=owns_sessions)
     factory = Mock(return_value=prepared)
     monkeypatch.setattr(local_run, 'PreparedUISession', factory)
     llm = SimpleNamespace(ensure_ready=AsyncMock(), _helpers=set())
@@ -542,7 +549,7 @@ def test_optional_ui_uses_one_prepared_owner_and_then_llm(local, monkeypatch):
         borrowed = object()
         assert await local.owner._ui(browser_owner=borrowed) is prepared
         prepared.start.assert_awaited_once()
-        llm.ensure_ready.assert_awaited_once()
+        assert llm.ensure_ready.await_count == (0 if owns_sessions else 1)
         assert factory.call_args.kwargs['browser_owner'] is borrowed
         assert local.owner._status()['components']['ui'] == 'ready'
         assert [row.name for row in local.owner.snapshot.destinations] == ['agent', 'flow', 'ui']

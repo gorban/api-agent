@@ -178,3 +178,29 @@ catalog identity. Raw span payloads cannot establish either identity. Remote hos
 owned generations consume these facts at the provider source. Authoritative
 worker metrics omit provider labels unavailable through a trusted local source;
 they never infer the provider from model-name text.
+
+### Local selected-workflow completion
+
+Local UI providers receive the optional trusted service
+`workflow_complete(request, *, llm, context)`. It awaits completion through the
+already-admitted application graph using the supplied session-owned LLM facade
+and operation context. It does not create or authenticate an owner. Providers
+constructing alternate backends must authenticate requests, retain and close
+per-session owners, and project safe responses through their existing contracts.
+The default Studio backend keeps its original owner. This callable is never
+frontend configuration or a directly registered HTTP capability.
+
+Trusted runtime construction may additionally supply
+`LocalLLM(..., session_owner_factory=...)`. The synchronous factory receives the
+selected implementation plus `emissions`, `on_authentication_failure`,
+`user_index`, `credentials`, `interactive` and `timeout`; it returns the existing
+async session-owner protocol without allocating unowned resources. The default
+registered session and normal inference/accounting paths remain unchanged.
+The constructor hook is not environment configuration or a browser capability.
+
+UI capabilities may declare `features=('session_owned_inference',)` when the
+selected UI owns authenticated per-session inference. Prepared UI sessions expose
+that validated ownership, and Run local defers eager setup of its otherwise
+unused default local LLM. Normal request authentication remains mandatory;
+other UIs retain default readiness. This feature is invalid for other provider
+kinds and cannot be enabled through a frontend value or configuration flag.

@@ -1,5 +1,6 @@
 """Persistent local inference ownership, independent of test executions."""
 import asyncio
+import inspect
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -12,7 +13,7 @@ from uuid import uuid4
 from api_agent.auth.bindings import bind_role_credentials
 from api_agent.auth.managers import registry_for_owner
 from api_agent.providers.cache_policy import configured_request, validate_provider_request
-from api_agent.providers.contracts import ConfigurationRequiredError, SetupPrerequisiteError, ProviderAccessError
+from api_agent.providers.contracts import ContractError, ConfigurationRequiredError, SetupPrerequisiteError, ProviderAccessError
 from api_agent.providers.control import CleanupPendingError, OperationContext
 from api_agent.providers.costs import quote_cost, validate_quote
 from api_agent.providers.inference import async_request_to_wire, usage_to_wire
@@ -75,10 +76,15 @@ class LocalLLM(_Owner):
     def __init__(self, config, owner_root, *, emissions=None, registry=None,
                  unattended_index_source=None, interaction_owner=None,
                  loader=aload_provider, timeout=120, cleanup_timeout=5,
-                 on_session=None, on_status=None, trace=None):
+                 on_session=None, on_status=None, trace=None, session_owner_factory=None):
         super().__init__(cleanup_timeout)
         if type(timeout) not in (int, float) or not 0 < timeout < float('inf'):
             raise ValueError('Invalid local inference timeout')
+        if session_owner_factory is not None and (not callable(session_owner_factory)
+                or inspect.iscoroutinefunction(session_owner_factory)
+                or inspect.iscoroutinefunction(getattr(session_owner_factory, "__call__", None))):
+            raise ValueError('Invalid session owner factory')
+        self.session_owner_factory = session_owner_factory
         self.config = MappingProxyType(deepcopy(dict(config)))
         self.owner_root = owner_root
         self.emissions = emissions or EmissionBoundary(ContentPolicy())
@@ -148,10 +154,19 @@ class LocalLLM(_Owner):
         self.provider._credential_bound_authority = self.emissions._authority
         self.provider._credential_withheld = withheld
         def owner_factory(scoped):
-            self.session = _RegisteredSession(implementation, emissions=self.emissions, user_index=index,
+            factory = _RegisteredSession if self.session_owner_factory is None else self.session_owner_factory
+            self.session = factory(implementation, emissions=self.emissions, user_index=index,
                 on_authentication_failure=self._authentication_failed,
                 credentials=scoped, interactive=self.interaction_owner is not None or bool(self.config.get('DEBUG')) or not self.config.get('NO_STD_IN', False),
                 timeout=self._timeout)
+            if inspect.iscoroutine(self.session):
+                self.session.close()
+                raise ContractError('Invalid shared session owner')
+            if (not callable(getattr(self.session, 'call', None))
+                    or not callable(getattr(self.session, 'aclose', None))):
+                if callable(getattr(self.session, 'aclose', None)):
+                    self._resources.append((self.session, 'aclose'))
+                raise ContractError('Invalid shared session owner')
             return self.session
         async def complete(request, *, auth):
             from api_agent.providers.presentation import complete_with_progress
