@@ -157,6 +157,83 @@ def test_native_tool_state_survives_tool_results_without_discard_or_reordering(r
         codec.continuation_message(changed, GPT)
 
 
+@pytest.mark.parametrize('model, replay_unsigned', [
+    (GPT, False), ('openai.gpt-oss-20b-1:0', True), (CLAUDE, True),
+    ('openai.gpt-6-luna', True), ('global.openai.gpt-6-luna', True),
+    ('us.openai.gpt-5.6-luna', True), ('us.openai.gpt-6.1-terra', True),
+])
+@pytest.mark.parametrize('text', ['', 'A brief display explanation.'])
+def test_unsigned_reasoning_replay_obeys_the_qualified_provider_input_contract(model, replay_unsigned, text):
+    raw = response()
+    raw['output']['message']['content'].insert(0, {'reasoningContent': {'reasoningText': {'text': text}}})
+    before = deepcopy(raw)
+    answer = codec.decode(raw, selected_llm=model)
+    carrier = answer.payload.continuation
+    following = replace(request(model, 'low'), payload=CompletionRequest((
+        Message('user', (TextContent('Question'),)), answer.payload,
+        Message('user', (TextContent('Continue'),)))))
+
+    body = codec.encode(following)
+
+    expected = raw['output']['message'] if replay_unsigned else {'role': 'assistant', 'content': [{'text': 'hello'}]}
+    assert body['messages'][1] == expected
+    assert answer.payload.continuation == carrier
+    assert json.loads(carrier)['state'] == [before['output']['message']]
+    assert answer.reasoning_summary == (text or None)
+    assert raw == before
+
+
+def test_gpt_tool_replay_preserves_the_entire_protected_message_including_unsigned_context():
+    raw = response()
+    raw['stopReason'] = 'tool_use'
+    signed = {'reasoningContent': {'reasoningText': {'text': 'Signed explanation.', 'signature': 'opaque-signature'}}}
+    opaque = {'reasoningContent': {'redactedContent': base64.b64encode(b'opaque-binary').decode()}}
+    tool = {'toolUse': {'toolUseId': 'call-1', 'name': 'lookup', 'input': {'query': 'value'}}}
+    raw['output']['message']['content'] = [
+        {'reasoningContent': {'reasoningText': {'text': 'Display only.'}}}, signed, opaque, tool]
+    answer = codec.decode(raw, selected_llm=GPT)
+    original_carrier = answer.payload.continuation
+    following = replace(request(), payload=CompletionRequest((
+        Message('user', (TextContent('Question'),)), answer.payload,
+        Message('tool', results=(ToolResult('call-1', (TextContent('found'),)),))),
+        tools=(Tool('lookup', 'Lookup', '{"type":"object"}', strict=False),)))
+
+    body = codec.encode(following)
+
+    assert body['messages'][1] == raw['output']['message']
+    assert body['messages'][2] == {'role': 'user', 'content': [
+        {'toolResult': {'toolUseId': 'call-1', 'content': [{'text': 'found'}]}}]}
+    assert answer.payload.continuation == original_carrier
+    assert json.loads(original_carrier)['state'] == [raw['output']['message']]
+
+
+def test_gpt_unsigned_reasoning_tool_replay_preserves_tool_and_result_order():
+    raw = response()
+    raw['stopReason'] = 'tool_use'
+    tool = {'toolUse': {'toolUseId': 'call-1', 'name': 'lookup', 'input': {'query': 'value'}}}
+    raw['output']['message']['content'] = [
+        {'reasoningContent': {'reasoningText': {'text': 'Display only.'}}}, tool]
+    answer = codec.decode(raw, selected_llm=GPT)
+    following = replace(request(), payload=CompletionRequest((
+        Message('user', (TextContent('Question'),)), answer.payload,
+        Message('tool', results=(ToolResult('call-1', (TextContent('found'),)),))),
+        tools=(Tool('lookup', 'Lookup', '{"type":"object"}', strict=False),)))
+
+    body = codec.encode(following)
+
+    assert body['messages'][1] == {'role': 'assistant', 'content': [tool]}
+    assert body['messages'][2]['content'][0]['toolResult']['toolUseId'] == 'call-1'
+    assert json.loads(answer.payload.continuation)['state'] == [raw['output']['message']]
+
+
+def test_unknown_converse_model_does_not_acquire_gpt_replay_adaptation():
+    raw = response()
+    raw['output']['message']['content'].insert(0, {'reasoningContent': {'reasoningText': {'text': 'Keep unchanged.'}}})
+    answer = codec.decode(raw, selected_llm='unknown.model')
+
+    assert codec.continuation_message(answer.payload, 'unknown.model') == raw['output']['message']
+
+
 @pytest.mark.parametrize('raw', [None, [], {'output': None}, {'output': {'message': None}},
     {'output': {'message': {'content': None}}}])
 def test_non_binary_response_shapes_are_left_for_the_normal_decoder(raw):

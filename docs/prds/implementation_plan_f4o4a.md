@@ -28,6 +28,19 @@
 - [x] Keep displayable reasoning separate from final answers; preserve omitted
   summaries and unknown reasoning-token usage honestly. Verify buffered Converse
   progress before graph completion without claiming token-by-token streaming.
+- [ ] Repair GPT Luna Converse multi-turn replay when a completed response
+  contains `reasoningContent.reasoningText.text` that the model rejects as an
+  assistant input. Qualify the distinction between display-only reasoning and
+  replayable native state using the actual returned field structure. Preserve
+  signatures, opaque content, answer/tool ordering and Claude replay behavior;
+  do not discard protected continuation or change the selected API to hide the
+  failure. Cover ordinary follow-up and tool-result turns before claiming parity.
+  For the affected `us.openai.gpt-6-luna` profile, unsigned reasoning text is
+  omitted only from assistant wire input; retain the original private
+  carrier and display summary. Apply this only to messages without signed or
+  redacted blocks; otherwise replay the whole message and surrounding context
+  unchanged. Other models/profiles keep exact replay. Any expansion and
+  mixed-carrier adaptation require separate qualification.
 - [x] Preserve worker deadlines, cancellation, cleanup and protected diagnostics.
   Prove serialization, tool continuation and credential rejection causally;
   finish exact unit coverage, installed/package/public-boundary and external

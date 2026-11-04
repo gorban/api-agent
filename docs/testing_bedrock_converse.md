@@ -58,7 +58,15 @@ uses the declared response fallback or rejects before inference. The original
 schema remains validated after a permitted fallback.
 
 Signed and opaque reasoning is preserved in order for answer and tool
-continuations. Opaque binary state has a 64 KiB aggregate bound and is never
+continuations. The `us.openai.gpt-6-luna` profile has reported rejecting plaintext
+reasoning as assistant input. The adapter retains that original
+response privately and displays its summary, but omits unsigned reasoning text
+from replay requests only when the message contains no signed or encrypted
+state. An entire signed/encrypted message remains unchanged, including any
+surrounding unsigned content. Other profiles/models retain exact replay;
+mixed-carrier adaptation and expansion to other models remain unqualified. This
+does not promise identical cache prefixes for unsupported display fields.
+Opaque binary state has a 64 KiB aggregate bound and is never
 shown in Studio, logs, traces or optional evidence. Converse usage may omit a
 separate reasoning-token count; missing usage remains unknown.
 
@@ -66,6 +74,10 @@ separate reasoning-token count; missing usage remains unknown.
 
 Live checks established GPT-OSS request/replay and Sonnet 4.5 low-budget replay.
 A separate GPT-6 Luna low-effort request confirmed the nested effort carrier.
+An operator's GPT-6 Luna high-effort two-call probe also confirmed exact replay
+of returned encrypted `redactedContent`. The reported unsigned-text replay
+repair still requires a matching live response; a text-only or encrypted-only
+response does not exercise that adaptation.
 These checks do not qualify every model/version/account or guarantee a nonempty
 summary. Opus 4.5 hybrid effort passed low-effort replay and low/high-effort
 named-tool workflows on its Runtime US profile; this does not qualify strict
