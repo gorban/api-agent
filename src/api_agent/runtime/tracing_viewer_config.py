@@ -35,8 +35,6 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
     schema = bootstrap_schema(schema, argv, environ, dotenv, owner_root=owner_root)
     path, _ = provider_location(location, owner_root=owner_root)
     declaration = read_declaration(path.parent)
-    if not declaration.profiles and declaration.dashboard is None:
-        raise ConfigError('Selected tracing provider has no dashboard capability.')
     options = parse_options(schema, argv)
     if options.errors:
         raise ConfigError('\n'.join(options.errors))
@@ -81,7 +79,10 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
         except ValueError:
             raise ConfigError('Invalid trace destination configuration.') from None
         if selected is None:
-            raise ConfigError('Trace viewer requires an enabled tracing provider profile.')
+            secrets = _raw_diagnostic_secrets(declaration.profiles, schema, (options.values, environ, dotenv))
+            message = (f'Trace viewer requires an enabled tracing provider profile. '
+                       f'TRACE_PROVIDER={location!r}; {declaration.selector} is disabled.')
+            raise ConfigError(_scrub_diagnostic(message, secrets))
     else:
         selected = declaration
     selector_names = set(selector_config.fields) if declaration.selector is not None else set(names)
@@ -95,7 +96,7 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
     fields, pinned = dict(schema.fields), {}
     managed = dict(selected.managed_endpoints)
     port = managed.get('dashboard_port_field')
-    if managed:
+    if managed or dashboard is None:
         auxiliary = {name for name in (selected.endpoint_field if not strict_endpoint else None,
                                        port if port not in names else None) if name in schema.fields}
         auxiliary_fields = {name: replace(field, required=False, required_when={})
@@ -148,7 +149,15 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
         result = resolve_fields(set(names), fields=fields, pinned=pinned)
         selection = admit(result)
     if selection.declaration.dashboard is None:
-        raise ConfigError('Selected tracing provider has no dashboard capability; configure an explicit dashboard for remote ingestion.')
+        # Export-only credentials must not become dashboard prerequisites, but
+        # configured secrets still constrain what a diagnostic may display.
+        secrets = _raw_diagnostic_secrets((selected,), schema, (options.values, environ, dotenv))
+        for name in set(selected.secret_fields) & schema.fields.keys():
+            try:
+                secrets.append(resolve_fields({name}, strict=False).values.get(name))
+            except ConfigError:
+                pass
+        raise ConfigError(_dashboard_unavailable(selection, selected, declaration, secret_values=secrets))
 
     def ownership(value):
         descriptor = value.declaration
@@ -180,3 +189,56 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
     if safe_destination(selection.values.get(selection.declaration.dashboard.url_field)) is None:
         raise ConfigError('Tracing dashboard requires a valid HTTP(S) URL without credentials, query or fragment.')
     return dict(selection.values)
+
+
+def _dashboard_unavailable(selection, profile, declaration, *, secret_values=()):
+    """Describe admitted capability loss without displaying unsafe URL components."""
+    from api_agent.runtime.local_status import safe_destination
+    values = selection.values
+    endpoint = profile.endpoint_field
+    secrets = [*secret_values, *(values.get(name) for name in profile.secret_fields)]
+    if profile.dashboard and profile.dashboard.password_field:
+        secrets.append(values.get(profile.dashboard.password_field))
+
+    def safe_url(value):
+        return (safe_destination(value) if type(value) is str and not any(
+            type(secret) is str and secret and secret in value for secret in secrets) else None)
+
+    actual = safe_url(values.get(endpoint)) or '<unset or unsafe URL; redacted>'
+    parts = ['Selected tracing provider has no dashboard capability.',
+             f'TRACE_PROVIDER={selection.location!r}.']
+    if declaration.selector:
+        parts.append(f'{declaration.selector}={profile.profile!r}.')
+    parts.append(f'Actual {endpoint}={actual}.')
+    managed = dict(profile.managed_endpoints)
+    expected = [managed['trace_endpoint'], *managed.get('trace_endpoint_aliases', ())] if managed else []
+    if expected:
+        parts.append('Managed endpoint defaults: ' + ', '.join(
+            safe_url(value) or '<unsafe URL; redacted>' for value in expected) + '.')
+    if selection.dashboard_unavailable_reason == 'explicit_empty_viewer':
+        parts.append(f'{profile.dashboard.url_field} is explicitly empty, which disables the dashboard; '
+                     'remove that saved override to use the managed default, or set an explicit dashboard URL.')
+    elif selection.dashboard_unavailable_reason == 'unmanaged_endpoint':
+        parts.append('The effective ingestion endpoint does not match this profile’s managed defaults. '
+                     'A saved endpoint from a different profile can remain after changing the mode. '
+                     f'Review {endpoint}: remove the saved override to use the selected profile’s default '
+                     f'or keep remote ingestion and configure an explicit {profile.dashboard.url_field}. '
+                     'Explicit endpoints are never overwritten automatically.')
+    return _scrub_diagnostic(' '.join(parts), secrets)
+
+
+def _raw_diagnostic_secrets(profiles, schema, sources):
+    """Read known raw secrets without admitting disabled credential requirements."""
+    names = {name for profile in profiles for name in profile.secret_fields}
+    names.update(name for name, field in schema.fields.items() if field.sensitive)
+    names.update(profile.dashboard.password_field for profile in profiles if profile.dashboard)
+    fields = [field for name, field in schema.fields.items() if name in names]
+    defaults = [field.default for field in fields]
+    defaults.extend(row['value'] for field in fields for row in field.conditional_defaults)
+    return defaults + [source.get(name) for name in names for source in sources]
+
+
+def _scrub_diagnostic(message, secrets):
+    for secret in sorted({value for value in secrets if type(value) is str and value}, key=len, reverse=True):
+        message = message.replace(secret, '[redacted]')
+    return message

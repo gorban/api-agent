@@ -324,3 +324,10 @@ def test_legacy_e2e_recollection_confirmation_can_cancel_before_execution(tmp_pa
             await pilot.click('#quit-submit')
             assert await confirmation is False
     asyncio.run(scenario())
+
+
+def test_e2e_debug_warning_includes_confirmation_browsers():
+    from types import SimpleNamespace
+    tests = [SimpleNamespace(id='one'), SimpleNamespace(id='two')]
+    assert 'additional confirmation browsers' in debug_warning('e2e', True, tests)
+    assert 'additional confirmation browsers' not in debug_warning('integration', True, tests)

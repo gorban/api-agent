@@ -158,9 +158,13 @@ reporting resources alive, and closes owned resources on Ctrl+C. Repeated
 Ctrl+C waits for disposal acknowledgement. Startup and cleanup errors appear
 on stderr with credentials scrubbed.
 
-In live or completed test results, highlight one completed test and press
-**a View in Allure** for that exact attempt. Pending/running tests, groups, units
-and multi-row selections have no shortcut. A live preview labels pending
+In live or completed integration/E2E results, highlight a completed test and press
+**a View in Allure** for that exact attempt. Shift+Up/Down extends a selected
+range; Ctrl+A selects all rows. Press **a** to open one report containing the
+selected tests. Escape clears the range. Every selected row must be completed
+and have retained Allure evidence; pending/running tests, groups and units have
+no shortcut. Finalized E2E selections include their confirmation attempts under
+Retries while excluding unselected tests. A live preview labels pending
 suite-wide accounting; final publication gets a separate immutable binding.
 The viewer remains until leaving results, Back to selection, End inspection or
 quit. Viewer failures do not change test/publication outcomes. Normal prompts,

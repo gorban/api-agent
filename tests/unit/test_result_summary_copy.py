@@ -421,3 +421,13 @@ def test_empty_error_message_does_not_offer_copy(tmp_path):
             assert app.screen.copy_target() == (None, False)
             assert not app.screen.check_action('copy_value', ())
     asyncio.run(scenario())
+
+
+def test_e2e_summary_counts_recovered_tests_only_in_final_rate():
+    from dataclasses import replace
+    values = outcomes(('passed', 'passed', 'failed'))
+    values = (values[0], replace(values[1], first_status='failed'),
+              replace(values[2], first_status='failed'))
+    assert format_test_summary('e2e', values, elapsed=61) == (
+        'E2e results: FAIL — 2/3 passed (66.67%); first chance 1/3 (33.33%)'
+        ' — final 2/3 (66.67%) — 1m 1s total.')

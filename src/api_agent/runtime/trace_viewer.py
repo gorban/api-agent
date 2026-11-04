@@ -16,7 +16,7 @@ def resolve_viewer_config(schema, *, argv, environ, dotenv, anchors):
     from api_agent.runtime.tracing_viewer_config import custom_viewer_config
     values = custom_viewer_config(schema, argv=argv, environ=environ, dotenv=dotenv, anchors=anchors)
     if values is None:
-        raise ConfigError('Trace viewer requires an enabled tracing provider profile.')
+        raise ConfigError('Trace viewer requires an enabled tracing provider profile; TRACE_PROVIDER is omitted or empty.')
     return values
 
 

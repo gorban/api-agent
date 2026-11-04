@@ -34,8 +34,7 @@ position. Unit selection does not offer authentication controls.
 - [ ] Human review the bounded E2E selection, rendered response and matching
   turn screenshot, node payloads and LLM evidence in Allure.
 
-This slice accepts E2E_RERUNS=0 only. A positive allowance fails preflight before
-services or authentication. Defaults remain unchanged: select zero explicitly
-until the confirmation aggregation in the linked requirements is delivered.
-Retry/rate reporting, full scenario migration and broader UI providers remain
-pending. This checkpoint does not complete the parent E2E checklist.
+The first-slice zero-only restriction is superseded by the linked
+[confirmation protocol](implementation_plan_d5.md): the default allowance is
+two, and explicit empty or zero disables confirmations. Full scenario migration
+and broader UI providers remain pending. This checkpoint does not complete the parent E2E checklist.

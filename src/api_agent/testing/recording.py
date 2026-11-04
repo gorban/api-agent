@@ -202,7 +202,11 @@ class RunRecorder:
         ended = self._clock()
         _timestamp(ended)
         stopped_ms = int(ended.timestamp() * 1000)
-        started_ms = stopped_ms - int(max(0, result.duration) * 1000)
+        prior_stops = [item.get('stop', -1) for item in self._results
+                       if item.get('node_id') == test.node_id]
+        stopped_ms = max(stopped_ms, max(prior_stops, default=-1) + 1)
+        started_ms = max(max(prior_stops, default=-1) + 1,
+                         stopped_ms - int(max(0, result.duration) * 1000))
         row = {
             'uuid': str(uuid4()), 'historyId': hashlib.sha256(f'{self.identity.repo}:{self.identity.mode}:{test.node_id}'.encode()).hexdigest(),
             'name': name, 'fullName': self._safe_text(test.node_id), 'status': status,
@@ -226,7 +230,9 @@ class RunRecorder:
         if result.traceback and self._include_trace:
             row.setdefault('statusDetails', {})['trace'] = self._safe_text(result.traceback)
         filename = self._write(f'{row["uuid"]}-result.json', json.dumps(row, sort_keys=True).encode())
-        self._results.append({'file': filename, 'status': result.status})
+        self._results.append({'file': filename, 'status': result.status,
+                              'history_id': row['historyId'], 'attempt': attempt,
+                              'node_id': test.node_id, 'stop': stopped_ms})
         return filename
 
     def attach_test_artifacts(self, artifacts):
@@ -273,7 +279,7 @@ class RunRecorder:
             finally:
                 temporary.unlink(missing_ok=True)
 
-    def finalize(self, metadata=None, *, status=None, shared_artifacts=()):
+    def finalize(self, metadata=None, *, status=None, shared_artifacts=(), e2e_reruns=None):
         if self._finalized:
             raise RuntimeError('Run already finalized')
         if self._write_failed:
@@ -286,7 +292,52 @@ class RunRecorder:
                     or not isinstance(mime, str) or not mime):
                 raise ValueError('Shared attachments require a recorded artifact, title and MIME type')
             shared_rows.append({'name': self._safe_text(title), 'source': source, 'type': mime})
-        statuses = {row['status'] for row in self._results}
+        e2e_outcomes = None
+        if e2e_reruns is not None:
+            if self.identity.mode != 'e2e':
+                raise ValueError('Confirmation outcomes require E2E mode')
+            from .confirmations import confirmation_count, confirmation_outcome
+            e2e_reruns = confirmation_count(e2e_reruns)
+            groups = {}
+            for result in self._results:
+                groups.setdefault(result['history_id'], []).append(result)
+            e2e_outcomes = []
+            for history, results in groups.items():
+                if [item['attempt'] for item in results] != list(range(1, len(results) + 1)):
+                    raise ValueError('Confirmation attempts must be contiguous and ordered')
+                final, incomplete = confirmation_outcome([item['status'] for item in results], e2e_reruns)
+                if incomplete:
+                    final = 'interrupted' if status == 'interrupted' else 'failed'
+                e2e_outcomes.append(dict(history_id=history, first_status=results[0]['status'],
+                    final_status=final, attempts=len(results), complete=not incomplete,
+                    attempt_statuses=[item['status'] for item in results],
+                    result_files=[item['file'] for item in results]))
+                # Native Allure selects the latest result in a history group.
+                # A successful recovery is deliberately yellow (broken), while
+                # a successful intermediate attempt cannot hide protocol failure.
+                latest = results[-1]
+                projected = ('broken' if final == 'passed' and len(results) > 1 else
+                             'passed' if final == 'passed' else
+                             'skipped' if final == 'skipped' else 'failed')
+                path = self.directory / latest['file']
+                row = json.loads(path.read_bytes())
+                row['status'] = projected
+                if final == 'passed' and len(results) > 1:
+                    row['statusDetails'] = {'message': 'Recovered after all required confirmations passed'}
+                elif incomplete:
+                    row['statusDetails'] = {'message': 'Required confirmations did not complete'}
+                temporary = self.directory / f'.{uuid4()}.tmp'
+                try:
+                    with temporary.open('xb') as stream:
+                        stream.write(json.dumps(row, sort_keys=True).encode())
+                    temporary.replace(path)
+                except OSError:
+                    self._write_failed = True
+                    raise
+                finally:
+                    temporary.unlink(missing_ok=True)
+        statuses = ({row['final_status'] for row in e2e_outcomes}
+                    if e2e_outcomes is not None else {row['status'] for row in self._results})
         derived = ('interrupted' if statuses & {'cancelled', 'interrupted'} else
                    'failed' if statuses & {'failed', 'broken', 'error'} else 'completed')
         if status is None:
@@ -302,6 +353,25 @@ class RunRecorder:
             setup = TestIdentity(f'{self.identity.repo}::__suite__', self.identity.repo,
                                  '__suite__', '__suite__::setup')
             self.record_test(TestResult(setup, 'interrupted' if status == 'interrupted' else 'broken'))
+            if e2e_outcomes is not None:
+                item = self._results[-1]
+                path = self.directory / item['file']
+                row = json.loads(path.read_bytes())
+                row['status'] = 'failed'
+                temporary = self.directory / f'.{uuid4()}.tmp'
+                try:
+                    with temporary.open('xb') as stream:
+                        stream.write(json.dumps(row, sort_keys=True).encode())
+                    temporary.replace(path)
+                except OSError:
+                    self._write_failed = True
+                    raise
+                finally:
+                    temporary.unlink(missing_ok=True)
+                final, incomplete = confirmation_outcome([item['status']], e2e_reruns)
+                e2e_outcomes.append(dict(history_id=item['history_id'], first_status=item['status'],
+                    final_status=final, attempts=1, complete=not incomplete,
+                    attempt_statuses=[item['status']], result_files=[item['file']]))
         # Quota is known only after all tests drain. Attach one frozen suite
         # artifact to every outcome, including synthetic setup failures, before
         # hashing files and publishing the manifest that makes this run visible.
@@ -321,7 +391,12 @@ class RunRecorder:
                 finally:
                     temporary.unlink(missing_ok=True)
         boundary = EmissionBoundary(assigned_ids=(self.identity.run_id,))
-        safe_metadata = boundary.export(metadata or {})
+        metadata = dict(metadata or {})
+        safe_metadata = boundary.export(metadata)
+        if e2e_outcomes is not None:
+            # These records are constructed above from admitted result statuses,
+            # generated filenames and SHA-256 identities, never caller content.
+            safe_metadata.update(e2e_reruns=e2e_reruns, e2e_outcomes=e2e_outcomes)
         files = {name: hashlib.sha256((self.directory / name).read_bytes()).hexdigest()
                  for name in sorted(self._files)}
         manifest = {'schema': 1, 'run_id': self.identity.run_id, 'repo': self.identity.repo,

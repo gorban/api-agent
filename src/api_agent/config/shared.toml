@@ -84,9 +84,10 @@ pack_only = true
 help = "Base runtime location, resolved relative to the pack root."
 
 [fields.E2E_RERUNS]
-help = "E2E-only retry allowance; unit and integration tests never retry. E2E execution requires human acceptance."
+help = "E2E confirmations after an initial failure: every configured confirmation must pass; stop at the first unsuccessful confirmation. Initial passes never repeat. Empty or 0 disables confirmations. Unit and integration tests never repeat. E2E execution requires explicit acceptance."
 type = "int"
-default = 0
+allow_empty = true
+default = 2
 validation = "nonnegative"
 [fields.E2E_RERUNS.applies_when]
 TUI_MODE = "e2e"
