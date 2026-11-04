@@ -22,12 +22,12 @@ class SearchInput(EditableInput):
         super().__init__(*args, **kwargs)
 
     BINDINGS = [
-        Binding('up,k', "navigate('up')", show=False),
-        Binding('down,j', "navigate('down')", show=False),
+        Binding('up', "navigate('up')", show=False),
+        Binding('down', "navigate('down')", show=False),
         Binding('pageup', "navigate('page_up')", show=False),
         Binding('pagedown', "navigate('page_down')", show=False),
-        Binding('shift+up,shift+k,K', "navigate('range_up')", show=False),
-        Binding('shift+down,shift+j,J', "navigate('range_down')", show=False),
+        Binding('shift+up', "navigate('range_up')", show=False),
+        Binding('shift+down', "navigate('range_down')", show=False),
         Binding('shift+pageup', "navigate('range_page_up')", show=False),
         Binding('shift+pagedown', "navigate('range_page_down')", show=False),
         Binding('ctrl+shift+up,super+shift+up', "navigate('range_top')", show=False),
@@ -82,13 +82,6 @@ class SearchInput(EditableInput):
             self.delete_selection()
 
     async def _on_key(self, event: events.Key):
-        movement = {'j': 'down', 'k': 'up', 'J': 'range_down', 'K': 'range_up',
-                    'shift+j': 'range_down', 'shift+k': 'range_up'}
-        if event.key in movement:
-            self.action_navigate(movement[event.key])
-            event.stop()
-            event.prevent_default()
-            return
         # The other platform's hidden cut shortcut must never reach native cut.
         if event.key in ('ctrl+x', 'super+x'):
             expected = 'super+x' if sys.platform == 'darwin' else 'ctrl+x'

@@ -97,7 +97,10 @@ to the calling directory. A pack launcher selects its own pack by default.
 ## Navigation and worktree safety
 
 The bottom bar shows available shortcuts. Tab selects controls; arrows and
-h/j/k/l navigate tables and scroll panes. Space or Enter toggles test selections.
+h/j/k/l navigate tables and scroll panes. During `/` or `?` test filtering,
+letters (including h/j/k/l and uppercase variants) type into the query; Up/Down
+still navigate the matching tests. Escape exits filtering and restores Vim
+navigation. Space or Enter toggles test selections.
 Copy uses Ctrl+C on non-Mac systems and Cmd+C on Mac. On the main menu, **q** exits
 immediately; active operations require confirmation and owned cleanup.
 
