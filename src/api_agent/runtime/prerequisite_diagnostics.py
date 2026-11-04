@@ -1,6 +1,28 @@
 """Value-free diagnosis and non-destructive advice for managed infrastructure."""
 import shlex
 
+
+def missing_captured_assets_message(identifier, *, executable, project):
+    """Explain a retained bind whose captured host files were removed."""
+    border = '!' * 72
+    notice = '\n'.join((
+        border, '', 'ACTION REQUIRED: retained prerequisite files are missing', '',
+        'A retained container references captured host files that no longer exist.',
+        'Cleaning ignored artifacts (for example with git clean -xdf) can cause this.',
+        'The container cannot be adopted until it is recreated with fresh captures.', '',
+        'Recover while preserving named volumes:',
+        f'1. Stop all launcher/test invocations using project {project}.',
+        '2. Use the same container engine/context as the launcher. Confirm the',
+        '   identified container is not being used by another operation.',
+        '3. Stop and remove only that container:',
+        '   ' + shlex.join((executable, 'stop', identifier)),
+        '   ' + shlex.join((executable, 'rm', identifier)),
+        '4. Rerun the launcher/test; it captures the assets and recreates the container.', '',
+        'Keep all volumes. Do not use -v, compose down -v, or volume pruning.',
+        '', border,
+    ))
+    return 'Prerequisite captured assets are missing.' + '\n\n\n' + notice + '\n\n'
+
 _LANGFUSE_SETTINGS = {
     'LANGFUSE_INIT_USER_EMAIL': 'LANGFUSE_ADMIN_EMAIL',
     'LANGFUSE_INIT_USER_PASSWORD': 'LANGFUSE_ADMIN_PASSWORD',
