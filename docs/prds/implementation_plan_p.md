@@ -32,3 +32,8 @@ GraphQL/entry/environment checks; combined measured statement/branch coverage is
 Generated lock entries do not establish fresh-host/non-Linux qualification.
 Platform, publication and human acceptance remain explicit. The separately
 requested recursive executable extension has its own linked verification gates.
+
+## Interactive shell trust
+
+- [x] Before isolating project tool configuration and state, persist trust for the exact resolved checkout `mise.toml` through the caller's mise configuration/state. Suppress project environment and hooks during this trust operation. Do not trust a directory tree, parent or sibling configuration. A failed trust write must stop before tool execution with recovery guidance. Preserve inherited custom state/configuration paths and normal CLI/cwd/exit behavior.
+- [ ] Human acceptance: after running `launch.sh`, leaving and reentering the checkout in macOS Terminal no longer warns that its unchanged `mise.toml` is untrusted. Later paranoid-mode content changes retain mise's normal trust checks until the next explicit launch.

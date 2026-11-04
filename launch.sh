@@ -16,6 +16,11 @@ while [ -L "$entry" ]; do
   case "$target" in /*) entry=$target ;; *) entry=$directory/$target ;; esac
 done
 root=$(CDPATH= cd -P "$(dirname "$entry")" && pwd)
+# The interactive shell reads the caller's trust state, not our isolated state.
+if ! mise --no-env --no-hooks --quiet trust "$root/mise.toml"; then
+  printf '%s\n' 'Could not trust the project mise.toml for this shell. Check mise state-directory permissions, then retry launch.sh.' >&2
+  exit 2
+fi
 state="$root/.api-agent/bootstrap"
 export API_AGENT_MISE=1 API_AGENT_CALLER_CWD="$(pwd -P)"
 # Keep project tool selection separate from shell configuration and other repos.
