@@ -461,3 +461,20 @@ def test_model_catalog_cache_ttl_rejects_invalid_values(value, message):
         'TUI_MODE': 'unit', 'LLM_CATALOG_CACHE_TTL_SECONDS': value})
 
     assert result.errors == (f'LLM_CATALOG_CACHE_TTL_SECONDS: {message}',)
+
+
+@pytest.mark.parametrize('mode, collect_only, present', [
+    ('unit', False, True), ('unit', True, False),
+    ('integration', False, False), ('e2e', False, False),
+])
+def test_all_unit_is_an_execution_only_unit_setting(tmp_path, mode, collect_only, present):
+    schema = load_shared_schema()
+    options = {**AUTH, 'TUI_MODE': mode, 'COLLECT_ONLY': str(collect_only)}
+    result = resolve_config(schema, environ=options, anchors={'owner_root': tmp_path})
+    result.raise_for_errors()
+    assert ('ALL_UNIT' in result.values) is present
+    if present:
+        assert result.values['ALL_UNIT'] is False
+        explicit = resolve_config(schema, environ=options, argv=['--all-unit'], anchors={'owner_root': tmp_path})
+        explicit.raise_for_errors()
+        assert explicit.values['ALL_UNIT'] is True

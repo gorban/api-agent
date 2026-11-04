@@ -368,6 +368,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             from api_agent.testing.collection import collect_tests
             from api_agent.testing.runner import run_unit_tests, format_unit_summary, unit_parallel_jobs
             tests = collect_tests(context, 'unit', result.positionals)
+            from api_agent.testing.unit_scope import unit_default_tests, owner_unit_only, EMPTY_OWNER_UNITS
+            if not result.positionals:
+                tests = unit_default_tests(context, tests, all_unit=result.values.get('ALL_UNIT', False))
+                if not tests and owner_unit_only(context, result.values):
+                    raise ValueError(EMPTY_OWNER_UNITS)
             selected_tools = compose_operation_tools(context, schema,
                 selection=OperationSelection('unit', tuple(test.id for test in tests)),
                 argv=argv, environ=os.environ, dotenv=dotenv,
@@ -386,6 +391,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             execution = run_unit_tests(context, tests, evidence_boundary=unit_scrubber.boundary, output=lambda chunk: print(chunk, end='', flush=True),
                                        parallel_jobs=unit_parallel_jobs(result.values),
                                        coverage_full=result.values.get('UNIT_COVERAGE_FULL', False),
+                                       **({'coverage_owner_only': True} if owner_unit_only(context, result.values) else {}),
                                        **({'successful_test_diagnostics_level': 'info'}
                                           if result.values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL') == 'info' else {}),
                                        require_full_coverage=not result.positionals)

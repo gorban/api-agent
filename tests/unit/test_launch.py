@@ -303,3 +303,48 @@ def test_launch_keyboard_interrupt_has_clean_exit(monkeypatch, capsys):
     monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', interrupted)
     assert main(['--help'], base_root=ROOT) == 130
     assert capsys.readouterr().err == 'Run interrupted.\n'
+
+
+def test_terminal_owner_defaults_and_explicit_all_or_dependency_selection(tmp_path):
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.testing.runner import UnitRunResult
+    pack = tmp_path / 'owner'
+    pack.mkdir()
+    (pack / 'config.toml').write_text('version = 1\n')
+    (pack / 'pack.toml').write_text('version = 1\nid = "owner_fixture"\nconfig = "config.toml"\n')
+    tests = (TestIdentity('api-agent::a', 'api-agent', 'a.py', 'a'),
+             TestIdentity('owner::b', 'owner', 'b.py', 'b'))
+    cases = [((), tests[1:], True), (('--all-unit',), tests, False),
+             (('api-agent::a',), tests[:1], True)]
+    for options, expected, owner_only in cases:
+        with patch.dict(os.environ, {}, clear=True), patch('sys.stdout', StringIO()), \
+                patch('api_agent.config.read_dotenv', return_value={}), \
+                patch('api_agent.runtime.worktrees.verify_worktrees'), \
+                patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+                patch('api_agent.testing.collection.collect_tests', return_value=tests[:1] if options == ('api-agent::a',) else tests) as collect, \
+                patch('api_agent.testing.runner.run_unit_tests', return_value=UnitRunResult(0, (), (), '')) as run:
+            assert main(['--no-std-in', '--tui-mode=unit', *options], base_root=ROOT, resource_pack_dir=pack) == 0
+            assert tuple(run.call_args.args[1]) == expected
+            assert run.call_args.kwargs.get('coverage_owner_only', False) is owner_only
+            assert tuple(collect.call_args.args[2]) == (('api-agent::a',) if options == ('api-agent::a',) else ())
+
+
+def test_terminal_empty_owner_guides_all_unit_without_running_dependencies(tmp_path):
+    from api_agent.testing.collection import TestIdentity
+    pack = tmp_path / 'owner'
+    pack.mkdir()
+    (pack / 'config.toml').write_text('version = 1\n')
+    (pack / 'pack.toml').write_text('version = 1\nid = "empty_owner_fixture"\nconfig = "config.toml"\n')
+    tests = (TestIdentity('api-agent::a', 'api-agent', 'a.py', 'a'),)
+    errors = StringIO()
+    with patch.dict(os.environ, {}, clear=True), patch('sys.stdout', StringIO()), patch('sys.stderr', errors), \
+            patch('api_agent.config.read_dotenv', return_value={}), \
+            patch('api_agent.runtime.worktrees.verify_worktrees'), \
+            patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+            patch('api_agent.testing.collection.collect_tests', return_value=tests), \
+            patch('api_agent.testing.runner.run_unit_tests') as run:
+        assert main(['--no-std-in', '--tui-mode=unit'], base_root=ROOT, resource_pack_dir=pack) == 2
+        assert '--all-unit' in errors.getvalue()
+        run.assert_not_called()
+        assert main(['--no-std-in', '--tui-mode=unit', '--collect-only'], base_root=ROOT, resource_pack_dir=pack) == 0
+        run.assert_not_called()

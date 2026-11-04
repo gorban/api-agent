@@ -172,8 +172,8 @@ def test_catalog_accepts_distinct_models_with_same_family_and_unknown_versions()
     assert observed.rows == rows
 
 
-@pytest.mark.parametrize('version, duplicate, label', [('2.7',False,'2.7'), (None,False,'Unknown version — vendor.beta'), ('2.7',True,'2.7 — vendor.beta')])
-def test_prompt_uses_catalog_labels_and_actual_wire_selection(monkeypatch, version, duplicate, label):
+@pytest.mark.parametrize('version', ['2.7', None])
+def test_prompt_uses_ui_group_handle_and_actual_wire_selection(monkeypatch, version):
     import asyncio
     from unittest.mock import AsyncMock
     from api_agent.providers.llm import AvailableSelection
@@ -182,15 +182,13 @@ def test_prompt_uses_catalog_labels_and_actual_wire_selection(monkeypatch, versi
     wire = {'model':'vendor.beta','reasoning_effort':'high',
         'messages':[{'role':'user','content':'Respond with exactly: Maybe'}]}
     page = Mock()
-    page.evaluate = AsyncMock(return_value={'default':'vendor.alpha','reasoning_default':'off'})
+    page.evaluate = AsyncMock(return_value={'default':'vendor.alpha','reasoning_default':'off','selectedGroup':'beta-family'})
     controls = {}
     def locator(selector):
         if selector not in controls:
             control = Mock()
             control.click = AsyncMock()
             control.select_option = AsyncMock()
-            control.get_attribute = AsyncMock(return_value='beta-family')
-            control.filter.return_value = control
             controls[selector] = control
         return controls[selector]
     page.locator = locator
@@ -209,7 +207,7 @@ def test_prompt_uses_catalog_labels_and_actual_wire_selection(monkeypatch, versi
     page.expect_request = expect_request
     expectations = []
     def expect(control):
-        result = SimpleNamespace(to_have_attribute=AsyncMock(),to_have_text=AsyncMock(),to_have_count=AsyncMock())
+        result = SimpleNamespace(to_have_attribute=AsyncMock(),to_have_text=AsyncMock(),to_have_value=AsyncMock())
         expectations.append((control,result))
         return result
     import playwright.async_api
@@ -218,16 +216,23 @@ def test_prompt_uses_catalog_labels_and_actual_wire_selection(monkeypatch, versi
     observed = SimpleNamespace(choices=choices,rows=(None,
         AvailableSelection('vendor.beta',family='Beta public',version=version)))
     observed.catalog = [observed.rows[1]]
-    if duplicate:
-        observed.catalog.append(AvailableSelection('vendor.gamma',family='Beta public',version=version))
     result = asyncio.run(selected.selection_prompt(SimpleNamespace(session=SimpleNamespace(page=page)), observed))
     assert result == wire
     controls['#model'].select_option.assert_awaited_once_with('beta-family')
     controls['#version'].select_option.assert_awaited_once_with('vendor.beta')
     controls['#reasoning'].select_option.assert_awaited_once_with('high')
-    assert controls['#model option'].filter.call_args.kwargs['has_text'].fullmatch('Beta public')
+    assert '#model option' not in controls
+    page.evaluate.assert_awaited_once()
+    assert page.evaluate.call_args.args[1] == 'vendor.beta'
     checked = [result for control,result in expectations if control is controls['#version option:checked']]
-    checked[0].to_have_text.assert_awaited_once_with(label)
+    label = checked[0].to_have_text.call_args.args[0]
+    assert label.fullmatch(version or 'Unknown version')
+    assert label.fullmatch((version or 'Unknown version') + ' — vendor.beta')
+    assert not label.fullmatch('1' + (version or 'Unknown version'))
+    assert not label.fullmatch((version or 'Unknown version') + ' — vendor.gamma')
+    for selector, value in (('#model', 'beta-family'), ('#version', 'vendor.beta')):
+        matched = [result for control, result in expectations if control is controls[selector]]
+        matched[0].to_have_value.assert_awaited_once_with(value)
 
 
 def test_final_evidence_checks_observed_provider_request(monkeypatch, capsys):
@@ -255,3 +260,16 @@ def test_catalog_requires_family_for_ui_control():
     rows = tuple(AvailableSelection(model, family=None, features=('reasoning_effort',),reasoning_efforts=('medium','off')) for model in CHOICES[:2])
     with pytest.raises(AssertionError, match='advertised model family'):
         module().selection_catalog.__wrapped__(CHOICES, SimpleNamespace(describe=lambda:rows))
+
+
+def test_default_model_configuration_derives_distinct_catalog_choices():
+    from api_agent.providers.llm import AvailableSelection
+    values = {'LLM_DEFAULT_MODEL': 'vendor.alpha', 'LLM_REASONING_EFFORT': 'low'}
+    selected = module()
+    config = selected.require_selection_configuration(IntegrationRequirements(values))
+    rows = tuple(AvailableSelection(identifier, family='Sample', version=version,
+        features=('reasoning_effort',), reasoning_efforts=('off', 'low'))
+        for identifier, version in (('vendor.alpha', '2'), ('vendor.beta', '1')))
+    observed = selected.selection_catalog.__wrapped__(config, SimpleNamespace(describe=lambda: rows))
+    assert observed.choices == ('vendor.alpha', 'vendor.beta', 'off', 'low')
+    assert observed.rows == rows

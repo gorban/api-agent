@@ -1554,6 +1554,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if self._review_return_to_tests:
             self._review_return_to_tests = False
             self.review_destination = None
+            if self.mode == 'unit' and getattr(self, '_unit_all_default', False) != self.session.result().values.get('ALL_UNIT', False):
+                self.apply_unit_defaults()
             self.show_selection()
         elif self.review_destination:
             self.mode = self.review_destination
@@ -1719,6 +1721,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.exit(0)
                 return
             self.selection = SelectionModel(tests)
+            self.apply_unit_defaults()
             if self.active_test_selectors:
                 self.selection.preselect(self.active_test_selectors)
             if not tests:
@@ -1731,6 +1734,16 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         except Exception as error:
             if await self.collection_delivery_allowed(owner, cancel_event):
                 self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
+
+    def apply_unit_defaults(self):
+        if self.mode != 'unit' or self.active_test_selectors:
+            return
+        from api_agent.testing.unit_scope import owner_unit_only
+        from api_agent.testing.collection import repository_label
+        self._unit_all_default = self.session.result().values.get('ALL_UNIT', False)
+        repositories = ({repository_label(self.context, self.context.owner_root)}
+                        if owner_unit_only(self.context, self.session.result().values) else None)
+        self.selection.set_defaults(repositories)
 
     def back_to_selection(self):
         # Capture the visit before a caller can queue this coroutine behind Quit.
@@ -1789,6 +1802,11 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 return
             self.selection.refresh_for_run(fresh_tests)
             if not self.selection.selected_tests:
+                from api_agent.testing.unit_scope import unit_default_tests, owner_unit_only, EMPTY_OWNER_UNITS
+                values = self.session.result().values
+                if owner_unit_only(self.context, values) and not unit_default_tests(
+                        self.context, fresh_tests, all_unit=values.get('ALL_UNIT', False)):
+                    raise ValueError(EMPTY_OWNER_UNITS)
                 raise ValueError("No selected tests remain after recollection")
             if (not self.session.result().values.get('NO_STD_IN')
                     and len(self.selection.selected_ids) == len(self.selection.tests)):
@@ -1803,15 +1821,18 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
             self.show_unit_results(self.unit_progress())
             run_values = self.session.result().values
+            from api_agent.testing.unit_scope import owner_unit_only, unit_coverage_complete
             result = await asyncio.to_thread(
                 runner, self.context, self.selection.selected_tests,
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel,
                 parallel_jobs=unit_parallel_jobs(run_values),
                 coverage_full=run_values.get('UNIT_COVERAGE_FULL', False),
+                **({'coverage_owner_only': True} if owner_unit_only(self.context, run_values) else {}),
                 **({'successful_test_diagnostics_level': 'info'}
                    if run_values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL') == 'info' else {}),
-                require_full_coverage=self.selection.groups()[0].selected)
+                require_full_coverage=unit_coverage_complete(self.context, self.selection.tests,
+                    self.selection.selected_tests, all_unit=run_values.get('ALL_UNIT', False)))
             self.unit_result = result
             for test in result.tests:
                 self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f"{test.duration:.3f}s")
@@ -2671,6 +2692,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     await self.close_view()
                     return
                 if not self.selection.selected_ids:
+                    from api_agent.testing.unit_scope import unit_default_tests, owner_unit_only, EMPTY_OWNER_UNITS
+                    values = self.session.result().values
+                    if (self.mode == 'unit' and owner_unit_only(self.context, values)
+                            and not unit_default_tests(self.context, self.selection.tests,
+                                                      all_unit=values.get('ALL_UNIT', False))):
+                        raise ValueError(EMPTY_OWNER_UNITS)
                     raise ValueError(NO_TEST_SELECTION_MESSAGE)
                 from api_agent.testing.debug_confirmation import debug_warning
                 warning = debug_warning(self.mode, self.session.result().values.get('DEBUG'),

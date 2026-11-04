@@ -91,33 +91,37 @@ class SelectionProvider:
 
 
 async def selection_prompt(prepared, observed):
-    """Exercise family, version and effort controls; observe actual outgoing JSON."""
+    """Exercise included Studio controls; observe actual outgoing JSON."""
     from playwright.async_api import expect
     default, selected, default_effort, selected_effort = observed.choices
     selected_row = observed.rows[1]
-    version_label = selected_row.version or 'Unknown version'
-    same_version = sum(row.family == selected_row.family and row.version == selected_row.version for row in observed.catalog)
-    if not selected_row.version or same_version > 1:
-        version_label += ' — ' + selected_row.selected_llm
     page = prepared.session.page
     async with component_timeout('Studio settings selection', 30):
         await expect(page.locator('#model-status')).to_have_attribute('data-catalog-state', 'settled', timeout=15000)
         await expect(page.locator('#model-status')).to_have_text('')
         # This is the backend's default, before any control changes.
-        catalog = await page.evaluate('''async () => {
+        catalog = await page.evaluate('''async selected => {
+            const {normalizeCatalog, modelGroups} = await import('/catalog.js');
             const config = await (await fetch('/config.json')).json();
             const response = await fetch(config.apiOrigin + '/app/agent/models', {headers: config.apiHeaders});
             if (!response.ok) throw Error('Model catalog HTTP ' + response.status);
-            return response.json();
-        }''')
+            const catalog = await response.json();
+            const groups = modelGroups(normalizeCatalog(catalog));
+            const matches = groups.filter(group => group.rows.some(row => row.selected_llm === selected));
+            if (matches.length !== 1) throw Error('Expected one Studio group for selected model');
+            return {...catalog, selectedGroup: matches[0].value};
+        }''', selected)
         assert catalog['default'] == default
         assert catalog['reasoning_default'] == default_effort
         await page.locator('#settings-nav').click()
-        family = page.locator('#model option').filter(has_text=re.compile('^' + re.escape(selected_row.family) + '$', re.I))
-        await expect(family).to_have_count(1)
-        await page.locator('#model').select_option(await family.get_attribute('value'))
+        # Reuse Studio's catalog grouping; visible family labels may be shortened.
+        await page.locator('#model').select_option(catalog['selectedGroup'])
+        await expect(page.locator('#model')).to_have_value(catalog['selectedGroup'])
         await page.locator('#version').select_option(selected)
-        await expect(page.locator('#version option:checked')).to_have_text(version_label)
+        await expect(page.locator('#version')).to_have_value(selected)
+        version_label = re.escape(selected_row.version or 'Unknown version')
+        await expect(page.locator('#version option:checked')).to_have_text(
+            re.compile('^' + version_label + '(?: — ' + re.escape(selected) + ')?$'))
         await page.locator('#reasoning').select_option(selected_effort)
         await expect(page.locator('#model-status')).to_have_text('')
         await page.locator('#close-settings').click()

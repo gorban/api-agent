@@ -4,7 +4,7 @@
 
 Write deterministic requirement tests, preferably red-to-green. Before code commits, require applicable units at exact 100% line/branch coverage under AGENTS.md. Use focused mutations for ambiguous rejection causes.
 
-The TUI enforces exact All tests coverage; partial coverage is informational. CI requires applicable units/coverage before merges. Units never enter Allure. Renew coverage as features land and before cleanup. Agree final E2E pass-rate thresholds/measurement separately.
+The TUI enforces exact complete unit-scope coverage; partial coverage is informational. See [owner unit defaults](implementation_plan_a15.md). CI requires applicable units/coverage before merges. Units never enter Allure. Renew coverage as features land and before cleanup. Agree final E2E pass-rate thresholds/measurement separately.
 
 ## Checklist
 

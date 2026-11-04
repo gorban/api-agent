@@ -562,3 +562,18 @@ def test_unit_scratch_closes_directory_descriptor_on_interrupt(tmp_path, monkeyp
     with pytest.raises(KeyboardInterrupt):
         runner._unit_scratch('unit-')
     assert len(list(Path('/proc/self/fd').iterdir())) == before
+
+
+@pytest.mark.parametrize('select_all', [False, True])
+def test_owner_coverage_omits_dependency_sources_even_when_explicitly_selected(tmp_path, select_all):
+    base = fixture_repo(tmp_path / 'base', code='VALUE = 1\nUNUSED = 2\n')
+    pack = fixture_repo(tmp_path / 'pack', test='from owned_code import VALUE\ndef test_ok():\n    assert VALUE == 1\n')
+    (pack / 'src/tiny.py').rename(pack / 'src/owned_code.py')
+    ctx = context(base, pack)
+    tests = collect_tests(ctx, 'unit')
+    selected = tests if select_all else tuple(test for test in tests if test.repo == 'pack')
+    result = run_unit_tests(ctx, selected, coverage_owner_only=True)
+    assert result.exit_code == 0
+    assert {area.repo for area in result.coverage} == {'pack'}
+    assert {report.repo for report in result.coverage_reports} == {'pack'}
+    assert {test.identity.id for test in result.tests} == {test.id for test in selected}
