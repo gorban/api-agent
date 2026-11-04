@@ -391,6 +391,8 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                         failed = True
                         for deadline in deadlines:
                             detail = deadline.diagnostic(ordinals.get(deadline.identity))
+                            if deadline.identity is not None:
+                                detail += '\nTimed out unit: ' + stderr_scrub(deadline.identity)
                             raw(repo, detail + '\n')
                             if deadline.identity is not None:
                                 timeout_details.setdefault(deadline.identity, detail)

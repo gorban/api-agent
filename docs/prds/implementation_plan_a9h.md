@@ -44,3 +44,9 @@ The joined source passes 11,393 unit tests at 32 workers through the production 
 ## Recorded human acceptance
 
 The user confirms another full unit launch passed at exact 100% coverage and accepts integration behavior with and without DEBUG and NO_STD_IN. The separately reported multithreaded-fork warnings are tracked in [process fixture startup](implementation_plan_a9h1.md); the accepted hang repair remains complete.
+
+## Portable credential-helper fixture and timeout identity
+
+- [x] Prepare the synthetic credential worker/helper before starting the short inference timeout, using bounded semantic readiness and a stdin admission handshake. Exercise delayed startup, timeout cleanup and an already-exiting worker without relaxing the production timeout or group-disposal assertions. Verify group liveness through the shared Linux/macOS process probe rather than treating absent Linux `/proc` files as macOS exit evidence.
+- [x] Print the exact timed-out collected identity alongside its ordinal, elapsed time and limit. Credential-scrub that identity before console delivery; preserve deadline/status/coverage failure semantics.
+- [ ] Human acceptance: rerun the full macOS base unit suite and the composed all-unit invocation. Separate outdated resource-pack fixture failures from the base deadline failure.
