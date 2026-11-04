@@ -67,3 +67,7 @@ Out-of-bin ordering or end-time reversals remain errors. Parent links,
 attempt indexes and terminal states remain authoritative. Parallel branches do
 not imply a total order. Broader signal and backend-view qualification remains
 tracked in the [GenAI conformance requirements](prds/implementation_plan_k1a.md).
+
+### Unavailable managed dashboard
+
+The viewer reports the full selected `TRACE_PROVIDER`, profile selector and actual safe ingestion endpoint alongside the provider’s managed endpoint defaults. Changing a mode does not replace an explicitly saved endpoint: a saved endpoint from the previous mode can therefore disable the new mode’s managed dashboard. Remove the saved ingestion override to accept the selected profile’s default, or retain remote ingestion and set an explicit viewer URL. An explicitly empty viewer URL disables the dashboard; remove that override to restore managed derivation. URLs containing credentials, queries or fragments are redacted in this diagnostic.

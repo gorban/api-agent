@@ -314,14 +314,21 @@ def test_typed_invalid_managed_dashboard_port_is_rejected_before_factory_import(
     assert not (provider / '__pycache__').exists()
 
 
-def test_selected_export_only_profile_has_no_standalone_dashboard(external_profile):
+@pytest.mark.parametrize('endpoint', [None, 'https://collector.example/traces'])
+def test_selected_export_only_profile_has_no_standalone_dashboard(external_profile, endpoint):
     schema, anchors, provider = external_profile
     descriptor = provider / 'tracing-provider.toml'
     text = descriptor.read_text()
     index = text.rindex('[[profiles]]')
     descriptor.write_text(text[:index] + '[[profiles]]\nvalue="export"\nsignals=["traces"]\n')
-    with pytest.raises(ConfigError, match='no dashboard capability'):
-        resolve_viewer_config(schema, argv=(), environ={'MODE': 'export'}, dotenv={}, anchors=anchors)
+    schema = ConfigSchema({**schema.fields,
+        'TRACE_EXPORT_ENDPOINT': replace(schema.fields['TRACE_EXPORT_ENDPOINT'], default=UNSET, required=True)})
+    environment = {'MODE': 'export'}
+    if endpoint is not None:
+        environment['TRACE_EXPORT_ENDPOINT'] = endpoint
+    with pytest.raises(ConfigError, match='no dashboard capability') as error:
+        resolve_viewer_config(schema, argv=(), environ=environment, dotenv={}, anchors=anchors)
+    assert ('Actual TRACE_EXPORT_ENDPOINT=' + (endpoint or '<unset or unsafe URL; redacted>')) in str(error.value)
     assert not (provider / '__pycache__').exists()
 
 
@@ -364,6 +371,127 @@ def test_remote_langfuse_dashboard_needs_no_managed_project_keys():
         'LANGFUSE_ADMIN_PASSWORD': 'synthetic-dashboard-password'}, dotenv={}, anchors={})
     assert viewer['TRACE_VIEWER_URL'] == 'https://dashboard.example'
     assert 'LANGFUSE_PUBLIC_KEY' not in viewer and 'LANGFUSE_SECRET_KEY' not in viewer
+
+
+@pytest.mark.parametrize('source', ['environment', 'dotenv', 'cli'])
+def test_unavailable_dashboard_redacts_export_secret_from_endpoint_path(source):
+    secret = 'synthetic-project-secret'
+    environment = {'TRACE_MODE': 'LangFuse',
+        'TRACE_EXPORT_ENDPOINT': 'https://collector.example/' + secret + '/traces',
+        'LANGFUSE_ADMIN_EMAIL': 'viewer@example.test', 'LANGFUSE_ADMIN_PASSWORD': 'synthetic-dashboard-password'}
+    argv = ('--langfuse-secret-key=' + secret,) if source == 'cli' else ()
+    dotenv = {'LANGFUSE_SECRET_KEY': secret} if source == 'dotenv' else {}
+    if source == 'environment':
+        environment['LANGFUSE_SECRET_KEY'] = secret
+
+    with pytest.raises(ConfigError) as error:
+        resolve_viewer_config(load_shared_schema(), argv=argv, environ=environment, dotenv=dotenv, anchors={})
+
+    assert 'no dashboard capability' in str(error.value)
+    assert '<unset or unsafe URL; redacted>' in str(error.value)
+    assert secret not in str(error.value)
+
+
+def test_unavailable_dashboard_redacts_secret_from_provider_location(external_profile):
+    schema, anchors, provider = external_profile
+    secret = 'synthetic-location-secret'
+    moved = provider.with_name(secret)
+    provider.rename(moved)
+    schema = ConfigSchema({**schema.fields,
+        'TRACE_PROVIDER': replace(schema.fields['TRACE_PROVIDER'], default=str(moved / 'provider.py') + ':create'),
+        **schema_from_dict({'version': 1, 'fields': {'EXPORT_SECRET': {'type': 'str'}}}).fields})
+    descriptor = moved / 'tracing-provider.toml'
+    descriptor.write_text(descriptor.read_text().replace('signals=["traces"]',
+        'signals=["traces"]\nsecret_fields=["EXPORT_SECRET"]', 1))
+
+    with pytest.raises(ConfigError) as error:
+        resolve_viewer_config(schema, argv=(), environ={'EXPORT_SECRET': secret,
+            'TRACE_EXPORT_ENDPOINT': 'https://collector.example/traces'}, dotenv={}, anchors=anchors)
+
+    assert 'no dashboard capability' in str(error.value)
+    assert 'TRACE_PROVIDER=' in str(error.value)
+    assert secret not in str(error.value)
+    assert '[redacted]/provider.py:create' in str(error.value)
+
+
+@pytest.mark.parametrize('source', ['environment', 'dotenv', 'cli'])
+@pytest.mark.parametrize('credential', ['declared', 'dashboard', 'sensitive'])
+def test_disabled_profile_redacts_known_raw_secret_in_provider_path_without_requiring_credentials(
+        external_profile, source, credential):
+    schema, anchors, provider = external_profile
+    secret = 'synthetic-disabled-secret'
+    moved = provider.with_name(secret)
+    provider.rename(moved)
+    fields = schema_from_dict({'version': 1, 'fields': {
+        'EXPORT_SECRET': {'type': 'str', 'required': True, 'sensitive': credential == 'sensitive'},
+        'VIEWER_USERNAME': {'type': 'str', 'required': True},
+    }}).fields
+    schema = ConfigSchema({**schema.fields, **fields,
+        'TRACE_PROVIDER': replace(schema.fields['TRACE_PROVIDER'], default=str(moved / 'provider.py') + ':create')})
+    descriptor = moved / 'tracing-provider.toml'
+    if credential == 'declared':
+        descriptor.write_text(descriptor.read_text().replace('signals=["traces"]',
+            'signals=["traces"]\nsecret_fields=["EXPORT_SECRET"]', 1))
+    if credential == 'dashboard':
+        descriptor.write_text(descriptor.read_text().replace('[profiles.dashboard]',
+            '[profiles.dashboard]\nusername_field="VIEWER_USERNAME"\npassword_field="EXPORT_SECRET"\nlogin="provider"', 1))
+    environment = {'MODE': ''}
+    argv = ('--export-secret=' + secret,) if source == 'cli' else ()
+    dotenv = {'EXPORT_SECRET': secret} if source == 'dotenv' else {}
+    if source == 'environment':
+        environment['EXPORT_SECRET'] = secret
+
+    with pytest.raises(ConfigError) as error:
+        resolve_viewer_config(schema, argv=argv, environ=environment, dotenv=dotenv, anchors=anchors)
+
+    message = str(error.value)
+    assert 'enabled tracing provider profile' in message
+    assert 'MODE is disabled' in message
+    assert '[redacted]/provider.py:create' in message
+    assert secret not in message
+    assert not (moved / '__pycache__').exists()
+
+
+@pytest.mark.parametrize('credential', ['required', 'missing-controller', 'undeclared'])
+def test_unavailable_dashboard_diagnostic_does_not_require_export_secrets(external_profile, credential, monkeypatch):
+    schema, anchors, provider = external_profile
+    descriptor = provider / 'tracing-provider.toml'
+    descriptor.write_text(descriptor.read_text().replace('signals=["traces"]',
+        'signals=["traces"]\nsecret_fields=["EXPORT_SECRET"]', 1))
+    field = schema_from_dict({'version': 1, 'fields': {
+        'EXPORT_SECRET': {'type': 'str', 'required': True}}}).fields['EXPORT_SECRET']
+    if credential == 'missing-controller':
+        field = replace(field, applies_when={'UNDECLARED': True})
+    if credential != 'undeclared':
+        schema = ConfigSchema({**schema.fields, 'EXPORT_SECRET': field})
+    if credential == 'missing-controller':
+        monkeypatch.setattr('api_agent.providers.loading.bootstrap_schema', lambda *args, **kwargs: schema)
+
+    with pytest.raises(ConfigError) as error:
+        resolve_viewer_config(schema, argv=(), environ={
+            'TRACE_EXPORT_ENDPOINT': 'https://collector.example/traces'}, dotenv={}, anchors=anchors)
+
+    assert 'no dashboard capability' in str(error.value)
+    assert 'Actual TRACE_EXPORT_ENDPOINT=https://collector.example/traces' in str(error.value)
+
+
+def test_unavailable_dashboard_redacts_explicit_secret_with_unavailable_controller(external_profile, monkeypatch):
+    schema, anchors, provider = external_profile
+    descriptor = provider / 'tracing-provider.toml'
+    descriptor.write_text(descriptor.read_text().replace('signals=["traces"]',
+        'signals=["traces"]\nsecret_fields=["EXPORT_SECRET"]', 1))
+    secret_field = schema_from_dict({'version': 1, 'fields': {'EXPORT_SECRET': {'type': 'str'}}}).fields['EXPORT_SECRET']
+    schema = ConfigSchema({**schema.fields,
+        'EXPORT_SECRET': replace(secret_field, applies_when={'UNDECLARED': True})})
+    monkeypatch.setattr('api_agent.providers.loading.bootstrap_schema', lambda *args, **kwargs: schema)
+    secret = 'synthetic-unresolved-secret'
+
+    with pytest.raises(ConfigError) as error:
+        resolve_viewer_config(schema, argv=(), environ={'EXPORT_SECRET': secret,
+            'TRACE_EXPORT_ENDPOINT': 'https://collector.example/' + secret + '/traces'}, dotenv={}, anchors=anchors)
+
+    assert 'no dashboard capability' in str(error.value)
+    assert secret not in str(error.value)
 
 
 def test_managed_only_required_dependency_is_strict_only_for_local_admission(external_profile):
@@ -572,3 +700,46 @@ def test_effective_standard_endpoint_outside_raw_enum_retains_admitted_route(ext
     assert not ordinary.errors
     selected = effective_selection(ordinary, owner_root=anchors['owner_root'], environ=environ)
     assert selected.values['TRACE_EXPORT_ENDPOINT'] == viewer['TRACE_EXPORT_ENDPOINT']
+
+
+@pytest.mark.parametrize(('environment', 'reason'), [
+    ({'TRACE_EXPORT_ENDPOINT': 'https://collector.example/v1/traces'}, 'saved endpoint from a different profile'),
+    ({'DASHBOARD_URL': ''}, 'DASHBOARD_URL is explicitly empty'),
+])
+def test_custom_provider_dashboard_diagnostic_uses_its_own_fields(external_profile, environment, reason):
+    schema, anchors, provider = external_profile
+    with pytest.raises(ConfigError) as error:
+        resolve_viewer_config(schema, argv=(), environ=environment, dotenv={}, anchors=anchors)
+    message = str(error.value)
+    assert reason in message
+    assert "MODE='local'" in message
+    assert str(provider/'provider.py') + ':create' in message
+    assert 'http://localhost:4318/v1/traces' in message
+
+
+@pytest.mark.parametrize('conditional', [False, True])
+@pytest.mark.parametrize('destination', ['provider-path', 'endpoint-path'])
+def test_diagnostic_redacts_sensitive_schema_defaults(external_profile, conditional, destination):
+    schema, anchors, provider = external_profile
+    secret = 'synthetic-sensitive-default'
+    declaration = {'type':'str', 'sensitive':True}
+    declaration.update({'conditional_defaults':[{'when':{'FEATURE':True},'value':secret}]}
+                       if conditional else {'default':secret})
+    extension = schema_from_dict({'version':1,'fields':{'DEFAULT_SECRET':declaration}}, base_schema=schema)
+    fields = {**schema.fields, **extension.fields}
+    if destination == 'provider-path':
+        moved = provider.with_name(secret)
+        provider.rename(moved)
+        fields['TRACE_PROVIDER'] = replace(fields['TRACE_PROVIDER'], default=str(moved / 'provider.py') + ':create')
+        environ = {'MODE':''}
+    else:
+        fields['TRACE_EXPORT_ENDPOINT'] = replace(fields['TRACE_EXPORT_ENDPOINT'],
+            default='https://collector.example/' + secret + '/traces')
+        environ = {}
+    with pytest.raises(ConfigError) as error:
+        resolve_viewer_config(ConfigSchema(fields), argv=(), environ=environ, dotenv={}, anchors=anchors)
+    message = str(error.value)
+    assert 'TRACE_PROVIDER=' in message
+    assert secret not in message
+    assert ('[redacted]' in message if destination == 'provider-path' else
+            '<unset or unsafe URL; redacted>' in message)

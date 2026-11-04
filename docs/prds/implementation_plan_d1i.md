@@ -28,3 +28,9 @@
 
 Human acceptance of screenshot placement and selected/all-test viewing was
 explicitly recorded on October 26, 2026.
+
+Completed E2E results retain the same keyboard-range controls as integration:
+Shift+Up/Down extends the range, Ctrl+A selects all rows, Escape clears it, and
+`a` opens every selected completed result together. Mode-specific keyboard and
+immutable subset-route checks cover both modes; missing evidence rejects the
+entire selection instead of silently opening fewer tests.

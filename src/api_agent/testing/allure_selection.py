@@ -96,3 +96,17 @@ def verify_selected_cases(cases, expected):
             raise ValueError()
     except (ValueError, KeyError, TypeError, AttributeError):
         raise ViewerError('Allure did not preserve the exact selected attempt') from None
+
+
+def confirmation_selection(manifest, files, selected):
+    """Retain retry artifacts only for explicitly selected E2E logical tests."""
+    if (selected is None or manifest['mode'] != 'e2e'
+            or 'e2e_outcomes' not in manifest.get('metadata', {})):
+        return selected
+    from .allure_counts import result_counts
+    result_counts(manifest, {name: body for name, body in files.items() if name.endswith('-result.json')})
+    included = set(selected)
+    for outcome in manifest['metadata']['e2e_outcomes']:
+        if included.intersection(outcome['result_files']):
+            included.update(outcome['result_files'])
+    return tuple(sorted(included))

@@ -57,8 +57,11 @@ def test_incoherent_or_damaged_live_selection_is_rejected(attempts, change):
         selected_snapshot((first, (second[0], snapshot)))
 
 
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
 @async_test
-async def test_subset_routes_are_order_independent_distinct_and_preserve_single_deeplink(attempts, cli, port):
+async def test_subset_routes_are_order_independent_distinct_and_preserve_single_deeplink(attempts, cli, port, mode):
+    for _, attempt in attempts:
+        attempt.manifest['mode'] = mode
     snapshot = selected_snapshot(tuple(attempts))
     names = tuple(snapshot.result_files.values())
     owner = ManagedAllureViewer(port, browser_factory=Browser)
@@ -76,9 +79,10 @@ async def test_subset_routes_are_order_independent_distinct_and_preserve_single_
         await owner.aclose()
 
 
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
 @pytest.mark.parametrize('unavailable', [None, 'pending', 'running', 'missing', 'budget', 'other-run'])
 @async_test
-async def test_table_range_opens_every_completed_attempt_or_rejects_entire_selection(tmp_path, attempts, unavailable):
+async def test_table_range_opens_every_completed_attempt_or_rejects_entire_selection(tmp_path, attempts, unavailable, mode):
     from textual.widgets import DataTable
     from test_tui import fixture
     from test_allure_navigation import Viewer
@@ -86,7 +90,9 @@ async def test_table_range_opens_every_completed_attempt_or_rejects_entire_selec
     app.allure_viewer = Viewer()
     async with app.run_test(size=(110, 35)) as pilot:
         await pilot.pause()
-        app.mode = 'integration'
+        app.mode = mode
+        for _, snapshot in attempts:
+            snapshot.manifest['mode'] = mode
         app.unit_rows = {key: ('PASSED', key, '1s') for key, _ in attempts}
         if unavailable in {'pending', 'running'}:
             app.unit_rows['test-1'] = (unavailable.upper(), 'test-1', '')
@@ -101,16 +107,55 @@ async def test_table_range_opens_every_completed_attempt_or_rejects_entire_selec
         if unavailable == 'budget':
             app._allure_budget_unavailable.add('test-1')
         table = app.screen.query_one(DataTable)
-        table.action_extend_range(2)
+        await pilot.press('shift+down', 'shift+down')
+        assert table.selected_row_keys == tuple(key for key, _ in attempts)
         selected = app.selected_allure_result(app.screen)
         if unavailable is None:
             assert set(selected[1]) == {snapshot.result_files[key] for key, snapshot in attempts}
-            await app.open_selected_allure()
+            await pilot.press('a')
+            await pilot.pause()
             assert app.allure_viewer.calls == [selected]
         else:
             assert selected is None if unavailable in {'pending', 'running'} else selected == (None, None)
             await app.open_selected_allure()
             assert app.allure_viewer.calls == []
+
+
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
+@async_test
+async def test_keyboard_range_opens_exact_subset_and_retains_all_and_clear_controls(tmp_path, attempts, mode):
+    from textual.widgets import DataTable
+    from test_tui import fixture
+    from test_allure_navigation import Viewer
+    app = fixture(tmp_path)
+    app.allure_viewer = Viewer()
+    async with app.run_test(size=(110, 35)) as pilot:
+        await pilot.pause()
+        app.mode = mode
+        app.unit_rows = {key: ('PASSED', key, '1s') for key, _ in attempts}
+        app.show('test-results', 'Results', rows=list(app.unit_rows.items()))
+        await pilot.pause()
+        for _, snapshot in attempts:
+            snapshot.manifest['mode'] = mode
+            app.receive_allure_snapshot(snapshot, app._inspection_generation)
+        table = app.screen.query_one(DataTable)
+
+        await pilot.press('shift+down', 'a')
+        await pilot.pause()
+
+        assert table.selected_row_keys == ('test-0', 'test-1')
+        assert len(app.allure_viewer.calls) == 1
+        bound, names = app.allure_viewer.calls[0]
+        assert bound.selection == tuple(attempts[:2])
+        assert set(names) == {snapshot.result_files[key] for key, snapshot in attempts[:2]}
+        assert attempts[2][1].result_files['test-2'] not in names
+
+        await pilot.press('ctrl+a')
+        assert table.selected_row_keys == ('test-0', 'test-1', 'test-2')
+        await pilot.press('escape')
+        assert table.selected_row_keys == ('test-2',)
+        await pilot.press('shift+up')
+        assert table.selected_row_keys == ('test-1', 'test-2')
 
 
 def test_shared_final_snapshot_preserves_authoritative_manifest(attempts):

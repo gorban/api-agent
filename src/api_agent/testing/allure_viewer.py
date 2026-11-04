@@ -269,6 +269,8 @@ class ManagedAllureViewer:
                 name not in files or not name.endswith('-result.json') for name in selected)):
             raise ViewerError('The exact selected Allure result is unavailable')
         single = selected[0] if selected is not None and len(selected) == 1 else None
+        from .allure_selection import confirmation_selection
+        included = confirmation_selection(manifest, files, selected)
         selector = ('suite' if selected is None else
                     hashlib.sha256(single.encode()).hexdigest() if single else
                     'subset-' + hashlib.sha256(json.dumps(selected).encode()).hexdigest())
@@ -286,8 +288,9 @@ class ManagedAllureViewer:
         url = f'http://127.0.0.1:{self.port}/{route}/index.html'
         with tempfile.TemporaryDirectory(prefix='input-', dir=root) as staging:
             markers = []
+            primary_marker = None
             for name, body in files.items():
-                if selected is not None and name.endswith('-result.json') and name not in selected:
+                if included is not None and name.endswith('-result.json') and name not in included:
                     continue
                 original = body
                 if history is not None and name.endswith('-result.json'):
@@ -296,6 +299,8 @@ class ManagedAllureViewer:
                     from .allure_selection import marked_result
                     body, marker = marked_result(name, body, original=original)
                     markers.append(marker)
+                    if name == single:
+                        primary_marker = marker
                 (Path(staging) / name).write_bytes(body)
             if 'environment.properties' not in files:
                 (Path(staging) / 'environment.properties').write_text(
@@ -333,11 +338,15 @@ class ManagedAllureViewer:
                     verify_selected_cases(cases, markers)
                 if single:
                     try:
-                        case = json.loads(cases[0].read_bytes())
+                        from .allure_selection import _SELECTION_LABEL
+                        rows = ((path, json.loads(path.read_bytes())) for path in cases)
+                        case_path, case = next((path, row) for path, row in rows if any(
+                            label.get('name') == _SELECTION_LABEL and label.get('value') == primary_marker
+                            for label in row.get('labels', [])))
                         uid = case['uid']
-                        if not isinstance(uid, str) or re.fullmatch('[a-zA-Z0-9_-]+', uid) is None or cases[0].stem != uid:
+                        if not isinstance(uid, str) or re.fullmatch('[a-zA-Z0-9_-]+', uid) is None or case_path.stem != uid:
                             raise ValueError()
-                    except (ValueError, KeyError, TypeError):
+                    except (ValueError, KeyError, TypeError, StopIteration):
                         raise ViewerError('Allure generated an invalid selected-result link') from None
                     suffix = '#testresult/' + quote(uid, safe='')
                 destination = root / route

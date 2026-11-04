@@ -627,3 +627,63 @@ async def test_invalid_unused_local_port_does_not_bypass_final_dashboard_url_adm
     probe.assert_not_called()
     assert viewer._binding.declaration.managed_compose_profile is None
     await viewer.aclose()
+
+
+@pytest.mark.parametrize(('mode', 'endpoint'), [
+    ('LangFuse', 'http://localhost:4318/v1/traces'),
+    ('OTEL', 'http://localhost:3000/api/public/otel/v1/traces'),
+])
+def test_unavailable_viewer_explains_stale_saved_endpoint(mode, endpoint):
+    from api_agent.runtime.tracing_viewer_config import _dashboard_unavailable
+    declaration = read_declaration(ROOT)
+    profile = select_declaration(declaration, {'TRACE_MODE': mode})
+    selected = effective_selection(config(mode, TRACE_EXPORT_ENDPOINT=endpoint,
+        explicit=('TRACE_EXPORT_ENDPOINT',)), environ={}, require_export=False)
+    message = _dashboard_unavailable(selected, profile, declaration)
+    assert selected.dashboard_unavailable_reason == 'unmanaged_endpoint'
+    assert f'TRACE_MODE={mode!r}' in message
+    assert str(ROOT/'provider.py') + ':create_tracing_provider' in message
+    assert f'Actual TRACE_EXPORT_ENDPOINT={endpoint}' in message
+    assert dict(profile.managed_endpoints)['trace_endpoint'] in message
+    assert 'saved endpoint from a different profile' in message
+    assert 'never overwritten automatically' in message
+
+
+def test_unavailable_viewer_explains_explicit_empty_url():
+    from api_agent.runtime.tracing_viewer_config import _dashboard_unavailable
+    declaration = read_declaration(ROOT)
+    profile = select_declaration(declaration, {'TRACE_MODE': 'OTEL'})
+    selected = effective_selection(config(explicit=('TRACE_VIEWER_URL',)), environ={}, require_export=False)
+    message = _dashboard_unavailable(selected, profile, declaration)
+    assert selected.dashboard_unavailable_reason == 'explicit_empty_viewer'
+    assert 'TRACE_VIEWER_URL is explicitly empty' in message
+    assert 'remove that saved override' in message
+    assert 'saved endpoint from a different profile' not in message
+
+
+@pytest.mark.parametrize('endpoint', [
+    'https://user:password@example.test/v1/traces',
+    'https://example.test/v1/traces?token=secret',
+    'https://example.test/v1/traces#secret',
+])
+def test_unavailable_viewer_never_displays_unsafe_ingestion_url(endpoint):
+    from api_agent.runtime.tracing_viewer_config import _dashboard_unavailable
+    declaration = read_declaration(ROOT)
+    profile = select_declaration(declaration, {'TRACE_MODE': 'OTEL'})
+    selected = effective_selection(config(TRACE_EXPORT_ENDPOINT=endpoint,
+        explicit=('TRACE_EXPORT_ENDPOINT',)), environ={}, require_export=False)
+    message = _dashboard_unavailable(selected, profile, declaration)
+    assert endpoint not in message
+    assert 'password' not in message and 'secret' not in message
+    assert '<unset or unsafe URL; redacted>' in message
+
+
+def test_unavailable_viewer_redacts_known_secret_in_url_path():
+    from api_agent.runtime.tracing_viewer_config import _dashboard_unavailable
+    declaration = read_declaration(ROOT)
+    profile = select_declaration(declaration, {'TRACE_MODE': 'LangFuse'})
+    selected = effective_selection(config('LangFuse', TRACE_EXPORT_ENDPOINT='https://example.test/private-token/traces',
+        LANGFUSE_SECRET_KEY='private-token', explicit=('TRACE_EXPORT_ENDPOINT',)), environ={}, require_export=False)
+    message = _dashboard_unavailable(selected, profile, declaration)
+    assert 'private-token' not in message
+    assert '<unset or unsafe URL; redacted>' in message

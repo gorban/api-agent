@@ -59,6 +59,9 @@ class IntegrationRunResult:
     output: str
     cancelled: bool = False
     inspections: tuple = ()
+    attempts: tuple[TestResult, ...] = ()
+    e2e_reruns: int = 0
+    infrastructure_failed: bool = False
 
 
 _PLUGIN = r'''
@@ -126,8 +129,7 @@ def _complete_report(rows):
 
 
 @suite_locked
-@_admit_operation
-def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
+def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
                           after_run=None, config=None, config_fields=None, resolved_test_profiles=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None, evidence_boundary=None, explicit_debug_test_ids=()):
@@ -166,7 +168,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     interaction_server = None
     interruption = None
     publication_error = None
-    callback_failed = cancelled = failed = False
+    callback_failed = cancelled = failed = infrastructure_failed = False
     disabled = set()
     diagnostics = {}
     local_diagnostics = {}
@@ -226,7 +228,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         return text
 
     def call(name, callback, *args):
-        nonlocal callback_failed
+        nonlocal callback_failed, infrastructure_failed
         if callback is None or name in disabled:
             return
         try:
@@ -235,7 +237,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             from .suite_lock import _cleanup_receipts
             if name == 'after_run' and any(_cleanup_receipts(error)):
                 raise
-            callback_failed = True
+            callback_failed = infrastructure_failed = True
             disabled.add(name)
             chunks.append(f'{name} callback failed; details withheld.\n')
             if name == 'before_run':
@@ -252,7 +254,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         emit(RunnerEvent('output', repo, text=chunk))
 
     def abort_inspections():
-        nonlocal failed, interruption
+        nonlocal failed, interruption, infrastructure_failed
         for inspection in inspections:
             try:
                 inspection.abort()
@@ -261,7 +263,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     interruption = error
                 record_local('Integration inspection cleanup', error)
                 chunks.append('Inspection cleanup pending; retry required.\n')
-                failed = True
+                failed = infrastructure_failed = True
 
     def check_cancellation():
         nonlocal cancelled
@@ -312,7 +314,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             available = {test.id: test for test in collect_tests(context, mode, cancel_event=cancel_event, **({'config': config} if config is not None else {}))}
         except Exception as error:
             raw('', diagnose(stage, error) + '\n')
-            failed = True
+            failed = infrastructure_failed = True
             available = None
         if available is not None:
             if mode == 'e2e' and config.get('DEBUG'):
@@ -344,6 +346,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             owner_roots = composition_roots(context) if ordered else (base, owner)
             roots = {repository_label(context, root): root for root in dict.fromkeys(owner_roots)}
             env = os.environ.copy()
+            env['API_AGENT_TEST_ATTEMPT'] = str((config or {}).get('_E2E_ATTEMPT', 1))
             if config is not None and config.get('SKIP_ALLURE_REPORTING') is True:
                 env['API_AGENT_ALLURE_REPORTING'] = '0'
             elif config is not None and config.get('_ALLURE_REPORTING_ACTIVE') is True:
@@ -367,7 +370,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 if root is None:
                     for identity in selected.values():
                         diagnostics[identity.id] = ['Integration owner resolution failed: no suite root is available.']
-                    failed = True
+                    failed = infrastructure_failed = True
                     break
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
@@ -376,7 +379,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 was_failed = callback_failed
                 call('before_run', before_run)
                 if callback_failed and not was_failed:
-                    failed = True
+                    failed = infrastructure_failed = True
                     break
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
@@ -454,7 +457,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                         if liveness_write is not None:
                             os.close(liveness_write)
                         raw(repo, diagnose('Integration pytest process startup', error, selected.values()) + '\n')
-                        failed = True
+                        failed = infrastructure_failed = True
                         continue
                     except BaseException:
                         if liveness_write is not None:
@@ -514,7 +517,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                             evidence_scoped.add(item)
 
                     def drain_evidence():
-                        nonlocal evidence_offset, evidence_read_failed
+                        nonlocal evidence_offset, evidence_read_failed, infrastructure_failed
                         drain_scoped_failures()
                         if evidence_read_failed:
                             return True
@@ -524,14 +527,14 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                             except sqlite3.OperationalError as error:
                                 if 'locked' in str(error).lower() or 'busy' in str(error).lower():
                                     return False
-                                evidence_read_failed = True
+                                evidence_read_failed = infrastructure_failed = True
                                 for node, identity in selected.items():
                                     if node not in evidence_incomplete:
                                         evidence_incomplete.add(node)
                                         emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
                                 return True
                             except (OSError, ValueError, TypeError, sqlite3.Error):
-                                evidence_read_failed = True
+                                evidence_read_failed = infrastructure_failed = True
                                 for node, identity in selected.items():
                                     if node not in evidence_incomplete:
                                         evidence_incomplete.add(node)
@@ -556,7 +559,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 emit(RunnerEvent('inference_evidence_incomplete', repo, identity, text='unavailable'))
                         return True
                     def drain_events():
-                        nonlocal offset, failed, run_complete, inspection_ready
+                        nonlocal offset, failed, infrastructure_failed, run_complete, inspection_ready
                         if not drain_evidence():
                             return False
                         try:
@@ -653,16 +656,16 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         detail = 'Integration report protocol failed: invalid pytest event received.'
                                         if detail not in diagnostics.setdefault(test.id, []):
                                             diagnostics[test.id].append(detail)
-                                    failed = True
+                                    failed = infrastructure_failed = True
                         return True
                     def drain(*, final=False):
-                        nonlocal worker_output, dropped_output_chars, evidence_read_failed
+                        nonlocal worker_output, dropped_output_chars, evidence_read_failed, infrastructure_failed
                         # Structured completion must not wait behind a slow raw sink.
                         if final:
                             deadline = time.monotonic() + 5
                             while not drain_events():
                                 if time.monotonic() >= deadline:
-                                    evidence_read_failed = True
+                                    evidence_read_failed = infrastructure_failed = True
                                     for node, identity in selected.items():
                                         if node not in evidence_incomplete:
                                             evidence_incomplete.add(node)
@@ -735,7 +738,9 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 with output_lock:
                                     discard_output.set()
                             drain(final=True)
-                    failed |= bool(reader_errors) or (run_complete if directory.retained else process.returncode) != 0
+                    code = run_complete if directory.retained else process.returncode
+                    infrastructure_failed |= bool(reader_errors) or code not in (0, 1)
+                    failed |= bool(reader_errors) or code != 0
                     for node, identity in selected.items():
                         if node not in evidence_incomplete and has_pending(evidence_file, node):
                             evidence_incomplete.add(node)
@@ -769,7 +774,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         if isinstance(error, CollectionError):
             raise
         raw('', diagnose(stage, error) + '\n')
-        failed = True
+        failed = infrastructure_failed = True
     finally:
         if interaction_server is not None:
             interaction_server.close()
@@ -788,7 +793,7 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                         interruption.inspections = tuple(inspections)
                     record_local('Integration shared setup backend cleanup', error)
                     chunks.append('Shared setup backend cleanup pending; retry required.\n')
-                    failed = True
+                    failed = infrastructure_failed = True
         try:
             check_cancellation()
             for test in tests:
@@ -804,11 +809,12 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                         chunks.append('Shared setup execution cleanup pending; retry required.\n')
                         # Provider work must stop before immutable accounting.
                         publication_error = error
-                        failed = True
+                        failed = infrastructure_failed = True
             failed |= callback_failed or any(reader_diagnostics.values()) or any(
                 test.status not in {'passed', 'skipped'} for test in results.values())
             result = IntegrationRunResult(130 if cancelled else int(failed),
-                                          final_tests(), ''.join(chunks), cancelled, tuple(inspections))
+                                          final_tests(), ''.join(chunks), cancelled, tuple(inspections),
+                                          infrastructure_failed=infrastructure_failed or callback_failed or any(reader_diagnostics.values()))
             if publication_error is not None:
                 publication_error.execution = result
                 raise publication_error
@@ -829,11 +835,13 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 from .inspection_gate import publish_manual_accounting_ready
                 publish_manual_accounting_ready(inspections)
             result = IntegrationRunResult(130 if cancelled else int(result.exit_code != 0 or callback_failed or failed),
-                                          final_tests(), ''.join(chunks), cancelled, result.inspections)
+                                          final_tests(), ''.join(chunks), cancelled, result.inspections,
+                                          infrastructure_failed=infrastructure_failed or callback_failed or any(reader_diagnostics.values()))
             emit(RunnerEvent('finished', status='failed' if result.exit_code else 'passed'))
             check_cancellation()
             result = IntegrationRunResult(130 if cancelled else int(result.exit_code != 0 or callback_failed or failed),
-                                          final_tests(), ''.join(chunks), cancelled, result.inspections)
+                                          final_tests(), ''.join(chunks), cancelled, result.inspections,
+                                          infrastructure_failed=infrastructure_failed or callback_failed or any(reader_diagnostics.values()))
         except BaseException as error:
             primary = interruption or error
             interruption = primary
@@ -848,3 +856,138 @@ def run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             interruption.inspections = tuple(inspections)
             raise interruption
     return result
+
+
+@suite_locked
+@_admit_operation
+def run_integration_tests(context, tests, **options):
+    """Execute integrations once, or E2Es with all-pass failure confirmations.
+
+    Each wave keeps the configured worker count. Physical callback identities
+    own evidence and accounting; returned logical outcomes own UI/exit status.
+    """
+    config = options.get('config') or {}
+    if config.get('TUI_MODE') != 'e2e':
+        return _run_integration_tests(context, tests, **options)
+    from .confirmations import confirmation_count, confirmation_outcome
+    from .recorded import validate_integration_start
+    tests = validate_integration_start(tests, config,
+        accepted=options.get('accepted', False), no_std_in=options.get('no_std_in', False))
+    allowance = confirmation_count(config.get('E2E_RERUNS'))
+    logical = {test.id: test for test in tests}
+    histories = {test.id: [] for test in tests}
+    attempts, chunks, inspections = [], [], []
+    pending = tests
+    prepared = cancelled = infrastructure_failed = False
+    callbacks = {key: options.get(key) for key in ('on_event', 'on_result', 'before_run', 'after_run')}
+    def aggregate():
+        outcomes = []
+        for key, test in logical.items():
+            rows = histories[key]
+            if not rows:
+                outcomes.append(TestResult(test, 'cancelled' if cancelled else 'error'))
+                continue
+            status, incomplete = confirmation_outcome([row.status for row in rows], allowance)
+            if incomplete:
+                status = 'cancelled' if cancelled else 'failed'
+            outcomes.append(replace(rows[-1], identity=test, status=status,
+                duration=sum(row.duration for row in rows), first_status=rows[0].status))
+        execution = IntegrationRunResult(130 if cancelled else int(infrastructure_failed or any(
+            row.status not in {'passed', 'skipped'} for row in outcomes)), tuple(outcomes), ''.join(chunks),
+            cancelled, tuple(inspections), tuple(attempts), allowance,
+            infrastructure_failed=infrastructure_failed)
+        return execution
+    publication_attempted = False
+    try:
+        if callbacks['on_event'] is not None:
+            callbacks['on_event'](RunnerEvent('started'))
+        while pending:
+            physical = {test.id: replace(test, id=(test.id if not histories[test.id]
+                else test.id + '::confirmation:' + str(len(histories[test.id]) + 1))) for test in pending}
+            def event(row):
+                # Journals retain the collected node ID; only their owning identity
+                # changes. This keeps journal validation and Allure history stable.
+                if row.identity is not None and row.kind != 'test_started':
+                    row = replace(row, identity=physical[row.identity.id])
+                if callbacks['on_event'] is not None and row.kind not in {'started', 'finished', 'test_finished'}:
+                    callbacks['on_event'](row)
+            def result(row):
+                key = row.identity.id
+                owned = replace(row, identity=physical[key], logical_id=key,
+                    attempt=len(histories[key]) + 1)
+                histories[key].append(owned)
+                attempts.append(owned)
+                if callbacks['on_result'] is not None:
+                    callbacks['on_result'](owned)
+            def before():
+                nonlocal prepared
+                if not prepared:
+                    if callbacks['before_run'] is not None:
+                        callbacks['before_run']()
+                    prepared = True
+            wave = _run_integration_tests(context, pending, **dict(options,
+                on_event=event, on_result=result, before_run=before, after_run=None,
+                config=dict(config, _E2E_ATTEMPT=len(histories[pending[0].id]) + 1)))
+            chunks.append(wave.output)
+            inspections.extend(wave.inspections)
+            cancelled |= wave.cancelled or (options.get('cancel_event') is not None and options['cancel_event'].is_set())
+            # A worker/setup/cleanup failure independent of reported test outcomes
+            # cannot be repaired by confirming a functional test failure.
+            infrastructure_failed |= wave.infrastructure_failed
+            if cancelled or infrastructure_failed:
+                break
+            pending = tuple(test for test in pending
+                if confirmation_outcome([row.status for row in histories[test.id]], allowance)[1])
+        execution = aggregate()
+        outcomes = execution.tests
+        if callbacks['on_event'] is not None:
+            for row in outcomes:
+                callbacks['on_event'](RunnerEvent('test_finished', row.identity.repo, row.identity,
+                    row.status, row.duration, row.traceback))
+        if options.get('cancel_event') is not None and options['cancel_event'].is_set():
+            cancelled = True
+            execution = replace(execution, exit_code=130, cancelled=True)
+        if callbacks['after_run'] is not None:
+            publication_attempted = True
+            callbacks['after_run'](execution)
+        if options.get('cancel_event') is not None and options['cancel_event'].is_set():
+            cancelled = True
+            execution = replace(execution, exit_code=130, cancelled=True)
+        if not cancelled and not (options.get('cancel_event') is not None and options['cancel_event'].is_set()):
+            from .inspection_gate import publish_manual_accounting_ready
+            publish_manual_accounting_ready(inspections)
+        else:
+            for inspection in inspections:
+                inspection.abort()
+        if callbacks['on_event'] is not None:
+            callbacks['on_event'](RunnerEvent('finished', status='failed' if execution.exit_code else 'passed'))
+        if options.get('cancel_event') is not None and options['cancel_event'].is_set():
+            execution = replace(execution, exit_code=130, cancelled=True)
+            for inspection in inspections:
+                inspection.abort()
+        return execution
+    except BaseException as error:
+        from .suite_lock import _cleanup_receipts
+        retained = tuple(dict.fromkeys([*inspections, *getattr(error, 'inspections', ())]))
+        error.inspections = retained
+        cleanup_errors = []
+        for inspection in retained:
+            try:
+                inspection.abort()
+            except BaseException as cleanup:
+                cleanup_errors.append(cleanup)
+        if cleanup_errors:
+            error.confirmation_cleanup_errors = tuple(cleanup_errors)
+        if (not publication_attempted and (prepared or attempts) and not cleanup_errors
+                and not any(_cleanup_receipts(error))):
+            cancelled |= not isinstance(error, Exception)
+            infrastructure_failed = True
+            execution = aggregate()
+            error.execution = execution
+            if callbacks['after_run'] is not None:
+                publication_attempted = True
+                try:
+                    callbacks['after_run'](execution)
+                except BaseException as publication_error:
+                    error.confirmation_publication_error = publication_error
+        raise

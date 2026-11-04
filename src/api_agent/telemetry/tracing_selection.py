@@ -30,6 +30,7 @@ class EffectiveSelection:
     location: str
     path: object
     identity: str
+    dashboard_unavailable_reason: str | None = None
 
 
 def effective_selection(config, *, owner_root=None, environ=None, declaration=None, require_export=True, explicit_fields=None):
@@ -70,6 +71,7 @@ def effective_selection(config, *, owner_root=None, environ=None, declaration=No
                           explicit_fields=explicit, required=False) if 'traces' in selected.signals else None)
     if trace_endpoint is not None:
         values[selected.endpoint_field] = trace_endpoint
+    dashboard_unavailable_reason = None
     # A profile's local dashboard default has no authority over remote ingestion.
     if selected.managed_endpoints:
         managed = dict(selected.managed_endpoints)
@@ -89,9 +91,12 @@ def effective_selection(config, *, owner_root=None, environ=None, declaration=No
         if local and field not in explicit:
             values[field] = values.get(field) or managed['dashboard_url']
         if not local and field not in explicit:
+            dashboard_unavailable_reason = dashboard_unavailable_reason or 'unmanaged_endpoint'
             values[field] = ''
             selected = replace(selected, dashboard=None)
         if not values.get(field):
+            if field in explicit:
+                dashboard_unavailable_reason = 'explicit_empty_viewer'
             selected = replace(selected, dashboard=None)
         if (not local
                 or values.get(field) != managed['dashboard_url']):
@@ -109,7 +114,7 @@ def effective_selection(config, *, owner_root=None, environ=None, declaration=No
     identity = sha256(json.dumps(proof, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return EffectiveSelection(selected, MappingProxyType(values),
         explicit,
-        MappingProxyType(environment), location, path, identity)
+        MappingProxyType(environment), location, path, identity, dashboard_unavailable_reason)
 
 
 def _resource_identity(values, declaration, plan, environment):

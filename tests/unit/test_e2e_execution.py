@@ -43,7 +43,7 @@ def test_e2e_uses_shared_recording_with_e2e_identity(tmp_path, updates):
 
 
 @pytest.mark.parametrize('tests,updates,reason', [([], {}, 'UI-session'),
-    (None, {}, 'UI-session'), ('ui', {'E2E_RERUNS':2}, 'retry')])
+    (None, {}, 'UI-session')])
 def test_unsupported_e2e_selection_fails_before_recording(tmp_path, tests, updates, reason):
     context, test, config = selected(tmp_path)
     tests = [replace(test, tags=frozenset())] if tests is None else [test] if tests == 'ui' else tests
@@ -74,7 +74,7 @@ def test_e2e_legacy_debug_uses_shared_headed_lifecycle(tmp_path, monkeypatch):
 def test_e2e_debug_admits_solo_or_enumerated_whole_suite(tmp_path, monkeypatch, available_count, explicit_ids):
     context, first, config = selected(tmp_path)
     first = replace(first, id='first')
-    available = [first, replace(first, id='second')][:available_count]
+    available = [first, replace(first, id='second', node_id=first.node_id + '_second')][:available_count]
     config.update(E2E_DEBUG=True)
     monkeypatch.setattr('api_agent.testing.collection.collect_tests', lambda *args, **kwargs: available)
 
@@ -83,11 +83,11 @@ def test_e2e_debug_admits_solo_or_enumerated_whole_suite(tmp_path, monkeypatch, 
 
     assert result.exit_code == 0
 
-@pytest.mark.parametrize('allowance', [None, False, True, -1, 2, '0'])
-def test_e2e_requires_effective_integer_zero(tmp_path, allowance):
+@pytest.mark.parametrize('allowance', [False, True, -1, '0'])
+def test_e2e_rejects_invalid_confirmation_count(tmp_path, allowance):
     context, test, config = selected(tmp_path)
     config['E2E_RERUNS'] = allowance
-    with pytest.raises(ValueError, match='retry'):
+    with pytest.raises(ValueError, match='E2E_RERUNS'):
         recorded.validate_integration_start([test], config, accepted=True)
 
 

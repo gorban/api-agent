@@ -241,8 +241,9 @@ TUI_MODE = "unit"
 COLLECT_ONLY = false
 
 [fields.E2E_RERUNS]
-help = "E2E-only retry allowance; unit and integration tests never retry. E2E execution requires its human-acceptance screen or explicit START=E2E. Set to 0 to turn off."
+help = "E2E confirmations after an initial failure: every configured confirmation must pass; stop at the first unsuccessful confirmation. Initial passes never repeat. Empty or 0 disables confirmations. Unit and integration tests never repeat. E2E execution requires explicit acceptance."
 type = "int"
+allow_empty = true
 default = 2
 validation = "nonnegative"
 [fields.E2E_RERUNS.applies_when]

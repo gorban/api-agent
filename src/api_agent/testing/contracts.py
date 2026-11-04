@@ -15,6 +15,9 @@ class TestResult:
     local_diagnostic: str = field(default='', repr=False, compare=False)
     local_stderr: str = field(default='', repr=False, compare=False)
     local_stdout: str = field(default='', repr=False, compare=False)
+    attempt: int = 1
+    logical_id: str = ''
+    first_status: str = ''
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,10 @@ def format_test_summary(mode, tests, *, state=None, elapsed=None):
         summary += f' ({100 * passed / total if total else 0:.2f}%)'
         if skipped:
             summary += f', {skipped}/{total} skipped ({100 * skipped / total:.2f}%)'
+    if mode == 'e2e' and any(getattr(test, 'first_status', '') for test in tests):
+        first = sum((getattr(test, 'first_status', '') or test.status) == 'passed' for test in tests)
+        summary += (f'; first chance {first}/{total} ({100 * first / total:.2f}%)'
+                    f' — final {passed}/{total} ({100 * passed / total:.2f}%)')
     if elapsed is not None:
         from api_agent.tui.test_results import elapsed_time
         summary += f' — {elapsed_time(elapsed)} total'

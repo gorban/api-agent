@@ -27,8 +27,9 @@ def debug_warning(mode, debug, tests, *, e2e_debug=False):
         return None
     setting = 'E2E_DEBUG=True' if legacy and debug is not True else 'DEBUG=True'
     disabled = 'DEBUG=False and E2E_DEBUG=False' if legacy else 'DEBUG=False'
+    attempts = '; failed E2E tests can open additional confirmation browsers' if mode == 'e2e' else ''
     return (f'{setting} with {count} selected tests could open multiple browser windows '
-            f'(up to {count}). To avoid this confirmation, set {disabled} and do not pass --debug. '
+            f'(up to {count} per attempt{attempts}). To avoid this confirmation, set {disabled} and do not pass --debug. '
             'Enter literal y to continue; every other response cancels.')
 
 

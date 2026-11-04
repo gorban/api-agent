@@ -17,8 +17,17 @@
 - [x] Keep LangFuse trace-only. OTEL may offer metrics opt-in to a separate explicitly configured metrics destination. Reveal endpoint, temporality and profile only when metrics are enabled; do not infer metric ingestion from Jaeger or a general OTLP base. Preserve custom provider capabilities and validation.
 - [x] Preserve optional trace-failure isolation, shared observation capture, privacy, bounded flush/disposal before collector release, leases, retained volumes and dashboard-only/export-only configurations. No new metric backend, periodic delivery or retention reset is included.
 
+- [x] Explain unavailable managed dashboards using the admitted provider selector, selected profile, actual safe ingestion endpoint and descriptor-owned managed defaults. Distinguish a stale saved endpoint after mode changes from an explicitly empty viewer URL; preserve explicit remote ingestion and suggest reviewing saved overrides or setting an explicit viewer URL. Never disclose credential-bearing URL components.
+
 ## Verification and acceptance
 
 - [x] Verify disabled/LangFuse/OTEL/custom truth tables, Review/Help/Clear laziness, endpoint precedence and explicit empties, local/remote selection, capability rejection, synthetic third-party profiles, captured restore and tampered identity rejection. Include causal checks for independently enforced guards.
 - [x] Complete paired independent reviews, applicable exact unit line/branch coverage, workflow/package/relocated checks, intended-source boundary/metadata/license review and final external review. Retain separate release gates when not exercised.
 - [x] Human acceptance of trace configuration recorded November 3, 2026. The user approved the configuration checkpoint after interactive testing; automated custom-provider and content-policy qualification remains separately evidenced above.
+
+## Dashboard diagnostic follow-up
+
+Focused selection/viewer tests cover both cross-profile endpoint mismatches, explicit-empty viewer disabling and URL userinfo/query/fragment redaction. The effective selection forwards a generic capability-loss reason; presentation reads provider declarations without provider-name branches.
+
+- [x] Complete the renewed full coverage and independent review gates for the diagnostic follow-up.
+- [ ] Human acceptance of the actionable unavailable-dashboard diagnostic.

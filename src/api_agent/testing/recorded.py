@@ -170,8 +170,8 @@ def validate_integration_start(tests, config, *, accepted=False, no_std_in=False
         tests = tuple(tests)
         if not tests or any('requires_ui_session' not in test.tags for test in tests):
             raise ValueError('E2E selections require UI-session tests')
-        if type(config.get('E2E_RERUNS')) is not int or config['E2E_RERUNS'] != 0:
-            raise ValueError('E2E retry execution is not available; set E2E_RERUNS=0')
+        from .confirmations import confirmation_count
+        confirmation_count(config.get('E2E_RERUNS'))
         return tests
     if (accepted is not True or ((no_std_in or config.get('NO_STD_IN'))
             and not config.get('DEBUG') and not start_requested(config))
@@ -268,6 +268,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                                  localstack_port=config.get('ALLURE_LOCALSTACK_PORT', 4566),
                                  managed_local=config.get('ALLURE_S3_USE_LOCALSTACK', False))
         usage = SuiteUsage(identity.run_id, cost_estimator=cost_estimator)
+        physical_tests = {test.id: test for test in tests}
+        physical_results = {}
+        logical_owners = {test.id: test.id for test in tests}
         seen = set()
         recording_ids = {}
         content = {}
@@ -298,7 +301,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             from .payloads import PayloadStore
             if test_id not in payload_stores:
                 payload_stores[test_id] = PayloadStore(recorder, test_id,
-                    journal_test_id=next(test.node_id for test in tests if test.id == test_id))
+                    journal_test_id=physical_tests[test_id].node_id)
             return payload_stores[test_id]
 
         def native_payload_attachments(store, reference, title):
@@ -405,14 +408,33 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             recorder.update_test_evidence(recording_ids[test_id], attachments=attachments,
                                           steps=steps)
 
+        def admit(test, logical_id=None):
+            physical_tests[test.id] = test
+            owner = logical_id or next((item.id for item in tests
+                if item.node_id == test.node_id and item.repo == test.repo), test.id)
+            logical_owners[test.id] = owner
+            if owner in test_configs:
+                test_configs[test.id] = test_configs[owner]
+            if test.id != owner:
+                for key, projection in list(workflow_admissions.items()):
+                    if isinstance(key, tuple) and key[0] == owner:
+                        workflow_admissions[(test.id, key[1])] = projection
+                for predictions in (estimator.predictions, getattr(estimator, 'advance_predictions', {})):
+                    if owner in predictions:
+                        predictions[test.id] = deepcopy(predictions[owner])
+            if owner in ui_test_ids:
+                ui_test_ids.add(test.id)
+
         def record(result):
+            admit(result.identity, result.logical_id or None)
+            physical_results[result.identity.id] = result
             test = result.identity
             if test.repo != identity.repo:
                 label = ('provider:' + os.path.relpath(test.root, context.base_root)
                          if test.root is not None else test.repo)
                 test = replace(test, repo=identity.repo, node_id=f'{label}::{test.node_id}')
             bridge = workflow_steps.get(result.identity.id)
-            filename = recorder.record_test(replace(result, identity=test),
+            filename = recorder.record_test(replace(result, identity=test), attempt=result.attempt,
                                             steps=group_execution_steps(deepcopy(bridge.steps)) if bridge is not None else None)
             recording_ids[result.identity.id] = filename
             seen.add(result.identity.id)
@@ -430,7 +452,10 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     finish()
                 except Exception:
                     cleanup_failed = True
-            for outcome in result.tests:
+            attempted_logical_ids = {item.logical_id or item.identity.id for item in result.attempts}
+            recorded_outcomes = (tuple(result.attempts) + tuple(item for item in result.tests
+                if item.identity.id not in attempted_logical_ids)) if result.attempts else result.tests
+            for outcome in recorded_outcomes:
                 if outcome.identity.id not in seen:
                     record(outcome)
                 record_evidence(outcome)
@@ -453,7 +478,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                         recorder.record_test(TestResult(failure, 'error'))
             usage_summary = usage.report()
             from api_agent.telemetry.accounting import build_accounting
-            artifact = build_accounting(identity, tests, config, usage, result.tests, estimator=estimator, summary=usage_summary, context=context, test_configs=test_configs)
+            artifact = build_accounting(identity, tuple(physical_tests.values()), config, usage, tuple(physical_results.values()), estimator=estimator, summary=usage_summary, context=context, test_configs=test_configs)
             stabilized = estimator.complete(artifact)
             completed_averages = estimator.completed_averages(artifact, stabilized)
             # Preserve the initial raw allocation while publishing separately
@@ -542,9 +567,11 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 ('Immutable accounting', 'accounting.json', 'application/json')]
             if has_workflow_accounting:
                 shared.append(('Workflow accounting join', 'workflow-accounting-join.json', 'application/json'))
-            manifest = recorder.finalize(status=status, shared_artifacts=tuple(shared))
+            manifest = recorder.finalize(status=status, shared_artifacts=tuple(shared),
+                **({'e2e_reruns': result.e2e_reruns} if identity.mode == 'e2e' else {}))
             from .allure_preview import emit_snapshot
-            emit_snapshot(recorder, recording_ids, on_snapshot, manifest=manifest)
+            emit_snapshot(recorder, {logical_owners[key]: value for key, value in recording_ids.items()},
+                          on_snapshot, manifest=manifest)
             estimator.ingest(directory, manifest)
             try:
                 storage.persist(directory, manifest)
@@ -576,6 +603,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 usage_output(starting_usage_line(usage.report()))
 
         def event(row):
+            if row.identity is not None:
+                admit(row.identity)
             if row.kind == 'inference_evidence_incomplete':
                 if row.identity is None or row.text not in {'truncated', 'unavailable'}:
                     raise ValueError('Invalid incomplete inference evidence event')
@@ -724,6 +753,10 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                            **({'tool_plan': tool_plan} if tool_plan is not None else {}),
                            **({'config_fields': config_fields} if config_fields is not None else {}),
                            **({'resolved_test_profiles': profiles} if runner is run_integration_tests else {}))
+        presentation_usage = usage_summary if usage_summary is not None else usage.report()
+        if identity.mode == 'e2e':
+            from .confirmations import logical_usage
+            presentation_usage = logical_usage(presentation_usage, logical_owners)
         return RecordedIntegrationResult(execution, identity, directory if local_directory else None,
-                                         usage_summary if usage_summary is not None else usage.report(), manifest, persisted,
+                                         presentation_usage, manifest, persisted,
                                          monotonic() - started_at)
