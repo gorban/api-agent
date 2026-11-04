@@ -852,20 +852,25 @@ class PrerequisiteManager:
                     if (actual['Type'] != 'bind' or actual.get('RW') is not False
                             or not path.is_relative_to(self.directory)):
                         raise ValueError()
-                    inside = len(path.parent.relative_to(self.directory).parts) + 1
-                    for parent in (path.parent, *path.parent.parents)[:inside]:
-                        info = parent.lstat()
-                        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                                or info.st_mode & 0o022):
-                            raise ValueError()
-                    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                    with os.fdopen(descriptor, 'rb') as stream:
-                        info = os.fstat(stream.fileno())
-                        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                                or info.st_mode & 0o022 or info.st_size > 1024 * 1024
-                                or sha256(stream.read(1024 * 1024 + 1)).hexdigest()
-                                != specification.asset_digests[asset_key]):
-                            raise ValueError()
+                    try:
+                        inside = len(path.parent.relative_to(self.directory).parts) + 1
+                        for parent in (path.parent, *path.parent.parents)[:inside]:
+                            info = parent.lstat()
+                            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                                    or info.st_mode & 0o022):
+                                raise ValueError()
+                        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                        with os.fdopen(descriptor, 'rb') as stream:
+                            info = os.fstat(stream.fileno())
+                            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                                    or info.st_mode & 0o022 or info.st_size > 1024 * 1024
+                                    or sha256(stream.read(1024 * 1024 + 1)).hexdigest()
+                                    != specification.asset_digests[asset_key]):
+                                raise ValueError()
+                    except FileNotFoundError as error:
+                        from .prerequisite_diagnostics import missing_captured_assets_message
+                        raise PrerequisiteError(missing_captured_assets_message(identifier,
+                            executable=self.plan.command[0], project=self.scope.project)) from error
                 else:
                     volume_name = self.scope.project + '_' + source
                     if actual['Type'] != 'volume' or actual.get('Name') != volume_name:

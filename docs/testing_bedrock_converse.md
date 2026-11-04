@@ -49,6 +49,26 @@ For Studio inspection, use the reasoning test described in the
 [main guide](testing_reasoning.md), or retain `test_studio_request` with `--debug`
 and send your own prompt after selecting effort.
 
+The reasoning-contrast test needs separately reported reasoning-token counts;
+the current Converse adapter does not expose those counts. An unqualified route
+is a configuration skip, not a passed comparison. Do not enable
+`LLM_REASONING_TEST_TOKEN_REPORTING` merely because reasoning is visible.
+
+The Studio selection test also skips if its two exact model choices are absent.
+For an account and allowed-model filter admitting both of these US profiles,
+configure the following test-specific settings in `.env`:
+
+```dotenv
+LLM_STUDIO_TEST_DEFAULT_MODEL=us.openai.gpt-6-luna
+LLM_STUDIO_TEST_SELECTED_MODEL=us.openai.gpt-6.1-terra
+LLM_STUDIO_TEST_DEFAULT_EFFORT=low
+LLM_STUDIO_TEST_SELECTED_EFFORT=high
+```
+
+These model IDs are exact strings, not regular expressions. The test still
+validates both choices against the selected catalog and allowed-model filter.
+Malformed choices and actual provider/authentication/execution errors fail.
+
 Native ConverseStream is collected with bounded content, metadata, event count
 and deadlines. Large Claude thinking requests use that SDK path even for a
 buffered completion. Display progress is published after native validation,
@@ -76,8 +96,9 @@ Live checks established GPT-OSS request/replay and Sonnet 4.5 low-budget replay.
 A separate GPT-6 Luna low-effort request confirmed the nested effort carrier.
 An operator's GPT-6 Luna high-effort two-call probe also confirmed exact replay
 of returned encrypted `redactedContent`. The reported unsigned-text replay
-repair still requires a matching live response; a text-only or encrypted-only
-response does not exercise that adaptation.
+repair's original integration test now passes in the operator's retest. The
+structural probes themselves supplied text-only and encrypted-only responses,
+so they do not independently exercise the unsigned-text adaptation.
 These checks do not qualify every model/version/account or guarantee a nonempty
 summary. Opus 4.5 hybrid effort passed low-effort replay and low/high-effort
 named-tool workflows on its Runtime US profile; this does not qualify strict

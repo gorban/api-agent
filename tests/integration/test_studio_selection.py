@@ -15,6 +15,10 @@ pytestmark = [pytest.mark.feature('Studio model selection'), pytest.mark.credent
 def require_selection_configuration(requirements):
     """Reject incomplete choices before requesting provider fixtures."""
     values = requirements.values
+    for key in ('LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL'):
+        if values.get(key) not in (None, ''):
+            exact_model(values, key)
+    requirements.require('LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL')
     default = exact_model(values, 'LLM_STUDIO_TEST_DEFAULT_MODEL')
     selected = exact_model(values, 'LLM_STUDIO_TEST_SELECTED_MODEL')
     efforts = tuple(values.get(key, '') for key in (

@@ -31,6 +31,29 @@ def test_supported_configuration_requires_no_provider_setup():
     assert module().require_selection_configuration(IntegrationRequirements(VALUES)) == CHOICES
 
 
+@pytest.mark.parametrize('name', ['LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL'])
+@pytest.mark.parametrize('empty', [None, ''])
+def test_missing_model_choices_are_explicit_configuration_skips(name, empty):
+    with pytest.raises(pytest.skip.Exception, match='Missing required configuration: ' + name):
+        module().require_selection_configuration(IntegrationRequirements(VALUES | {name: empty}))
+
+
+@pytest.mark.parametrize('value', [False, 123, ' whitespace '])
+def test_malformed_model_choices_remain_failures(value):
+    with pytest.raises(ValueError, match='qualified exact model ID'):
+        module().require_selection_configuration(IntegrationRequirements(VALUES | {'LLM_STUDIO_TEST_DEFAULT_MODEL': value}))
+
+
+@pytest.mark.parametrize('missing, supplied', [
+    ('LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL'),
+    ('LLM_STUDIO_TEST_SELECTED_MODEL', 'LLM_STUDIO_TEST_DEFAULT_MODEL'),
+])
+@pytest.mark.parametrize('value', [False, 123, ' whitespace '])
+def test_missing_choice_does_not_hide_a_malformed_supplied_choice(missing, supplied, value):
+    with pytest.raises(ValueError, match='qualified exact model ID'):
+        module().require_selection_configuration(IntegrationRequirements(VALUES | {missing: '', supplied: value}))
+
+
 @pytest.mark.parametrize('edit', [
     {'LLM_STUDIO_TEST_SELECTED_MODEL':'gpt-6-sol'},
     {'LLM_STUDIO_TEST_SELECTED_EFFORT':'medium'},

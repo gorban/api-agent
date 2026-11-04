@@ -20,6 +20,17 @@ pytestmark = [pytest.mark.feature('Reasoning contrast'), pytest.mark.requires_ll
 def reasoning_ready(integration_config):
     config = integration_config.values
     timeout = reasoning_timeout(config)
+    reporting = config.get('LLM_REASONING_TEST_TOKEN_REPORTING')
+    if reporting is not None and type(reporting) is not bool:
+        scope(config, owner_root=integration_config.owner_root)
+    if config.get('LLM_REASONING_TEST_MODEL') not in (None, ''):
+        from api_agent.testing.model_choices import exact_model
+        exact_model(config, 'LLM_REASONING_TEST_MODEL')
+    if reporting is None or reporting is False:
+        integration_config.require_combination(False,
+            'Reasoning contrast requires a provider/API route qualified for reasoning-token reporting; '
+            'configure a qualified test route before enabling LLM_REASONING_TEST_TOKEN_REPORTING.')
+    integration_config.require('LLM_REASONING_TEST_MODEL')
     model = scope(config, owner_root=integration_config.owner_root)
     efforts = tuple(config.get(key, '') for key in (
         'LLM_REASONING_TEST_LOW_EFFORT', 'LLM_REASONING_TEST_HIGH_EFFORT'))

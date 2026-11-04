@@ -272,6 +272,39 @@ def test_storage_requires_identity_private_parent_and_owned_volume(synthetic, da
         manager.verify_conditional_storage(name, identifier, 10)
 
 
+@pytest.mark.parametrize('removed', ['file', 'directory'])
+def test_removed_captured_assets_explain_container_recreation_without_mutating_engine(synthetic, removed):
+    from copy import deepcopy
+    manager, engine, _, _, _ = synthetic
+    lease = manager.acquire()
+    identifier = lease.owned_ids[0]
+    record = engine.records[identifier]
+    path = Path(next(mount['Source'] for mount in record['Mounts'] if mount['Type'] == 'bind'))
+    manager.release()
+    if removed == 'file':
+        path.unlink()
+    else:
+        shutil.rmtree(path.parent)
+    original = deepcopy(engine.records)
+    before = len(engine.calls)
+
+    with pytest.raises(p.PrerequisiteError, match='captured assets are missing') as caught:
+        manager.acquire()
+
+    message = str(caught.value)
+    assert '\n\n\n' + '!' * 72 + '\n\nACTION REQUIRED:' in message
+    assert 'git clean -xdf' in message
+    assert manager.scope.project in message
+    assert 'docker stop ' + identifier in message
+    assert 'docker rm ' + identifier in message
+    assert 'Keep all volumes.' in message
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+    assert manager.lease is None
+    assert engine.records == original
+    assert not any('up' in command or command[1] in ('stop', 'rm', 'volume', 'down')
+                   for command, _ in engine.calls[before:])
+
+
 def test_status_honors_explicit_deadline_and_default_bound(synthetic):
     manager, _, _, _, _ = synthetic
     assert manager.status() == ()

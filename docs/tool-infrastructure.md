@@ -31,7 +31,20 @@ An inventory row reads the declaration's owner and service identities, without r
 
 Operations share compatible selected services through locked leases. If a creator finishes while another operation still uses its containers, eligible cleanup responsibility transfers to a remaining consumer. Cleanup runs after the last relevant lease releases, subject to explicit retention and volume-preservation policy. A failed cleanup remains owned for retry; unrelated retained services are never added to that responsibility.
 
+## Missing captured files after external cleanup
+
+Removing ignored prerequisite artifacts (for example with `git clean -xdf`)
+while container definitions remain can delete their captured read-only bind
+sources. A later launch refuses adoption and prints an ACTION REQUIRED section
+identifying the affected container. Stop other operations using that stack,
+then use the same engine/context to stop and remove only the identified
+container. Retain all named volumes and rerun the launcher to recapture files
+and recreate the container. Repeat for any other affected container; stopping
+alone leaves its old bind definition intact. Existing unsafe or altered assets
+remain validation failures, rather than being silently replaced.
+
 ## Recursive dependencies and Docker profiles
+
 
 The bundled [instance](../demo/simple/cfg/tools/primary.toml) declares its local
 output separately from its `[bindings]`:
