@@ -39,9 +39,10 @@ def test_unsupported_accounting_period_never_falls_back_to_week(period):
 
 @pytest.mark.parametrize('quota', ['day', 'week', 'month'])
 @pytest.mark.parametrize('pay', ['day', 'week', 'month'])
-def test_base_quota_and_payment_options_are_consistent(quota, pay):
+def test_gpt_subscription_quota_and_payment_options_are_consistent(quota, pay):
     from api_agent.config import load_shared_schema, resolve_config
-    schema = load_shared_schema()
+    from api_agent.providers.loading import bootstrap_schema
+    schema = bootstrap_schema(load_shared_schema(), (), {}, {})
     assert schema.fields['LLM_QUOTA_PERIOD'].enum == schema.fields['LLM_PAY_PERIOD'].enum == ('day', 'week', 'month')
     result = resolve_config(schema, argv=['--tui-mode=unit', f'--llm-quota-period={quota}',
                             f'--llm-pay-period={pay}'], environ={}, dotenv={})

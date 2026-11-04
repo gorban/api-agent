@@ -112,6 +112,7 @@ def test_optional_recording_destinations_are_reviewable_without_becoming_require
                                                                acknowledge_default=False)})
         app.session.schema = app.schema
         app.context.anchors['owner_root'] = tmp_path
+        app.session.set_value('TOKEN_USAGE_CSV_ENABLED', 'True')
         async with app.run_test() as pilot:
             await pilot.pause()
             assert set(app.configuration_pending()) == set(names)
@@ -119,7 +120,8 @@ def test_optional_recording_destinations_are_reviewable_without_becoming_require
             assert [table.get_row_at(i)[0] for i in range(table.row_count)] == list(names)
             for name in names:
                 assert name not in app.session.result(_review=True).missing
-                assert name not in app.session.result(_review=True).fields
+            assert 'ALLURE_SECONDARY_DIR' not in app.session.result(_review=True).fields
+            assert app.session.result(_review=True).values['TOKEN_USAGE_CSV'] == tmp_path / 'token_usage.csv'
             await pilot.press('c')
             await pilot.pause()
             assert app.screen.kind == 'menu'

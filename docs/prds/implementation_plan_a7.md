@@ -4,6 +4,8 @@ Follow the exact [session and browser contracts](../architecture/provider_archit
 
 ## Checklist
 
+- [x] Declare subscription allocation settings (`LLM_QUOTA_PERIOD`, `LLM_PAY_PERIOD`, `LLM_PAY_PERIOD_LIMIT`) in the owning GPT provider, applicable only to `GPT_AUTH_MODE=subscription`. Bedrock and GPT API-key configuration review must not offer these controls. Preserve provider extensibility through contributed declarations; the payment amount estimates quota cost and does not impose a spending cap.
+
 - [ ] Share an owned LLM authentication session across the selected unattended runtime. Initialize it lazily when an authenticated provider operation needs it. Unit/help/collection/configuration operations do not authenticate or read quota. Preserve human configuration review and integration/E2E acceptance.
 - [ ] Give the selected LLM provider an unattended user index, its dedicated headless browser and an LLM-user credential callback. Its authentication hook returns a fresh opaque token getter and asynchronous disposal. The provider owns protocol state, refresh and any private persistence; public core does not serialize or interpret tokens.
 - [ ] Keep provider authentication isolated from resource-pack UI authentication. Each E2E UI session authenticates through the resource pack before the test receives that same session. The resource pack receives tui_mode, the browser, the optional unattended index and role-bound credential callbacks.
