@@ -101,3 +101,5 @@ The combined gate passes 2,758/2,758 units with exact 100% measured per-file lin
 - [x] Retain shared-setup failure evidence through the worker, pytest and Allure: unexpected backend failures include bounded fixed classifications and stack locations without arbitrary exception messages, code, locals or external filesystem paths. Preserve validated failure-frame messages and explicit safe cause chains, including when cleanup is pending. Keep interruptions and owned disposal unchanged; verify real recorded pytest failures and focused mutations of each reporting link.
 
 The delivered authentication/DEBUG scope is human-accepted. Platform-specific verification, future consumers and unsupported challenge variants retain their own gates.
+
+- [x] Apply the same configuration-only skip to workflow node coverage when its exact test-model choice is absent; reject malformed supplied models and invalid workflow budgets before provider setup, and retain runtime failures.

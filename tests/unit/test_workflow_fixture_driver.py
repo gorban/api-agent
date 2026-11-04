@@ -396,7 +396,7 @@ def test_integration_collection_has_only_mandatory_coverage():
     module = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'tests/integration/test_workflow.py'))
     assert [name for name in module if name.startswith('test_')] == ['test_workflow_node_coverage']
     lookup = Mock(side_effect=AssertionError('Missing model must not request provider fixtures'))
-    with pytest.raises(ValueError, match='LLM_WORKFLOW_TEST_MODEL'):
+    with pytest.raises(pytest.skip.Exception, match='Missing required configuration: LLM_WORKFLOW_TEST_MODEL'):
         module['test_workflow_node_coverage'](SimpleNamespace(getfixturevalue=lookup), SimpleNamespace(values={}))
     lookup.assert_not_called()
 
@@ -639,3 +639,14 @@ def test_workflow_profile_enforces_declared_strict_output_bound(monkeypatch):
                      {'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS': 1024})
     assert calls[0].payload.generation.max_output_tokens == 1024
     assert request.payload.generation.max_output_tokens is None
+
+
+@pytest.mark.parametrize('value', [False, 123, ' bad '])
+def test_workflow_integration_malformed_exact_model_is_not_skipped(value):
+    import runpy
+    module = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'tests/integration/test_workflow.py'))
+    lookup = Mock(side_effect=AssertionError('Malformed model must not acquire providers'))
+    with pytest.raises(ValueError, match='qualified exact model ID'):
+        module['test_workflow_node_coverage'](SimpleNamespace(getfixturevalue=lookup),
+            SimpleNamespace(values={'LLM_WORKFLOW_TEST_MODEL': value}))
+    lookup.assert_not_called()
