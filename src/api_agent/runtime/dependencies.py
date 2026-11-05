@@ -36,6 +36,45 @@ def _parsed_requirement(raw):
     return parsed
 
 
+def _group_name(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?', value):
+        raise ValueError('Invalid dependency group name')
+    return re.sub(r'[-_.]+', '-', value).lower()
+
+
+def _dependency_groups(table, requested):
+    """Expand only selected PEP 735 groups, retaining order and constraints."""
+    if not isinstance(table, dict):
+        raise ValueError('Dependency groups must be a table')
+    indexed = {}
+    for key, contents in table.items():
+        name = _group_name(key)
+        if name in indexed:
+            raise ValueError('Colliding dependency group names')
+        indexed[name] = contents
+
+    def expand(name, ancestors):
+        if name in ancestors:
+            raise ValueError('Cyclic dependency group include')
+        if name not in indexed:
+            raise ValueError('Unknown included dependency group')
+        contents = indexed[name]
+        if not isinstance(contents, list):
+            raise ValueError('Dependency group must be a list')
+        result = []
+        for entry in contents:
+            if isinstance(entry, str):
+                _parsed_requirement(entry)
+                result.append(entry)
+            elif isinstance(entry, dict) and set(entry) == {'include-group'}:
+                result.extend(expand(_group_name(entry['include-group']), (*ancestors, name)))
+            else:
+                raise ValueError('Invalid dependency group item')
+        return result
+
+    return {name: expand(name, ()) for name in requested if name in indexed}
+
+
 def requirements(context, *, collect=False, groups=(), selected_provider_manifests=()):
     from .pack_admission import declaration_bodies, verify_composition
     verify_composition(context)
@@ -44,6 +83,7 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
     dependencies = []
     library_root = getattr(context, 'workflow_base_root', None)
     projects = {}
+    documents = {}
     roots = (context.base_root, context.pack_root, library_root,
              *(layer.pack_root for layer in getattr(context, 'pack_layers', ())))
     for root in dict.fromkeys(Path(root) if immutable else Path(root).resolve()
@@ -59,10 +99,11 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
             continue
         if immutable or manifest.is_file():
             if immutable:
-                projects[root] = tomllib.loads(bodies[manifest].decode()).get('project', {})
+                documents[root] = tomllib.loads(bodies[manifest].decode())
             else:
                 with manifest.open('rb') as handle:
-                    projects[root] = tomllib.load(handle).get('project', {})
+                    documents[root] = tomllib.load(handle)
+            projects[root] = documents[root].get('project', {})
     library_project = (projects.get(Path(library_root) if immutable else Path(library_root).resolve(), {})
                        if library_root is not None and getattr(context, 'workflow_library_files', None) is None
                        else {})
@@ -114,19 +155,28 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
                     requirement.marker = None
                 add_requirement(str(requirement))
 
+    requested = tuple(dict.fromkeys(_group_name(group) for group in groups))
     found_groups = set()
     # Admission already selected these roots; never search siblings or parents.
-    for project in projects.values():
+    for root, project in projects.items():
         selected = list(project.get('dependencies', []))
         optional = project.get('optional-dependencies', {})
-        for group in groups:
-            if group in optional:
-                found_groups.add(group)
-                selected.extend(optional[group])
+        normalized_optional = {}
+        for key, contents in optional.items():
+            name = _group_name(key)
+            if name in normalized_optional:
+                raise ValueError('Colliding optional dependency group names')
+            normalized_optional[name] = contents
+        standard = _dependency_groups(documents[root].get('dependency-groups', {}), requested) if requested else {}
+        for group in requested:
+            for available in (normalized_optional, standard):
+                if group in available:
+                    found_groups.add(group)
+                    selected.extend(available[group])
         for requirement in selected:
             # Source loading supplies the base itself; install only external tools.
             add_requirement(requirement)
-    if missing_groups := set(groups) - found_groups:
+    if missing_groups := set(requested) - found_groups:
         raise ValueError(f'Unknown optional dependency group(s): {", ".join(sorted(missing_groups))}')
     # Callers pass only manifests for operation-active providers. Discovery and
     # collection do not select executable providers or prepare their packages.
