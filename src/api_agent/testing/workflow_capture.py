@@ -10,6 +10,22 @@ _FLAGS = ('LOG_CONTENT', 'TRACELOOP_TRACE_CONTENT')
 _CURRENT = ContextVar('integration_workflow_capture', default=None)
 
 
+def managed_workflow_manifest(manifest, *, fixture_names=(), mode=None):
+    """Enroll the framework owner without inferring other credential producers."""
+    from .authority_scope import validate_manifest
+    owners = validate_manifest(manifest)
+    if owners is None:
+        owners = {'workflow'}
+        if 'workflow_tools' in fixture_names:
+            owners.add('tools')
+        if 'ui_provider_session' in fixture_names or mode == 'e2e':
+            owners.add('ui')
+        return tuple(sorted(owners))
+    if owners == {'coordinator'}:
+        return ('workflow',)
+    return tuple(manifest) if 'workflow' in owners else (*manifest, 'workflow')
+
+
 def capture_sources(values, fields):
     """Retain exact resolved provenance, never infer permission from a mapping."""
     result = {}

@@ -478,7 +478,7 @@ class WorkflowObservations:
                 live.update(values=log_values, reason=classify_capture(log_values, report, capture_reason))
             else:
                 live.pop('values', None)
-                live['reason'] = 'withheld'
+                live['reason'] = 'unavailable' if capture_reason == 'unavailable' else 'withheld'
             self._emit(live)
             if trace_values is not None:
                 span = self._spans.get(visit_id)

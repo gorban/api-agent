@@ -20,6 +20,30 @@ def attention_status(*statuses):
     return max(statuses, key={"passed": 0, "broken": 1, "failed": 2}.__getitem__)
 
 
+def _capture_status(step, direction, reason):
+    details = {
+        'captured': 'Payload captured.',
+        'partial': 'Only part of the payload was admitted.',
+        'truncated': 'Payload exceeded a capture limit.',
+        'withheld': 'Payload withheld by the destination content policy.',
+        'unavailable': 'No admitted payload was recorded; it or its capture authority was unavailable.',
+        'not_observed': 'No capture event was recorded; execution may not have reached or produced this phase.',
+        'ambiguous': 'Multiple direct payload captures were recorded for this phase.',
+        'privacy_withheld': 'Payload withheld by credential scrubbing.',
+        'unclassified': 'No eligible plain I/O fields were declared.',
+        'unsupported': 'Payload does not match the supported capture contract.',
+        'payload_limit': 'Payload exceeded a capture limit.',
+        'unknown': 'Capture status was absent or unrecognized.',
+    }
+    if type(reason) is not str or reason not in details:
+        reason = 'unknown'
+    name = direction + '_capture'
+    step['parameters'][:] = [item for item in step['parameters']
+                            if item['name'] not in (name, name + '_detail')]
+    step['parameters'].extend((dict(name=name, value=reason),
+        dict(name=name + '_detail', value=details[reason])))
+
+
 def transport_attempt_steps(ledger):
     """Project admitted physical evidence without creating logical call rows."""
     if ledger is None:
@@ -196,6 +220,9 @@ def scope_steps(events):
             status=('failed' if end['outcome'] == 'failed' else 'broken'
                     if end['outcome'] in ('cancelled', 'partial', 'unknown') or attempts.get(identifier, 0) > 1 else 'passed'),
             start=int(scope['started_ms']), stop=int(end['stopped_ms']), steps=[], parameters=parameters)
+        if scope['kind'] == 'node':
+            for direction in ('input', 'output'):
+                _capture_status(rows[identifier], direction, 'not_observed')
     for identifier, scope in scopes.items():
         ancestors = {identifier}
         cursor = scope['parent_id']
@@ -220,6 +247,7 @@ def scope_steps(events):
     tool_steps = {}
     calls = set()
     inclusive = {identifier: [] for identifier in scopes}
+    node_captures = set()
     for event in events:
         identifier = event.get('tool_invocation_id')
         if event.get('event') == 'tool_start':
@@ -229,6 +257,8 @@ def scope_steps(events):
             for field in ('tool_name', 'tool_instance'):
                 if field in event:
                     leaf['parameters'].append(dict(name=field, value=event[field]))
+            for direction in ('input', 'output'):
+                _capture_status(leaf, direction, 'not_observed')
             parent['steps'].append(leaf)
             tool_steps[identifier] = (leaf, event, parent)
         elif event.get('event') == 'tool_end':
@@ -241,12 +271,22 @@ def scope_steps(events):
             # inside the original node interval. Round both projections alike.
             leaf.update(start=int(start['started_ms']), stop=int(event['stopped_ms']))
             parent['status'] = attention_status(parent['status'], leaf['status'])
-        elif event.get('event') == 'capture' and identifier in tool_steps:
+        elif event.get('event') == 'capture':
+            visit = event.get('visit_id')
+            direction = event.get('direction')
             reason = event.get('reason')
-            if reason not in ('captured', 'partial', 'truncated', 'unavailable', 'withheld'):
-                reason = 'unknown'
-            tool_steps[identifier][0]['parameters'].append(
-                dict(name=event['direction'] + '_capture', value=reason))
+            if reason in ('captured', 'partial', 'truncated') and 'values' not in event:
+                reason = 'unavailable'
+            if identifier in tool_steps:
+                _capture_status(tool_steps[identifier][0], direction, reason)
+            elif (identifier is None and visit in rows and scopes[visit]['kind'] == 'node'
+                    and not any(event.get(field) is not None for field in
+                                ('cause_id', 'transport_attempt_id', 'capture_source'))
+                    and direction in ('input', 'output')):
+                key = (visit, direction)
+                reason = 'ambiguous' if key in node_captures else reason
+                _capture_status(rows[visit], direction, reason)
+                node_captures.add(key)
         if event.get('event') != 'call':
             continue
         call_id, visit_id = event.get('call_id'), event.get('visit_id')

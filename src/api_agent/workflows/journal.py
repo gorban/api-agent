@@ -660,7 +660,7 @@ class WorkflowJournal:
         if type(visit_id) is not str or not visit_id:
             raise ValueError('Workflow capture requires a node visit')
         event = dict(event='capture', visit_id=visit_id, direction=direction,
-                     reason='withheld')
+                     reason='unavailable' if capture_reason == 'unavailable' else 'withheld')
         if tool_invocation_id is not None:
             event.update(tool_invocation_id=tool_invocation_id, attempt_id=attempt_id)
         if cause_id is not None:

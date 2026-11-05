@@ -81,11 +81,8 @@ async def capture_node(journal, services, *, visit_id, direction, values, schema
                 lease.release()
         capability = local_authority
     if capability is None:
-        if plain_fields is not ...:
-            return journal.capture(visit_id=visit_id, direction=direction, values=values,
-                schema=schema, plain_fields=plain_fields)
         return journal.capture_json(visit_id=visit_id, direction=direction,
-            values=values, schema=schema, **tool_fields)
+            values={}, schema=schema, capture_reason='unavailable', **tool_fields)
     from .journal import defer_capture_callbacks
     from .capture import capture_reason, project_values
     callbacks = []

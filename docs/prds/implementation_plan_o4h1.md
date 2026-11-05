@@ -32,3 +32,6 @@ legacy duplicate trace spans.
 Independent source review and browser inspection of the new report pass. Existing
 immutable reports cannot gain payloads that were never captured; rerun the test
 to obtain the corrected evidence.
+
+[Shared entry-point defaults](implementation_plan_o4h2.md) extends this repair
+across managed workflows and adds explicit omission states to node steps.
