@@ -146,7 +146,7 @@ def test_default_resolver_protected_writer_normal_studio_and_shared_host(default
         if event=='collector-release':
             assert factory_events[:index].count('adapter-close')>factory_events[:index].count('collector-release')
     spans=spans_from(received)
-    assert any(span.name=='request' for span in spans)
+    assert {'GET /app/agent/models', 'POST /app/agent/chat'} <= {span.name for span in spans}
     assert len([span for span in spans if attrs(span).get('gen_ai.operation.name')=={'stringValue':'chat'}])==1
     assert ('safe answer' in str(received)) is trace
 

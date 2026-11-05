@@ -17,7 +17,8 @@ The user approved reasoning-effort support, short newest-model access/capability
 - [x] Run the authorized bounded latest-model probes and an explicit initial 20-graph Bedrock pilot with a working model. Keep credentials/raw output private and publish only independently reviewed structural measurements. Stop on unavailable auth or failed pilot; do not cherry-pick observations or silently change model/provider/settings. Additional expansions need explicit approval.
 - [x] Qualify a complete live three-pair reasoning comparison under its unchanged signed threshold. Preserve unavailable, empty and cap-reaching samples as failures; partial matched pairs do not establish a passed test. Further inference needs a new bounded authorization after the completed attempt scopes.
 - [x] Refresh the stale GLM workflow baseline after the deadline/pricing sampling-source changes, preserving the earlier report and requiring fresh independent review before node-coverage reuse.
-- [ ] Human acceptance through launcher reasoning, Studio selection and normal node-coverage tests remains separate from capability discovery and pilot arithmetic.
+- [x] Human-approved Studio model/version/effort selection through the launcher integration check. This acceptance is separate from capability discovery and pilot arithmetic.
+- [ ] Remaining launcher reasoning and normal node-coverage acceptance stays separate; Studio selection approval does not qualify every provider/API route.
 
 Completed scoped repair: [reasoning deadlines and concurrent qualification](implementation_plan_f4l1.md).
 

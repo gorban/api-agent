@@ -66,7 +66,7 @@ def test_normal_http_retained_manual_has_separate_graph_and_frozen_evidence(manu
     assert graphs[0].trace_id!=graphs[1].trace_id
     for graph in graphs:
         request=next(span for span in spans if span.span_id==graph.parent_span_id)
-        assert request.name=='request'
+        assert request.name=='POST /app/agent/chat'
         assert request.start_time_unix_nano<=graph.start_time_unix_nano<=graph.end_time_unix_nano<=request.end_time_unix_nano
     calls=[span for span in spans if attrs(span).get('gen_ai.operation.name')=={'stringValue':'chat'}]
     assert len(calls)==1  # Retained manual uses its existing accounting journal.

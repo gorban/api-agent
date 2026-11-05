@@ -61,7 +61,7 @@ async def agent_endpoint(provider, selection, origin, nonce, *, listener=None, r
             on_error=lambda error: _execution_error(provider, nonce, error), trace_owner=tracing)
         duties.push(backend.aclose)
         if tracing is not None:
-            tracing.bind_http(origin, nonce)
+            tracing.bind_http(origin, nonce, backend=backend)
         runtime = Runtime('demo', services={'studio_backend': backend}, tracing=tracing)
         duties.push(_close_runtime, runtime)
         asgi_application = create_application(runtime)

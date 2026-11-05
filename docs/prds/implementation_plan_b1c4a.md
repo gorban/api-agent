@@ -91,8 +91,9 @@ also retains safe status on stderr. The TUI's display retention remains separate
   or promise lossless terminal delivery. Document the stdout/tee alternative.
 - [x] Test full records, Unicode byte accounting, old-record eviction, default
   limits and credential scrubbing. Complete applicable coverage and review.
-- [ ] Human acceptance: copy a large admitted Run local record with the setting
-  enabled and confirm the TUI no longer inserts its truncation marker.
+- [x] Human-approved full admitted Run local records and preview truncation.
+  The user tested untruncated content first, then confirmed preview truncation
+  cuts individual field values while preserving valid structured JSON.
 
 Verification: 22,887 unit tests pass with exact 100% line/branch coverage across
 336 measured files. The normal recorded runner passes four controlled demo

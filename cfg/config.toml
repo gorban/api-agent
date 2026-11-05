@@ -94,6 +94,12 @@ type = "bool"
 default = false
 help = "Default False withholds prompts, responses, provider-returned plaintext reasoning and tool content from logs, local diagnostics and Allure details/screenshots. True permits scrubbed content in those destinations. TRACELOOP_TRACE_CONTENT independently controls trace payloads. Credentials, encrypted reasoning and internal state remain excluded."
 
+[fields.TRACE_HTTP_DIAGNOSTICS_LEVEL]
+type = "str"
+default = "off"
+enum = ["off", "info"]
+help = "HTTP trace diagnostics. Off omits shipped health/heartbeat probes and browser preflights, including failed responses; info traces them. Endpoint behavior and logging are unchanged."
+
 [fields.TRACELOOP_TRACE_CONTENT]
 type = "bool"
 default = false
