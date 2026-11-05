@@ -7,6 +7,6 @@
 - [x] Read raw diagnostic secrets only through valid nonempty declaration field names; optional absent password metadata must not become an invalid environment lookup. Exercise real environment-mapping key rules without changing process credentials.
 - [x] Resolve and validate controller errors before side effects. Do not instantiate providers, allocate infrastructure, start browsers or change saved configuration to produce a rejection diagnostic.
 - [x] Reproduce the bundled profile mismatch with only the two route settings, verify red-to-green diagnostics and meaningful rejection controls, complete independent and external source review, exact full unit coverage and public index/metadata checks.
-- [ ] Human acceptance of the corrected unavailable-dashboard message remains required.
+- [x] Human-approved the corrected unavailable-dashboard diagnostic.
 
-Verification: 26,915 full unit tests pass at 16 workers with exact 100% line and branch coverage. Independent adversarial and external source reviews pass after the custom named-endpoint regression was repaired. The actual launcher produces the actionable profile mismatch diagnostic without changing saved settings. Human acceptance of that message remains open.
+Verification: 26,915 full unit tests pass at 16 workers with exact 100% line and branch coverage. Independent adversarial and external source reviews pass after the custom named-endpoint regression was repaired. The actual launcher produces the actionable profile mismatch diagnostic without changing saved settings. The corrected diagnostic is human-approved.

@@ -78,7 +78,7 @@ def test_original_page_selects_exact_version_and_off_before_only_request(tmp_pat
         assert provider.calls == []
         module.test_studio_selection(prepared, loop, backend)
         if scoped:
-            assert loop.run_until_complete(original_page.locator('#model option:checked').text_content()) == 'gpt-luna'
+            assert loop.run_until_complete(original_page.locator('#model option:checked').text_content()) == 'GPT-Luna'
         assert len(provider.calls) == 1
         assert backend.observed.calls[0][1].usage == Usage(2, 3)
         request = provider.calls[0]

@@ -203,7 +203,7 @@ async function openStudio(handler, init) {
     return handler(route);
   });
   await page.goto(host);
-  await page.waitForFunction(()=>[...document.querySelector('#model').options].some(option=>option.textContent==='Sample model'));
+  await page.waitForFunction(()=>[...document.querySelector('#model').options].some(option=>option.textContent==='Sample Model'));
   return {browser,context,page};
 }
 const result = (text, extra = {}) => ({text,outcome:'completed',usage:{input_tokens:null,output_tokens:null,cached_input_tokens:null,reasoning_tokens:null},...extra});
@@ -1197,7 +1197,7 @@ test('family picker sends exact version IDs and pins old retries across family/d
  const {page}=studio;
  try{
   await page.locator('#settings-nav').click();
-  assert.deepEqual(await page.locator('#model option').allTextContents(),['GPT-Luna','GPT-Sol','Sample model']);
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['GPT-Luna','GPT-Sol','Sample Model']);
   assert.deepEqual(await page.locator('#version option').allTextContents(),['Provider default','6','5.6','Unknown version — luna-current']);
   await page.locator('#version').selectOption(l56.selected_llm);
   assert.deepEqual(await page.locator('#reasoning option').allTextContents(),['Provider default','off','low']);
@@ -1753,7 +1753,7 @@ test('Claude picker shows numeric versions and scoped labels while sending full 
  try{
   const {page}=studio;
   await page.locator('#settings-nav').click();
-  assert.deepEqual(await page.locator('#model option').allTextContents(),['claude-haiku']);
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['Claude-Haiku']);
   assert.deepEqual(await page.locator('#version option').allTextContents(),['Provider default','4.5','5.5']);
   await page.locator('#version').selectOption(older.selected_llm);await page.locator('#close-settings').click();
   await page.locator('#prompt').fill('Exact version');await page.locator('#send').click();
@@ -1761,7 +1761,7 @@ test('Claude picker shows numeric versions and scoped labels while sending full 
   rows=[older,newer,global];await reloadPage(page);
   await page.waitForFunction(()=>document.querySelectorAll('#model option').length===2);
   await page.locator('#settings-nav').click();
-  assert.deepEqual(await page.locator('#model option').allTextContents(),['claude-haiku-us','claude-haiku-global']);
+  assert.deepEqual(await page.locator('#model option').allTextContents(),['Claude-Haiku-Us','Claude-Haiku-Global']);
   assert.equal(await page.locator('#version').inputValue(),older.selected_llm);
  }finally{await studio.close();}
 });

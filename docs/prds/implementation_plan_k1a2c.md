@@ -30,6 +30,6 @@
 Focused selection/viewer tests cover both cross-profile endpoint mismatches, explicit-empty viewer disabling and URL userinfo/query/fragment redaction. The effective selection forwards a generic capability-loss reason; presentation reads provider declarations without provider-name branches.
 
 - [x] Complete the renewed full coverage and independent review gates for the diagnostic follow-up.
-- [ ] Human acceptance of the actionable unavailable-dashboard diagnostic.
+- [x] Human acceptance of the actionable unavailable-dashboard diagnostic, including the required-field ordering repair.
 
 [Required-field diagnostic ordering repair](implementation_plan_k1a2c1.md) tracks a bundled profile mismatch that still produced the generic missing-configuration message.
