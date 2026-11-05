@@ -30,3 +30,9 @@ future proposal, scheduled after all profiling and authentication work.
 [Bounded unit execution and launcher parity](implementation_plan_a9h.md) is implemented and independently reviewed, covering source aliases, fixture coordination and fixed 60-second hang guards. The user accepts the repaired full launch and integration with and without DEBUG and NO_STD_IN; accepted coverage disclosure stays complete.
 
 [Unit-suite performance investigation](implementation_plan_a9i.md) joins later profiling, preserving exact coverage and real boundary proofs.
+
+## Child interpreter coverage
+
+- [x] Owners may opt into child Python interpreter coverage with standard `pyproject.toml` `[tool.coverage.run] patch=["subprocess"]`. The ordinary unit runner defaults this off, reads only the current owner’s admitted declaration, merges opted-in child execution into that owner’s report, and preserves the same exact line/branch gate in serial and parallel runs. Inherited process coverage configuration is cleared before unit collection and each pytest owner. A captured exact owner project takes precedence even without an explicit patch; a missing owner project abstains rather than hiding mapped pack policies; otherwise same-owner pack declarations abstain when patch is absent, coalesce identical explicit policies, and reject conflicting explicit policies. Require pytest-cov 7 or newer for supported subprocess patching. Opted-in child-only execution must produce measured owner coverage; without opt-in, unexecuted parent production remains a coverage failure.
+- [x] Complete independent/external source review, wheel and public-boundary checks; all 27,528 units pass with exact 100% statement and branch coverage.
+- [ ] Human launcher acceptance of this extension remains open. Existing coverage disclosure acceptance is unchanged.

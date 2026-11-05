@@ -592,3 +592,46 @@ def test_owner_coverage_omits_dependency_sources_even_when_explicitly_selected(t
     assert {area.repo for area in result.coverage} == {'pack'}
     assert {report.repo for report in result.coverage_reports} == {'pack'}
     assert {test.identity.id for test in result.tests} == {test.id for test in selected}
+
+
+@pytest.mark.parametrize("jobs", [0, 2])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_child_interpreter_execution_contributes_to_owner_coverage(tmp_path, jobs, enabled):
+    code = "def choose(value):\n    if value:\n        return 1\n    return 2\n"
+    test = ("import subprocess, sys\n"
+            "def test_child():\n"
+            "    subprocess.run([sys.executable, '-c', "
+            "\"from tiny import choose; assert choose(True) == 1; assert choose(False) == 2\"], check=True)\n")
+    base = fixture_repo(tmp_path / 'base', code=code, test=test)
+    if enabled:
+        (base / 'pyproject.toml').write_text('[tool.coverage.run]\npatch = ["subprocess"]\n')
+    ctx = context(base)
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'), parallel_jobs=jobs)
+    assert [test.status for test in result.tests] == ['passed']
+    assert result.exit_code == (0 if enabled else 1), result.output
+    assert len(result.coverage) == 1
+    assert result.coverage[0].complete == enabled
+    assert result.coverage[0].num_branches == (2 if enabled else 0)
+
+
+def test_owner_opt_in_does_not_instrument_other_owner_or_inherit_parent_config(tmp_path, monkeypatch):
+    code = 'def choose(value):\n    if value:\n        return 1\n    return 2\n'
+    def child_test(module):
+        return ('import os, subprocess, sys\n'
+                'def test_child():\n'
+                '    if ' + repr(module == 'other') + ':\n'
+                '        assert "COVERAGE_PROCESS_CONFIG" not in os.environ\n'
+                '        assert "COVERAGE_PROCESS_START" not in os.environ\n'
+                '    subprocess.run([sys.executable, "-c", '
+                + repr(f'from {module} import choose; choose(True); choose(False)') + '], check=True)\n')
+    base = fixture_repo(tmp_path / 'base', code=code, test=child_test('tiny'))
+    other = fixture_repo(tmp_path / 'other', code=code, test=child_test('other'))
+    (other / 'src/tiny.py').rename(other / 'src/other.py')
+    (base / 'pyproject.toml').write_text('[tool.coverage.run]\npatch=["subprocess"]')
+    monkeypatch.setenv('COVERAGE_PROCESS_CONFIG', 'inherited-parent-config')
+    monkeypatch.setenv('COVERAGE_PROCESS_START', 'inherited-parent-start')
+    ctx = context(base, other)
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'))
+    assert [test.status for test in result.tests] == ['passed', 'passed'], result.output
+    assert result.exit_code == 1
+    assert {area.repo: area.complete for area in result.coverage} == {'base': True, 'other': False}
