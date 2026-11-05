@@ -147,6 +147,8 @@ class ToolGate:
         outcome = 'failure'
         try:
             async with component_timeout('Tool execution', self.timeout):
+                from .execution import mark_active_effect
+                mark_active_effect()
                 result = await self.owner.invoke(dispatch)
                 if not isinstance(result, ToolResult):
                     raise ToolGateError('Tool owner returned invalid result')
