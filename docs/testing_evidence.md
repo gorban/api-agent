@@ -65,6 +65,37 @@ Recording also limits custom attachments per selected test to 256 packets and
 raises `ValueError`; these budgets apply to custom attachments independently of
 other workflow evidence.
 
+## Workflow capture defaults
+
+Managed integration and E2E runs bind workflow capture once per test. New flows,
+nested workflows and retries inherit that context; no `workflow` marker or
+per-diagram logging setting is required. Without an explicit authority marker,
+standard UI/tool fixtures enroll their owners automatically; E2E also enrolls its
+automatically prepared UI. Additional manual credential producers need explicit
+admission, such as `credential_authorities('ui', 'tools')`. An explicit manifest
+remains closed. Every enrolled producer must register its boundary before
+content is admitted. ToolGate records typed tool execution automatically; do not
+add a duplicate generic `record_call` for the same execution.
+
+`LOG_CONTENT=False` and `TRACELOOP_TRACE_CONTENT=False` remain the independent
+defaults. Enabling either permits only scrubbed declared node I/O and typed tool
+payloads for that destination. It does not permit arbitrary internal state.
+
+Allure node and tool steps include input/output capture states and fixed
+explanations. `withheld` means destination policy withheld content;
+`unavailable` means the payload or its capture authority was unavailable.
+`not_observed` means no phase capture event was recorded, for example after an
+earlier failure. It does not assert an authority error. Ambiguous duplicate
+node-phase captures are labelled `ambiguous` rather than choosing the last one.
+An empty or null payload is still captured if its value was actually retained.
+
+Standalone library callers and explicit application capture owners supply their
+own observation factory and complete credential boundary. A bare content-policy
+object is insufficient. An explicit owner replaces the inherited bundle without
+borrowing another owner's credentials; missing authority records unavailable
+content while workflow execution continues. Historical reports retain the
+evidence captured at the time and are not changed retroactively.
+
 ## UI responses before the next prompt
 
 UI tests using the prepared UI fixture can wrap each prompt and its rendered

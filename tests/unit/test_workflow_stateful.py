@@ -2325,13 +2325,14 @@ def test_presented_stateful_cli_keeps_validation_and_topology(fixture_graph, cap
 def test_stateful_plain_capture_requires_explicit_contract_and_retains_only_fields(fixture_graph,with_journal):
     root, entry = fixture_graph
     definition = load_stateful_definition(entry,base_root=root,pack_root=root)
-    from api_agent.telemetry.privacy import ContentPolicy
-    journal = WorkflowJournal(definition,log_content=True,content_policy=ContentPolicy(True)) if with_journal else None
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    boundary = EmissionBoundary(ContentPolicy(True))
+    journal = WorkflowJournal(definition,log_content=True,content_policy=ContentPolicy(True), boundary=boundary) if with_journal else None
     contract = {'schema':{'type':'object','properties':{'visits':{'type':'integer'}}},
                 'plain_fields':['visits']}
     workflow = StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),
         reducers={'messages':add_messages},journal=journal,
-        services={'plain_io_contracts':{'intake':{'input':contract,'output':contract}}})
+        services={'emissions': boundary, 'plain_io_contracts':{'intake':{'input':contract,'output':contract}}})
     result = asyncio.run(workflow.arun({'messages':[HumanMessage(content='unclassified text')],
         'pending':False,'visits':0},thread_id='classified'))
     assert result['visits'] == 1
@@ -2369,6 +2370,7 @@ def test_recorded_stateful_graph_publishes_only_resolved_log_permission(fixture_
     workflow = StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),reducers={'messages':add_messages},
         config={'LOG_CONTENT':True},services={'observation_factory':factory if observe else None,
             'content_policy':factory.log_policy if authority else None,
+            **({'emissions':factory.boundary} if authority else {}),
             'plain_io_contracts':{'intake':{'input':contract,'output':contract}}})
     result = asyncio.run(workflow.arun({'messages':[],'pending':False,'visits':0,
         'text':'private-stateful-sentinel'},thread_id='recorded-policy'))

@@ -16,7 +16,7 @@ from api_agent.workflows.demo_application import UsefulDemoApplication
 from api_agent.workflows.evidence import publish
 from api_agent.workflows.execution import WorkflowError
 
-pytestmark = [pytest.mark.feature('Useful API demo'), pytest.mark.credential_authorities('workflow')]
+pytestmark = [pytest.mark.feature('Useful API demo')]
 ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / 'demo/simple/flow.md.html'
 PLAN = json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''})
@@ -143,7 +143,7 @@ def test_selected_graph_repairs_deterministic_length_before_review_or_tool_execu
     assert all(detail in feedback for detail in ('maxLength', '$.answer', '8192', '8666'))
 
 
-@pytest.mark.credential_authorities('ui', 'workflow')
+@pytest.mark.credential_authorities('ui')
 def test_studio_receives_node_reasoning_before_workflow_finishes():
     """Exercise the real SSE bridge while a later declared node cannot finish."""
     import secrets

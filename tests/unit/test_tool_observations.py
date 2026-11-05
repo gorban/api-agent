@@ -252,7 +252,7 @@ async def test_owner_error_identity_survives_missing_response_evidence(error):
 
 
 @pytest.mark.asyncio
-async def test_missing_authority_withholds_content_and_secret_tool_labels():
+async def test_missing_authority_reports_unavailable_without_content_or_secret_tool_labels():
     journal, _ = observed_journal()
     owner = Owner()
     gate, _, grant = await verified_gate(owner)
@@ -263,7 +263,8 @@ async def test_missing_authority_withholds_content_and_secret_tool_labels():
 
     events = journal.finalize()['events']
     assert 'synthetic-secret' not in str(events)
-    assert all('values' not in row for row in events)
+    assert all(not row.get('values') for row in events)
+    assert all(row['reason'] == 'unavailable' for row in events if row['event'] == 'capture')
     assert len(owner.received) == 1
 
 
@@ -895,7 +896,7 @@ async def test_selected_local_authority_scrubs_distinct_destination_boundaries_a
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('subscriber_error', [RuntimeError, asyncio.CancelledError])
-async def test_withheld_tool_start_subscriber_failure_marks_loss_and_preserves_dispatch(subscriber_error):
+async def test_unavailable_tool_start_subscriber_failure_marks_loss_and_preserves_dispatch(subscriber_error):
     journal, _ = observed_journal()
     owner = Owner()
     gate, _, grant = await verified_gate(owner)
@@ -919,7 +920,7 @@ async def test_withheld_tool_start_subscriber_failure_marks_loss_and_preserves_d
     assert len({row['tool_invocation_id'] for row in tools}) == 1
     assert tools[-1]['outcome'] == 'success'
     captures = [row for row in tools if row['event'] == 'capture']
-    assert all(row['reason'] == 'withheld' and 'values' not in row for row in captures)
+    assert all(row['reason'] == 'unavailable' and not row.get('values') for row in captures)
     assert packet['gap'] == 'tool_evidence_unavailable'
     assert packet['completeness'] == 'partial'
     assert 'synthetic-secret' not in str(packet)

@@ -904,16 +904,23 @@ def _test_snapshot(request):
 
 @pytest.fixture(autouse=True)
 def _test_credential_authority_scope(request):
-    """Enroll only explicitly declared worker credential producers."""
+    """Bind framework capture and explicitly declared additional producers."""
     from .authority_scope import authority_scope
     marker = request.node.get_closest_marker('credential_authorities')
     if marker is not None and marker.kwargs:
         raise ContractError('Invalid test credential authority manifest')
     manifest = None if marker is None else marker.args
+    managed = bool(os.environ.get('API_AGENT_INTEGRATION_CONTEXT'))
+    if managed:
+        from .workflow_capture import managed_workflow_manifest
+        snapshot = _test_snapshot(request)
+        manifest = managed_workflow_manifest(manifest,
+            fixture_names=getattr(request, 'fixturenames', ()),
+            mode=snapshot['config'].get('TUI_MODE'))
     with authority_scope(manifest) as scope:
-        if os.environ.get('API_AGENT_INTEGRATION_CONTEXT'):
+        if managed:
             from .workflow_capture import worker_capture
-            with worker_capture(_test_snapshot(request), scope, manifest):
+            with worker_capture(snapshot, scope, manifest):
                 yield
         else:
             yield

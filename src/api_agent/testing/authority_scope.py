@@ -17,17 +17,21 @@ _PRODUCERS = frozenset({'ui', 'tools', 'workflow'})
 _COORDINATOR_ONLY = 'coordinator'
 
 
+def validate_manifest(manifest):
+    if manifest is not None:
+        if (type(manifest) not in (tuple, list) or not manifest or any(type(name) is not str for name in manifest)
+                or len(set(manifest)) != len(manifest) or set(manifest) - (_PRODUCERS | {_COORDINATOR_ONLY})
+                or _COORDINATOR_ONLY in manifest and len(manifest) != 1):
+            raise ContractError('Invalid test credential authority manifest')
+        manifest = frozenset(manifest)
+    return manifest
+
+
 class TestAuthorityScope:
     __test__ = False
 
     def __init__(self, manifest):
-        if manifest is not None:
-            if (type(manifest) not in (tuple, list) or not manifest or any(type(name) is not str for name in manifest)
-                    or len(set(manifest)) != len(manifest) or set(manifest) - (_PRODUCERS | {_COORDINATOR_ONLY})
-                    or _COORDINATOR_ONLY in manifest and len(manifest) != 1):
-                raise ContractError('Invalid test credential authority manifest')
-            manifest = frozenset(manifest)
-        self._manifest = manifest
+        self._manifest = validate_manifest(manifest)
         self._owners = {}
         self._closed = False
         self._closing = False

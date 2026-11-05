@@ -471,12 +471,18 @@ from api_agent.runtime.tasks import offload
 from api_agent.workflows.application import build
 from api_agent.providers.control import OperationalError
 from api_agent.providers.contracts import ContractError
-from api_agent.testing.authority_scope import join_current
+from api_agent.testing.authority_scope import join_current, authority_scope
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 
 @pytest.mark.credential_authorities('workflow')
 def test_graph(llm_provider, integration_config):
-    async def complete(request): return await offload(llm_provider.complete, request)
+    async def complete(request):
+        if os.environ.get('SYNTHETIC_NO_SCOPE'):
+            # Exercise a genuinely incomplete caller inventory, independently
+            # of the managed fixture's automatic workflow enrollment.
+            with authority_scope(None):
+                return await offload(llm_provider.complete, request)
+        return await offload(llm_provider.complete, request)
     if os.environ.get('SYNTHETIC_CROSS_SECRET'):
         join_current('workflow', EmissionBoundary(ContentPolicy(True), secrets=('synthetic-caller-only',)))
     with open(integration_config.values['SYNTHETIC_WORKER_PID'], 'w') as out: out.write(str(os.getpid()))
@@ -501,7 +507,8 @@ def test_graph(llm_provider, integration_config):
         'LOG_CONTENT':log, 'TRACELOOP_TRACE_CONTENT':trace, 'SYNTHETIC_WORKER_PID':str(tmp_path / 'worker-pid')}
     result = run_recorded_integration(context, [identity], config, accepted=True,
         storage=SimpleNamespace(persist=lambda directory, manifest: None))
-    assert result.execution.exit_code == 0, (result.execution.output, [test.local_diagnostic for test in result.execution.tests])
+    assert result.execution.exit_code == 0, result.execution.output + '\n' + '\n'.join(
+        test.local_diagnostic for test in result.execution.tests)
     assert result.persisted and int((tmp_path / 'worker-pid').read_text()) != os.getpid()
     if no_scope:
         assert not (tmp_path / 'wire.json').exists()

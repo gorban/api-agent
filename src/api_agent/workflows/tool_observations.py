@@ -163,7 +163,7 @@ class ToolObservation:
             def capture_json(self, **kwargs):
                 nonlocal barrier_passed, barrier_error
                 if not authority or unavailable:
-                    kwargs.update(values={}, capture_reason='unavailable' if unavailable else 'withheld')
+                    kwargs.update(values={}, capture_reason='unavailable')
                 if before_dispatch is not None:
                     try:
                         before_dispatch()
