@@ -19,6 +19,13 @@ from api_agent.workflows.tool_observations import validate_tool_events
 GRAPH = str(uuid4())
 VISIT = str(uuid4())
 
+
+@pytest.mark.parametrize('identifier', [False, 0, {}, '', 'not-a-uuid', '340FD2FB-8119-4BB2-81DE-8AB905368641'])
+def test_explicit_tool_observation_identity_must_be_a_canonical_uuid(identifier):
+    from api_agent.workflows.tool_observations import ToolObservation
+    with pytest.raises(ValueError):
+        ToolObservation(SimpleNamespace(name='lookup'), identifier=identifier)
+
 SCHEMA = {'type': 'object', 'properties': {'query': {'type': 'string'}},
           'required': ['query'], 'additionalProperties': False}
 
@@ -105,6 +112,51 @@ async def verified_gate(owner, invocation='external-call'):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('content', [False, True])
+async def test_tool_step_explains_capture_visibility_without_fabricating_payload(content):
+    import time
+    from api_agent.testing.workflow_steps import scope_steps
+    journal, boundary = observed_journal(log=content)
+    gate, _, grant = await verified_gate(Owner())
+    with bind_workflow_visit(journal, VISIT, capture_services={'emissions': boundary}):
+        await gate.execute(grant)
+    stopped = time.time() * 1000 + 1
+    for identifier, parent, kind, name in ((VISIT, GRAPH, 'node', 'Make'), (GRAPH, None, 'graph', 'GRAPH')):
+        journal.observe(dict(event='scope_end', scope_id=identifier, parent_id=parent,
+            kind=kind, owner=name, started_ms=0, stopped_ms=stopped, outcome='passed'))
+
+    tool = scope_steps(journal.finalize()['events'])[0]['steps'][0]['steps'][0]
+    parameters = {item['name']: item['value'] for item in tool['parameters']}
+    assert parameters['input_capture'] == parameters['output_capture'] == ('captured' if content else 'withheld')
+    assert 'values' not in tool and not tool['steps']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', [None, 'unrecognized diagnostic detail'])
+async def test_tool_step_bounds_unknown_capture_reason_without_exposing_details(reason):
+    import time
+    from api_agent.testing.workflow_steps import scope_steps
+    journal, boundary = observed_journal(log=False)
+    gate, _, grant = await verified_gate(Owner())
+    with bind_workflow_visit(journal, VISIT, capture_services={'emissions': boundary}):
+        await gate.execute(grant)
+    stopped = time.time() * 1000 + 1
+    for identifier, parent, kind, name in ((VISIT, GRAPH, 'node', 'Make'), (GRAPH, None, 'graph', 'GRAPH')):
+        journal.observe(dict(event='scope_end', scope_id=identifier, parent_id=parent,
+            kind=kind, owner=name, started_ms=0, stopped_ms=stopped, outcome='passed'))
+    events = journal.finalize()['events']
+    for event in events:
+        if event.get('tool_invocation_id') and event['event'] == 'capture':
+            event['reason'] = reason
+
+    tool = scope_steps(events)[0]['steps'][0]['steps'][0]
+
+    parameters = {item['name']: item['value'] for item in tool['parameters']}
+    assert parameters['input_capture'] == parameters['output_capture'] == 'unknown'
+    assert 'unrecognized diagnostic detail' not in str(tool)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('log,trace', [(False, False), (False, True), (True, False), (True, True)])
 async def test_actual_gate_has_distinct_scrubbed_tool_phases_with_independent_flags(log, trace):
     journal, boundary, tracing, sink = observed_destinations(log, trace)
@@ -119,6 +171,7 @@ async def test_actual_gate_has_distinct_scrubbed_tool_phases_with_independent_fl
     events = journal.finalize()['events']
     tool = [row for row in events if row.get('tool_invocation_id')]
     assert [row['event'] for row in tool] == ['tool_start', 'capture', 'capture', 'tool_end']
+    assert {row['tool_invocation_id'] for row in tool} == {grant.gate_id}
     assert validate_tool_events(events)
     assert answer.data['answer'] == 'visible synthetic-secret'
     assert owner.received == [{'query': 'visible synthetic-secret'}]

@@ -633,7 +633,7 @@ def test_explicit_reasoning_effort_keeps_selected_model():
     assert all(row.selected_llm == 'chosen-model' for row in llm.requests)
 
 
-def test_tool_node_rejects_missing_grant_and_records_failed_actual_call():
+def test_tool_node_rejects_missing_grant_and_preserves_gate_failure_without_a_duplicate_call():
     app = application(Owner())
     invoke = app.registry['execute_tool'].invoke
     observations = []
@@ -648,8 +648,7 @@ def test_tool_node_rejects_missing_grant_and_records_failed_actual_call():
     context.tools = {'primary': FailingGate()}
     with pytest.raises(RuntimeError, match='transport failed'):
         asyncio.run(invoke({}, context))
-    assert len(observations) == 1
-    assert observations[0]['outcome'] == 'failed'
+    assert observations == []
 
 
 def test_plain_text_check_still_rejects_tool_role_if_wire_layer_changes(monkeypatch):

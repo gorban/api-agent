@@ -16,7 +16,7 @@ from api_agent.workflows.demo_application import UsefulDemoApplication
 from api_agent.workflows.evidence import publish
 from api_agent.workflows.execution import WorkflowError
 
-pytestmark = pytest.mark.feature('Useful API demo')
+pytestmark = [pytest.mark.feature('Useful API demo'), pytest.mark.credential_authorities('workflow')]
 ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / 'demo/simple/flow.md.html'
 PLAN = json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''})

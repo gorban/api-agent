@@ -32,6 +32,9 @@
 
 ## Durable failed-run result evidence
 
+[Controlled application tool evidence](implementation_plan_o4h1.md) tracks missing
+capture declarations, redundant generic call removal and explicit capture states.
+
 - [x] Preserve safe completed-call result evidence in durable reporting when later inference, validation, final-answer or cleanup fails, including before final-answer validation runs. A result-received flag alone is insufficient. Retain a per-call synthetic match proof or policy-controlled result content, with a regression demonstrating publication after a later failure. Keep secret-bearing tool content out of default artifacts.
 
 ## Bounded reporting and call attribution

@@ -112,13 +112,15 @@ def tool_payload_schema(schema, field):
 
 class ToolObservation:
     """Retain under the existing authority lease; fan out only after release."""
-    def __init__(self, spec, *, alias=None, instance=None):
+    def __init__(self, spec, *, alias=None, instance=None, identifier=None):
         from uuid import uuid4
         from .attribution import current_workflow_visit, current_tool_capture_services
         self.owner = current_workflow_visit()
         self.services = current_tool_capture_services()
         self.journal = None if self.owner is None else self.owner[0]
-        self.identifier = str(uuid4())
+        if identifier is not None and (type(identifier) is not str or str(UUID(identifier)) != identifier):
+            raise ValueError('Invalid tool observation identity')
+        self.identifier = str(uuid4()) if identifier is None else identifier
         self.spec, self.alias, self.instance = spec, alias or spec.name, instance
         self.labels, self.started = {}, None
 
