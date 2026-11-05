@@ -1,5 +1,6 @@
 """Actual binding failure retains cleanup independently of a passed E2E result."""
 import asyncio
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -85,7 +86,11 @@ def test_actual_sdk_binding_pending_disposal_keeps_success_only_for_trace(monkey
                   'TRACE_METRICS':signal=='metrics','TRACE_METRICS_ENDPOINT':endpoint+'/v1/metrics'}
         try:
             if failure in ('trace','delivery'):
-                result=run_integration_tests(ctx,selected,accepted=True,config=settings,after_run=published.append)
+                warning = (pytest.warns(RuntimeWarning, match=(
+                    r"Trace delivery failed; tracing resources were closed\. Some traces may be missing\."
+                )) if failure == 'delivery' else nullcontext())
+                with warning:
+                    result=run_integration_tests(ctx,selected,accepted=True,config=settings,after_run=published.append)
                 assert result.exit_code==0 and [test.status for test in result.tests]==['passed']
                 assert published
                 if failure=='trace':
