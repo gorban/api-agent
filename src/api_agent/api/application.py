@@ -355,23 +355,36 @@ class Application:
                     return
         elif scope["type"] == "http":
             tracing = self.runtime.tracing
+            if tracing is None:
+                return await self._http(scope, receive, send)
+            from api_agent.telemetry.http_tracing import request_metadata, suppressed, bind_http
+            from .studio import StudioBackend
+            backend = (self.runtime.services or {}).get('studio_backend')
+            owned = type(self._django_app) is RuntimeHandler and (backend is None or type(backend) is StudioBackend)
+            metadata = request_metadata(scope, owned=owned, urlconf=getattr(self.runtime, 'urlconf', None))
+            if suppressed(getattr(tracing, 'http_diagnostics_level', 'off'), metadata):
+                return await self._http(scope, receive, send)
             request_owner = getattr(tracing, 'request', None)
-            if request_owner is not None:
-                async with request_owner(scope) as selected:
-                    await self._traced_http(selected, scope, receive, send)
-            else:
-                await self._traced_http(tracing, scope, receive, send)
+            with bind_http(tracing, scope, metadata):
+                if request_owner is not None:
+                    async with request_owner(scope) as selected:
+                        await self._traced_http(selected, scope, receive, send, metadata)
+                else:
+                    await self._traced_http(tracing, scope, receive, send, metadata)
         else:
             raise ValueError(f"Unsupported ASGI scope: {scope['type']}")
 
-    async def _traced_http(self, tracing, scope, receive, send):
+    async def _traced_http(self, tracing, scope, receive, send, metadata=None):
         if tracing is None:
             return await self._http(scope, receive, send)
         from api_agent.telemetry.operation import operation
-        with operation(tracing) as owner:
+        with operation(tracing, http=metadata) as owner:
             async def traced_send(message):
                 try:
                     await send(message)
+                    if message.get('type') == 'http.response.start' and owner.span is not None:
+                        from api_agent.telemetry.operation import safe_trace
+                        safe_trace(lambda: owner.span.structural({'http.response.status_code': message.get('status')}))
                 except asyncio.CancelledError:
                     # Django can consume send cancellation inside its task.
                     # Record it at the boundary before that handoff loses it.

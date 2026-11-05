@@ -134,6 +134,17 @@ def _structural(boundary, payload, model_identities=frozenset()):
         elif key in ('gen_ai.tool.name', 'gen_ai.tool.call.id', 'api_agent.tool.instance'):
             if type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', value):
                 clean[key] = value
+        elif key == 'http.request.method':
+            from .http_tracing import METHODS
+            if type(value) is str and value in METHODS:
+                clean[key] = value
+        elif key == 'http.route':
+            from .http_tracing import ROUTES
+            if type(value) is str and value in ROUTES:
+                clean[key] = value
+        elif key == 'http.response.status_code':
+            if type(value) is int and 100 <= value <= 599:
+                clean[key] = value
         elif key == 'gen_ai.operation.name' and value in ('chat', 'execute_tool'):
             clean[key] = value
         elif key == 'api_agent.capture.reason' and value in ('captured', 'partial', 'truncated', 'unavailable', 'withheld', 'terminal_unknown'):
@@ -147,11 +158,12 @@ def _structural(boundary, payload, model_identities=frozenset()):
 
 
 def _span_name(boundary, name, model_identities=frozenset()):
+    from .http_tracing import safe_name
     if type(name) is str and name.startswith('chat ') and not _model_identity(name[5:], model_identities):
         return 'chat'
     if type(name) is not str or not (
             re.fullmatch(r'(?:graph|component|node) [A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}', name)
-            or name in ('execute_tool', 'transport attempt', 'request')
+            or name in ('execute_tool', 'transport attempt', 'request') or safe_name(name)
             or (name.startswith('chat ') and _model_identity(name[5:], model_identities))):
         return 'api_agent.span'
     return boundary.content_export({'name': name}).get('name', 'api_agent.span')
@@ -438,6 +450,8 @@ class TraceRuntime:
         if config.errors or config.missing:
             raise TraceError('Tracing requires valid complete configuration.')
         values = config.values
+        from .http_tracing import diagnostics_level
+        self.http_diagnostics_level = diagnostics_level(values)
         if binding is not None:
             return
         from .tracing_providers import admit_binding

@@ -17,8 +17,11 @@ def safe_trace(action):
 
 
 @contextmanager
-def operation(runtime):
-    span = safe_trace(lambda: runtime.begin('request', {}, kind='SERVER'))
+def operation(runtime, *, http=None):
+    from .http_tracing import HTTPMetadata
+    metadata = http if type(http) is HTTPMetadata else None
+    span = safe_trace(lambda: runtime.begin(metadata.name if metadata else 'request',
+        metadata.attributes() if metadata else {}, kind='SERVER'))
     owner = OperationOutcome(runtime, span)
     loss_owner = getattr(runtime, 'losses', None)
     loss_start = loss_owner.count if type(loss_owner) is TraceLoss else 0

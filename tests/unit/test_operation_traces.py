@@ -367,7 +367,7 @@ def test_django_terminal_send_cannot_hide_request_cancellation(ending):
                 await backend.aclose()
                 await trace.aclose()
         asyncio.run(run())
-    root = next(s for s in spans_from(received) if s.name == 'request')
+    root = next(s for s in spans_from(received) if s.name == 'POST /app/agent/chat/stream')
     expected = {'success': 'success', 'cancel': 'cancelled', 'failure': 'failure'}[ending]
     assert attrs(root)['api_agent.outcome.state'] == {'stringValue': expected}
     assert root.status.code == (2 if ending == 'failure' else 0)

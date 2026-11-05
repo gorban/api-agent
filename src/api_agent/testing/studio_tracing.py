@@ -36,9 +36,14 @@ class StudioTraceOwner:
         self._closed = False
         self._cleanup_fatal = False
         self._http = None
+        self._http_bridge = False
+        from api_agent.telemetry.http_tracing import diagnostics_level
+        self.http_diagnostics_level = diagnostics_level(self.config.values)
 
-    def bind_http(self, origin, nonce):
+    def bind_http(self, origin, nonce, *, backend=None):
+        from api_agent.api.studio import StudioBackend
         self._http = (origin, nonce)
+        self._http_bridge = type(backend) is StudioBackend
 
     def _authorized(self, scope):
         if self._http is None or type(scope) is not dict:
@@ -74,6 +79,17 @@ class StudioTraceOwner:
 
     @asynccontextmanager
     async def request(self, scope=None):
+        from api_agent.telemetry.http_tracing import HTTPMetadata, current_http, request_metadata, suppressed
+        metadata = current_http(self, scope)
+        if metadata is None and type(scope) is dict:
+            metadata = request_metadata(scope, owned=self._http_bridge)
+            if metadata is not None and metadata.route not in (
+                    '/app/agent/models', '/app/agent/chat', '/app/agent/chat/stream',
+                    '/app/agent/chat/cancel', '/app/agent/chat/heartbeat'):
+                metadata = HTTPMetadata(metadata.method)
+        if suppressed(self.http_diagnostics_level, metadata):
+            yield None
+            return
         if not self._authorized(scope):
             yield None
             return

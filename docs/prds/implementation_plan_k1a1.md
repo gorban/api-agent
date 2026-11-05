@@ -125,3 +125,7 @@ unchecked gates until implemented and verified.
 
 Manually constructed integration-fixture tracing remains pending under
 [integration operation ownership](implementation_plan_k1a1b.md).
+
+[HTTP trace diagnostics and safe request names](implementation_plan_k1a1d.md)
+cover probe filtering and finite structural HTTP metadata without granting content
+capture authority.

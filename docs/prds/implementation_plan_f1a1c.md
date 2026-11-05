@@ -43,9 +43,9 @@
 - [x] Complete meaningful causal controls, exact applicable unit coverage,
   affected integrations, installed/relocated resources, boundary checks and
   independent external review before the human checkpoint.
-- [ ] Human acceptance: inspect planner and verifier retry requests in GRAPH and
-  confirm detailed errors and previous messages remain in order. Cache-hit
-  accounting is meaningful only on a supporting, configured provider.
+- [x] Human-approved ordered planner and verifier retry histories, detailed error
+  feedback and tool-message ordering without duplication. This approval does not
+  establish cache hits; those require a supporting, configured provider.
 
 ## Verification
 

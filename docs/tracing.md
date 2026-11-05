@@ -175,3 +175,17 @@ Stop, confirmed Quit and terminal Ctrl+C wait for owned cleanup. Each cleanup
 attempt has a 15-second budget. If work remains, Run local shows cleanup pending
 and retries while keeping its event loop alive. This bounds each attempt, not
 the time until process exit; repeated Ctrl+C does not abandon pending cleanup.
+
+## HTTP request diagnostics
+
+`TRACE_HTTP_DIAGNOSTICS_LEVEL` defaults to `off`. Shipped GET health probes,
+POST heartbeat requests and genuine browser preflights on built-in routes are
+omitted before request tracing initializes. This also omits failed responses on
+those diagnostic routes; endpoint behavior and logging are unchanged. Choose
+`info` to trace them. Ordinary OPTIONS requests and custom handlers remain traced.
+
+Built-in request names use a method and fixed route template; unknown/custom
+routes use only the method, with `HTTP` for unknown methods. Structural method,
+route and delivered response status remain credential-scrubbed regardless of
+payload settings. Paths, queries, mount prefixes and dynamic result identifiers
+are never request names. HTTP status does not determine application outcome.
