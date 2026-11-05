@@ -7,7 +7,7 @@ import time
 import math
 from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent, StructuredOutput, Usage
 from api_agent.providers.progress import component_timeout
-from .execution import NodeFunction, Workflow, WorkflowError
+from .execution import CandidateCorrection, NodeFunction, Workflow, WorkflowError
 from .definition import load_definition, load_native_catalog
 
 
@@ -36,7 +36,7 @@ def requested_decisions(inputs, context):
             or component == 'second' and type(upstream) is not dict):
         raise WorkflowError('Contrived component identity disagrees with its upstream input')
     previous = inputs['previous']
-    if (context.attempt == 1) != (previous is None):
+    if (getattr(context, 'guard_attempt', context.attempt) == 1) != (previous is None):
         raise WorkflowError('Contrived correction requires its previous draft after the initial attempt')
     if previous is not None:
         if previous.get('route') != decisions['route']:
@@ -76,15 +76,20 @@ async def produce(inputs, context):
     try:
         decoded = strict_json(result.payload.content[0].text)
     except ValueError:
-        raise WorkflowError('Contrived producer returned invalid JSON') from None
+        raise CandidateCorrection({'reason': 'Contrived producer returned invalid JSON',
+            'rule': 'json', 'path': '$', 'instruction': 'Return exactly one JSON object without duplicate keys or nonfinite numbers.'}) from None
     if type(decoded) is not dict:
-        raise WorkflowError('Contrived producer returned a non-object')
+        raise CandidateCorrection({'reason': 'Contrived producer returned a non-object',
+            'rule': 'type', 'path': '$', 'expected': 'object'}, rejected=decoded)
     if previous is not None and decoded.get('route') != previous.get('route'):
-        raise WorkflowError('A correction changed its original routing choice')
+        raise CandidateCorrection({'reason': 'A correction changed its original routing choice',
+            'rule': 'const', 'path': '$.route', 'expected': previous.get('route')}, rejected=decoded)
     if decoded.get('route') != decisions['route']:
-        raise WorkflowError('Contrived producer did not honor the requested route')
+        raise CandidateCorrection({'reason': 'Contrived producer did not honor the requested route',
+            'rule': 'const', 'path': '$.route', 'expected': decisions['route']}, rejected=decoded)
     if decoded.get('ready') is not decisions['ready']:
-        raise WorkflowError('Contrived producer did not honor the requested readiness')
+        raise CandidateCorrection({'reason': 'Contrived producer did not honor the requested readiness',
+            'rule': 'const', 'path': '$.ready', 'expected': decisions['ready']}, rejected=decoded)
     return decoded
 
 

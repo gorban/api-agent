@@ -36,7 +36,8 @@ def inputs(*, component='first', previous=None):
 
 
 def reply(request, **changes):
-    metadata = json.loads(request.payload.messages[-1].content[0].text)
+    metadata = next(json.loads(message.content[0].text) for message in reversed(request.payload.messages)
+                    if message.role == 'user' and '"decisions"' in message.content[0].text)
     source = request.payload.messages[1].content[0].text
     value = {'original_input': source, 'final_output': source,
              'route': metadata['decisions']['route'], 'ready': metadata['decisions']['ready'], **changes}
@@ -108,15 +109,16 @@ def test_correction_state_requires_actual_previous_draft(attempt, previous):
 @pytest.mark.parametrize('changes,error', [({'route': 'next_a'}, 'requested route'),
                                          ({'ready': False}, 'requested readiness'),
                                          ({'ready': 1}, 'requested readiness')])
-def test_model_decision_mismatch_is_terminal_and_preserves_response(changes, error):
+def test_direct_producer_exposes_typed_rejection_and_preserves_response(changes, error):
     requests, replies = [], []
     async def llm(request):
         requests.append(request)
         result = reply(request, **changes)
         replies.append(result)
         return result
-    with pytest.raises(WorkflowError, match=error):
+    with pytest.raises(WorkflowError) as caught:
         asyncio.run(contrived.produce(inputs(), context(llm=llm)))
+    assert error in caught.value.feedback['reason']
     assert len(requests) == 1
     actual = json.loads(replies[0].payload.content[0].text)
     assert all(actual[key] == value for key, value in changes.items())
@@ -127,8 +129,9 @@ def test_initial_false_readiness_must_be_returned_not_bypassed():
     async def llm(request):
         calls.append(request)
         return reply(request, ready=True)
-    with pytest.raises(WorkflowError, match='requested readiness'):
+    with pytest.raises(WorkflowError) as caught:
         asyncio.run(contrived.produce(inputs(), context(seed=trial_uuid(first_ready=False), llm=llm)))
+    assert 'requested readiness' in caught.value.feedback['reason']
     assert len(calls) == 1
 
 
@@ -147,15 +150,16 @@ def test_correction_preserves_original_route_and_explicitly_requires_ready_true(
     assert result['route'] == 'next_b' and result['ready'] is True
 
 
-def test_correction_cannot_reject_the_requested_readiness_and_trigger_another_retry():
+def test_direct_producer_rejects_wrong_readiness_without_owning_a_retry_loop():
     previous = {'route': 'skip', 'ready': False}
     calls = []
     async def llm(request):
         calls.append(request)
         return reply(request, ready=False)
-    with pytest.raises(WorkflowError, match='requested readiness'):
+    with pytest.raises(WorkflowError) as caught:
         asyncio.run(contrived.produce(inputs(previous=previous), context(
             seed=trial_uuid(first_ready=False), attempt=2, llm=llm)))
+    assert 'requested readiness' in caught.value.feedback['reason']
     assert len(calls) == 1
 
 
@@ -164,6 +168,27 @@ def test_poisoned_previous_route_rejects_before_new_inference():
     with pytest.raises(WorkflowError, match='correction state changed'):
         asyncio.run(contrived.produce(inputs(previous={'route': 'next_a'}), context(attempt=2, llm=llm)))
     llm.assert_not_called()
+
+
+def test_deterministic_route_repair_retains_original_decisions_and_history():
+    requests = []
+    async def llm(request):
+        requests.append(request)
+        # The first component initially produces the wrong route. Its local
+        # correction must not require a previously accepted semantic draft.
+        return reply(request, **({'route': 'next_a'} if len(requests) == 1 else {}))
+    workflow = contrived.build(ROOT, llm=llm, selection='synthetic',
+        trial=trial_uuid('skip'), config={'WORKFLOW_MAX_PASSES': 2})
+
+    output = asyncio.run(workflow.arun({'user_input': 'Original'}))
+
+    assert output['first_draft']['route'] == 'skip'
+    assert len(requests) == 2
+    first, repaired = requests[:2]
+    assert repaired.payload.messages[:len(first.payload.messages)] == first.payload.messages
+    feedback = '\n'.join(part.text for message in repaired.payload.messages
+                         for part in message.content)
+    assert 'requested route' in feedback and '$.route' in feedback
 
 
 def test_real_graph_observes_native_guard_rejection_and_actual_correction():
@@ -189,14 +214,14 @@ def test_real_graph_observes_native_guard_rejection_and_actual_correction():
     assert result['second_draft']['original_input'] == result['second_draft']['final_output'] == '  Original λ\n'
 
 
-def test_runtime_model_mismatch_has_no_guard_or_correction_inference():
+def test_runtime_mismatch_exhausts_repairs_without_running_guard():
     calls, events = [], []
     async def llm(request):
         calls.append(request)
         return reply(request, route='next_b')
     workflow = contrived.build(ROOT, llm=llm, selection='synthetic', trial=trial_uuid(), observe=events.append)
-    with pytest.raises(WorkflowError, match='requested route'):
+    with pytest.raises(WorkflowError, match='exhausted'):
         asyncio.run(workflow.arun({'user_input': '  Original λ\n'}))
-    assert len(calls) == 1
-    assert not [event for event in events if event['event'] in {'guard', 'attempt'} and event.get('attempt', 1) > 1]
+    assert len(calls) == 2
+    assert [event['attempt'] for event in events if event['event'] == 'attempt'] == [1, 2]
     assert not [event for event in events if event['event'] == 'guard']

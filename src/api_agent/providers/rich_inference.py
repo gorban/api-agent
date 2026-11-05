@@ -551,11 +551,31 @@ def _output_checks(request, result, selection=None):
         yield definition.schema, definition.strict, ''.join(part.text for part in result.payload.content), 'Structured output does not match its schema', None
 
 
+def _candidate_feedback(definition, text, malformed):
+    facts = []
+    if not malformed:
+        try:
+            schema, value = json.loads(definition), json.loads(text)
+        except (ValueError, TypeError):
+            schema, value = {}, None
+        def visit(rule, candidate, path, depth):
+            if depth > 16 or len(facts) >= 16 or type(rule) is not dict:
+                return
+            maximum = rule.get('maxLength')
+            if type(candidate) is str and type(maximum) is int and len(candidate) > maximum:
+                facts.append(dict(path=path, keyword='maxLength', constraint=maximum, actual=len(candidate)))
+            if type(candidate) is dict:
+                for key, child in rule.get('properties', {}).items():
+                    if key in candidate:
+                        visit(child, candidate[key], [*path, key], depth + 1)
+        visit(schema, value, [], 0)
+    return {'reason': 'response_json' if malformed else 'response_schema', 'errors': facts}
+
+
 def _output_error(result, message, code, definition, text, verdict, malformed):
-    if code is None and malformed and not text.strip():
-        return ProviderAccessError('unknown', 'Completed inference returned no final-answer JSON',
-            code='empty_final_answer', type='response_validation', origin='local_output_validation',
-            usage=result.usage, response=result.response)
+    if (code is None and verdict is False and result.outcome == 'completed' and not result.payload.calls):
+        from .contracts import CandidateOutputError
+        return CandidateOutputError(_bounded_result(result), _candidate_feedback(definition, text, malformed))
     if code is not None:
         if malformed:
             message += ': expected a bounded, unambiguous JSON object'
@@ -608,8 +628,10 @@ def validate_result(request, result, *, selection=None):
 def validate_response_result(request, result):
     """Admit original policy output at IPC without inventing route capabilities."""
     for definition, strict, text, message in _response_output_checks(request, result):
-        if not _valid_output(definition, strict, text, allow_markdown_fences=_prompted_json(result)):
-            raise ProviderAccessError('unknown', message, usage=result.usage, response=result.response)
+        parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
+        verdict = None if parsed is None else False if malformed else schema_verdict(parsed, value)
+        if verdict is not True:
+            raise _output_error(result, message, None, definition, text, verdict, malformed)
     return result
 
 
@@ -620,14 +642,6 @@ async def async_validate_result(request, result, *, selection=None):
         if verdict is not True:
             raise _output_error(result, message, code, definition, text, verdict, malformed)
     return _bounded_result(result)
-
-
-def _valid_output(definition, strict, text, *, allow_markdown_fences=False):
-    try:
-        return valid_schema(_validation_schema(definition, strict),
-                            _validation_value(text, strict, allow_markdown_fences=allow_markdown_fences))
-    except ContractError:
-        return False
 
 
 def validate_catalog_selection(values, request, *, clamp_output_limit=False):

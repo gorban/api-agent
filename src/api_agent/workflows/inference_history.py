@@ -9,12 +9,13 @@ import inspect
 import json
 from threading import Lock
 
-from api_agent.providers.contracts import ContractError, ProviderAccessError
+from api_agent.providers.contracts import CandidateOutputError, ContractError, ProviderAccessError
 from api_agent.providers.inference import request_to_wire
 from api_agent.providers.llm import LLMRequest, LLMResult, Message, ResponseEvidence, TextContent
 
 
 _DIALOGUE = ContextVar('workflow_inference_dialogue', default=())
+_OWN_CORRECTIONS = ContextVar('workflow_native_correction_owner', default=False)
 MAX_HISTORY_BYTES = 32 * 1024 * 1024
 MAX_DIALOGUES = 128
 
@@ -31,6 +32,16 @@ def inference_dialogue(name):
         _DIALOGUE.reset(token)
 
 
+@contextmanager
+def own_candidate_corrections():
+    """A native resumable loop owns rejection without replaying its node."""
+    token = _OWN_CORRECTIONS.set(True)
+    try:
+        yield
+    finally:
+        _OWN_CORRECTIONS.reset(token)
+
+
 def _bytes(value):
     return len(json.dumps(value, ensure_ascii=True, allow_nan=False).encode())
 
@@ -44,6 +55,8 @@ class _Dialogue:
     size: int = 0
     configuration_size: int = 0
     blocked: bool = False
+    correction: object = None
+    correction_size: int = 0
     tail: Future = field(default_factory=Future)
     guard: Lock = field(default_factory=Lock)
 
@@ -82,6 +95,23 @@ class InferenceHistory:
             self._closed = True
             self._entries.clear()
             self._bytes = 0
+
+    def correct(self, node, feedback):
+        """Target only an unambiguous actual producer; never broadcast roles."""
+        with self._guard:
+            entries = [entry for key, entry in self._entries.items() if key[0] == node and entry.messages]
+            if len(entries) > 1:
+                raise ContractError('Candidate correction has ambiguous inference origin')
+            if entries:
+                entry = entries[0]
+                correction = Message('user', (TextContent(json.dumps({'correction': feedback})),))
+                size = _bytes(asdict(correction))
+                difference = size - entry.correction_size
+                if entry.blocked or self._bytes + difference > self.max_bytes:
+                    raise ContractError('Workflow inference history budget exceeded before correction')
+                self._bytes += difference
+                entry.size += difference
+                entry.correction_size, entry.correction = size, correction
 
     def services(self, values, node):
         return _Services(values, self, node)
@@ -158,6 +188,7 @@ class InferenceHistory:
             self._bytes += size - entry.size
             entry.size = size
             entry.messages, entry.previous_input = messages, incoming
+            entry.correction_size = 0
 
     async def call(self, node, service, callback, request, *args, **kwargs):
         # A nested graph borrows the underlying provider, not its parent's
@@ -176,6 +207,9 @@ class InferenceHistory:
                 raise ContractError('Workflow inference history budget exceeded before dispatch')
             incoming = request.payload.messages
             messages = self._extend(entry, incoming)
+            if entry.correction is not None:
+                messages = (*messages, entry.correction)
+                entry.correction = None
             if len(messages) > 64:
                 raise ContractError('Workflow inference history exceeds the 64-message request bound')
             prepared = replace(request, payload=replace(request.payload, messages=messages))
@@ -187,6 +221,9 @@ class InferenceHistory:
                 result = await value if inspect.isawaitable(value) else value
                 if not isinstance(result, LLMResult):
                     raise ContractError('Workflow LLM service returned an invalid result')
+                if _OWN_CORRECTIONS.get():
+                    from api_agent.providers.rich_inference import async_validate_result
+                    await async_validate_result(prepared, result)
                 previous_calls = {call.call_id for message in messages for call in message.calls}
                 identifiers = [call.call_id for call in result.payload.calls]
                 if len(set(identifiers)) != len(identifiers) or previous_calls.intersection(identifiers):
@@ -196,6 +233,20 @@ class InferenceHistory:
                     error.origin = 'local_output_validation'
                     error.execution = 'completed'
                     raise error
+            except CandidateOutputError as error:
+                if type(error) is not CandidateOutputError:
+                    raise
+                from api_agent.providers.rich_inference import async_validate_result
+                # IPC facts cannot establish rejection against a different request.
+                try:
+                    await async_validate_result(prepared, error.result)
+                except CandidateOutputError as confirmed:
+                    self._save(entry, prepared, incoming, error.result.payload, error.result.response)
+                    if _OWN_CORRECTIONS.get():
+                        raise confirmed from None
+                    from .execution import CandidateCorrection
+                    raise CandidateCorrection(confirmed.feedback) from None
+                raise ContractError('Rejected candidate does not match its originating response contract') from None
             except BaseException as error:
                 category = ('cancelled' if isinstance(error, asyncio.CancelledError) else
                             'timeout' if isinstance(error, TimeoutError) else 'failed')

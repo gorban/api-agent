@@ -55,6 +55,32 @@ class ProviderAccessError(OperationalError):
         return self.message + ('\n' + ' · '.join(details) if details else '')
 
 
+class CandidateOutputError(ProviderAccessError):
+    """Definitively rejected completed output; candidate stays transient/private."""
+    def __init__(self, result, feedback):
+        import json
+        from .inference import result_to_wire
+        if type(result) is not LLMResult or result.outcome != 'completed' or result.payload.calls:
+            raise ContractError('Invalid rejected inference candidate')
+        result_to_wire(result)
+        try:
+            encoded = json.dumps(feedback, allow_nan=False)
+            if type(feedback) is not dict or not feedback or len(encoded.encode()) > 65536:
+                raise ValueError
+            safe = json.loads(encoded)
+            if safe != feedback:
+                raise ValueError
+        except (ValueError, TypeError):
+            raise ContractError('Invalid rejected inference feedback') from None
+        self.result, self.feedback = result, safe
+        empty = not ''.join(part.text for part in result.payload.content).strip()
+        super().__init__('unknown', 'Completed inference returned no final-answer JSON' if empty else
+            'Completed inference candidate does not match its original schema',
+            code='empty_final_answer' if empty else 'response_candidate_rejected', type='response_validation',
+            origin='local_output_validation', usage=result.usage, response=result.response)
+        self.execution = 'completed'
+
+
 class SetupPrerequisiteError(ContractError):
     """A safe reason that required setup configuration/capability is unavailable.
 

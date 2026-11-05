@@ -85,14 +85,17 @@ def test_compiled_langgraph_preserves_input_and_independent_pass_budgets(route, 
 
 
 @pytest.mark.parametrize('response', ['not json', '{}'])
-def test_contract_failure_is_not_a_guard_retry(response):
+def test_generated_contract_failure_repairs_origin_within_component_budget(response):
     calls=[]
     async def complete(request):
         calls.append(request)
         return LLMResult(Message('assistant',(TextContent(response),)))
-    with pytest.raises(WorkflowError):
+    with pytest.raises(WorkflowError, match='exhausted 2 passes'):
         asyncio.run(build(ROOT,llm=complete,selection='gpt-example',trial=trial_uuid()).arun({'user_input':'user'}))
-    assert len(calls)==1
+    assert len(calls) == 2
+    assert calls[1].payload.messages[:len(calls[0].payload.messages)] == calls[0].payload.messages
+    assert calls[1].payload.messages[len(calls[0].payload.messages)] == Message('assistant', (TextContent(response),))
+    assert json.loads(calls[1].payload.messages[-1].content[0].text)['correction']
 
 
 def test_guard_exhaustion_is_failure_without_final_pass_relaxation():

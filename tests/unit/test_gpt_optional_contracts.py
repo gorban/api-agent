@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from api_agent.llm_providers.gpt import inference, rich
-from api_agent.providers.contracts import ProviderAccessError
+from api_agent.providers.contracts import CandidateOutputError, ProviderAccessError
 from api_agent.providers.llm import (CacheBoundary, CompletionRequest, GenerationOptions,
     LLMRequest, Message, StructuredOutput, TextContent, Tool, Usage)
 
@@ -79,12 +79,23 @@ def test_optional_schema_survives_transport_and_local_validation(mode, subscript
 @pytest.mark.parametrize('mode', ['responses', 'completions'])
 @pytest.mark.parametrize('kind,message,code', [
     ('tool', 'Generated arguments for tool call 1 (declared tool 1)', 'tool_arguments_schema'),
-    ('structured', 'Structured output does not match its schema', None),
+    ('structured', 'Completed inference candidate does not match its original schema', 'response_candidate_rejected'),
 ])
 @pytest.mark.parametrize('text', ['{"value":4}', '{"value":"ok","optional":"wrong"}', '{"optional":1}'])
 def test_invalid_nonstrict_output_preserves_usage(mode, kind, message, code, text):
     with pytest.raises(ProviderAccessError) as caught:
         complete(request(kind), mode, kind, text)
+    if kind == 'structured':
+        assert type(caught.value) is CandidateOutputError
+        original = caught.value.result
+        assert original.outcome == 'completed' and not original.payload.calls
+        assert original.payload.content == (TextContent(text),)
+        assert original.usage is caught.value.usage
+        assert caught.value.execution == 'completed'
+        assert caught.value.type == 'response_validation'
+    else:
+        assert type(caught.value) is ProviderAccessError
+        assert not hasattr(caught.value, 'result')
     assert caught.value.usage == Usage(9, 3, 4)
     assert message in str(caught.value)
     assert caught.value.code == code

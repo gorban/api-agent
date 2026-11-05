@@ -2,7 +2,7 @@
 from .run_context import recording_enabled
 from .run_context import current_structural_scope, structural_scope
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextlib import nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
@@ -25,6 +25,127 @@ from .predicates import component_controller, component_decision, native_conditi
 
 class WorkflowError(RuntimeError):
     pass
+
+
+class _SchemaRejection(WorkflowError):
+    def __init__(self, node, direction, errors, schema, value):
+        self.errors = errors
+        path = _schema_facts(schema, value, errors)[0]['path']
+        super().__init__(f'Node {node} returned invalid {direction} structure at {path}')
+
+
+class CandidateCorrection(WorkflowError):
+    """Explicit rejection of current-node candidate data, never execution failure.
+
+    Authors supply safe facts, not exception/provider text, and mark arbitrary
+    effects before dispatch through NodeContext.mark_effect().
+    """
+    def __init__(self, feedback, *, rejected=None):
+        if type(feedback) is not dict or not feedback:
+            raise ValueError('Candidate correction requires feedback facts')
+        try:
+            encoded = json.dumps({'feedback': feedback, 'rejected': rejected}, allow_nan=False)
+            value = json.loads(encoded)
+            if value != {'feedback': feedback, 'rejected': rejected} or len(encoded.encode()) > 1024 * 1024:
+                raise ValueError
+        except (ValueError, TypeError):
+            raise ValueError('Invalid candidate correction data') from None
+        self.feedback, self.rejected = value['feedback'], value['rejected']
+        super().__init__('Candidate requires correction')
+
+
+def _schema_facts(schema, value, errors):
+    numeric = {'minLength', 'maxLength', 'minItems', 'maxItems', 'minProperties',
+               'maxProperties', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf'}
+    facts = []
+    for error in errors[:16]:
+        rule, path = schema, []
+        candidate = error.instance
+        for part in list(error.path)[:16]:
+            if type(part) is str and part in rule.get('properties', {}):
+                path.append(part)
+                rule = rule['properties'][part]
+            elif type(part) is int and part >= 0:
+                path.append(part)
+                rule = rule.get('items', {})
+            else:
+                path.append('*')
+                rule = {}
+        fact = {'path': path, 'keyword': error.validator}
+        if error.validator in numeric and type(error.validator_value) in (int, float):
+            fact['constraint'] = error.validator_value
+            if type(candidate) in (str, list, dict):
+                fact['actual'] = len(candidate)
+        facts.append(fact)
+    return facts
+
+
+def scrub_correction(feedback, *, boundary=None):
+    """Bound JSON facts, sharing active authority or an explicit empty authority."""
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    admitted = CandidateCorrection(feedback if feedback != {} else {'reason': 'candidate_rejected'}).feedback
+    if feedback == {}:
+        admitted = {}
+    if boundary is None:
+        boundary = EmissionBoundary(ContentPolicy(True))
+    if type(boundary) is not EmissionBoundary:
+        raise WorkflowError('Correction credential authority unavailable')
+    lease = boundary.begin_evidence_lease()
+    try:
+        return boundary.for_policy(ContentPolicy(True)).content_export(admitted)
+    finally:
+        lease.release()
+
+
+async def project_correction(feedback, *, services=None):
+    """Borrow the live task-local credential authority even without a journal."""
+    if services is None:
+        from .attribution import current_tool_capture_services
+        services = current_tool_capture_services() or {}
+    capability = services.get('capture_authority')
+    if capability is not None:
+        try:
+            async with component_timeout('Workflow correction authority', 30):
+                async with capability() as boundary:
+                    return scrub_correction(feedback, boundary=boundary)
+        except TimeoutError:
+            raise
+        except Exception:
+            raise WorkflowError('Correction credential authority unavailable') from None
+    return scrub_correction(feedback, boundary=services.get('emissions'))
+
+
+@dataclass
+class _RepairFrame:
+    workflow: object
+    component: str
+    maximum: int
+    budget: object
+    attempt: int = 1
+    guard_attempt: int = 1
+    effect: bool = False
+
+
+_REPAIRS = ContextVar('workflow_repair_frames', default=())
+_ACTIVE_NODES = ContextVar('workflow_repair_node_effect_owners', default=())
+
+
+@contextmanager
+def _node_effect_owner(context):
+    token = _ACTIVE_NODES.set((*_ACTIVE_NODES.get(), context))
+    try:
+        yield
+    finally:
+        _ACTIVE_NODES.reset(token)
+
+
+@asynccontextmanager
+async def _repair_owner(frame):
+    token = _REPAIRS.set((*_REPAIRS.get(), frame) if frame is not None else _REPAIRS.get())
+    try:
+        yield
+    finally:
+        _REPAIRS.reset(token)
 
 
 _CURRENT_JOURNAL = ContextVar('workflow_journal', default=None)
@@ -62,11 +183,29 @@ class NodeContext:
     visit_id: str | None = None
     attempt_id: str | None = None
     response_contract: dict | None = None
+    correction: dict | None = None
+    rejected: object = None
+    correction_attempt: int = 0
+    guard_attempt: int = 1
+    _repair_limit: tuple | None = None
+    _effects: list = field(default_factory=list, repr=False, compare=False)
     _tools: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         from api_agent.tooling.runtime import capture_node_tools
         object.__setattr__(self, '_tools', capture_node_tools(self.node_id))
+
+    def mark_effect(self):
+        """Mark arbitrary native dispatch before awaiting it; replay is unsafe."""
+        for context in (*_ACTIVE_NODES.get(), self):
+            if not context._effects:
+                context._effects.append(True)
+        for frame in _REPAIRS.get():
+            frame.effect = True
+
+    def _dispatched(self):
+        invocation = self._tools._invocation if self._tools is not None else None
+        return bool(self._effects or (invocation is not None and self.node_id in getattr(invocation, 'effects', ())))
 
     def response_request(self, messages, *, tools=(), generation=None, strict=True):
         """Explicitly bind a request to this node's generated-response contract."""
@@ -94,7 +233,15 @@ class NodeContext:
         resolver = self.services.get('tools')
         if resolver is None:
             raise WorkflowError('Workflow has no admitted tool bindings')
-        return resolver.for_port(scope_kind='node', scope=self.node_id, port=port)
+        borrowed = resolver.for_port(scope_kind='node', scope=self.node_id, port=port)
+        context = self
+        class EffectTool:
+            def __getattr__(self, name):
+                return getattr(borrowed, name)
+            async def invoke(self, prepared):
+                context.mark_effect()
+                return await borrowed.invoke(prepared)
+        return EffectTool()
 
     def record_call(self, *, usage=None, selection=None, elapsed=None, outcome='completed', call_id=None):
         """Attribute one completed provider/tool leaf call to this node visit."""
@@ -107,11 +254,11 @@ class NodeContext:
 
     @property
     def attempt(self):
-        return self.ancestry[-1][1] if self.ancestry else 1
+        return self._repair_limit[0] if self._repair_limit else self.ancestry[-1][1] if self.ancestry else 1
 
     @property
     def max_passes(self):
-        return self.ancestry[-1][2] if self.ancestry else 1
+        return self._repair_limit[1] if self._repair_limit else self.ancestry[-1][2] if self.ancestry else 1
 
 
 class _State(TypedDict):
@@ -335,30 +482,49 @@ class Workflow:
             feedback = {}
             async with self._scope(step.id, kind='component', component=step.id, attempt=1,
                                    attempt_id=state.get('attempt_id'), max_passes=maximum) as budget:
-                for attempt in range(1, maximum + 1):
-                    attempt_id = str(uuid4())
-                    previous = {key: value for key, value in current['values'].items() if key in descendants} if attempt > 1 else {}
-                    current = dict(current, values={key: value for key, value in current['values'].items() if key not in descendants},
-                                   previous=previous, ancestry=(*original_ancestry, (step.id, attempt, maximum)), feedback=feedback,
-                                   attempt_id=attempt_id)
-                    self._event('attempt', scope_id=budget.id, component=step.id, attempt=attempt,
-                                attempt_id=attempt_id, max_passes=maximum)
-                    current = await graph.ainvoke(current, {'recursion_limit': len(self.layout.steps) + 1})
-                    if not controller['accepted']:
-                        return dict(current, ancestry=original_ancestry, feedback=original_feedback,
-                                    previous=original_previous, attempt_id=original_attempt_id,
-                                    visit_id=budget.id)
-                    if row['Guard'] not in current['values']:
-                        raise WorkflowError(f'Component {step.id} did not execute its guard in the current pass')
-                    guard = GuardResult.from_output(current['values'][row['Guard']])
-                    self._event('guard', scope_id=budget.id, component=step.id, attempt=attempt, accepted=guard.accepted)
-                    if component_decision(controller, guard.accepted, attempt) == 'accepted':
-                        return dict(current, ancestry=original_ancestry, feedback=original_feedback,
-                                    previous=original_previous, attempt_id=original_attempt_id,
-                                    visit_id=budget.id)
-                    feedback = guard.feedback
-                raise WorkflowError(f'Component {step.id} exhausted {maximum} passes')
+                frame = _RepairFrame(self, step.id, maximum, budget)
+                async with _repair_owner(frame if controller['accepted'] else None):
+                    return await passes(frame, current, budget, original_ancestry, original_feedback, original_previous, original_attempt_id, descendants)
+        async def passes(frame, current, budget, original_ancestry, original_feedback, original_previous, original_attempt_id, descendants):
+            feedback = {}
+            while frame.attempt <= maximum:
+                attempt = frame.attempt
+                attempt_id = str(uuid4())
+                previous = {key: value for key, value in current['values'].items() if key in descendants} if frame.guard_attempt > 1 else {}
+                current = dict(current, values={key: value for key, value in current['values'].items() if key not in descendants},
+                               previous=previous, ancestry=(*original_ancestry, (step.id, attempt, maximum)), feedback=feedback,
+                               attempt_id=attempt_id)
+                self._event('attempt', scope_id=budget.id, component=step.id, attempt=attempt,
+                            attempt_id=attempt_id, max_passes=maximum)
+                current = await graph.ainvoke(current, {'recursion_limit': len(self.layout.steps) + 1})
+                attempt = frame.attempt
+                if not controller['accepted']:
+                    return dict(current, ancestry=self._repair_ancestry(original_ancestry), feedback=original_feedback,
+                                previous=original_previous, attempt_id=original_attempt_id,
+                                visit_id=budget.id)
+                if row['Guard'] not in current['values']:
+                    raise WorkflowError(f'Component {step.id} did not execute its guard in the current pass')
+                guard = GuardResult.from_output(current['values'][row['Guard']])
+                self._event('guard', scope_id=budget.id, component=step.id, attempt=attempt, accepted=guard.accepted)
+                if component_decision(controller, guard.accepted, attempt) == 'accepted':
+                    return dict(current, ancestry=self._repair_ancestry(original_ancestry), feedback=original_feedback,
+                                previous=original_previous, attempt_id=original_attempt_id,
+                                visit_id=budget.id)
+                if frame.effect:
+                    raise WorkflowError('Component correction cannot replay dispatched effects')
+                feedback = await self._safe_feedback(guard.feedback)
+                frame.attempt += 1
+                frame.guard_attempt += 1
+            raise WorkflowError(f'Component {step.id} exhausted {maximum} passes')
         return execute
+
+    def _repair_ancestry(self, ancestry):
+        frames = {frame.component: frame for frame in _REPAIRS.get() if frame.workflow is self}
+        return tuple((owner, frames[owner].attempt, maximum) if owner in frames else (owner, attempt, maximum)
+                     for owner, attempt, maximum in ancestry)
+
+    async def _safe_feedback(self, feedback):
+        return await project_correction(feedback, services=self._capture_services())
 
     def _owned_by(self, step, owner):
         parents = {item.id: item.parent for item in self.layout.steps}
@@ -384,7 +550,10 @@ class Workflow:
                 services = SummaryServices(services, row['Display summary'])
             context = NodeContext(step.id, state['ancestry'], tuple(state['prompts'][item['File']] for item in prompts
                 if item['When'] == 'always' or self._condition(item['When'], values)), services,
-                budget.id, state.get('attempt_id'), row)
+                budget.id, state.get('attempt_id'), row, state.get('_correction'),
+                state.get('_rejected'), state.get('_correction_attempt', 0), state.get('_guard_attempt', 1),
+                state.get('_repair_limit'))
+            state['_node_context'] = context
             for binding in bindings:
                 source = binding['From']
                 sources = {'START': values['START'], 'PREVIOUS': state['previous'].get(step.id, {}),
@@ -393,7 +562,7 @@ class Workflow:
                 payload = sources.get(source, values.get(source, {}))
                 available = (source in ('START', 'ATTEMPT', 'MAX_PASSES')
                              or (source == 'PREVIOUS' and step.id in state['previous'])
-                             or (source == 'FEEDBACK' and (bool(payload) or context.attempt > 1))
+                             or (source == 'FEEDBACK' and (bool(payload) or context.guard_attempt > 1))
                              or source in values)
                 if binding['Field'] == '*' and available:
                     inputs[binding['Input']] = deepcopy(payload)
@@ -412,7 +581,7 @@ class Workflow:
                 plain_fields=plain_fields.get('input', ...))
             started = time.monotonic()
             from .attribution import bind_workflow_visit
-            with bind_workflow_visit(journal, budget.id, state.get('attempt_id'), capture_services=self._capture_services()):
+            with _node_effect_owner(context), bind_workflow_visit(journal, budget.id, state.get('attempt_id'), capture_services=self._capture_services()):
                 try:
                     result = (function.invoke(inputs, context) if inspect.iscoroutinefunction(function.invoke)
                               else await offload(function.invoke, inputs, context))
@@ -420,9 +589,24 @@ class Workflow:
                         result = await result
                 finally:
                     from .evidence_finalization import finalize
-                    await finalize()
+                    try:
+                        await finalize()
+                    finally:
+                        if context._dispatched():
+                            context.mark_effect()
             self._check_deadline(budget)
-            self._validate(row['Output schema'], result, step.id, 'output')
+            try:
+                self._validate(row['Output schema'], result, step.id, 'output')
+            except _SchemaRejection as invalid:
+                try:
+                    encoded = json.dumps(result, allow_nan=False)
+                    json_value = json.loads(encoded)
+                except (ValueError, TypeError):
+                    raise invalid
+                if row.get('Output mode', '-') == '-' or json_value != result:
+                    raise
+                facts = _schema_facts(row['Output schema'], result, invalid.errors)
+                raise CandidateCorrection({'reason': 'output_schema', 'errors': facts}, rejected=result) from None
             await capture_node(journal, self._capture_services(), visit_id=budget.id,
                 direction='output', values=result, schema=row['Output schema'],
                 plain_fields=plain_fields.get('output', ...))
@@ -430,18 +614,56 @@ class Workflow:
                         elapsed=time.monotonic() - started, kind=function.kind)
             return dict(state, values={**values, step.id: deepcopy(result)}, visit_id=budget.id)
         async def timed(state):
-            async with self._scope(step.id, kind='node', node=step.id, component=step.parent,
-                                   attempt=state['ancestry'][-1][1] if state['ancestry'] else 1,
-                                   attempt_id=state.get('attempt_id'),
-                                   max_passes=state['ancestry'][-1][2] if state['ancestry'] else 1) as budget:
-                return await execute(state, budget)
+            frame = next((item for item in reversed(_REPAIRS.get()) if item.workflow is self), None)
+            current = dict(state)
+            correction_attempt = 0
+            while True:
+                if frame is not None:
+                    self._check_deadline(frame.budget)
+                current['ancestry'] = self._repair_ancestry(current['ancestry'])
+                context = None
+                try:
+                    async with self._scope(step.id, kind='node', node=step.id, component=step.parent,
+                                           attempt=frame.attempt if frame is not None else current['ancestry'][-1][1] if current['ancestry'] else 1,
+                                           attempt_id=current.get('attempt_id'),
+                                           max_passes=frame.maximum if frame is not None else current['ancestry'][-1][2] if current['ancestry'] else 1) as budget:
+                        if frame is not None:
+                            current['_guard_attempt'] = frame.guard_attempt
+                            current['_repair_limit'] = (frame.attempt, frame.maximum)
+                        result = await execute(current, budget)
+                        return {key: value for key, value in result.items() if not key.startswith('_')}
+                except CandidateCorrection as error:
+                    context = current.get('_node_context')
+                    if frame is None:
+                        raise
+                    self._check_deadline(frame.budget)
+                    self._check_deadline(budget)
+                    if context is None or context._dispatched():
+                        for owner in _REPAIRS.get():
+                            owner.effect = True
+                        raise WorkflowError('Candidate correction cannot replay dispatched effects') from None
+                    feedback = await self._safe_feedback(error.feedback)
+                    if frame.attempt >= frame.maximum:
+                        raise WorkflowError(f'Component {frame.component} exhausted {frame.maximum} passes') from None
+                    history = _CURRENT_SERVICES.get()[3]
+                    history.correct(step.id, feedback)
+                    self._check_deadline(frame.budget)
+                    frame.attempt += 1
+                    correction_attempt += 1
+                    ancestry = tuple((owner, frame.attempt, maximum) if owner == frame.component else (owner, attempt, maximum)
+                                     for owner, attempt, maximum in current['ancestry'])
+                    current = dict(current, ancestry=ancestry, attempt_id=str(uuid4()),
+                                   _correction=feedback, _rejected=deepcopy(error.rejected),
+                                   _correction_attempt=correction_attempt)
+                    self._event('attempt', scope_id=frame.budget.id, component=frame.component,
+                                attempt=frame.attempt, attempt_id=current['attempt_id'], max_passes=frame.maximum)
         return timed
 
     @staticmethod
     def _validate(schema, value, node, direction):
         errors = tuple(Draft202012Validator(schema).iter_errors(value))
         if errors:
-            raise WorkflowError(f'Node {node} returned invalid {direction} structure at {list(errors[0].path)}')
+            raise _SchemaRejection(node, direction, errors, schema, value)
         # JSON is the state/IPC contract; reject Python-only and nonfinite values.
         try:
             encoded = json.dumps(value, allow_nan=False)

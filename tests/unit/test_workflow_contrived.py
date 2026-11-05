@@ -37,8 +37,9 @@ def test_producer_rejects_contract_defects(output,outcome,previous,error):
     async def llm(request):
         return SimpleNamespace(outcome=outcome,payload=SimpleNamespace(content=(SimpleNamespace(text=output),)))
     context=SimpleNamespace(node_id='first_draft',attempt=2 if previous is not None else 1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(previous['route'] if previous else 'skip'),'output_schema':{}})
-    with pytest.raises(WorkflowError,match=error):
+    with pytest.raises(WorkflowError) as caught:
         asyncio.run(produce({'previous':previous,'feedback':None,'upstream':None,'user_input':'original'},context))
+    assert error in getattr(caught.value, 'feedback', {}).get('reason', str(caught.value))
 
 
 def test_producer_sends_input_and_upstream_separately():

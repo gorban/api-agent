@@ -10,7 +10,7 @@ import pytest
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.control import OperationContext
 from api_agent.providers.llm import CompletionRequest, LLMRequest, LLMResult, Message, TextContent, Usage
-from api_agent.providers.tools import ToolResult, ToolSpec
+from api_agent.providers.tools import ToolResult, ToolSpec, ToolValidationError
 from api_agent.workflows.definition import load_definition
 from api_agent.workflows.demo_application import UsefulDemoApplication
 from api_agent.workflows.evidence import publish
@@ -35,7 +35,7 @@ class ControlledOwner:
     async def validate(self, prepared):
         self.events.append('validate')
         if prepared.arguments != {'query': '{ item { name } }'}:
-            raise ValueError('invalid query')
+            raise ToolValidationError('invalid query')
 
     async def invoke(self, prepared):
         self.events.append('invoke')
@@ -120,6 +120,27 @@ def test_selected_graph_rejects_removed_review_guard_before_execution():
 
     with pytest.raises(ContractError, match='useful demo contract'):
         UsefulDemoApplication(altered, tool_owner=ControlledOwner([]))
+
+
+def test_selected_graph_repairs_deterministic_length_before_review_or_tool_execution():
+    app, llm, events, request = run_demo([verdict()], render='Ada')
+    rejected = json.loads(PLAN)
+    rejected['answer'] = 'x' * 8666
+    original = json.dumps(rejected)
+    llm.outputs = iter([original, PLAN, json.dumps(verdict()), 'Ada'])
+
+    result = asyncio.run(app.complete(request, llm=llm,
+        context=OperationContext('length-repair')))
+
+    assert result.payload.content[0].text == 'Ada'
+    assert events == ['describe', 'llm', 'llm', 'validate', 'llm', 'invoke', 'llm']
+    first, repaired = llm.requests[:2]
+    assert repaired.payload.messages[:len(first.payload.messages)] == first.payload.messages
+    assert any(message.role == 'assistant' and message.content[0].text == original
+               for message in repaired.payload.messages)
+    feedback = '\n'.join(part.text for message in repaired.payload.messages
+                         for part in message.content)
+    assert all(detail in feedback for detail in ('maxLength', '$.answer', '8192', '8666'))
 
 
 @pytest.mark.credential_authorities('ui', 'workflow')

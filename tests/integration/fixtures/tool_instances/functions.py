@@ -1,5 +1,7 @@
 """Native node for the explicitly selected shared-target integration graph."""
+from api_agent.providers.contracts import ContractError
 from api_agent.providers.rich_inference import object_json
+from api_agent.workflows.execution import CandidateCorrection
 from api_agent.workflows.tool_conversation import run_tool_conversation
 
 
@@ -23,9 +25,14 @@ async def converse(inputs, context):
                 or any(len(records) != 1 for records in results.values())
                 or any(not call['result_matches'] for call in journal['calls'])):
             raise ValueError('Both tools must independently return the controlled backend value')
-        report = object_json(final)
+        try:
+            report = object_json(final)
+        except ContractError:
+            raise CandidateCorrection({'reason': 'Final answer must be a bounded JSON object',
+                'expected_keys': sorted(ALIASES)}) from None
         if report != dict.fromkeys(ALIASES, expected):
-            raise ValueError('Final answer must attribute the exact value to both named tools')
+            raise CandidateCorrection({'reason': 'Final answer must attribute the exact value to both named tools',
+                'expected_keys': sorted(ALIASES), 'values_from': 'completed named tool results'})
         journal['final_matches'] = True
 
     gates = {alias: context.tools[port] for alias, port in ALIASES.items()}

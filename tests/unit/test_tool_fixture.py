@@ -111,7 +111,7 @@ async def test_normal_runtime_preserves_two_graphql_owners_and_rejects_cross_ins
         assert all(view.closed for view in runtime._tool_views)
 
 
-async def graph_trial(tmp_path, journal, final):
+async def graph_trial(tmp_path, journal, final, *, repair=False):
     with server(tmp_path / 'backend') as endpoint:
         expected = get(endpoint, '/control/value')['hello']
         runtime = Runtime('fixture', tool_plan=external_plan(endpoint, endpoint), services={'owner_root': ROOT})
@@ -129,6 +129,10 @@ async def graph_trial(tmp_path, journal, final):
 
         async def complete(request):
             requests.append(request)
+            if repair and len(requests) == 5:
+                assert 'Correct the rejected candidate' in request.payload.messages[-1].content[0].text
+                return LLMResult(Message('assistant', (TextContent(json.dumps({
+                    'primary_read': expected, 'secondary_read': expected})),)), Usage(5, 2))
             return next(rows)
 
         try:
@@ -163,12 +167,14 @@ async def test_shared_native_graph_executes_both_real_tools_and_verifies_final_a
     lambda value: '{"primary_read":' + json.dumps(value) + ',"secondary_read":' + json.dumps(value)
                   + ',"secondary_read":' + json.dumps(value) + '}',
 ])
-async def test_shared_native_graph_rejects_wrong_or_ambiguous_final_and_preserves_results(tmp_path, final):
+async def test_shared_native_graph_repairs_wrong_or_ambiguous_final_without_redispatch(tmp_path, final):
     journal = {}
-    with pytest.raises(ValueError):
-        await graph_trial(tmp_path, journal, final)
+    output, requests = await graph_trial(tmp_path, journal, final, repair=True)
+    assert output['conversation'] == {'verified': True}
     assert len(journal['calls']) == 2
     assert all(call['result_matches'] for call in journal['calls'])
-    assert len(journal['inference']) == 4
+    assert len(journal['inference']) == len(requests) == 5
     assert journal['inference'][-1]['usage']['input_tokens'] == 5
-    assert journal['final_matches'] is False
+    assert journal['final_matches'] is True
+    assert journal['completed'] is True
+    assert len(requests[4].payload.messages[2].results) == 2

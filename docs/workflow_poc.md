@@ -60,6 +60,10 @@ does not add inference attempts, relax guards, change cache policy or promise
 cache hits. Provider serialization and credential controls remain authoritative;
 see [history requirements](prds/implementation_plan_f1a1c.md) for acceptance gates.
 
+Existing guarded components also support [deterministic candidate repair](workflow_repair.md)
+within their declared pass/deadline budgets, preserving producer history and
+blocking replay of dispatched effects.
+
 ## Named tools and optional dependencies
 
 Workflows select named tool instances through linked Tools tables. Graph and

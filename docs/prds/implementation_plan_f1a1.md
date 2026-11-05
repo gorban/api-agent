@@ -189,3 +189,5 @@ not establish access or feature support for an unverified deployment.
 
 - [x] Deliver [ordered parsed-flow inference history](implementation_plan_f1a1c.md)
   and exact reviewer rejection details across retrying application and test flows.
+- [x] Extend existing retry controllers with [deterministic candidate repair](implementation_plan_f1a1d.md),
+  preserving producer history, pass limits and effect boundaries.

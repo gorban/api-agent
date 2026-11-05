@@ -12,7 +12,7 @@ from api_agent.providers.control import OperationContext
 from api_agent.providers.llm import CompletionRequest, GenerationOptions, LLMRequest, LLMResult, Message, TextContent, Usage, Tool
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.inference import request_from_wire, request_to_wire
-from api_agent.providers.tools import ToolResult, ToolSpec
+from api_agent.providers.tools import ToolResult, ToolSpec, ToolValidationError
 from api_agent.workflows.definition import load_definition
 from api_agent.workflows.demo_application import UsefulDemoApplication
 from api_agent.workflows.execution import WorkflowError
@@ -37,7 +37,7 @@ class Owner:
     async def validate(self, prepared):
         self.events.append('validate')
         if prepared.arguments['query'] != '{ item { name } }':
-            raise ValueError('invalid query')
+            raise ToolValidationError('invalid query')
 
     async def invoke(self, prepared):
         self.events.append('invoke')
@@ -326,7 +326,7 @@ def test_rejected_tool_cannot_rewrite_the_previous_planner_candidate():
         async def validate(self, prepared):
             self.events.append('validate')
             prepared.arguments['query'] = 'owner-mutated'
-            raise ValueError('reject changed arguments')
+            raise ToolValidationError('reject changed arguments')
 
     owner = MutatingOwner()
     original = {'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}
@@ -343,25 +343,55 @@ def test_rejected_tool_cannot_rewrite_the_previous_planner_candidate():
     assert len(llm.requests) == 4
 
 
+def test_typed_tool_validation_details_reach_the_next_planner():
+    owner = Owner()
+    invalid = json.dumps({'use_tool': True, 'arguments': {'query': 'wrong'}, 'answer': ''})
+    corrected = json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Hello'})
+    llm = LLM([invalid, corrected, verdict(), 'Hello'])
+
+    result = asyncio.run(application(owner).complete(request(), llm=llm,
+        context=OperationContext('preflight-feedback')))
+
+    feedback = json.loads(llm.requests[1].payload.messages[-1].content[0].text)['feedback']
+    assert feedback['validation'] == {'check': 'owner_preflight', 'detail': 'invalid query',
+                                      'reason': 'Tool preflight rejected the candidate'}
+    assert result.payload.content[0].text == 'Hello'
+    assert 'invoke' not in owner.events
+
+
+def test_untyped_tool_preflight_bug_is_terminal_without_retry():
+    class BrokenOwner(Owner):
+        async def validate(self, prepared):
+            raise ValueError('Programming failure')
+    plan = json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''})
+    llm = LLM([plan])
+
+    with pytest.raises(ValueError, match='Programming failure'):
+        asyncio.run(application(BrokenOwner()).complete(request(), llm=llm,
+            context=OperationContext('preflight-bug')))
+
+    assert len(llm.requests) == 1
+
+
 @pytest.mark.parametrize('bad', [
     'not json', '{}',
     json.dumps({'use_tool': False, 'arguments': {'query': 'wrong'}, 'answer': ''}),
     pytest.param(json.dumps({'use_tool': True, 'arguments': {'path': 'x' * 16384}, 'answer': ''}), id='oversized-path'),
 ])
-def test_invalid_planner_output_stops_before_tool_and_renderer(bad):
+def test_invalid_planner_output_exhausts_repairs_before_tool_and_renderer(bad):
     owner = Owner()
-    llm = LLM([bad])
-    with pytest.raises(WorkflowError, match='Planner returned invalid'):
+    llm = LLM([bad, bad])
+    with pytest.raises(WorkflowError, match='exhausted'):
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert owner.events == ['describe']
-    assert len(llm.requests) == 1
+    assert len(llm.requests) == 2
 
 
 @pytest.mark.parametrize('bad', ['not json', '{}'])
-def test_invalid_reviewer_output_stops_before_tool(bad):
+def test_invalid_reviewer_output_repairs_only_reviewer_before_exhaustion(bad):
     owner = Owner()
-    llm = LLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Hello'}), bad])
-    with pytest.raises(WorkflowError, match='Reviewer returned invalid'):
+    llm = LLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Hello'}), bad, bad])
+    with pytest.raises(WorkflowError, match='exhausted'):
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
     assert owner.events == ['describe']
 
@@ -371,24 +401,104 @@ def test_rejected_verdict_requires_bounded_specific_details(details):
     owner = Owner()
     invalid = json.loads(verdict(correct=False))
     invalid['details'] = details
-    llm = LLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Candidate'}), json.dumps(invalid)])
+    llm = LLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Candidate'}), json.dumps(invalid), json.dumps(invalid)])
 
-    with pytest.raises(WorkflowError, match='invalid verdict details'):
+    with pytest.raises(WorkflowError, match='exhausted'):
         asyncio.run(application(owner).complete(request(), llm=llm, context=OperationContext('request')))
 
-    assert len(llm.requests) == 2
+    assert len(llm.requests) == 3
     assert owner.events == ['describe']
 
 
 def test_missing_review_details_reject_even_with_valid_boolean_controls():
     invalid = json.loads(verdict(correct=False))
     del invalid['details']
-    llm = LLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Candidate'}), json.dumps(invalid)])
+    llm = LLM([json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Candidate'}), json.dumps(invalid), json.dumps(invalid)])
 
-    with pytest.raises(WorkflowError, match='invalid verdict details'):
+    with pytest.raises(WorkflowError, match='exhausted'):
         asyncio.run(application(Owner()).complete(request(), llm=llm, context=OperationContext('request')))
 
-    assert len(llm.requests) == 2
+    assert len(llm.requests) == 3
+
+
+def test_overlength_planner_receives_constraint_and_repairs_before_review():
+    owner = Owner()
+    rejected = json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'x' * 8666})
+    corrected = json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Short answer'})
+    llm = LLM([rejected, corrected, verdict(), 'Short answer'])
+
+    result = asyncio.run(application(owner).complete(request(), llm=llm,
+        context=OperationContext('repair-length')))
+
+    assert result.payload.content[0].text == 'Short answer'
+    assert len(llm.requests) == 4
+    first, repaired = llm.requests[:2]
+    assert repaired.payload.messages[:len(first.payload.messages)] == first.payload.messages
+    assert any(message.role == 'assistant' and message.content[0].text == rejected
+               for message in repaired.payload.messages)
+    feedback = '\n'.join(part.text for message in repaired.payload.messages
+                         for part in message.content)
+    assert all(detail in feedback for detail in ('maxLength', '$.answer', '8192', '8666'))
+    assert owner.events == ['describe']
+
+
+def test_reviewer_format_repair_preserves_valid_plan_and_does_not_repeat_tool():
+    owner = Owner()
+    plan = json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''})
+    llm = LLM([plan, 'not json', verdict(), 'Ada'])
+
+    result = asyncio.run(application(owner).complete(request(), llm=llm,
+        context=OperationContext('repair-review')))
+
+    assert result.payload.content[0].text == 'Ada'
+    assert len(llm.requests) == 4
+    assert owner.events.count('invoke') == 1
+    assert owner.events.count('describe') == 1
+    first, repaired = llm.requests[1:3]
+    assert repaired.payload.messages[:len(first.payload.messages)] == first.payload.messages
+    assert any(message.role == 'assistant' and message.content[0].text == 'not json'
+               for message in repaired.payload.messages)
+
+
+def test_provider_schema_rejection_repairs_planner_with_actual_assistant_history():
+    from api_agent.llm_providers.response_policy import resolve_response
+    from api_agent.providers.rich_inference import async_validate_result
+
+    class ValidatingLLM(LLM):
+        async def complete(self, incoming, *, context):
+            result = await super().complete(incoming, context=context)
+            if incoming.payload.response is None:
+                return result
+            _, evidence = resolve_response(incoming, lambda actual: None)
+            return await async_validate_result(incoming, replace(result, response=evidence))
+
+    rejected = json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'x' * 8666})
+    corrected = json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Short answer'})
+    llm = ValidatingLLM([rejected, corrected, verdict(), 'Short answer'])
+
+    result = asyncio.run(application(Owner()).complete(request(), llm=llm,
+        context=OperationContext('provider-schema-repair')))
+
+    assert result.payload.content[0].text == 'Short answer'
+    assert len(llm.requests) == 4
+    repaired = llm.requests[1].payload.messages
+    assert any(message.role == 'assistant' and message.content[0].text == rejected
+               for message in repaired)
+    feedback = '\n'.join(part.text for message in repaired for part in message.content)
+    assert 'maxLength' in feedback and '8192' in feedback and '8666' in feedback
+
+
+def test_planner_and_reviewer_repairs_share_the_two_pass_limit():
+    owner = Owner()
+    plan = json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Candidate'})
+    llm = LLM(['not json', plan, verdict(correct=False)])
+
+    with pytest.raises(WorkflowError, match='exhausted'):
+        asyncio.run(application(owner).complete(request(), llm=llm,
+            context=OperationContext('shared-repair-budget')))
+
+    assert len(llm.requests) == 3
+    assert owner.events == ['describe']
 
 
 def test_maximum_review_details_reach_retry_without_truncation():
@@ -627,16 +737,16 @@ def test_bedrock_reasoning_native_reviewer_preserves_schema_validation(model, ef
         reviewer['unexpected'] = True
     llm = BedrockPolicyLLM([
         json.dumps({'use_tool': False, 'arguments': {}, 'answer': 'Hello'}),
-        json.dumps(reviewer), 'Hello'])
+        json.dumps(reviewer), json.dumps(reviewer) if invalid_verdict else 'Hello'])
     owner = Owner()
     original = request()
     selected = replace(original, selected_llm=model,
         payload=replace(original.payload, generation=GenerationOptions(reasoning_effort=effort)))
 
     if invalid_verdict:
-        with pytest.raises(ProviderAccessError):
+        with pytest.raises(WorkflowError, match='exhausted'):
             asyncio.run(application(owner).complete(selected, llm=llm, context=OperationContext('request')))
-        assert len(llm.requests) == 2
+        assert len(llm.requests) == 3
     else:
         result = asyncio.run(application(owner).complete(selected, llm=llm, context=OperationContext('request')))
         assert result.payload.content[0].text == 'Hello'
