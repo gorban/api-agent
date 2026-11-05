@@ -92,6 +92,9 @@ Human review reconfirmed the automated Studio `Ok` request and the previously ac
 
 ## Trusted selected-workflow service
 
+[Loopback binding with an advertised readiness identity](implementation_plan_i2c1a.md)
+extends the owned process service without changing existing listener defaults.
+
 - [x] Local UI-provider services include `workflow_complete(request, *, llm, context)`, bound to the same admitted application graph as the included backend. A trusted provider may build a separate authenticated session backend using its own owned LLM facade, while preserving graph execution, observations and deadline handling. The included backend retains its original owner and callback behavior.
 - [x] Keep this callable inside injected runtime services; do not expose it as a browser/API route, serialize it to frontend configuration, mutate the default backend or accept an LLM owner from untrusted request data. The alternate provider owns authenticated admission, per-session owner lifecycle, cancellation and safe response projection.
 

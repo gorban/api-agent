@@ -278,15 +278,17 @@ class WorkflowObservations:
             self._visit_call_kinds.pop(row['scope_id'], None)
             self._tool_visits.discard(row['scope_id'])
             if span is not None:
-                span.attributes({'status': 'error' if row.get('outcome') == 'failed' else
-                                 'cancelled' if row.get('outcome') == 'cancelled' else 'ok',
+                span.attributes({'status': 'error' if row.get('outcome') in ('failed', 'partial') else
+                                 'cancelled' if row.get('outcome') == 'cancelled' else
+                                 'unknown' if row.get('outcome') == 'unknown' else 'ok',
                                  'duration_seconds': row.get('elapsed')})
                 from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeState, OutcomeCause
                 state = {'failed': OutcomeState.FAILURE, 'cancelled': OutcomeState.CANCELLED,
+                         'partial': OutcomeState.PARTIAL,
                          'passed': OutcomeState.SUCCESS}.get(row.get('outcome'), OutcomeState.UNKNOWN)
                 if row.get('outcome') != 'passed':
                     span.outcome(ExecutionOutcome(state,
-                        OutcomeCause.EXECUTION if state == OutcomeState.FAILURE else None))
+                        OutcomeCause.EXECUTION if state in (OutcomeState.FAILURE, OutcomeState.PARTIAL) else None))
                 span.end(end_time=int(row['stopped_ms'] * 1_000_000) if row.get('stopped_ms') is not None else None)
         elif event == 'tool_start':
             self._tool_visits.add(row.get('visit_id'))

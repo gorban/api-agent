@@ -12,6 +12,7 @@ from api_agent.providers.contracts import SetupPrerequisiteError
 from api_agent.providers.control import CleanupPendingError, finish_cleanup
 from api_agent.providers.progress import component_timeout, independent_timeout_scope, report_timeout
 from api_agent.runtime.client_tls import require_verified_context
+from .provider import advertised_origin_identity as _readiness_identity
 
 
 class OwnedStudioProcess:
@@ -107,7 +108,7 @@ class StudioProcesses:
             raise ValueError('Studio output capture requires an emission boundary')
         self.log_callback, self.emissions = log_callback, emissions
 
-    async def start(self, argv, *, cwd, host, port, scheme, env):
+    async def start(self, argv, *, cwd, host, port, scheme, env, readiness_origin=None):
         if host != 'localhost':
             try:
                 local = ipaddress.ip_address(host).is_loopback
@@ -117,6 +118,8 @@ class StudioProcesses:
                 raise ValueError('Studio process requires loopback')
         if scheme not in ('http', 'https') or type(port) is not int or not 1 <= port <= 65535:
             raise ValueError('Invalid Studio process listener')
+        readiness_identity = (None if readiness_origin is None else
+                              _readiness_identity(readiness_origin, scheme=scheme, port=port))
         token = token_urlsafe(32)
         if self.log_callback is not None:
             from api_agent.telemetry.privacy import register_secret_async
@@ -155,7 +158,13 @@ class StudioProcesses:
                             if child.poll() is not None:
                                 raise SetupPrerequisiteError('Studio exited before verified readiness')
                             try:
-                                response = await client.head(url)
+                                if readiness_identity is None:
+                                    response = await client.head(url)
+                                else:
+                                    authority, server_name = readiness_identity
+                                    response = await client.request('HEAD', url,
+                                        headers={'Host': authority},
+                                        extensions={'sni_hostname': server_name})
                             except httpx.HTTPError:
                                 response = None
                             # A transport can consume cancellation. The clipped

@@ -929,17 +929,20 @@ class StatefulWorkflow:
             outcome = 'failed'
             try:
                 yield
+                outcome = 'passed'
                 terminal = self._services.get().get('execution_outcome')
                 if terminal is not None:
                     from api_agent.telemetry.outcomes import ExecutionOutcome, report_outcome
                     final = terminal()
                     if type(final) is not ExecutionOutcome:
                         raise ValueError('Invalid explicit execution outcome')
+                    outcome = {'success': 'passed', 'failure': 'failed',
+                               'cancelled': 'cancelled', 'partial': 'partial',
+                               'unknown': 'unknown'}[final.state.value]
                     report_outcome(final, runtime=getattr(self._journal.get(), 'trace', None))
                     current = self._journal.get()
                     if current is not None and hasattr(current, 'report_outcome'):
                         current.report_outcome(budget.id, final)
-                outcome = 'passed'
             except BaseException as error:
                 from api_agent.telemetry.outcomes import report_failure, OutcomeState
                 scopes = (budget.id, *(owned['budget'].id for owned in self._turn_state.get()['open_components'].values()))
