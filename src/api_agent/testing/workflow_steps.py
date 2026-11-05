@@ -45,14 +45,99 @@ def transport_attempt_steps(ledger):
     return steps
 
 
-def bubble_attention(step):
-    """Propagate attention upward while preserving each successful child."""
+def _bubble_attention(step):
+    parameters = {item['name']: item['value'] for item in step['parameters']}
+    if 'scope_id' in parameters and 'outcome' in parameters:
+        outcome = parameters['outcome']
+        step['status'] = ('failed' if outcome == 'failed' else 'broken'
+                          if outcome != 'passed' or parameters.get('retry_observed') == 'true'
+                          else 'passed')
+    if 'recovered_by_scope_id' in parameters and step['status'] == 'failed':
+        step['status'] = 'broken'
     for child in step["steps"]:
-        bubble_attention(child)
+        _bubble_attention(child)
         step["status"] = attention_status(step["status"], child["status"])
         if any(item == dict(name='retry_observed', value='true') for item in child['parameters']):
             if not any(item['name'] == 'retry_observed' for item in step['parameters']):
                 step['parameters'].append(dict(name='retry_observed', value='true'))
+
+
+def bubble_attention(step):
+    """Propagate attention, revalidating recovery after projection enrichment."""
+    def walk(item):
+        yield item
+        for child in item['steps']:
+            yield from walk(child)
+
+    items = list(walk(step))
+    scopes = {parameter['value']: item for item in items for parameter in item['parameters']
+              if parameter['name'] == 'scope_id'}
+    while True:
+        _bubble_attention(step)
+        changed = False
+        for item in items:
+            replacement = next((parameter['value'] for parameter in item['parameters']
+                                if parameter['name'] == 'recovered_by_scope_id'), None)
+            if replacement is not None and (replacement not in scopes or scopes[replacement]['status'] == 'failed'):
+                item['parameters'][:] = [parameter for parameter in item['parameters']
+                                        if parameter['name'] != 'recovered_by_scope_id']
+                item['status'] = 'failed'
+                changed = True
+            elif replacement is not None:
+                # Complementary projections may add failed call evidence after
+                # the original node recovery was established.
+                for descendant in walk(item):
+                    if descendant['status'] == 'failed':
+                        descendant['status'] = 'broken'
+                        if not any(parameter['name'] == 'recovered_by_scope_id'
+                                   for parameter in descendant['parameters']):
+                            descendant['parameters'].append(dict(name='recovered_by_scope_id', value=replacement))
+                            changed = True
+        if not changed:
+            return
+
+
+def _recover_scope_attempts(scopes, rows, attempts):
+    """Only an observed successful retry in the same controller recovers a visit."""
+    def mark(step, replacement):
+        if step['status'] == 'failed':
+            step['status'] = 'broken'
+            step['parameters'].append(dict(name='recovered_by_scope_id', value=replacement))
+        for child in step['steps']:
+            mark(child, replacement)
+
+    def failed(step):
+        return step['status'] == 'failed' or any(failed(child) for child in step['steps'])
+
+    for identifier, scope in reversed(tuple(scopes.items())):
+        parent = scopes.get(scope['parent_id'])
+        attempt = scope.get('attempt')
+        if (scope['kind'] != 'node' or scope['end']['outcome'] != 'failed'
+                or parent is None or parent['kind'] != 'component'
+                or parent['end']['outcome'] != 'passed'
+                or type(attempt) is not int or attempt < 1):
+            continue
+        controller = parent
+        while (controller['kind'] == 'component' and controller.get('max_passes') == 1
+               and controller['end']['outcome'] == 'passed'):
+            controller = scopes[controller['parent_id']]
+        maximum = scope.get('max_passes')
+        observed = (min(maximum, attempts.get(controller['scope_id'], 0))
+                    if type(maximum) is int and maximum > 1
+                    and controller['kind'] == 'component' and controller['end']['outcome'] == 'passed'
+                    and controller.get('max_passes') == maximum else 0)
+        for successor_id, successor in scopes.items():
+            next_attempt = successor.get('attempt')
+            if (successor['kind'] == 'node' and successor['parent_id'] == scope['parent_id']
+                    and successor['owner'] == scope['owner']
+                    and successor['end']['outcome'] == 'passed'
+                    and successor.get('max_passes') == maximum
+                    and type(next_attempt) is int
+                    and attempt < next_attempt <= observed
+                    and successor['started_ms'] >= scope['end']['stopped_ms']
+                    and not failed(rows[successor_id])):
+                mark(rows[identifier], successor_id)
+                break
 
 
 def scope_steps(events):
@@ -207,6 +292,7 @@ def scope_steps(events):
                                              and value >= 0 for value in values) else None
             rows[identifier]['parameters'].append(dict(name='inclusive_' + name,
                                                        value=str(amount) if amount is not None else 'unknown'))
+    _recover_scope_attempts(scopes, rows, attempts)
     for root in roots:
         bubble_attention(root)
     return roots

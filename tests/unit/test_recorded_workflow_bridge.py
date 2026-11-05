@@ -349,6 +349,69 @@ def test_attention_enrichment_merges_without_outcome_conflict(journal_first):
     assert {'name': 'outcome', 'value': 'passed'} in bridge.steps[0]['parameters']
 
 
+@pytest.mark.parametrize('journal_first', [True, False])
+def test_recovery_enrichment_removes_historical_red_in_either_projection_order(journal_first):
+    from test_workflow_steps import correction_trace
+    complete = correction_trace()
+    sparse = [event for event in deepcopy(complete) if event['event'] not in ('attempt', 'guard')]
+    packets = [packet(complete, str(uuid4())), packet(sparse)]
+    bridge = _WorkflowStepBridge()
+    for item in packets if journal_first else reversed(packets):
+        bridge.add(item)
+    graph = bridge.steps[0]
+    component = graph['steps'][0]
+    rejected, accepted = component['steps']
+    assert graph['status'] == component['status'] == rejected['status'] == 'broken'
+    assert accepted['status'] == 'passed'
+    assert dict(name='outcome', value='failed') in rejected['parameters']
+
+
+@pytest.mark.parametrize('journal_first', [True, False])
+def test_recovery_is_revoked_when_merged_replacement_contains_a_terminal_call(journal_first):
+    from test_workflow_steps import correction_trace
+    complete = correction_trace()
+    complete.insert(4, dict(event='call', call_id=str(uuid4()),
+        visit_id=complete[3]['scope_id'], outcome='failed', usage=None))
+    enriched = deepcopy(complete)
+    replacement = next(event for event in enriched if event['event'] == 'scope_start'
+        and event.get('kind') == 'node' and event.get('attempt') == 2)
+    at = enriched.index(replacement)
+    enriched.insert(at + 1, dict(event='call', call_id=str(uuid4()),
+        visit_id=replacement['scope_id'], outcome='failed', usage=None))
+    packets = [packet(complete, str(uuid4())), packet(enriched)]
+    bridge = _WorkflowStepBridge()
+    for item in packets if journal_first else reversed(packets):
+        bridge.add(item)
+    graph = bridge.steps[0]
+    component = graph['steps'][0]
+    rejected, replacement = component['steps']
+    assert graph['status'] == component['status'] == rejected['status'] == replacement['status'] == 'failed'
+    assert rejected['steps'][0]['status'] == 'failed'
+    assert not any(item['name'] == 'recovered_by_scope_id'
+        for step in flatten(graph) for item in step['parameters'])
+
+
+@pytest.mark.parametrize('journal_first', [True, False])
+def test_recovery_covers_failed_descendants_added_by_a_sparse_projection(journal_first):
+    from test_workflow_steps import correction_trace
+    complete = correction_trace()
+    sparse = [event for event in deepcopy(complete) if event['event'] not in ('attempt', 'guard')]
+    first = next(event for event in sparse if event['event'] == 'scope_start'
+        and event.get('kind') == 'node' and event.get('attempt') == 1)
+    sparse.insert(sparse.index(first) + 1, dict(event='call', call_id=str(uuid4()),
+        visit_id=first['scope_id'], outcome='failed', usage=None))
+    packets = [packet(complete, str(uuid4())), packet(sparse)]
+    bridge = _WorkflowStepBridge()
+    for item in packets if journal_first else reversed(packets):
+        bridge.add(item)
+    graph = bridge.steps[0]
+    component = graph['steps'][0]
+    rejected, accepted = component['steps']
+    assert graph['status'] == component['status'] == rejected['status'] == rejected['steps'][0]['status'] == 'broken'
+    assert accepted['status'] == 'passed'
+    assert dict(name='outcome', value='failed') in rejected['steps'][0]['parameters']
+
+
 @pytest.mark.parametrize('order', list(permutations(range(3))))
 def test_partial_enrichment_bubbles_failure_and_preserves_original_outcome(order):
     from test_workflow_steps import visit_events

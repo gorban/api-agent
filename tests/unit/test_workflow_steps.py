@@ -257,6 +257,135 @@ def test_terminal_failure_outranks_retry_and_keeps_successful_child_green():
     assert graph['steps'][0]['steps'][0]['status'] == 'passed'
 
 
+def correction_trace():
+    events = trace()
+    component = events[1]
+    first = dict(event='scope_start', scope_id=str(uuid4()),
+        parent_id=component['scope_id'], owner='Make', kind='node',
+        started_ms=component['started_ms'] + 1, attempt=1, max_passes=2)
+    second = dict(first, scope_id=str(uuid4()), started_ms=first['started_ms'] + 1, attempt=2)
+    events[3:3] = [first, dict(first, event='scope_end', outcome='failed',
+        stopped_ms=second['started_ms']), second,
+        dict(second, event='scope_end', outcome='passed', stopped_ms=second['started_ms'] + 1)]
+    return events
+
+
+def test_recovered_producer_is_yellow_without_rewriting_failed_outcome():
+    events = correction_trace()
+    graph = scope_steps(events)[0]
+    component = graph['steps'][0]
+    rejected, accepted = component['steps']
+    assert graph['status'] == component['status'] == rejected['status'] == 'broken'
+    assert accepted['status'] == 'passed'
+    assert dict(name='outcome', value='failed') in rejected['parameters']
+    assert dict(name='recovered_by_scope_id', value=accepted['parameters'][0]['value']) in rejected['parameters']
+
+
+@pytest.mark.parametrize('change', ['terminal_component', 'different_owner', 'same_attempt',
+    'no_observed_retry', 'later_failed', 'overlap', 'invalid_attempt', 'outside_budget',
+    'unguarded', 'different_budget', 'observed_over_budget'])
+def test_unproven_or_terminal_recovery_remains_red(change):
+    events = correction_trace()
+    if change == 'terminal_component':
+        events[-2]['outcome'] = 'failed'
+    elif change == 'different_owner':
+        events[5]['owner'] = events[6]['owner'] = 'Other'
+    elif change == 'same_attempt':
+        events[5]['attempt'] = events[6]['attempt'] = 1
+    elif change == 'no_observed_retry':
+        events = [event for event in events if event['event'] != 'attempt']
+    elif change == 'later_failed':
+        events[6]['outcome'] = 'failed'
+    elif change == 'overlap':
+        events[4]['stopped_ms'] += .5
+    elif change == 'invalid_attempt':
+        events[3]['attempt'] = events[4]['attempt'] = True
+    elif change == 'unguarded':
+        events[1]['max_passes'] = events[-2]['max_passes'] = 1
+    elif change == 'different_budget':
+        events[5]['max_passes'] = events[6]['max_passes'] = 3
+    elif change == 'observed_over_budget':
+        events[5]['attempt'] = events[6]['attempt'] = events[8]['attempt'] = 3
+    else:
+        events[5]['attempt'] = events[6]['attempt'] = 3
+    graph = scope_steps(events)[0]
+    assert graph['status'] == graph['steps'][0]['status'] == 'failed'
+    assert graph['steps'][0]['steps'][0]['status'] == 'failed'
+
+
+@pytest.mark.parametrize('replacement_call', ['completed', 'failed'])
+def test_recovery_includes_failed_call_only_when_replacement_has_no_terminal_failure(replacement_call):
+    events = correction_trace()
+    for index, outcome in ((5, replacement_call), (3, 'failed')):
+        events.insert(index + 1, dict(event='call', call_id=str(uuid4()),
+            visit_id=events[index]['scope_id'], outcome=outcome, usage=None))
+    graph = scope_steps(events)[0]
+    rejected, accepted = graph['steps'][0]['steps']
+    expected = 'broken' if replacement_call == 'completed' else 'failed'
+    assert graph['status'] == rejected['status'] == rejected['steps'][0]['status'] == expected
+    assert accepted['status'] == ('passed' if replacement_call == 'completed' else 'failed')
+
+
+def test_passing_same_named_node_in_another_component_cannot_recover_failure():
+    events = correction_trace()
+    other = dict(events[1], scope_id=str(uuid4()), owner='Other')
+    events[5]['parent_id'] = events[6]['parent_id'] = other['scope_id']
+    events[1:1] = [other, dict(other, event='scope_end', outcome='passed',
+        stopped_ms=events[-2]['stopped_ms'])]
+    graph = scope_steps(events)[0]
+    assert graph['status'] == 'failed'
+    assert graph['steps'][1]['steps'][0]['status'] == 'failed'
+
+
+def test_rejected_native_candidate_preserves_its_successful_llm_call_green():
+    events = correction_trace()
+    events.insert(4, dict(event='call', call_id=str(uuid4()),
+        visit_id=events[3]['scope_id'], outcome='completed', usage=None))
+    graph = scope_steps(events)[0]
+    rejected = graph['steps'][0]['steps'][0]
+    assert rejected['status'] == 'broken'
+    assert rejected['steps'][0]['status'] == 'passed'
+
+
+def test_missing_replacement_cannot_keep_a_recovery_label():
+    from api_agent.testing.workflow_steps import bubble_attention
+    graph = scope_steps(correction_trace())[0]
+    component = graph['steps'][0]
+    component['steps'].pop()
+    bubble_attention(graph)
+    rejected = component['steps'][0]
+    assert graph['status'] == component['status'] == rejected['status'] == 'failed'
+    assert not any(item['name'] == 'recovered_by_scope_id' for item in rejected['parameters'])
+
+
+@pytest.mark.parametrize('outer_outcome', ['passed', 'failed'])
+@pytest.mark.parametrize('inner_passes', [1, 2])
+@pytest.mark.parametrize('node_passes', [1, 2])
+def test_nested_producer_uses_its_enclosing_retry_controller(outer_outcome, inner_passes, node_passes):
+    events = correction_trace()
+    inner_id = events[1]['scope_id']
+    outer = dict(events[1], scope_id=str(uuid4()), owner='Outer',
+        started_ms=events[0]['started_ms'] + .5)
+    for event in events:
+        if event.get('kind') == 'node':
+            event['max_passes'] = node_passes
+        if event.get('scope_id') == inner_id:
+            if event['event'] in ('scope_start', 'scope_end'):
+                event.update(parent_id=outer['scope_id'], max_passes=inner_passes)
+            elif event['event'] in ('attempt', 'guard'):
+                event['scope_id'] = outer['scope_id']
+    events.insert(1, outer)
+    events.insert(-1, dict(outer, event='scope_end', outcome=outer_outcome,
+        stopped_ms=events[-1]['stopped_ms'] - .5))
+    graph = scope_steps(events)[0]
+    outer_step = graph['steps'][0]
+    inner_step = outer_step['steps'][0]
+    first, second = inner_step['steps']
+    expected = 'broken' if outer_outcome == 'passed' and inner_passes == 1 and node_passes == 2 else 'failed'
+    assert graph['status'] == outer_step['status'] == inner_step['status'] == first['status'] == expected
+    assert second['status'] == 'passed'
+
+
 def test_unknown_call_outcome_is_bounded_before_rendering():
     events = visit_events(trace(), call_outcome='unrecognized provider detail')
     graph = scope_steps(events)[0]

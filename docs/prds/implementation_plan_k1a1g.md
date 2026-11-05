@@ -32,7 +32,7 @@
   configurations, content permissions, credentials, recovery and cancellation.
 - [x] Prove response-size rejection before JSON/SSE decoding with no extra call.
 - [x] Complete causal rejection controls and applicable repository gates.
-- [ ] Human acceptance sees the final failure in the selected trace viewer.
+- [x] Human acceptance sees the final failure in the selected trace viewer.
 
 Standard OTEL status descriptions also supply Langfuse status messages through
 its [documented fallback](https://langfuse.com/docs/observability/features/log-levels).
