@@ -241,6 +241,12 @@ def scope_steps(events):
             # inside the original node interval. Round both projections alike.
             leaf.update(start=int(start['started_ms']), stop=int(event['stopped_ms']))
             parent['status'] = attention_status(parent['status'], leaf['status'])
+        elif event.get('event') == 'capture' and identifier in tool_steps:
+            reason = event.get('reason')
+            if reason not in ('captured', 'partial', 'truncated', 'unavailable', 'withheld'):
+                reason = 'unknown'
+            tool_steps[identifier][0]['parameters'].append(
+                dict(name=event['direction'] + '_capture', value=reason))
         if event.get('event') != 'call':
             continue
         call_id, visit_id = event.get('call_id'), event.get('visit_id')

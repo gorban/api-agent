@@ -130,7 +130,8 @@ class ToolGate:
         arguments = json.loads(canonical(prepared.arguments, MAX_ARGUMENT_BYTES))
         dispatch = PreparedCall(prepared.spec, arguments, prepared.invocation_id, prepared.digest)
         from .tool_observations import ToolObservation, tool_payload_schema
-        observation = ToolObservation(prepared.spec, alias=_tool_alias or self.tool_alias, instance=self.tool_instance)
+        observation = ToolObservation(prepared.spec, alias=_tool_alias or self.tool_alias,
+                                      instance=self.tool_instance, identifier=self._id)
         request_schema = {'type': 'object', 'properties': {
             'tool_name': {'type': 'string'}, 'tool_instance': {'type': ['string', 'null']},
             'arguments': tool_payload_schema(prepared.spec.input_schema, 'arguments')}, 'additionalProperties': False}

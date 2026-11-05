@@ -10,7 +10,6 @@ from api_agent.providers.tools import MAX_ARGUMENT_BYTES, canonical
 from api_agent.providers.rich_inference import response_json
 from api_agent.providers.contracts import ContractError
 import json
-import time
 
 
 async def llm_call(inputs, context):
@@ -192,20 +191,13 @@ async def execute_tool(inputs, context):
     grant = context.services.get('verified_call')
     if grant is None:
         raise WorkflowError('Tool execution lacked accepted verification')
-    started = time.monotonic()
-    call_id = str(uuid4())
-    try:
-        result = await context.tools['primary'].execute(grant)
-    except Exception:
-        context.record_call(call_id=call_id, elapsed=time.monotonic() - started, outcome='failed')
-        raise
-    context.record_call(call_id=call_id, elapsed=time.monotonic() - started, outcome=result.status)
+    result = await context.tools['primary'].execute(grant)
     context.services['tool_result'] = result
     # This application promises a successful tool operation, so a typed rejected
     # or partial ToolResult remains the final operation outcome after rendering.
     from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeState, OutcomeCause
     outcome = ExecutionOutcome(OutcomeState(result.status),
-        OutcomeCause.TOOL if result.status in ('failure', 'partial') else None, call_id)
+        OutcomeCause.TOOL if result.status in ('failure', 'partial') else None, grant.gate_id)
     store = context.services.get('result_store')
     if store is not None:
         store['tool_outcome'] = outcome
