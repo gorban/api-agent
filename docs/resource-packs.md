@@ -164,3 +164,21 @@ use owner-independent defaults: absolute paths/selectors or base-root paths.
 Relative path/selector defaults with pack/owner dependence, including conditional
 defaults, are rejected. Put those defaults in the owning pack's main configuration
 or use absolute auxiliary defaults until provider bootstrap supports per-file owners.
+
+## Development dependency groups
+
+A source resource pack does not need distribution metadata to declare test tools:
+
+```toml
+[dependency-groups]
+dev = ["pytest>=8", {include-group = "checks"}]
+checks = ["packaging>=24"]
+```
+
+Normal unit preparation selects `dev` through the shared environment helper.
+Only admitted pack/base/library roots contribute; declarations do not activate
+providers. Group names compare case insensitively with runs of `.`, `_` and `-`
+treated alike. Includes resolve within their own manifest; missing includes,
+cycles and colliding names fail. Only selected groups and their includes are
+evaluated. A matching optional extra contributes additively, preserving existing
+packs. Requirements use the existing PEP 508 and direct-URL validation policy.
