@@ -303,9 +303,14 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
             env.pop('API_AGENT_COVERAGE_OUTPUT', None)
             env.pop('API_AGENT_COVERAGE_SOURCE', None)
             env.pop('API_AGENT_COVERAGE_HTML', None)
+            env.pop('COVERAGE_PROCESS_CONFIG', None)
+            env.pop('COVERAGE_PROCESS_START', None)
             if has_code:
                 config = Path(temporary) / 'coverage.ini'
-                config.write_text('[run]\nbranch = true\nomit = */tests/*\n[report]\ninclude_namespace_packages = true\n')
+                from .coverage_config import owner_coverage_patches
+                patches = owner_coverage_patches(context, root)
+                patch_config = 'patch = ' + ', '.join(patches) + '\n' if patches else ''
+                config.write_text('[run]\nbranch = true\n' + patch_config + 'omit = */tests/*\n[report]\ninclude_namespace_packages = true\n')
                 env['API_AGENT_COVERAGE_OUTPUT'] = str(coverage)
                 env['API_AGENT_COVERAGE_SOURCE'] = json.dumps([str(source) for source in sources])
                 env['API_AGENT_COVERAGE_HTML'] = str(Path(temporary) / 'html')

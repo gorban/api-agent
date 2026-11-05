@@ -136,7 +136,7 @@ def test_unit_dependency_selection_needs_no_optional_browser_or_driver(tmp_path)
          patch('api_agent.runtime.browser.subprocess.run') as run, \
          patch('api_agent.runtime.browser.subprocess.Popen') as install:
         wanted = requirements(context, collect=True)
-    assert wanted == ('packaging>=24', 'pytest>=8,<10', 'pytest-cov>=6,<8', 'pytest-xdist>=3,<4')
+    assert wanted == ('packaging>=24', 'pytest>=8,<10', 'pytest-cov>=7,<8', 'pytest-xdist>=3,<4')
     run.assert_not_called()
     install.assert_not_called()
 

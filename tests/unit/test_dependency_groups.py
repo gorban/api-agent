@@ -23,7 +23,7 @@ def test_source_only_group_prepares_unit_environment(context):
         python.parent.mkdir(parents=True)
         python.touch()
         assert dep.ensure_environment(context, [], collect=True, groups=('dev',)) == 0
-    assert probe.call_args.args[1] == ('synthetic-tool>=2', 'pytest>=8,<10', 'pytest-cov>=6,<8', 'pytest-xdist>=3,<4')
+    assert probe.call_args.args[1] == ('synthetic-tool>=2', 'pytest>=8,<10', 'pytest-cov>=7,<8', 'pytest-xdist>=3,<4')
 
 
 def test_normalized_groups_includes_and_extras_are_additive(context):

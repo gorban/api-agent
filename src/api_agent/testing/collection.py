@@ -264,6 +264,9 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
     if not suites:
         raise CollectionError(f"No {mode} suites are declared")
     child_env = os.environ.copy()
+    if mode == "unit":
+        child_env.pop("COVERAGE_PROCESS_CONFIG", None)
+        child_env.pop("COVERAGE_PROCESS_START", None)
     source_paths = [str(base / "src")]
     if owner != base:
         source_paths.append(str(owner / "src"))

@@ -27,7 +27,7 @@ def test_selected_source_is_fresh_and_cwd_independent(context, tmp_path, monkeyp
     project(tmp_path / 'unselected', ['unselected-tool>=1'])
     assert dep.requirements(context, collect=True, groups=('dev',)) == (
         'runtime-tool>=1', 'pack-tool>=2', 'native-tool>=3', 'library-dev>=4',
-        'pytest>=8,<10', 'pytest-cov>=6,<8', 'pytest-xdist>=3,<4')
+        'pytest>=8,<10', 'pytest-cov>=7,<8', 'pytest-xdist>=3,<4')
     project(context.workflow_base_root, ['changed-tool>=5'])
     assert dep.requirements(context) == ('runtime-tool>=1', 'pack-tool>=2', 'changed-tool>=5')
     with pytest.raises(ValueError, match='Unknown optional dependency group'):

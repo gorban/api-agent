@@ -186,7 +186,7 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
             raise TypeError('Selected providers require dependency manifest descriptors')
         dependencies.extend(manifest.requirements())
     if collect:
-        dependencies.extend(('pytest>=8,<10', 'pytest-cov>=6,<8', 'pytest-xdist>=3,<4'))
+        dependencies.extend(('pytest>=8,<10', 'pytest-cov>=7,<8', 'pytest-xdist>=3,<4'))
     for requirement in dependencies:
         _parsed_requirement(requirement)
     return tuple(dict.fromkeys(dependencies))

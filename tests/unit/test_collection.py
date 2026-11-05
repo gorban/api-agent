@@ -330,3 +330,19 @@ def test_expired_collection_budget_disposes_before_exchange(tmp_path, monkeypatc
     finally:
         for child in children:
             processes.finalize(child)
+
+
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+def test_collection_inherits_process_coverage_only_outside_unit_mode(tmp_path, monkeypatch, mode):
+    root = tmp_path / 'owner'
+    selected = suite(root, mode)
+    expected = mode != 'unit'
+    (selected / 'test_tiny.py').write_text(
+        'import os\n'
+        'flags = {name: name in os.environ for name in ("COVERAGE_PROCESS_CONFIG", "COVERAGE_PROCESS_START")}\n'
+        f'assert flags == {{"COVERAGE_PROCESS_CONFIG": {expected}, "COVERAGE_PROCESS_START": {expected}}}\n'
+        'def test_collected_without_execution():\n    raise AssertionError("collection only")\n')
+    monkeypatch.setenv('COVERAGE_PROCESS_CONFIG', 'synthetic-inherited-config')
+    monkeypatch.setenv('COVERAGE_PROCESS_START', 'synthetic-inherited-start')
+    collected = collect_tests(context(root, modes={mode: (selected,)}), mode)
+    assert [test.node_id for test in collected] == [f'tests/{mode}/test_tiny.py::test_collected_without_execution']
