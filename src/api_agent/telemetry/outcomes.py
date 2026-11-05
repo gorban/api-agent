@@ -287,7 +287,13 @@ def report_failure(error, *, observations=None, scope_ids=(), terminal=False,
             safe_trace(lambda: observations.report_failure(scope_id, error,
                 deadline_expired=deadline_expired))
     if terminal:
-        report_outcome(outcome, runtime=getattr(observations, 'trace', None))
+        runtime = getattr(observations, 'trace', None)
+        owner = current_operation(runtime) if runtime is not None else None
+        if owner is not None:
+            owner.report(outcome)
+            if owner.final is outcome:
+                from .operation import describe_failure
+                describe_failure(owner.span, error, deadline_expired=deadline_expired)
     return outcome
 
 

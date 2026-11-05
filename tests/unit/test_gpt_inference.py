@@ -239,7 +239,14 @@ def test_compression_rejected_before_decoder_or_body_iteration():
 
 def test_raw_size_rejected_even_when_json_would_be_valid():
     body=json.dumps(result()).encode()+b' '*(module._LIMIT+1)
-    with pytest.raises(ProviderAccessError,match='response exceeded its limit'): run(httpx.Response(200,content=body))
+    with pytest.raises(ProviderAccessError,match='1048576-byte body limit') as caught:
+        run(httpx.Response(200,content=body))
+    assert caught.value.status == 200
+    assert caught.value.code == 'response_body_limit'
+    assert caught.value.type == 'response_size_limit'
+    assert caught.value.execution == 'possibly_executed'
+    assert caught.value.usage is None
+    assert 'not a model output-token limit' in caught.value.message
 
 
 def test_stream_rejection_preserves_upstream_and_actual_http_status():

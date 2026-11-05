@@ -214,6 +214,8 @@ class WorkflowObservations:
             from api_agent.telemetry.operation import safe_trace
             safe_trace(lambda: span.outcome(outcome))
             safe_trace(lambda: span.structural({'api_agent.failure.code': diagnostic['code']}))
+            from api_agent.telemetry.operation import describe_failure
+            describe_failure(span, error, deadline_expired=deadline_expired)
 
 
     def _emit(self, row):
