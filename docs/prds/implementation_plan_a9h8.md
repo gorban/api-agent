@@ -10,8 +10,8 @@
 - [x] Deterministically exercise recovery EIO-as-EOF handling and non-EIO terminal read rejection on every applicable platform, independently of real PTY exit ordering. Verify private credential delivery, safe errors and actual owned cleanup; reject removal of each intended guard.
 - [x] Exercise bounded-schema worker write failures with synchronized doubles that prove the write attempt, unavailable verdict and owned cleanup without scheduling or pipe races. Retain production startup and execution budgets.
 - [x] Require independent adversarial and external review, exact full applicable unit line/branch coverage and public-boundary/index/metadata checks before publication. Keep the selected worker policy unchanged.
-- [ ] Native normal-launcher acceptance remains open. A passing local gate does not establish native acceptance or explain a previously unreproduced error.
+- [x] Native normal-launcher verification passes after the linked follow-up: 26,887 passed, 16 platform-incompatible tests not applicable, and exact line/branch coverage reported at 16 workers. This verifies the repaired suite without proving the precise original filesystem cause.
 
-Verification: 26,887 Linux unit tests pass at 16 workers with exact 100% line and branch coverage. Independent adversarial and external source reviews pass, including actual-worker failure probes and targeted mutations. Workflow and staged public-boundary checks pass; committed metadata must pass before publication. This does not establish native acceptance.
+Verification: 26,887 Linux unit tests pass at 16 workers with exact 100% line and branch coverage. Independent adversarial and external source reviews pass, including actual-worker failure probes and targeted mutations. Workflow and staged public-boundary checks pass; committed metadata must pass before publication. Subsequent native verification is recorded in the linked follow-up.
 
 Follow-up: [concurrent lock creation and isolated clipboard controls](implementation_plan_a9h9.md).
