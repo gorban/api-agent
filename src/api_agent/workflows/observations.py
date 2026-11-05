@@ -87,6 +87,7 @@ class WorkflowObservations:
         from api_agent.telemetry.operation import TraceLoss
         self.trace_losses = getattr(trace, 'losses', None) or TraceLoss()
         self._spans = {}
+        self._scope_failures = {}
         self._visit_call_kinds = {}
         self._call_payloads = {}
         self._tool_spans = {}
@@ -201,6 +202,20 @@ class WorkflowObservations:
             from api_agent.telemetry.operation import safe_trace
             safe_trace(lambda: span.outcome(outcome))
 
+    def report_failure(self, scope_id, error, *, deadline_expired=False):
+        """Classify a failed scope without exporting exception text or stacks."""
+        from api_agent.telemetry.outcomes import failure_diagnostic, failure_outcome, OutcomeState
+        outcome = failure_outcome(error, deadline_expired=deadline_expired)
+        diagnostic = failure_diagnostic(error, deadline_expired=deadline_expired)
+        span = self._spans.get(scope_id)
+        prior = self._scope_failures.get(scope_id)
+        if span is not None and (prior is None or prior.state != OutcomeState.FAILURE):
+            self._scope_failures[scope_id] = outcome
+            from api_agent.telemetry.operation import safe_trace
+            safe_trace(lambda: span.outcome(outcome))
+            safe_trace(lambda: span.structural({'api_agent.failure.code': diagnostic['code']}))
+
+
     def _emit(self, row):
         if self.sink is not None:
             try:
@@ -259,6 +274,7 @@ class WorkflowObservations:
                 start_time=int(row['started_ms'] * 1_000_000) if row.get('started_ms') is not None else None)
         elif event == 'scope_end':
             span = self._spans.pop(row['scope_id'], None)
+            self._scope_failures.pop(row['scope_id'], None)
             self._visit_call_kinds.pop(row['scope_id'], None)
             self._tool_visits.discard(row['scope_id'])
             if span is not None:
@@ -522,6 +538,7 @@ class WorkflowObservations:
             except (Exception, asyncio.CancelledError):
                 self.trace_losses.record()
         self._spans.clear()
+        self._scope_failures.clear()
         self._tool_visits.clear()
         self._call_payloads.clear()
         self._call_fields.clear()

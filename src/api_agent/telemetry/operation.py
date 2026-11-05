@@ -4,7 +4,7 @@ import logging
 from contextlib import contextmanager
 
 from .outcomes import (ExecutionOutcome, OperationOutcome, OutcomeState,
-                       OutcomeCause, bind_operation)
+                       OutcomeCause, bind_operation, failure_outcome)
 
 
 def safe_trace(action):
@@ -32,8 +32,7 @@ def operation(runtime, *, http=None):
             owner.report(ExecutionOutcome(OutcomeState.CANCELLED, OutcomeCause.CANCELLED))
             raise
         except BaseException as error:
-            owner.report(ExecutionOutcome(OutcomeState.FAILURE,
-                OutcomeCause.TIMEOUT if isinstance(error, TimeoutError) else OutcomeCause.EXECUTION))
+            owner.report(failure_outcome(error))
             raise
         finally:
             final = owner.finish()

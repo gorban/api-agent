@@ -145,7 +145,10 @@ def test_failed_provider_capture_has_request_without_fabricated_response(failure
             await shared.aclose()
             adapter.close()
         captures = [row for row in rows if row['event'] == 'capture']
-        assert len(captures) == 1 and captures[0]['direction'] == 'input'
+        assert [row['direction'] for row in captures] == ['input', 'output']
+        assert set(captures[1]['values']['llm_response']) == {'application_failure'}
+        assert captures[1]['values']['llm_response']['application_failure']['code'] == (
+            'cancelled' if isinstance(failure, asyncio.CancelledError) else 'execution')
         assert 'visible-request' in repr(captures)
         assert 'synthetic-auth' not in repr(captures)
     asyncio.run(scenario())

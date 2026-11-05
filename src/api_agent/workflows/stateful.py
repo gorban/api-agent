@@ -710,9 +710,11 @@ class StatefulWorkflow:
             self._event('node', scope_id=budget.id, node=row['ID'], visit_id=visit_id,
                         elapsed=time.monotonic() - started, kind=row['Kind'])
             return result
-        except asyncio.CancelledError:
-            outcome = ('failed' if budget.deadline is not None
-                       and time.monotonic() >= budget.deadline else 'cancelled')
+        except BaseException as error:
+            from api_agent.telemetry.outcomes import report_failure, OutcomeState
+            failed = report_failure(error, observations=self._journal.get(), scope_ids=(budget.id,),
+                deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
+            outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
             raise
         finally:
             self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
@@ -750,9 +752,11 @@ class StatefulWorkflow:
                             try:
                                 await finish
                                 outcome = 'passed'
-                            except asyncio.CancelledError:
-                                outcome = ('failed' if budget.deadline is not None
-                                           and time.monotonic() >= budget.deadline else 'cancelled')
+                            except BaseException as error:
+                                from api_agent.telemetry.outcomes import report_failure, OutcomeState
+                                failed = report_failure(error, observations=self._journal.get(), scope_ids=(budget.id,),
+                                    deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
+                                outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
                                 raise
                             finally:
                                 self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
@@ -936,9 +940,12 @@ class StatefulWorkflow:
                     if current is not None and hasattr(current, 'report_outcome'):
                         current.report_outcome(budget.id, final)
                 outcome = 'passed'
-            except asyncio.CancelledError:
-                outcome = ('failed' if budget.deadline is not None
-                           and time.monotonic() >= budget.deadline else 'cancelled')
+            except BaseException as error:
+                from api_agent.telemetry.outcomes import report_failure, OutcomeState
+                scopes = (budget.id, *(owned['budget'].id for owned in self._turn_state.get()['open_components'].values()))
+                failed = report_failure(error, observations=self._journal.get(), scope_ids=scopes, terminal=parent_id is None,
+                    deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
+                outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
                 raise
             finally:
                 try:

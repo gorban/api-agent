@@ -143,3 +143,5 @@ Runtime disposal and remote fallback qualification also require:
 ## Shared exporter startup
 
 - [ ] Serialize concurrent first-call exporter startup and asynchronous disposal on each tracing runtime. Parallel callers must share one allocation, queued callers must report failed or cancelled startup as unavailable, and cleanup must not release the provider before startup settles. Verify delayed startup, concurrent first calls and close-during-start with deterministic barriers; preserve cancellation and retryable disposal semantics.
+
+Failure response annotation requirements: [Failure content on generation observations](implementation_plan_k1a1f.md).

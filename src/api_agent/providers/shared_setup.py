@@ -15,6 +15,24 @@ from .control import OperationalError, CleanupPendingError, finish_cleanup
 from .progress import independent_timeout_scope
 
 
+def _observed_request_matches(source, owned):
+    """Permit only identity-preserving provider default normalization."""
+    from .llm import LLMRequest, CompletionRequest, GenerationOptions
+    if source is owned:
+        return True
+    if (type(source) is not LLMRequest
+            or source.request_id != owned.request_id or source.selected_llm != owned.selected_llm
+            or type(source.payload) is not CompletionRequest
+            or type(source.payload.generation) is not GenerationOptions):
+        return False
+    if any(getattr(source.payload, name) is not getattr(owned.payload, name)
+           for name in ('messages', 'tools', 'structured', 'response')):
+        return False
+    from .cache_policy import configured_request
+    return source == configured_request(owned, source.payload.generation.cache_policy,
+                                        reasoning_effort=source.payload.generation.reasoning_effort)
+
+
 class RevocableCredentials(_Owner):
     """Own asynchronous reads and reject replies after operation revocation.
 
@@ -264,14 +282,70 @@ class SharedSetupOwner(_Owner):
                     while True:
                         token = begin_transport_attempt(index)
                         attempt_dispatch = None
+                        observed_result = [None]
+                        rejected_result = [None]
+                        ambiguous_result = [False]
+                        def observe_rejection(source_request, value, rejection, feedback, fingerprint, checked_text, *, owned_request=request,
+                                              receipt=rejected_result, ambiguous=ambiguous_result):
+                            if ambiguous[0]:
+                                return
+                            matching = _observed_request_matches(source_request, owned_request)
+                            prior = receipt[0]
+                            if prior is None:
+                                receipt[0] = (value, rejection, matching, feedback, fingerprint, checked_text)
+                            elif (prior[0] is not value or prior[1] is not rejection
+                                  or prior[2] != matching or prior[3] != feedback or prior[4] != fingerprint
+                                  or prior[5] != checked_text):
+                                receipt[0] = None
+                                ambiguous[0] = True
+                        def observe_result(value, *, observed=observed_result, owned_request=request, owned_token=token):
+                            if value is observed[0]:
+                                return
+                            try:
+                                from api_agent.workflows.inference_capture import record_provider_fields
+                                record_provider_fields(cause_id, owned_token, owned_request, value,
+                                    provider_name=self._telemetry_provider_name)
+                            except (Exception, asyncio.CancelledError):
+                                return
+                            observed[0] = value
+                        def resolve_rejection(primary, *, allow_carrier):
+                            receipt = rejected_result[0]
+                            from .contracts import CandidateOutputError
+                            known_rejection = receipt is not None and receipt[1] is primary
+                            contradiction = False
+                            if known_rejection:
+                                try:
+                                    from .rich_inference import _bounded_result_fingerprint
+                                    contradiction = (_bounded_result_fingerprint(receipt[0]) != receipt[4]
+                                        or type(primary) is CandidateOutputError and receipt[0] is not primary.result)
+                                except (Exception, asyncio.CancelledError):
+                                    contradiction = True
+                            eligible = not ambiguous_result[0] and not contradiction
+                            if eligible and known_rejection and receipt[2]:
+                                observe_result(receipt[0])
+                            if (allow_carrier and eligible and type(primary) is CandidateOutputError
+                                    and (not known_rejection or receipt[2])):
+                                try:
+                                    # Re-admit mutable error fields without semantic validation.
+                                    result_to_wire(primary.result)
+                                    observe_result(primary.result)
+                                except Exception:
+                                    pass
+                            confirmed_feedback = receipt[3] if eligible and known_rejection and receipt[2] else None
+                            confirmed_text = receipt[5] if confirmed_feedback is not None else None
+                            return confirmed_feedback, confirmed_text, eligible and (not known_rejection or receipt[2])
                         if not effective_capture:
                             capture_inference('input', request_wire, cause_id, auth=auth, fallback=True)
                         try:
                             from api_agent.workflows.inference_capture import isolated_response_dispatch, promote_response_dispatch
+                            from .rich_inference import bind_bounded_result_observer
                             with isolated_response_dispatch() as attempt_dispatch:
-                                result = await self._complete(request, auth=auth)
+                                with bind_bounded_result_observer(observe_rejection):
+                                    result = await self._complete(request, auth=auth)
                             promote_response_dispatch(attempt_dispatch)
                         except BaseException as error:
+                            from api_agent.workflows.inference_capture import capture_inference_failure
+                            from api_agent.telemetry.outcomes import retain_failure
                             conflict = None
                             if attempt_dispatch is not None:
                                 from api_agent.workflows.inference_capture import retain_response_failure
@@ -283,6 +357,12 @@ class SharedSetupOwner(_Owner):
                                     from .inference import error_usage
                                     if error_usage(error) is None and error_usage(conflict) is not None:
                                         error.usage = conflict.usage
+                            primary = conflict or error
+                            retain_failure(primary, provider=True)
+                            confirmed_feedback, confirmed_text, consistent = resolve_rejection(primary, allow_carrier=True)
+                            capture_inference_failure(primary, cause_id, auth=auth, transport_attempt_id=token,
+                                                      candidate_feedback=confirmed_feedback, candidate_text=confirmed_text,
+                                                      candidate_consistent=consistent)
                             from .control import CleanupPendingError
                             cleanup_pending = isinstance(getattr(error, 'cleanup_error', None), CleanupPendingError)
                             learned = rejected_limit(error, request) if conflict is None and not cleanup_pending else None
@@ -320,11 +400,23 @@ class SharedSetupOwner(_Owner):
                             finish_transport_attempt(token, result=result, response=attempt_dispatch['response'])
                             break
                 self._check()
+                # Physical result serialization already admitted these bounded facts.
+                observe_result(result)
                 from .rich_inference import async_validate_result
-                await async_validate_result(request, result, selection=selection)
-                from api_agent.workflows.inference_capture import record_provider_fields
-                record_provider_fields(cause_id, token, request, result,
-                    provider_name=self._telemetry_provider_name)
+                rejected_result[0] = None
+                ambiguous_result[0] = False
+                try:
+                    with bind_bounded_result_observer(observe_rejection):
+                        await async_validate_result(request, result, selection=selection)
+                except BaseException as error:
+                    from api_agent.workflows.inference_capture import capture_inference_failure
+                    from api_agent.telemetry.outcomes import retain_failure
+                    retain_failure(error, provider=True)
+                    candidate_feedback, candidate_text, consistent = resolve_rejection(error, allow_carrier=False)
+                    capture_inference_failure(error, cause_id, auth=auth, transport_attempt_id=token,
+                                              candidate_feedback=candidate_feedback, candidate_text=candidate_text,
+                                              candidate_consistent=consistent)
+                    raise
                 return result
         from api_agent.workflows.inference_capture import withholding_inference_content
         with withholding_inference_content(self._withhold_inference_content):

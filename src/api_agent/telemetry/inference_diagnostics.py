@@ -46,6 +46,8 @@ _ENUMS = {
                         '$.output.message.content[].toolUse.type', '$.serviceTier',
                         '$.serviceTier.type'},
 }
+from .outcomes import FAILURE_CODES, OutcomeCause
+_ENUMS.update(failure_cause={cause.value for cause in OutcomeCause}, failure_code=FAILURE_CODES)
 _STOPS = {'stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'other',
           'end_turn', 'max_tokens', 'stop_sequence', 'tool_use', 'guardrail_intervened', 'content_filtered'}
 _IDENTIFIERS = {'request_id', 'response_id', 'validation_location'}
@@ -53,7 +55,7 @@ _BOOLEANS = {'error_present', 'encrypted_reasoning_present'}
 _VERSION_KEYS = {'openai', 'httpx'}
 _CONTENT_KEYS = {'values', 'prompt', 'messages', 'response', 'provider_payload', 'provider_response',
                  'reasoning', 'reasoning_content', 'thinking_content', 'chain_of_thought',
-                 'text', 'input', 'output', 'request', 'response_text', 'message'}
+                 'text', 'input', 'output', 'request', 'response_text', 'message', 'application_failure'}
 
 
 def has_optional_content(payload):

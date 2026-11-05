@@ -73,3 +73,5 @@ retains failure rather than being swallowed by optional tracing wrappers.
 - [ ] Deliver complete [resource-pack backend admission](implementation_plan_k1a2.md).
   A versioned, immutable native attribute mapper is a shared seam, not a claim
   that arbitrary backend discovery, dashboards or infrastructure are implemented.
+
+Failure response annotation requirements: [Failure content on generation observations](implementation_plan_k1a1f.md).

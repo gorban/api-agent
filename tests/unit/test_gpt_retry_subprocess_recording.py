@@ -126,7 +126,10 @@ def test_graph(llm_provider, integration_config):
                 assert body == {'provider_payload': requests[ids.index(attempt)], 'adapter_instructions': []}
             if entry['occurrence']['phase'] == 'response':
                 expected = ({'error': {'message': 'retry [REDACTED]'},
-                             'usage': {'input_tokens': 2, 'output_tokens': 1}} if attempt == ids[0] else
+                             'usage': {'input_tokens': 2, 'output_tokens': 1},
+                             'application_failure': {'version': 1, 'cause': 'provider',
+                                 'code': 'provider', 'provider': {
+                                     'message': 'retry [redacted]', 'status': 503}}} if attempt == ids[0] else
                     {'status': 'completed', 'provider_extra': 'observed success',
                      'output': [{'type': 'message', 'role': 'assistant',
                                  'content': [{'type': 'output_text', 'text': 'Ok'}]}],

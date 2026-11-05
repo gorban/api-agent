@@ -99,7 +99,7 @@ def _structural(boundary, payload, model_identities=frozenset()):
             clean[key] = value
         elif key == 'api_agent.response.status' and value in ('completed','incomplete','failed','cancelled','in_progress','queued'):
             clean[key] = value
-        elif key == 'api_agent.response.service_tier' and value in ('auto','default','flex','priority','scale'):
+        elif key == 'api_agent.response.service_tier' and value in ('auto','default','flex','priority','scale','standard','reserved'):
             clean[key] = value
         elif key == 'gen_ai.request.reasoning.level' and value in ('none','off','minimal','low','medium','high','xhigh','max','auto'):
             clean[key] = value
@@ -115,6 +115,14 @@ def _structural(boundary, payload, model_identities=frozenset()):
         elif key == 'gen_ai.response.finish_reasons':
             if type(value) is list and len(value) <= 8 and all(type(item) is str and item in
                     ('stop', 'length', 'tool_calls', 'content_filter', 'end_turn', 'max_tokens', 'stop_sequence', 'tool_use', 'guardrail_intervened', 'content_filtered', 'other') for item in value):
+                clean[key] = value
+        elif key == 'api_agent.failure.cause':
+            from .outcomes import OutcomeCause
+            if type(value) is str and value in frozenset(item.value for item in OutcomeCause):
+                clean[key] = value
+        elif key == 'api_agent.failure.code':
+            from .outcomes import FAILURE_CODES
+            if type(value) is str and value in FAILURE_CODES:
                 clean[key] = value
         elif key == 'error.type' and value in ('unknown', 'deadline', 'unavailable', 'network', 'rate_limit', 'authentication', 'authorization', 'invalid_request', 'server'):
             clean[key] = value
