@@ -12,7 +12,7 @@
 - [x] Editing ALL_UNIT reapplies defaults unless explicit startup selectors were supplied.
 - [x] An owner with no units does not silently run dependencies; execution explains `--all-unit`. Data-only collection remains full discovery and succeeds.
 - [x] Integration/E2E behavior remains unchanged.
-- [ ] Human acceptance of picker defaults and owner/all execution.
+- [x] Human acceptance of picker defaults and owner/all execution: owner-local selection and exact coverage, with `--all-unit` restoring composed selection.
 
 ## Verification
 

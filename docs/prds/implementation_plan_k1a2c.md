@@ -31,3 +31,5 @@ Focused selection/viewer tests cover both cross-profile endpoint mismatches, exp
 
 - [x] Complete the renewed full coverage and independent review gates for the diagnostic follow-up.
 - [ ] Human acceptance of the actionable unavailable-dashboard diagnostic.
+
+[Required-field diagnostic ordering repair](implementation_plan_k1a2c1.md) tracks a bundled profile mismatch that still produced the generic missing-configuration message.

@@ -235,8 +235,14 @@ def test_unselected_profile_requirements_do_not_block_selected_dashboard(externa
     assert viewer['MODE'] == 'local'
     assert viewer['DASHBOARD_URL'] == 'http://localhost:17686'
     assert 'OTHER_REQUIRED' not in viewer and 'OTHER_PORT' not in viewer
-    with pytest.raises(ConfigError, match='valid selected dashboard'):
+    with pytest.raises(ConfigError, match='no dashboard capability') as error:
         resolve_viewer_config(schema, argv=(), environ={'MODE': 'other'}, dotenv={}, anchors=anchors)
+    assert "MODE='other'" in str(error.value)
+    assert 'Actual TRACE_EXPORT_ENDPOINT=http://localhost:4318/v1/traces' in str(error.value)
+    assert 'OTHER_DASHBOARD_URL' in str(error.value)
+    with pytest.raises(ConfigError, match='valid selected dashboard'):
+        resolve_viewer_config(schema, argv=(), environ={
+            'MODE': 'other', 'OTHER_DASHBOARD_URL': 'https://dashboard.example'}, dotenv={}, anchors=anchors)
     assert not (provider / '__pycache__').exists()
 
 
@@ -743,3 +749,118 @@ def test_diagnostic_redacts_sensitive_schema_defaults(external_profile, conditio
     assert secret not in message
     assert ('[redacted]' in message if destination == 'provider-path' else
             '<unset or unsafe URL; redacted>' in message)
+
+
+@pytest.mark.parametrize('source', ['environment', 'dotenv', 'cli'])
+def test_stale_profile_endpoint_diagnostic_precedes_missing_dashboard_credentials(source):
+    values = {'TRACE_MODE': 'LangFuse', 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces'}
+    argv = tuple('--' + name.lower().replace('_', '-') + '=' + value for name, value in values.items()) if source == 'cli' else ()
+    environment = values if source == 'environment' else {}
+    dotenv = values if source == 'dotenv' else {}
+
+    with pytest.raises(ConfigError) as error:
+        resolve_viewer_config(load_shared_schema(), argv=argv, environ=environment, dotenv=dotenv, anchors={})
+
+    message = str(error.value)
+    assert 'no dashboard capability' in message
+    assert "TRACE_MODE='LangFuse'" in message
+    assert 'Actual TRACE_EXPORT_ENDPOINT=http://localhost:4318/v1/traces' in message
+    assert 'http://localhost:3000/api/public/otel/v1/traces' in message
+    assert 'remove the saved override' in message and 'TRACE_VIEWER_URL' in message
+
+
+def test_explicit_empty_viewer_is_explained_without_dashboard_credentials():
+    with pytest.raises(ConfigError, match='explicitly empty'):
+        resolve_viewer_config(load_shared_schema(), argv=(), environ={
+            'TRACE_MODE': 'LangFuse', 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces',
+            'TRACE_VIEWER_URL': ''}, dotenv={}, anchors={})
+
+
+def test_explicit_remote_dashboard_still_requires_selected_login_credentials():
+    with pytest.raises(ConfigError, match='valid selected dashboard configuration'):
+        resolve_viewer_config(load_shared_schema(), argv=(), environ={
+            'TRACE_MODE': 'LangFuse', 'TRACE_EXPORT_ENDPOINT': 'https://collector.example/traces',
+            'TRACE_VIEWER_URL': 'https://dashboard.example'}, dotenv={}, anchors={})
+
+
+@pytest.mark.parametrize('named_route', [False, True])
+def test_unavailable_external_dashboard_precedes_missing_declared_dependency(external_profile, named_route):
+    schema, anchors, provider = external_profile
+    descriptor = provider / 'tracing-provider.toml'
+    fields = '["TRACE_EXPORT_ENDPOINT","VIEWER_TOKEN"]' if named_route else '["VIEWER_TOKEN"]'
+    descriptor.write_text(descriptor.read_text().replace('[profiles.dashboard]',
+        '[profiles.dashboard]\nconfig_fields=' + fields, 1))
+    dependency = schema_from_dict({'version': 1, 'fields': {
+        'VIEWER_TOKEN': {'type': 'str', 'sensitive': True, 'required_when': {'FEATURE': True}},
+    }}, base_schema=schema)
+    schema = ConfigSchema({**schema.fields, **dependency.fields})
+
+    with pytest.raises(ConfigError, match='no dashboard capability') as error:
+        resolve_viewer_config(schema, argv=(), environ={
+            'TRACE_EXPORT_ENDPOINT': 'https://collector.example/traces'}, dotenv={}, anchors=anchors)
+
+    assert "MODE='local'" in str(error.value)
+    assert 'DASHBOARD_URL' in str(error.value)
+    assert not (provider / '__pycache__').exists()
+
+
+def test_unavailable_dashboard_does_not_defer_typed_dependency_errors(external_profile):
+    schema, anchors, provider = external_profile
+    descriptor = provider / 'tracing-provider.toml'
+    descriptor.write_text(descriptor.read_text().replace('[profiles.dashboard]',
+        '[profiles.dashboard]\nconfig_fields=["VIEWER_COUNT"]', 1))
+    dependency = schema_from_dict({'version': 1, 'fields': {
+        'VIEWER_COUNT': {'type': 'int', 'required': True},
+    }}, base_schema=schema)
+    schema = ConfigSchema({**schema.fields, **dependency.fields})
+
+    with pytest.raises(ConfigError, match='VIEWER_COUNT'):
+        resolve_viewer_config(schema, argv=(), environ={
+            'TRACE_EXPORT_ENDPOINT': 'https://collector.example/traces', 'VIEWER_COUNT': 'invalid'},
+            dotenv={}, anchors=anchors)
+
+    assert not (provider / '__pycache__').exists()
+
+
+@pytest.mark.parametrize('custom', [False, True])
+def test_passwordless_dashboard_diagnostic_uses_only_string_environment_names(external_profile, custom):
+    import os
+    if custom:
+        schema, anchors, _ = external_profile
+        values = {'MODE': 'local', 'TRACE_EXPORT_ENDPOINT': 'https://collector.example/traces'}
+        selector = "MODE='local'"
+    else:
+        schema, anchors = load_shared_schema(), {}
+        values = {'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': 'https://collector.example/traces'}
+        selector = "TRACE_MODE='OTEL'"
+    template = os.environ
+    backing = {template.encodekey(name): template.encodevalue(value) for name, value in values.items()}
+    environment = type(template)(backing, template.encodekey, template.decodekey,
+                                 template.encodevalue, template.decodevalue)
+
+    with pytest.raises(ConfigError, match='no dashboard capability') as error:
+        resolve_viewer_config(schema, argv=(), environ=environment, dotenv={}, anchors=anchors)
+
+    assert selector in str(error.value)
+    assert 'Actual TRACE_EXPORT_ENDPOINT=https://collector.example/traces' in str(error.value)
+
+
+@pytest.mark.parametrize('controller,match', [({}, 'valid selected dashboard'),
+                                            ({'ROUTE_ENABLED': 'invalid'}, 'ROUTE_ENABLED')])
+def test_named_route_keeps_required_controller_strict(external_profile, controller, match):
+    schema, anchors, provider = external_profile
+    descriptor = provider / 'tracing-provider.toml'
+    descriptor.write_text(descriptor.read_text().replace('[profiles.dashboard]',
+        '[profiles.dashboard]\nconfig_fields=["TRACE_EXPORT_ENDPOINT"]', 1))
+    dependency = schema_from_dict({'version': 1, 'fields': {
+        'ROUTE_ENABLED': {'type': 'bool', 'required': True},
+    }}, base_schema=schema)
+    schema = ConfigSchema({**schema.fields, **dependency.fields,
+        'TRACE_EXPORT_ENDPOINT': replace(schema.fields['TRACE_EXPORT_ENDPOINT'], default=UNSET,
+                                        required_when={'ROUTE_ENABLED': True})})
+
+    with pytest.raises(ConfigError, match=match):
+        resolve_viewer_config(schema, argv=(), environ={**controller,
+            'TRACE_EXPORT_ENDPOINT': 'https://collector.example/traces'}, dotenv={}, anchors=anchors)
+
+    assert not (provider / '__pycache__').exists()

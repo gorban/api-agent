@@ -34,3 +34,5 @@ Shift+Up/Down extends the range, Ctrl+A selects all rows, Escape clears it, and
 `a` opens every selected completed result together. Mode-specific keyboard and
 immutable subset-route checks cover both modes; missing evidence rejects the
 entire selection instead of silently opening fewer tests.
+
+Human-approved completed E2E range/all selection and combined View in Allure, including retained retries and attachments. Approval does not assert new live observations.
