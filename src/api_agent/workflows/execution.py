@@ -408,8 +408,13 @@ class Workflow:
                     yield budget
                     self._check_deadline(budget)
                     outcome = 'passed'
-                except asyncio.CancelledError:
-                    outcome = 'failed' if budget.deadline is not None and time.monotonic() >= budget.deadline else 'cancelled'
+                except BaseException as error:
+                    from api_agent.telemetry.outcomes import report_failure, OutcomeState
+                    failed = report_failure(error,
+                        observations=_CURRENT_JOURNAL.get() or self._run_services().get('journal'),
+                        scope_ids=(budget.id,), terminal=owner == 'GRAPH' and metadata.get('kind') == 'graph' and parent_id is None,
+                        deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
+                    outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
                     raise
                 finally:
                     try:
@@ -613,7 +618,8 @@ class Workflow:
                 if row.get('Output mode', '-') == '-' or json_value != result:
                     raise
                 facts = _schema_facts(row['Output schema'], result, invalid.errors)
-                raise CandidateCorrection({'reason': 'output_schema', 'errors': facts}, rejected=result) from None
+                from api_agent.telemetry.outcomes import inherit_failure
+                raise inherit_failure(CandidateCorrection({'reason': 'output_schema', 'errors': facts}, rejected=result), invalid) from None
             await capture_node(journal, self._capture_services(), visit_id=budget.id,
                 direction='output', values=result, schema=row['Output schema'],
                 plain_fields=plain_fields.get('output', ...))
@@ -648,10 +654,12 @@ class Workflow:
                     if context is None or context._dispatched():
                         for owner in _REPAIRS.get():
                             owner.effect = True
-                        raise WorkflowError('Candidate correction cannot replay dispatched effects') from None
+                        from api_agent.telemetry.outcomes import inherit_failure
+                        raise inherit_failure(WorkflowError('Candidate correction cannot replay dispatched effects'), error) from None
                     feedback = await self._safe_feedback(error.feedback)
                     if frame.attempt >= frame.maximum:
-                        raise WorkflowError(f'Component {frame.component} exhausted {frame.maximum} passes') from None
+                        from api_agent.telemetry.outcomes import inherit_failure
+                        raise inherit_failure(WorkflowError(f'Component {frame.component} exhausted {frame.maximum} passes'), error) from None
                     history = _CURRENT_SERVICES.get()[3]
                     history.correct(step.id, feedback)
                     self._check_deadline(frame.budget)

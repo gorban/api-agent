@@ -29,6 +29,7 @@ def diagnostic_fields(diagnostics, boundary):
     return {target:value[source] for source,target in (
         ('response_id','gen_ai.response.id'),('finish_reasons','gen_ai.response.finish_reasons'),
         ('response_status','api_agent.response.status'),
+        ('failure_cause','api_agent.failure.cause'),('failure_code','api_agent.failure.code'),
         ('max_output_tokens','gen_ai.request.max_tokens'),('reasoning_effort','gen_ai.request.reasoning.level'))
         if source in value}
 

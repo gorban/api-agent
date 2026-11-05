@@ -351,8 +351,14 @@ class LocalLLM(_Owner):
         return await self._run(describe, context)
 
     async def complete(self, request, *, context=None):
+        from api_agent.telemetry.outcomes import failure_call
+        with failure_call():
+            return await self._complete_owned(request, context=context)
+
+    async def _complete_owned(self, request, *, context=None):
+        accounted_failure_id = None
         async def complete():
-            nonlocal request
+            nonlocal request, accounted_failure_id
             request = configured_request(request, self.config.get('LLM_CACHE_POLICY'),
                 reasoning_effort=self.config.get('LLM_REASONING_EFFORT'))
             await async_request_to_wire(request)
@@ -416,9 +422,19 @@ class LocalLLM(_Owner):
                         receipts[0]['transport_attempts'] = row['transport_attempts']
                         if 'quote' in row:
                             receipts[0]['quote'] = row['quote']
+                    if error is not None and len(receipts) <= 1:
+                        from api_agent.telemetry.outcomes import retain_failure
+                        accounted_failure_id = receipts[0]['call_id'] if receipts else row['call_id']
+                        retain_failure(error, cause_id=accounted_failure_id, provider=True)
                     self._usage.extend(receipts or [row])
                     del self._usage[:-128]
-        return await self._run(complete, context)
+        try:
+            return await self._run(complete, context)
+        except BaseException as error:
+            if accounted_failure_id is not None:
+                from api_agent.telemetry.outcomes import retain_failure
+                retain_failure(error, cause_id=accounted_failure_id, provider=True)
+            raise
 
     async def call(self, operation, *, context=None):
         return await self._run(lambda: operation(auth=None), context)

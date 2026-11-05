@@ -1,15 +1,64 @@
 """Version-two bounded structured/tool inference; version-one text stays valid."""
 import json
+import asyncio
 import re
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from referencing import Registry
 from referencing.jsonschema import DRAFT202012
 from referencing.exceptions import NoSuchResource, Unresolvable
-from .contracts import ContractError, ProviderAccessError
+from .contracts import ContractError, ProviderAccessError, CandidateOutputError
 from .llm import (CompletionRequest, GenerationOptions, LLMRequest, LLMResult,
                   Message, TextContent, Tool, ToolCall, ToolResult, StructuredOutput, Usage, CacheBoundary, cache_boundary_indexes, ResponsePolicy, ResponseEvidence)
+
+
+_BOUNDED_RESULT_OBSERVER = ContextVar('bounded_result_observer', default=None)
+
+
+@contextmanager
+def bind_bounded_result_observer(callback):
+    """Own optional physical-result metadata until this dispatch closes."""
+    if not callable(callback):
+        raise TypeError('Expected a bounded result observer')
+    state = {'active': True, 'callback': callback, 'lock': threading.RLock()}
+    token = _BOUNDED_RESULT_OBSERVER.set(state)
+    try:
+        yield
+    finally:
+        with state['lock']:
+            state['active'] = False
+            state['callback'] = None
+        _BOUNDED_RESULT_OBSERVER.reset(token)
+
+
+def _bounded_result_fingerprint(result, checked_text=None):
+    """Private correlation only; opaque wire data is never exported."""
+    from .inference import result_to_wire
+    wire = result_to_wire(result)
+    visible = wire['text'] if 'text' in wire else ''.join(wire['message']['content'])
+    if checked_text is not None and visible != checked_text:
+        return None
+    return sha256(json.dumps(wire, sort_keys=True, separators=(',', ':'),
+                             ensure_ascii=True, allow_nan=False).encode()).digest()
+
+
+def _observe_bounded_result(request, result, error, candidate_feedback=None, checked_text=None):
+    state = _BOUNDED_RESULT_OBSERVER.get()
+    if state is None:
+        return
+    with state['lock']:
+        if not state['active']:
+            return
+        try:
+            # Observation refusal must not change semantic error precedence.
+            fingerprint = _bounded_result_fingerprint(result, checked_text)
+            state['callback'](request, result, error, candidate_feedback, fingerprint, checked_text)
+        except (Exception, asyncio.CancelledError):
+            pass
 
 
 def _pairs(items):
@@ -617,31 +666,64 @@ def _bounded_result(result):
 
 def validate_result(request, result, *, selection=None):
     """Validate actual output against the originating unmodified schemas."""
-    for definition, strict, text, message, code in _output_checks(request, result, selection):
-        parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
-        verdict = None if parsed is None else False if malformed else schema_verdict(parsed, value)
-        if verdict is not True:
-            raise _output_error(result, message, code, definition, text, verdict, malformed)
-    return _bounded_result(result)
+    candidate_feedback = None
+    checked_text = None
+    try:
+        for definition, strict, text, message, code in _output_checks(request, result, selection):
+            parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
+            verdict = None if parsed is None else False if malformed else schema_verdict(parsed, value)
+            if verdict is not True:
+                error = _output_error(result, message, code, definition, text, verdict, malformed)
+                if type(error) is CandidateOutputError:
+                    checked_text = text
+                    if ''.join(part.text for part in error.result.payload.content) == text:
+                        candidate_feedback = json.loads(json.dumps(error.feedback))
+                raise error
+        return _bounded_result(result)
+    except BaseException as error:
+        _observe_bounded_result(request, result, error, candidate_feedback, checked_text)
+        raise
 
 
 def validate_response_result(request, result):
     """Admit original policy output at IPC without inventing route capabilities."""
-    for definition, strict, text, message in _response_output_checks(request, result):
-        parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
-        verdict = None if parsed is None else False if malformed else schema_verdict(parsed, value)
-        if verdict is not True:
-            raise _output_error(result, message, None, definition, text, verdict, malformed)
-    return result
+    candidate_feedback = None
+    checked_text = None
+    try:
+        for definition, strict, text, message in _response_output_checks(request, result):
+            parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
+            verdict = None if parsed is None else False if malformed else schema_verdict(parsed, value)
+            if verdict is not True:
+                error = _output_error(result, message, None, definition, text, verdict, malformed)
+                if type(error) is CandidateOutputError:
+                    checked_text = text
+                    if ''.join(part.text for part in error.result.payload.content) == text:
+                        candidate_feedback = json.loads(json.dumps(error.feedback))
+                raise error
+        return result
+    except BaseException as error:
+        _observe_bounded_result(request, result, error, candidate_feedback, checked_text)
+        raise
 
 
 async def async_validate_result(request, result, *, selection=None):
-    for definition, strict, text, message, code in _output_checks(request, result, selection):
-        parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
-        verdict = None if parsed is None else False if malformed else await async_schema_verdict(parsed, value)
-        if verdict is not True:
-            raise _output_error(result, message, code, definition, text, verdict, malformed)
-    return _bounded_result(result)
+    candidate_feedback = None
+    checked_text = None
+    try:
+        for definition, strict, text, message, code in _output_checks(request, result, selection):
+            parsed, value, malformed = _output_inputs(definition, strict, text, allow_markdown_fences=_prompted_json(result))
+            verdict = None if parsed is None else False if malformed else await async_schema_verdict(parsed, value)
+            if verdict is not True:
+                error = _output_error(result, message, code, definition, text, verdict, malformed)
+                if type(error) is CandidateOutputError:
+                    checked_text = text
+                    if ''.join(part.text for part in error.result.payload.content) == text:
+                        candidate_feedback = json.loads(json.dumps(error.feedback))
+                raise error
+        return _bounded_result(result)
+    except BaseException as error:
+        _observe_bounded_result(request, result, error, candidate_feedback, checked_text)
+        raise
 
 
 def validate_catalog_selection(values, request, *, clamp_output_limit=False):

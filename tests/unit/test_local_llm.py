@@ -659,7 +659,11 @@ def test_response_evidence_survives_local_terminal_accounting(selected, failure)
         if failure:raise ProviderAccessError('unknown','Safe failure',usage=Usage(2,3),response=evidence)
         return LLMResult(Message('assistant',(TextContent('answer'),)),Usage(2,3),response=evidence)
     implementation.acomplete=complete
-    journal=SimpleNamespace(record_call=Mock())
+    from api_agent.workflows.journal import WorkflowJournal
+    from test_workflow_observations import definition
+    journal=WorkflowJournal(definition())
+    journal.observe(dict(event='scope_start',scope_id='visit',kind='node',owner='Make'))
+    journal.record_call=Mock(wraps=journal.record_call)
     async def scenario():
         try:
             with bind_workflow_visit(journal,'visit'):

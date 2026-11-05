@@ -76,7 +76,10 @@ def test_retry_records_failed_and_successful_dispatch_separately(monkeypatch):
     first, second = ledger.snapshot()['attempts']
     assert [first['outcome'], second['outcome']] == ['failed', 'completed']
     assert [(row['phase'], row['transport_attempt_id']) for row in rows] == [
-        ('request', first['id']), ('request', second['id']), ('response', second['id'])]
+        ('request', first['id']), ('response', first['id']), ('request', second['id']), ('response', second['id'])]
+    assert set(rows[1]['content']) == {'application_failure'}
+    assert rows[1]['diagnostics']['failure_code'] == 'provider'
+    assert 'application_failure' not in rows[3]['content']
 
 
 def test_retry_occurrences_share_the_four_mib_test_budget(tmp_path):

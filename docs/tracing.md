@@ -137,20 +137,19 @@ counts and aggregate text are bounded; retained journal strings have a
 512-character preview and live/trace capture permits up to 65,536 characters
 within its aggregate admission budget. Credentials, continuation and hidden
 reasoning carriers are removed before schema filtering or display clipping.
-The separate
-`chat` span currently carries model and usage metadata. Its GenAI panel does not
-yet display those node events as a conversation; that mapping remains part of
-the [tracing schema and AI-view work](prds/implementation_plan_k1a.md). This
-location describes supported manual capture, not an exact upstream wire payload.
+The separate `chat` span carries admitted model/usage metadata, native JSON
+panels and normalized GenAI messages where the source form is supported. Native
+panels and normalized messages are separate projections; neither invents missing
+provider output. Broader conformance remains under the
+[tracing schema and AI-view work](prds/implementation_plan_k1a.md).
 Restart the application to use changed capture code. Previously withheld traces
 and Allure artifacts cannot be populated retroactively.
 
-The separate integration-test backend does not yet propagate the active node
-visit or independent trace-content authority across its process boundary. Shared
-node I/O capture still applies in the calling executor, but actual remote LLM
-message pairs retain the [worker/provider propagation gate](prds/implementation_plan_k1b.md).
-Existing separate inference evidence follows LOG_CONTENT; it cannot authorize
-trace-only payloads or replace the backend's credential boundary.
+The integration-test backend uses its authenticated trace ownership and evidence
+channels. Remote parenting requires an admitted explicit parent; unrelated calls
+cannot adopt ambient workflow spans. Broader distributed propagation retains the
+[worker/provider propagation gate](prds/implementation_plan_k1b.md). Reporting
+evidence cannot authorize trace-only payloads or replace the credential boundary.
 
 Manual trace model labels require exact identities established by their provider
 catalog or an explicit owner-controlled binding; identifier syntax alone is insufficient. Unclassified selection text is omitted
@@ -162,6 +161,36 @@ the observation factory or the engine's `content_policy` service (`ContentPolicy
 Raw configuration Booleans and credential scrubbers alone do not authorize
 recorded payloads; missing authority withholds them. Explicit denial cannot be
 raised by later adapter configuration.
+
+## Rejected output and final failures
+
+A failed generation's native output can include `application_failure` alongside
+the original response. With trace content enabled, it contains bounded known
+provider details or visible rejected candidate text and safe validation facts.
+For example, a length rejection can identify `maxLength`, its limit and the
+actual character count. Encrypted continuation is excluded. Unknown exceptions
+contribute fixed classifications rather than arbitrary exception text or stacks.
+Validation facts come from the originating schema's validator, including when
+validation runs inside an adapter. Provider-supplied claims cannot establish them.
+Counts describe the original checked candidate, before credential redaction.
+Known model, tier and revision metadata can survive local output rejection;
+unavailable or ambiguous source metadata is omitted.
+If no response was received, failure-only evidence does not invent an assistant
+message. Existing native keys and unavailable/withheld dispositions are preserved;
+an annotation that cannot fit does not erase the original response.
+
+Fixed failure cause/code metadata remains useful without content permission.
+When a trusted boundary has one canonical failed-call identity,
+`api_agent.outcome.cause_id` links affected node and terminal graph/request spans
+to that call. Missing or ambiguous identity stays unavailable. Application
+validation can fail after a physical transport completed successfully; those are
+different outcomes. A repaired candidate leaves a failed call/node visible while
+the completed graph and request remain successful. A handled nested graph failure
+also does not make a successful outer request fail.
+
+See [candidate repair](workflow_repair.md) for retry limits and a controlled
+length-rejection test. Restart to use changed tracing code: missing details in
+older traces cannot be reconstructed retroactively.
 
 ## UI-source activity
 

@@ -1,0 +1,22 @@
+# Failure content on generation observations
+
+Generation failure evidence must distinguish an unsuccessful application validation from a completed physical transport. It must retain the original provider response and attach bounded application failure details to that same physical response, rather than emit a competing response.
+
+## Requirements
+
+- Annotate the selected response once using its exact transport attempt identifier. Post-response validation supplies the completed identifier explicitly. Preserve original provider content, source, disposition, diagnostics and rejection admission facts.
+- If no response exists, admit a failure-only fallback. A native `application_failure` field is never overwritten.
+- Unknown exceptions expose only fixed cause/code metadata. Known provider errors may expose explicitly selected bounded fields through content authority. Rejected candidates expose bounded visible text; constraint/count facts are included only when derived by shared post-result validation or the common source validator’s matching request-and-escaping-error receipt. Provider-supplied feedback is never trusted or revalidated solely for diagnostics. Opaque continuation never enters failure content.
+- Apply live credential scrubbing and independent report/trace content permissions. Disabled content cannot be revived. Preserve the original response when annotation exceeds its budget.
+- Every structurally admitted physical result retains its known model, service tier and serving revision under the existing structural identity and credential checks before semantic validation. This includes undeclared-tool, schema and other local response rejection. Adapter-raised exact candidate errors may retain the metadata on their explicitly bounded result after synchronous structural readmission. Errors without an admitted result supply no additional identity fields. Invalid/unadmitted metadata does not gain authority.
+- Common sync/async response validators expose an internal optional failure observer after bounded structural admission. Its per-physical-dispatch receipt binds request, result and the exact escaping exception; caught, replaced, foreign or ambiguous failures cannot publish stale metadata. Default normalization may fill only unset cache/reasoning settings while preserving the same originating request ID (including its empty default), model and original immutable payload objects. Full existing default-normalizer equality excludes unrelated equivalent clones and changes to authored settings. Revocation excludes inherited late tasks/offloads.
+- Definitive schema facts are snapshotted where the common validator creates the rejection, before provider code can mutate feedback. Generic exception observation never grants authority to provider claims. A private bounded wire fingerprint must still match at rejection capture; in-place visible/metadata mutation withholds receipt metadata, confirmed facts and candidate fallback. Facts also require the exact visible text that was checked, including across asynchronous validation. That immutable checked text travels with confirmed facts through capture and owns the displayed candidate body, including the empty string; formatting never rereads the mutable result carrier when confirmed facts are present. The same eligibility policy applies to physical adapter and shared post-result rejection; fingerprints and opaque wire data are never exported.
+- Diagnostic enrichment starts no second semantic/schema worker, inference or await and changes no deadline or retry budget. Bounded structural admission and projection still incur CPU work; optional observation faults cannot replace the original rejection.
+- Fixed failure classifications may survive content opt-out as structural metadata. They do not change physical transport outcome or request recovery semantics.
+
+## Qualification
+
+- [x] Focused capture controls cover independent policies, exact completed-token attribution, one-shot annotation, collision/budget preservation, absent authority and opaque-data exclusion.
+- [x] Serialized OTLP controls cover both supported destinations and all report/trace content combinations, including recovered and terminal rejected generations.
+- [x] Independent source review and complete unit/coverage gates qualify the final implementation.
+- [ ] Human acceptance confirms useful bounded failure details in the selected trace viewer.

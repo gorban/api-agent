@@ -88,6 +88,9 @@ def publish(request, result=None, *, call_id=None, quote=None, failed=False, att
                                 **({'response': row['response']} if 'response' in row else {}))
             from api_agent.workflows.attribution import admit_terminal_call_receipt
             admit_terminal_call_receipt({**row, 'visit_id': visit_id, 'attempt_id': attempt_id}, journal)
+        if failed and isinstance(error, BaseException):
+            from api_agent.telemetry.outcomes import retain_failure
+            retain_failure(error, cause_id=call_id, provider=True)
     return call_id
 
 

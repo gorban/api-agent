@@ -241,11 +241,13 @@ class InferenceHistory:
                 try:
                     await async_validate_result(prepared, error.result)
                 except CandidateOutputError as confirmed:
+                    from api_agent.telemetry.outcomes import inherit_failure
+                    inherit_failure(confirmed, error)
                     self._save(entry, prepared, incoming, error.result.payload, error.result.response)
                     if _OWN_CORRECTIONS.get():
                         raise confirmed from None
                     from .execution import CandidateCorrection
-                    raise CandidateCorrection(confirmed.feedback) from None
+                    raise inherit_failure(CandidateCorrection(confirmed.feedback), confirmed) from None
                 raise ContractError('Rejected candidate does not match its originating response contract') from None
             except BaseException as error:
                 category = ('cancelled' if isinstance(error, asyncio.CancelledError) else

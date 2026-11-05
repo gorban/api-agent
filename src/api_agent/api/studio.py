@@ -115,12 +115,8 @@ class StudioBackend:
     def _error(self, error, *, turn=None):
         # The local diagnostic owner admits and scrubs exceptions separately
         # from the deliberately small public HTTP/stream error response.
-        from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState, OutcomeCause
-        report_outcome(ExecutionOutcome(OutcomeState.FAILURE,
-            OutcomeCause.TIMEOUT if isinstance(error, TimeoutError) or
-                isinstance(error, OperationalError) and error.kind == 'deadline' else
-            OutcomeCause.VALIDATION if isinstance(error, (ContractError, ValueError, UnicodeError)) else
-            OutcomeCause.PROVIDER), runtime=self._trace_runtime())
+        from api_agent.telemetry.outcomes import report_outcome, failure_outcome
+        report_outcome(failure_outcome(error), runtime=self._trace_runtime())
         self.lifecycle.report_error(error, turn=turn)
         if isinstance(error, ProviderAccessError):
             try:

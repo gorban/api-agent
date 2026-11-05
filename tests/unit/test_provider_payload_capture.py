@@ -73,7 +73,12 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
             result = client.complete(request)
             assert SECRET in result.payload.content[0].text
         rows = client.evidence
-        assert [row['phase'] for row in rows] == (['request'] if fail else ['request', 'response'])
+        assert [row['phase'] for row in rows] == ['request', 'response']
+        if fail:
+            assert rows[1]['diagnostics']['failure_code'] == ('cancelled' if fail == 'cancel' else 'execution')
+            assert rows[1]['content'] == ({'application_failure': {'version': 1,
+                'cause': 'cancelled' if fail == 'cancel' else 'execution',
+                'code': 'cancelled' if fail == 'cancel' else 'execution'}} if log else {})
         serialized = json.dumps(rows)
         assert SECRET not in serialized
         assert (VISIBLE in serialized) is log
@@ -145,7 +150,7 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
             for parameter in step.get('parameters', [])))
         if log:
             phases = [entry for entry in index['entries'] if entry['occurrence'].get('kind') == 'llm']
-            assert {entry['occurrence']['phase'] for entry in phases} == ({'request'} if fail else {'request', 'response'})
+            assert {entry['occurrence']['phase'] for entry in phases} == {'request', 'response'}
             assert all(entry['owner'] == {'invocation_id': retained['invocation_id'], 'visit_id': visit} for entry in phases)
             def descendants(step):
                 yield step
@@ -162,7 +167,7 @@ def test_separate_backend_authority_full_values_flags_and_failure(tmp_path, log,
         assert hydrate_journal(envelope, resolver) == retained
         payload_bodies = [(published.directory / name).read_text() for name in published.manifest['files'] if name.startswith('payload-') and not name.startswith('payload-index-')]
         assert all(SECRET not in body for body in payload_bodies)
-        assert sum(VISIBLE in body for body in payload_bodies) == (len(rows) if log else 0)
+        assert sum(VISIBLE in body for body in payload_bodies) == ((1 if fail else len(rows)) if log else 0)
         assert all('values' not in row for row in envelope['events'] if row['event'] == 'capture')
     finally:
         if client is not None:
@@ -268,7 +273,10 @@ def test_auth_callback_collector_keeps_request_on_failure_and_cancellation(failu
             finally:
                 await shared.aclose()
         assert collector['call_id'] == call_id
-        assert [row['phase'] for row in collector['rows']] == ['request']
+        assert [row['phase'] for row in collector['rows']] == ['request', 'response']
+        assert set(collector['rows'][1]['content']) == {'application_failure'}
+        assert collector['rows'][1]['diagnostics']['failure_code'] == (
+            'cancelled' if isinstance(failure, asyncio.CancelledError) else 'execution')
         assert collector['rows'][0]['content']['messages'][0]['text'] == VISIBLE + '[REDACTED]'
     asyncio.run(run())
 

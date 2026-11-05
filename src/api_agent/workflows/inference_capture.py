@@ -378,6 +378,133 @@ def _snapshot_raw(value, maximum):
     return snapshot, maximum - remaining[0]
 
 
+
+def capture_inference_failure(error, cause_id, *, auth=None, transport_attempt_id=None, candidate_feedback=None, candidate_consistent=True, candidate_text=None):
+    """Optional diagnostics cannot replace the primary provider failure."""
+    try:
+        _capture_inference_failure(error, cause_id, auth=auth, transport_attempt_id=transport_attempt_id,
+                                   candidate_feedback=candidate_feedback, candidate_consistent=candidate_consistent,
+                                   candidate_text=candidate_text)
+    except (Exception, asyncio.CancelledError):
+        return
+
+
+def _capture_inference_failure(error, cause_id, *, auth=None, transport_attempt_id=None, candidate_feedback=None, candidate_consistent=True, candidate_text=None):
+    """Annotate an existing physical response, never compete with its payload."""
+    from api_agent.telemetry.outcomes import failure_diagnostic
+    from api_agent.telemetry.inference_diagnostics import scrub_diagnostics, valid_diagnostics
+    from api_agent.providers.generation_attempts import current_transport_attempt
+    from .capture import project_values
+    import json
+    attempt = transport_attempt_id if transport_attempt_id is not None else current_transport_attempt()
+    if attempt is not None and not _valid_attempt_id(attempt):
+        return
+    collector = _COLLECTOR.get()
+    state = collector if collector is not None else _DIRECT_ROWS.get()
+    if state is None or state.get('authority_conflict') or state.get('overflow'):
+        return
+    trace = state.get('trace_collector')
+    if trace is not None:
+        token = _COLLECTOR.set(trace)
+        try:
+            capture_inference_failure(error, cause_id, auth=auth, transport_attempt_id=attempt,
+                                      candidate_feedback=candidate_feedback, candidate_consistent=candidate_consistent,
+                                      candidate_text=candidate_text)
+        finally:
+            _COLLECTOR.reset(token)
+    if attempt in state.setdefault('failure_annotations', set()):
+        return
+    state['failure_annotations'].add(attempt)
+    boundary = state.get('boundary')
+    owner = current_workflow_visit()
+    if boundary is None and owner is not None:
+        boundary = getattr(owner[0], 'boundary', None) or getattr(owner[0], '_boundary', None)
+    diagnostic = failure_diagnostic(error)
+    diagnostics = {'version': 1, 'failure_cause': diagnostic['cause'], 'failure_code': diagnostic['code']}
+    rows = [row for row in state['rows'] if row.get('phase') == 'response'
+            and row.get('transport_attempt_id') == attempt]
+    if rows:
+        rank = max(row.get('_source') != 'fallback' for row in rows)
+        selected = [row for row in rows if (row.get('_source') != 'fallback') == rank]
+    else:
+        selected = []
+    try:
+        if boundary is not None and type(auth) is str and auth:
+            boundary.register_secret(auth)
+        if boundary is not None:
+            diagnostics = scrub_diagnostics(diagnostics, boundary)
+        allowed = (boundary is not None and not _WITHHELD.get() and (collector is None or
+                   boundary.policy.allow_content is True and not state.get('content_withheld')))
+        content = None
+        if allowed:
+            from api_agent.telemetry.failure_content import failure_content
+            lease = boundary.begin_evidence_lease() if hasattr(boundary, 'begin_evidence_lease') else None
+            try:
+                payload = failure_content(error, candidate_feedback=candidate_feedback,
+                                          include_candidate=candidate_consistent, candidate_text=candidate_text)
+                if collector is not None and collector['retain_raw']:
+                    content, _ = _snapshot_raw({'application_failure': payload}, 65536)
+                else:
+                    content = project_values({'llm_response': {'application_failure': payload}},
+                        {'type': 'object'}, boundary, max_bytes=65536,
+                        _provider_content=True).get('llm_response')
+            except (ValueError, TypeError):
+                content = None
+            finally:
+                if lease is not None:
+                    lease.release()
+        if not selected:
+            row = {'phase': 'response', 'content': content or {},
+                   'reason': 'captured' if content else 'withheld', '_source': 'fallback',
+                   **({'transport_attempt_id': attempt} if attempt is not None else {})}
+        else:
+            row = selected[0]
+        # Ambiguous native rows already have their own incomplete disposition.
+        # Never create a fresh competing response or overwrite provider keys.
+        if len(selected) > 1:
+            return
+        from api_agent.providers.contracts import CandidateOutputError
+        if collector is not None and collector['retain_raw'] and type(error) is CandidateOutputError:
+            row['_rejected'] = True
+        merged = {**row.get('diagnostics', {}), **diagnostics}
+        if valid_diagnostics(merged):
+            if selected and collector is None:
+                old_size = len(json.dumps(row, ensure_ascii=False, allow_nan=False).encode())
+                diagnostic_size = len(json.dumps({**row, 'diagnostics': merged}, ensure_ascii=False,
+                                                 allow_nan=False).encode())
+                if diagnostic_size - old_size <= state['remaining']:
+                    state['remaining'] -= diagnostic_size - old_size
+                    row['diagnostics'] = merged
+            else:
+                row['diagnostics'] = merged
+        updated = dict(row)
+        if selected and content and row.get('reason') in (None, 'captured', 'partial'):
+            if 'application_failure' not in row['content']:
+                updated['content'] = {**row['content'], **content}
+        if collector is not None:
+            previous = collector['charged'].get(id(row), 0)
+            if collector['retain_raw'] and allowed:
+                _, size = _snapshot_raw(updated['content'], previous + collector['remaining'])
+            else:
+                size = len(json.dumps(updated['content'], sort_keys=True, separators=(',', ':'),
+                                      ensure_ascii=False, allow_nan=False).encode())
+        else:
+            previous = len(json.dumps(row, ensure_ascii=False, allow_nan=False).encode()) if selected else 0
+            size = len(json.dumps(updated, ensure_ascii=False, allow_nan=False).encode())
+        difference = size - previous
+        if difference > state['remaining'] or not selected and len(state['rows']) >= 128:
+            return
+        state['remaining'] -= difference
+        row.update(updated)
+        if not selected:
+            state['rows'].append(row)
+        if collector is not None:
+            collector['charged'][id(row)] = size
+    except (Exception, asyncio.CancelledError):
+        # Optional evidence must preserve the original response on any failure.
+        return
+
+
 def capture_inference(direction, wire, cause_id, *, auth=None, fallback=False, partial=False, decoded_visible_text_characters=None, unavailable=False, rejected=False):
     """Scrub before retention/IPC; optional evidence cannot affect inference."""
     from .capture import project_values, capture_reason
