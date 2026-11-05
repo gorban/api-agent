@@ -18,7 +18,9 @@
   continuation. Append credential-safe constraint details, paths, limits and
   observed sizes to the same node's ordered dialogue. Keep original instructions
   authoritative and avoid duplicating earlier messages or fabricated replies.
-- [x] Block restart after effect dispatch, including uncertain dispatch. Native
+- [x] Block restart after effect dispatch, including uncertain dispatch and
+  legacy `ToolGate` owners. Generic gates mark the active node immediately
+  before owner invocation; preparation and verification do not mark effects. Native
   tool conversations may repair remaining proposals or final text within their
   existing round limit while retaining actual tool results and completed-input
   protections. Never automatically repeat a completed tool operation.
@@ -41,8 +43,8 @@
 
 ## Verification
 
-All 27,072 unit tests pass with exact coverage of 63,078 executable lines and
-24,904 branches across 382 production files. Controlled native/provider and
+All 27,075 unit tests pass with exact coverage of 63,084 executable lines and
+24,906 branches across 382 production files. Controlled native/provider and
 worker-wire checks preserve original rejected responses, usage and opaque state;
 causal controls detect replay, budget, authority, diagnostic privacy and schema
 eligibility regressions. Independent adversarial and external source review pass.

@@ -139,6 +139,13 @@ def _node_effect_owner(context):
         _ACTIVE_NODES.reset(token)
 
 
+def mark_active_effect():
+    """Record a generic dispatch on its active native-node ownership chain."""
+    contexts = _ACTIVE_NODES.get()
+    if contexts:
+        contexts[-1].mark_effect()
+
+
 @asynccontextmanager
 async def _repair_owner(frame):
     token = _REPAIRS.set((*_REPAIRS.get(), frame) if frame is not None else _REPAIRS.get())
