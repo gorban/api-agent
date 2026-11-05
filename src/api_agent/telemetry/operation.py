@@ -16,6 +16,15 @@ def safe_trace(action):
         return None
 
 
+def describe_failure(span, error, *, deadline_expired=False):
+    """Compatibility spans may omit optional, content-aware status details."""
+    def observe():
+        callback = getattr(span, 'failure', None)
+        if callable(callback):
+            callback(error, deadline_expired=deadline_expired)
+    safe_trace(observe)
+
+
 @contextmanager
 def operation(runtime, *, http=None):
     from .http_tracing import HTTPMetadata
@@ -32,7 +41,10 @@ def operation(runtime, *, http=None):
             owner.report(ExecutionOutcome(OutcomeState.CANCELLED, OutcomeCause.CANCELLED))
             raise
         except BaseException as error:
-            owner.report(failure_outcome(error))
+            outcome = failure_outcome(error)
+            owner.report(outcome)
+            if owner.final is outcome:
+                describe_failure(span, error)
             raise
         finally:
             final = owner.finish()

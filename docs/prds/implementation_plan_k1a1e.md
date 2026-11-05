@@ -2,6 +2,7 @@
 
 [Complete-operation trace checkpoint](implementation_plan_k1a1a.md)
 [Integration trace ownership](implementation_plan_k1a1b.md)
+[Readable terminal status](implementation_plan_k1a1g.md)
 
 ## Requirements
 

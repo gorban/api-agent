@@ -342,6 +342,8 @@ class TraceSpan:
         self._model_identity = model_identity
         self._operation = operation
         self._outcome = None
+        self._failure_description = None
+        self._failure_signature = None
         from .trace_mapping import TraceMapping, admit_mapping
         self._mapping = admit_mapping(mapping or TraceMapping())
 
@@ -366,8 +368,53 @@ class TraceSpan:
         if self._span is not None:
             self._losses.run(lambda: self._span.set_attributes(clean))
             if clean.get('status') == 'error':
-                from opentelemetry.trace import StatusCode
-                self._losses.run(lambda: self._span.set_status(StatusCode.ERROR))
+                self._error_status()
+
+    def _error_status(self):
+        from opentelemetry.trace import Status, StatusCode
+        lease = self._boundary.begin_evidence_lease()
+        try:
+            message = self._failure_description or 'Operation did not complete successfully.'
+            # Scope closure is another publication; refresh cached descriptions
+            # against credentials registered since the original failure.
+            self._failure_description = self._boundary.for_policy(ContentPolicy(True)).export({
+                'message': message}).get('message')
+            self._losses.run(lambda: self._span.set_status(
+                Status(StatusCode.ERROR, self._failure_description)))
+        finally:
+            lease.release()
+
+    def failure(self, error, *, deadline_expired=False):
+        """Describe an explicit failure through this destination's live boundary."""
+        from .failure_content import failure_content
+        from .outcomes import failure_diagnostic
+        diagnostic = failure_diagnostic(error, deadline_expired=deadline_expired)
+        if self._span is None or diagnostic['cause'] == 'cancelled':
+            return
+        lease = self._boundary.begin_evidence_lease()
+        try:
+            fixed = self._boundary.for_policy(ContentPolicy(True)).export({
+                'message': 'Operation failed (' + diagnostic['code'] + ').'})
+            admitted = self._boundary.export({'failure': {
+                **failure_content(error, include_candidate=False), **diagnostic}})
+            details = admitted.get('failure', {})
+            self._failure_description = details.get('provider', {}).get('message') or fixed.get('message')
+            encoded = json.dumps(details, ensure_ascii=False, allow_nan=False) if details else None
+            signature = (self._failure_description, encoded)
+            self._error_status()
+            if signature == self._failure_signature:
+                return
+            self._failure_signature = signature
+            attributes = _structural(self._boundary, {
+                'api_agent.failure.cause': diagnostic['cause'],
+                'api_agent.failure.code': diagnostic['code']}, ())
+            if self._failure_description is not None:
+                attributes['message'] = self._failure_description
+            if encoded is not None:
+                attributes['api_agent.failure.details'] = encoded
+            self._losses.run(lambda: self._span.add_event('api_agent.failure', attributes=attributes))
+        finally:
+            lease.release()
 
     def structural(self, payload):
         models = frozenset(value for key, value in payload.items() if key in
@@ -394,8 +441,7 @@ class TraceSpan:
                    (OutcomeState.FAILURE, OutcomeState.PARTIAL) else {})})
             self._losses.run(lambda: self._span.set_attributes(clean))
             if outcome.state in (OutcomeState.FAILURE, OutcomeState.PARTIAL):
-                from opentelemetry.trace import StatusCode
-                self._losses.run(lambda: self._span.set_status(StatusCode.ERROR))
+                self._error_status()
 
     def capture_loss(self, count):
         """Structural incomplete-delivery marker independent of content permission."""

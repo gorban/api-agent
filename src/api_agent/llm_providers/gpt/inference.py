@@ -686,7 +686,10 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
             raw = bytearray()
             async for chunk in response.aiter_bytes():
                 if len(raw) + len(chunk) > _LIMIT:
-                    raise _invalid('GPT inference response exceeded its limit.')
+                    raise ProviderAccessError('unknown',
+                        f'GPT inference response exceeded its {_LIMIT}-byte body limit before decoding; '
+                        'no final answer or usage was decoded. This is not a model output-token limit.',
+                        status=status, code='response_body_limit', type='response_size_limit')
                 raw.extend(chunk)
             request_id = response.headers.get('x-request-id')
             if response.status_code != 200:
