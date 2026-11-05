@@ -15,6 +15,12 @@
   Report final request failure only when top-level graph execution escapes; a rejected
   candidate or nested graph failure that is handled does not make the completed
   outer graph/request fail.
+- An explicit semantic terminal outcome must agree with the final graph journal
+  event as well as its trace and request outcome, even when nodes return normally.
+  Preserve successful node visits. Success, failure, cancellation, partial and
+  unknown outcomes remain distinct; normal function return does not establish
+  semantic success. Evaluate the trusted terminal callback before closing the
+  graph scope, without exporting the callback or its private state.
 - Retain a typed failure-origin receipt only at a trusted operation boundary.
   Verify private receipt issuance and exact exception identity; public receipt
   values and carriers copied onto another exception grant no authority. Each
@@ -56,3 +62,7 @@ replace an exception that refuses metadata reads or writes.
   complete joined verification before accepting the repair.
 
 - [ ] Human acceptance confirms terminal causes and repaired outcomes in the selected trace viewer.
+
+Allure workflow steps retain each explicit terminal outcome. Partial, unknown and
+cancelled outcomes project to attention (`broken`), while failure projects to
+`failed`; none are rejected as invalid or promoted to a passing step.

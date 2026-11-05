@@ -87,7 +87,7 @@ def scope_steps(events):
             previous = scopes.get(identifier)
             if (previous is None or previous['end'] is not None
                     or any(previous.get(key) != event.get(key) for key in ('parent_id', 'owner', 'kind', 'started_ms'))
-                    or event.get('outcome') not in ('passed', 'failed', 'cancelled')
+                    or event.get('outcome') not in ('passed', 'failed', 'cancelled', 'partial', 'unknown')
                     or not _time(event.get('stopped_ms')) or event['stopped_ms'] < event['started_ms']):
                 raise ValueError('Invalid workflow scope completion')
             previous['end'] = event
@@ -109,7 +109,7 @@ def scope_steps(events):
             parameters.append(dict(name='guard_rejections', value=str(rejections[identifier])))
         rows[identifier] = dict(name=scope['kind'] + ' ' + scope['owner'],
             status=('failed' if end['outcome'] == 'failed' else 'broken'
-                    if end['outcome'] == 'cancelled' or attempts.get(identifier, 0) > 1 else 'passed'),
+                    if end['outcome'] in ('cancelled', 'partial', 'unknown') or attempts.get(identifier, 0) > 1 else 'passed'),
             start=int(scope['started_ms']), stop=int(end['stopped_ms']), steps=[], parameters=parameters)
     for identifier, scope in scopes.items():
         ancestors = {identifier}

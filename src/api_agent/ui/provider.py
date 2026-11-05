@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 from urllib.parse import urlsplit
 
+import httpx
+
 from api_agent.providers.contracts import ProviderCapabilities, SetupPrerequisiteError
 from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.progress import component_timeout
@@ -28,6 +30,29 @@ def listener_plan(value):
     if not valid:
         raise ValueError('ui_listener_invalid')
     return url, port
+
+
+def advertised_origin_identity(origin, *, scheme, port):
+    """Validate advertised authority independently of the loopback connection."""
+    try:
+        if type(origin) is not str:
+            raise ValueError
+        endpoint = urlsplit(origin)
+        parsed = httpx.URL(origin)
+        actual_port = endpoint.port if endpoint.port is not None else 443
+        valid = (origin.isascii()
+                 and endpoint.scheme == scheme == 'https' and 0 < actual_port < 65536 and actual_port == port
+                 and endpoint.hostname and endpoint.username is None and endpoint.password is None
+                 and endpoint.path in ('', '/') and not endpoint.query and not endpoint.fragment
+                 and '?' not in origin and '#' not in origin
+                 and origin.rstrip('/') == str(parsed).rstrip('/')
+                 and not any(character.isspace() for character in origin)
+                 and '\\' not in origin)
+    except (ValueError, TypeError, httpx.InvalidURL):
+        valid = False
+    if not valid:
+        raise ValueError('Invalid Studio readiness origin')
+    return endpoint.netloc, endpoint.hostname
 
 
 class DemoUIProvider:

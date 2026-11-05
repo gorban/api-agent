@@ -393,7 +393,7 @@ class Workflow:
             observer(dict(event=event, **values))
 
     @asynccontextmanager
-    async def _scope(self, owner, **metadata):
+    async def _scope(self, owner, *, _terminal_outcome=None, **metadata):
         declared = self.timeouts.get(owner)
         async with component_timeout('Workflow ' + owner, declared) as budget:
             started = time.time() * 1000
@@ -408,6 +408,10 @@ class Workflow:
                     yield budget
                     self._check_deadline(budget)
                     outcome = 'passed'
+                    if _terminal_outcome:
+                        outcome = {'success': 'passed', 'failure': 'failed',
+                                   'cancelled': 'cancelled', 'partial': 'partial',
+                                   'unknown': 'unknown'}[_terminal_outcome[0].state.value]
                 except BaseException as error:
                     from api_agent.telemetry.outcomes import report_failure, OutcomeState
                     failed = report_failure(error,
@@ -766,7 +770,9 @@ class Workflow:
                 from api_agent.testing.inference_usage import user_turn
             with execution_context(selected_context), (turn(active_turn) if active_turn is not None else nullcontext()), (
                     user_turn(active_turn, kind=turn_kind) if active_turn is not None else nullcontext()):
-                async with self._scope('GRAPH', kind='graph', attempt=1, max_passes=1):
+                terminal_outcome = []
+                async with self._scope('GRAPH', kind='graph', attempt=1, max_passes=1,
+                                       _terminal_outcome=terminal_outcome):
                     self._validate({'type': 'object'}, inputs, 'START', 'input')
                     prompts = {path: (self.definition.contents[path].decode('utf-8') if self.definition is not None
                                       else path.read_text(encoding='utf-8'))
@@ -780,6 +786,7 @@ class Workflow:
                         final = terminal()
                         if type(final) is not ExecutionOutcome:
                             raise WorkflowError('Invalid explicit execution outcome')
+                        terminal_outcome.append(final)
                         report_outcome(final, runtime=getattr(journal, 'trace', None))
                         if journal is not None and hasattr(journal, 'report_outcome'):
                             journal.report_outcome(current_structural_scope(), final)

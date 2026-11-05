@@ -32,9 +32,11 @@ def test_scope_steps_preserve_nested_intervals_explicit_outcomes_and_attempts():
     assert {'name':'effective_timeout','value':'60'} in child['parameters']
 
 
-@pytest.mark.parametrize('outcome,status',[('failed','failed'),('cancelled','broken')])
+@pytest.mark.parametrize('outcome,status',[('failed','failed'),('cancelled','broken'),('partial','broken'),('unknown','broken')])
 def test_scope_status_is_not_inferred_from_progress_stopping(outcome,status):
-    events=trace();events[-1]['outcome']=outcome
+    nested = trace()
+    events = [nested[0], nested[-1]]  # Child attention cannot mask the root status.
+    events[-1]['outcome'] = outcome
     graph = scope_steps(events)[0]
     assert graph['status'] == status
     assert {'name': 'outcome', 'value': outcome} in graph['parameters']
@@ -50,7 +52,7 @@ def test_scope_status_is_not_inferred_from_progress_stopping(outcome,status):
     lambda rows: rows[0].update(started_ms=True),
     lambda rows: rows.insert(1,deepcopy(rows[0])),
     lambda rows: rows[-1].update(started_ms=0),
-    lambda rows: rows[-1].update(outcome='unknown'),
+    lambda rows: rows[-1].update(outcome='unsupported'),
     lambda rows: rows[-1].update(stopped_ms=-1),
     lambda rows: rows.append(deepcopy(rows[-1])),
     lambda rows: rows.pop(),

@@ -34,7 +34,8 @@ class StudioBackend:
     """
     def __init__(self, *, owner, describe, complete, policy, origin, nonce,
                  scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None,
-                 on_error=None, max_output_tokens=200000, trace_owner=None):
+                 on_error=None, max_output_tokens=200000, trace_owner=None,
+                 advertised_origin=None):
         parts = urlsplit(origin)
         if (parts.scheme not in ('http', 'https') or parts.hostname not in ('localhost', '127.0.0.1', '::1')
                 or parts.path or parts.query or parts.fragment or parts.username or parts.password
@@ -43,6 +44,11 @@ class StudioBackend:
                 or type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
                 or type(body_limit) is not int or not 1 <= body_limit <= 131072):
             raise ValueError('Invalid Studio bridge configuration')
+        if advertised_origin is not None:
+            from api_agent.ui.provider import advertised_origin_identity
+            advertised_origin_identity(advertised_origin, scheme=parts.scheme,
+                port=parts.port if parts.port is not None else 443)
+            origin = advertised_origin
         if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= chat_contract.MAX_OUTPUT_TOKENS:
             raise ValueError('Invalid output-token ceiling')
         self.trace_owner = trace_owner
