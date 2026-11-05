@@ -144,10 +144,13 @@ def test_policy_output_invalid_json_is_not_a_tool_argument_error():
     evidence = ResponseEvidence('json', 'reject', 'json', sha256(SCHEMA.encode()).hexdigest(), False, None)
     result = LLMResult(Message('assistant', (TextContent('not-json'),)), Usage(9, 2), response=evidence)
 
-    with pytest.raises(ProviderAccessError, match='Response output does not match its original schema') as caught:
+    from api_agent.providers.contracts import CandidateOutputError
+    with pytest.raises(CandidateOutputError, match='original schema') as caught:
         subject.validate_response_result(request, result)
 
-    assert caught.value.code is None
+    assert caught.value.code == 'response_candidate_rejected'
+    assert caught.value.type == 'response_validation'
+    assert caught.value.result is result
     assert caught.value.usage == result.usage
 
 

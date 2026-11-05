@@ -77,6 +77,13 @@ help = "Address of the selected service."
 
 A factory is synchronous `create_tool(local_config, services)` and returns a version 1 owner with asynchronous `describe`, `validate`, `invoke` and `aclose` methods. `describe` returns the existing `ToolSpec`; validity and execution use `PreparedCall` and `ToolResult`. Inputs and prerequisites can each be empty. A compatible alternative must advertise its own real schemas; GraphQL arguments are never silently translated into another protocol.
 
+For a deterministic pre-dispatch candidate rejection, `validate` raises
+`ToolValidationError` from `api_agent.providers.tools`. The tool gate forwards
+its credential-safe details to an existing workflow correction controller.
+Arbitrary exceptions remain terminal; they do not establish a correctable
+candidate defect. `validate` must not execute the operation. See
+[candidate repair](workflow_repair.md) for pass limits and dispatch boundaries.
+
 Relative descriptor/factory paths stay inside admitted owners. `package:DISTRIBUTION:PACKAGE/PATH` names a distribution-owned resource whose installed receipt and content are verified. Installed missing assets do not fall back to a development checkout. Selected package sources, initializers, sibling modules and dependency requirements are captured before acquisition; execution validates the installed dependency identities and callable contract. The legacy GraphQL `create` entry translates `API_*` configuration only for its remaining API-provider consumers; `create_tool` accepts local slots, and mixed inputs reject.
 
 ## Select test graphs explicitly

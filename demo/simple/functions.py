@@ -4,8 +4,8 @@ from dataclasses import replace
 
 from api_agent.providers.inference import request_from_wire, result_to_wire
 from api_agent.providers.llm import GenerationOptions, LLMRequest, Message, TextContent
-from api_agent.workflows.execution import WorkflowError
-from api_agent.workflows.tool_gate import ToolGateError
+from api_agent.workflows.execution import CandidateCorrection, WorkflowError, project_correction
+from api_agent.workflows.tool_gate import ToolCandidateRejected, ToolGateError
 from api_agent.providers.tools import MAX_ARGUMENT_BYTES, canonical
 from api_agent.providers.rich_inference import response_json
 from api_agent.providers.contracts import ContractError
@@ -81,17 +81,28 @@ async def plan(inputs, context):
     try:
         candidate = response_json(result)
     except ContractError as error:
-        raise WorkflowError('Planner returned invalid JSON') from error
+        raise CandidateCorrection({'reason': 'Planner returned invalid JSON',
+            'rule': 'json', 'path': '$', 'instruction': 'Return one JSON object matching the response schema.'}) from error
     if (type(candidate) is not dict or type(candidate.get('use_tool')) is not bool
-            or type(candidate.get('arguments')) is not dict or type(candidate.get('answer')) is not str
-            or len(candidate['answer']) > 8192
-            or (candidate['use_tool'] and not candidate['arguments'])
-            or (not candidate['use_tool'] and candidate['arguments'])):
-        raise WorkflowError('Planner returned invalid candidate')
+            or type(candidate.get('arguments')) is not dict or type(candidate.get('answer')) is not str):
+        raise CandidateCorrection({'reason': 'Planner returned invalid candidate',
+            'rule': 'type', 'path': '$',
+            'instruction': 'Return use_tool:boolean, arguments:object and answer:string.'}, rejected=candidate)
+    if len(candidate['answer']) > 8192:
+        raise CandidateCorrection({'reason': 'Planner returned invalid candidate',
+            'rule': 'maxLength', 'path': '$.answer', 'limit': 8192,
+            'actual': len(candidate['answer']),
+            'instruction': 'Shorten answer while preserving the original request requirements.'}, rejected=candidate)
+    if (candidate['use_tool'] and not candidate['arguments']) or (not candidate['use_tool'] and candidate['arguments']):
+        raise CandidateCorrection({'reason': 'Planner returned invalid candidate',
+            'rule': 'tool_arguments', 'path': '$.arguments',
+            'instruction': 'Use nonempty arguments only when use_tool is true; otherwise use an empty object.'}, rejected=candidate)
     try:
         canonical(candidate['arguments'], MAX_ARGUMENT_BYTES)
     except ValueError as error:
-        raise WorkflowError('Planner returned invalid candidate') from error
+        raise CandidateCorrection({'reason': 'Planner returned invalid candidate',
+            'rule': 'argument_bytes', 'path': '$.arguments', 'limit': MAX_ARGUMENT_BYTES,
+            'instruction': 'Return bounded JSON tool arguments matching the supplied tool schema.'}, rejected=candidate) from error
     return {key: candidate[key] for key in ('use_tool', 'arguments', 'answer')}
 
 
@@ -137,15 +148,20 @@ async def review(inputs, context):
         try:
             verdict = response_json(result)
         except ContractError as error:
-            raise WorkflowError('Reviewer returned invalid JSON') from error
+            raise CandidateCorrection({'reason': 'Reviewer returned invalid JSON',
+                'rule': 'json', 'path': '$', 'instruction': 'Return one JSON verdict matching the response schema.'}) from error
         if type(verdict) is not dict or any(type(verdict.get(key)) is not bool for key in
                                               ('correct', 'grounded', 'relevant', 'preference')):
-            raise WorkflowError('Reviewer returned invalid verdict')
+            raise CandidateCorrection({'reason': 'Reviewer returned invalid verdict',
+                'rule': 'type', 'path': '$',
+                'instruction': 'Return correct, grounded, relevant and preference as booleans.'}, rejected=verdict)
         details = verdict.get('details')
         if (type(details) is not str or len(details) > 4096
                 or (not all(verdict[key] for key in ('correct', 'grounded', 'relevant', 'preference'))
                     and not details.strip())):
-            raise WorkflowError('Reviewer returned invalid verdict details')
+            raise CandidateCorrection({'reason': 'Reviewer returned invalid verdict details',
+                'rule': 'verdict_details', 'path': '$.details', 'limit': 4096,
+                'instruction': 'Return details:string of at most 4096 characters, nonblank for any failed check.'}, rejected=verdict)
         return verdict
 
     grant = None
@@ -153,7 +169,13 @@ async def review(inputs, context):
         try:
             prepared = await gate.prepare(candidate['arguments'])
             grant = await gate.verify(prepared, relevance=relevance)
-        except (ToolGateError, ValueError):
+        except ToolCandidateRejected as error:
+            feedback = _revision_feedback(previous_candidate, verdict, 'Invalid tool candidate')
+            feedback['validation'] = await project_correction(error.feedback)
+            return {'accepted': False, 'feedback': feedback}
+        except ToolGateError:
+            if not verdict or all(verdict[key] for key in ('correct', 'grounded', 'relevant')):
+                raise
             return {'accepted': False, 'feedback': _revision_feedback(previous_candidate, verdict,
                 'Invalid or ungrounded tool candidate')}
     else:

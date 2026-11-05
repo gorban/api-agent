@@ -1,5 +1,7 @@
 """Schema-driven conversation shared by independent GraphQL and REST selections."""
+from api_agent.providers.contracts import ContractError
 from api_agent.providers.rich_inference import object_json
+from api_agent.workflows.execution import CandidateCorrection
 from api_agent.workflows.tool_conversation import run_tool_conversation
 
 
@@ -22,8 +24,14 @@ async def converse(inputs, context):
                 or any(len(records) != 1 for records in results.values())
                 or any(not call['result_matches'] for call in journal['calls'])):
             raise ValueError('Each named tool must independently return its target value')
-        if object_json(final) != expected:
-            raise ValueError('Final answer must attribute each exact value to its named tool')
+        try:
+            report = object_json(final)
+        except ContractError:
+            raise CandidateCorrection({'reason': 'Final answer must be a bounded JSON object',
+                'expected_keys': sorted(ALIASES)}) from None
+        if report != expected:
+            raise CandidateCorrection({'reason': 'Final answer must attribute each exact value to its named tool',
+                'expected_keys': sorted(ALIASES), 'values_from': 'completed named tool results'})
         journal['final_matches'] = True
 
     gates = {alias: context.tools[port] for alias, port in ALIASES.items()}

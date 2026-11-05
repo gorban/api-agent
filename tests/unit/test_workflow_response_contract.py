@@ -190,8 +190,11 @@ def test_complete_output_still_rejects_invalid_runtime_value(tmp_path):
     definition = admit(entry)
     catalog = load_native_catalog(definition, tmp_path / 'native.py')
     graph = Workflow(definition, {'inspect': NodeFunction(catalog['inspect'], 'llm')})
-    with pytest.raises(WorkflowError, match='output'):
+    from api_agent.workflows.execution import CandidateCorrection
+    with pytest.raises(CandidateCorrection) as caught:
         asyncio.run(graph.arun({}))
+    assert caught.value.feedback['reason'] == 'output_schema'
+    assert caught.value.rejected == {'seen': 'invented'}
 
 
 def test_legacy_layout_accepts_extended_columns_and_captures_response_link(tmp_path):

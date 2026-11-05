@@ -167,6 +167,7 @@ class ToolInvocation:
                 raise ContractError('Tool resolver does not match workflow definition')
         self.id, self.closed, self.gates = str(uuid4()), False, {}
         self.calls = {}
+        self.effects = []
 
     def check(self):
         if self.closed:
@@ -205,6 +206,7 @@ class ToolInvocation:
             raise ToolGateError('Tool verification is missing')
         gate = calls[candidate.digest]
         if operation == 'execute':
+            self.effects.append(use.scope)
             kwargs['_tool_alias'] = use.port
         return await getattr(gate, operation)(*args, **kwargs)
 

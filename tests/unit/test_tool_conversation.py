@@ -152,30 +152,30 @@ def test_failed_provider_reported_zero_usage_is_distinct_from_unknown(scenario):
 @pytest.mark.parametrize('relevant,grounded', [(False, True), (True, False)])
 def test_independent_relevance_rejection_prevents_execution(scenario, relevant, grounded):
     journal = {}
-    with pytest.raises(ToolGateError, match='relevance'):
-        run(scenario, Script([tool_call(ALIASES[0]), verdict(relevant, grounded)]), journal)
+    with pytest.raises(ValueError, match='round limit'):
+        run(scenario, Script([tool_call(ALIASES[0]), verdict(relevant, grounded)]), journal, max_rounds=1)
     assert not scenario[0][ALIASES[0]].invocations
     assert len(journal['inference']) == 2
 
 
 def test_full_local_constraint_rejects_before_relevance(scenario):
     script = Script([tool_call(ALIASES[0], arguments='{"query":"too long for schema"}')])
-    with pytest.raises(ToolGateError, match='schema'):
-        run(scenario, script)
+    with pytest.raises(ValueError, match='round limit'):
+        run(scenario, script, max_rounds=1)
     assert len(script.requests) == 1
     assert not scenario[0][ALIASES[0]].validations
 
 
 @pytest.mark.parametrize('second', [tool_call('other', 'call-2'), tool_call(ALIASES[1])])
 def test_unknown_alias_and_reused_invocation_are_rejected(scenario, second):
-    with pytest.raises(ValueError, match='Unknown or repeated'):
-        run(scenario, Script([tool_call(ALIASES[0]), verdict(), second]))
+    with pytest.raises(ValueError, match='round limit|Unknown or repeated'):
+        run(scenario, Script([tool_call(ALIASES[0]), verdict(), second]), max_rounds=2)
     assert not scenario[0][ALIASES[1]].invocations
 
 
 def test_missing_required_tool_rejects_a_canned_final(scenario):
-    with pytest.raises(ValueError, match='Required tools'):
-        run(scenario, Script([reply('finished')]), required_tools=ALIASES)
+    with pytest.raises(ValueError, match='round limit'):
+        run(scenario, Script([reply('finished')]), required_tools=ALIASES, max_rounds=1)
 
 
 def test_optional_verifier_and_tool_requirements_allow_ordinary_final(scenario):
@@ -519,7 +519,7 @@ def test_cancellation_during_correction_preserves_failed_and_unknown_usage(scena
 
 
 @pytest.mark.parametrize('candidate,relevant,grounded', [('status', False, True), ('id-8', True, False)])
-def test_second_schema_valid_rejection_keeps_first_result_without_retry(scenario, candidate, relevant, grounded):
+def test_second_schema_valid_rejection_keeps_first_result_at_round_limit(scenario, candidate, relevant, grounded):
     scenario[0][ALIASES[0]].value = 'id-7'
     scenario[0][ALIASES[0]].spec = replace(scenario[0][ALIASES[0]].spec, description='Read the identifier')
     scenario[0][ALIASES[1]].spec = replace(scenario[0][ALIASES[1]].spec, description='Read the requested record by identifier or status')
@@ -545,9 +545,9 @@ def test_second_schema_valid_rejection_keeps_first_result_without_retry(scenario
         assert candidate != prior[0]['result']['hello']
         return verdict(relevant, grounded)
 
-    with pytest.raises(ToolGateError, match='relevance or grounding'):
+    with pytest.raises(ValueError, match='round limit'):
         asyncio.run(run_tool_conversation(prompt=prompt, gates=scenario[1], complete=independent_complete,
-                                          selection='synthetic', journal=journal))
+                                          selection='synthetic', journal=journal, max_rounds=1))
 
     assert scenario[0][ALIASES[0]].invocations == ['get-id']
     assert scenario[0][ALIASES[1]].validations == ['read-record']
@@ -560,11 +560,11 @@ def test_second_schema_valid_rejection_keeps_first_result_without_retry(scenario
 
 
 @pytest.mark.parametrize('relevant,grounded', [(False, True), (True, False), (False, False)])
-def test_completed_negative_verdict_reports_rejected_before_original_gate_error(scenario, relevant, grounded):
+def test_completed_negative_verdict_reports_rejected_at_round_limit(scenario, relevant, grounded):
     from api_agent.workflows.tool_evidence import tool_evidence
     script, journal = Script([tool_call(ALIASES[0]), verdict(relevant, grounded)]), {}
-    with pytest.raises(ToolGateError, match='Tool candidate failed relevance or grounding'):
-        run(scenario, script, journal)
+    with pytest.raises(ValueError, match='round limit'):
+        run(scenario, script, journal, max_rounds=1)
     report = tool_evidence(journal, graph_id='graph', instances=dict(zip(ALIASES, ('first','second'))))
     assert report['calls'][0]['status'] == 'rejected'
     assert not report['calls'][0]['verified_by_inference']
@@ -582,17 +582,17 @@ def test_rejected_model_call_has_safe_marker_and_keeps_conversation_request_iden
     rejected = ToolCall(hostile, hostile, '{"secret":"do not publish"}') if kind == 'unknown' else ToolCall('first', ALIASES[1], '{"secret":"do not publish"}')
     batch = reply(calls=(ToolCall('first', ALIASES[0], '{"query":"hello"}'), rejected))
     script, journal = Script([batch, verdict()]), {}
-    with pytest.raises(ValueError, match='^Unknown or repeated model tool call$'):
-        run(scenario, script, journal)
+    with pytest.raises(ValueError, match='round limit|Unknown or repeated'):
+        run(scenario, script, journal, max_rounds=1)
     report = tool_evidence(journal, graph_id='graph', instances=dict(zip(ALIASES, ('first','second'))))
     assert report['rejections'] == [{'reason':'unknown_tool' if kind == 'unknown' else 'duplicate_call',
         'model_round':1, 'call_index':2, 'request_id':script.requests[0].request_id}]
-    assert report['rejections'][0]['request_id'] != script.requests[1].request_id
-    assert report['calls'][0]['status'] == 'success' and report['calls'][0]['result_received']
-    assert journal['calls'][0]['result'] == {'hello':'unknown-0'}
-    assert len(report['calls']) == 1 and len(report['inference']) == len(script.requests) == 2
+    assert len(report['calls']) == (1 if kind == 'unknown' else 0)
+    assert all(entry['status'] == 'rejected' and not entry['result_received'] for entry in report['calls'])
+    assert all('result' not in entry for entry in journal['calls'])
+    assert len(report['inference']) == len(script.requests) == 1
     assert all(row['usage']['input_tokens'] == 9 for row in report['inference'])
-    assert scenario[0][ALIASES[0]].invocations == ['first']
+    assert not scenario[0][ALIASES[0]].invocations
     assert not scenario[0][ALIASES[1]].invocations
     assert not any(value in json.dumps(report) for value in (hostile, 'secret', 'do not publish', 'unknown-0'))
 
@@ -601,8 +601,8 @@ def test_hostile_label_shaped_unknown_call_is_not_published_as_identity(scenario
     from api_agent.workflows.tool_evidence import tool_evidence
     sensitive = 'credential_token_secret'
     script, journal = Script([reply(calls=(ToolCall(sensitive, sensitive, sensitive),))]), {}
-    with pytest.raises(ValueError, match='Unknown or repeated'):
-        run(scenario, script, journal)
+    with pytest.raises(ValueError, match='round limit|Unknown or repeated'):
+        run(scenario, script, journal, max_rounds=1)
     report = tool_evidence(journal, graph_id='graph', instances={})
     assert report['calls'] == []
     assert report['rejections'][0]['reason'] == 'unknown_tool'
@@ -619,22 +619,21 @@ def test_rejection_after_largest_existing_call_array_keeps_unbounded_numeric_pos
         # This is an index/evidence boundary, not 256 worker-startup proofs.
         validations.append((schema, value))
         return Draft202012Validator(schema).is_valid(value)
-    monkeypatch.setattr(tool_gate, 'async_isolated_valid_schema', validate_fixture_schema)
+    monkeypatch.setattr(tool_gate, 'async_isolated_schema_verdict', validate_fixture_schema)
     batch = reply(calls=tuple(ToolCall('call-' + str(i), ALIASES[0], '{"query":"hello"}') for i in range(128))
                   + (ToolCall('rejected-secret', 'unknown-secret', 'invalid'),))
     script, journal = Script([batch, *(verdict() for _ in range(128))]), {}
-    with pytest.raises(ValueError, match='Unknown or repeated'):
-        run(scenario, script, journal)
+    with pytest.raises(ValueError, match='round limit|Unknown or repeated'):
+        run(scenario, script, journal, max_rounds=1)
     report = tool_evidence(journal, graph_id='graph', instances={ALIASES[0]:'first'})
-    assert len(report['calls']) == 128 and len(report['inference']) == 129
+    assert len(report['calls']) == 128 and len(report['inference']) == 1
     assert report['rejections'][0]['call_index'] == 129
     assert report['rejections'][0]['request_id'] == script.requests[0].request_id
     assert 'secret' not in json.dumps(report)
     owner = scenario[0][ALIASES[0]]
-    assert validations == [(owner.spec.input_schema, {'query': 'hello'}),
-                           (owner.spec.output_schema, {'hello': owner.value})] * 128
-    expected = ['call-' + str(i) for i in range(128)]
-    assert owner.invocations == owner.validations == expected
+    assert validations == [(owner.spec.input_schema, {'query': 'hello'})] * 128
+    assert not owner.invocations and not owner.validations
+    assert all(not entry['result_received'] for entry in report['calls'])
 
 
 @pytest.mark.parametrize('outcome', ['length', 'refused'])
@@ -655,8 +654,8 @@ def test_rejection_marker_round_and_index_follow_the_conversation_not_relevance(
     from api_agent.workflows.tool_evidence import tool_evidence
     script = Script([tool_call(ALIASES[0]), verdict(), tool_call('unknown', 'next')])
     journal = {}
-    with pytest.raises(ValueError, match='Unknown or repeated'):
-        run(scenario, script, journal)
+    with pytest.raises(ValueError, match='round limit|Unknown or repeated'):
+        run(scenario, script, journal, max_rounds=2)
     report = tool_evidence(journal, graph_id='graph', instances={ALIASES[0]:'first'})
     assert report['rejections'] == [{'reason':'unknown_tool','model_round':2,'call_index':1,
                                     'request_id':script.requests[2].request_id}]
@@ -706,9 +705,9 @@ def test_completed_synthetic_proof_is_published_after_later_failure(scenario, la
 
 def test_result_proof_is_immediate_and_does_not_weaken_final_gate(scenario):
     journal = {}
-    with pytest.raises(ValueError, match='Required tools'):
+    with pytest.raises(ValueError, match='round limit'):
         run(scenario, Script([tool_call(ALIASES[0]), verdict(), reply('done')]), journal,
-            required_tools=ALIASES, result_proof=lambda alias, status, data: False)
+            required_tools=ALIASES, result_proof=lambda alias, status, data: False, max_rounds=2)
     assert journal['calls'][0]['result_matches'] is False
 
 

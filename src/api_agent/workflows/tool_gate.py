@@ -4,14 +4,22 @@ from hashlib import sha256
 import inspect
 from uuid import uuid4
 
-from api_agent.providers.bounded_schema import async_isolated_valid_schema
+from api_agent.providers.bounded_schema import async_isolated_schema_verdict
 from api_agent.providers.progress import component_timeout
 from api_agent.providers.tools import (MAX_ARGUMENT_BYTES, PreparedCall, ToolResult,
-                                       ToolSpec, canonical)
+                                       ToolSpec, ToolValidationError, canonical)
 
 
 class ToolGateError(ValueError):
     pass
+
+
+class ToolCandidateRejected(ToolGateError):
+    """Definitive candidate-only rejection before tool dispatch."""
+    def __init__(self, feedback, *, message='Tool candidate rejected before dispatch'):
+        from .execution import CandidateCorrection
+        self.feedback = CandidateCorrection(feedback).feedback
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -58,10 +66,18 @@ class ToolGate:
         async with component_timeout('Tool preparation', self.timeout):
             spec = await self.describe()
             if type(arguments) is not dict:
-                raise ToolGateError('Tool arguments must be an object')
+                raise ToolCandidateRejected({'reason': 'Tool arguments must be an object'},
+                                            message='Tool arguments must be an object')
             encoded = canonical(arguments, MAX_ARGUMENT_BYTES)
-            if not await async_isolated_valid_schema(spec.input_schema, arguments):
-                raise ToolGateError('Tool arguments do not match the selected schema')
+            verdict = await async_isolated_schema_verdict(spec.input_schema, arguments)
+            if verdict is False:
+                from api_agent.providers.rich_inference import _candidate_feedback
+                facts = _candidate_feedback(canonical(spec.input_schema, 65536), encoded, False)
+                facts.update(reason='Tool arguments do not match the selected schema', check='input_schema')
+                raise ToolCandidateRejected(facts,
+                                            message='Tool arguments do not match the selected schema')
+            if verdict is not True:
+                raise ToolGateError('Tool input schema validation is unavailable')
             digest = sha256((self._id + '\0' + self.invocation_id + '\0' + spec.digest + '\0' + encoded).encode()).hexdigest()
             return PreparedCall(spec, arguments, self.invocation_id, digest)
 
@@ -79,13 +95,21 @@ class ToolGate:
         """Owner validity precedes independent LLM relevance/grounding acceptance."""
         self._check(prepared)
         async with component_timeout('Tool verification', self.timeout):
-            await self.owner.validate(prepared)
+            try:
+                await self.owner.validate(prepared)
+            except ToolValidationError as error:
+                raise ToolCandidateRejected({'reason': 'Tool preflight rejected the candidate',
+                    'check': 'owner_preflight', 'detail': str(error)}) from None
             verdict = relevance(prepared)
             if inspect.isawaitable(verdict):
                 verdict = await verdict
-            if (type(verdict) is not dict or verdict.get('relevant') is not True
-                    or verdict.get('grounded') is not True):
-                raise ToolGateError('Tool candidate failed relevance or grounding')
+            if (type(verdict) is not dict or type(verdict.get('relevant')) is not bool
+                    or type(verdict.get('grounded')) is not bool):
+                raise ToolGateError('Tool candidate failed relevance or grounding: verdict unavailable or invalid')
+            if verdict['relevant'] is not True or verdict['grounded'] is not True:
+                raise ToolCandidateRejected({'reason': 'Tool candidate failed relevance or grounding',
+                    'relevant': verdict['relevant'], 'grounded': verdict['grounded']},
+                    message='Tool candidate failed relevance or grounding')
             self._check(prepared)
             grant = VerifiedCall(prepared, self._id)
             self._grants.add(prepared.digest)
@@ -126,7 +150,7 @@ class ToolGate:
                 result = await self.owner.invoke(dispatch)
                 if not isinstance(result, ToolResult):
                     raise ToolGateError('Tool owner returned invalid result')
-                if result.status != 'failure' and not await async_isolated_valid_schema(self._spec.output_schema, result.data):
+                if result.status != 'failure' and (await async_isolated_schema_verdict(self._spec.output_schema, result.data)) is not True:
                     raise ToolGateError('Tool result does not match the selected schema')
             outcome = result.status
         except BaseException as error:

@@ -175,7 +175,12 @@ def test_runtime_rejects_invalid_view_before_it_can_be_invoked(factory):
 
 def test_node_context_resolves_its_named_port_in_node_scope():
     calls = []
-    selected = object()
+    marker = object()
+    async def invoke(prepared):
+        assert context._effects == [True]
+        calls.append(prepared)
+        return marker
+    selected = SimpleNamespace(invoke=invoke, description='forwarded')
     def resolve(**kwargs):
         calls.append(kwargs)
         return selected
@@ -184,8 +189,10 @@ def test_node_context_resolves_its_named_port_in_node_scope():
 
     with pytest.raises(ValueError, match="active workflow invocation"):
         _ = context.tools
-    assert context.tool('primary') is selected
-    assert calls == [{'scope_kind': 'node', 'scope': 'read', 'port': 'primary'}]
+    borrowed = context.tool('primary')
+    assert borrowed.description == 'forwarded'
+    assert asyncio.run(borrowed.invoke(marker)) is marker
+    assert calls == [{'scope_kind': 'node', 'scope': 'read', 'port': 'primary'}, marker]
 
 
 def test_node_context_without_admission_rejects_tool_access():

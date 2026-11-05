@@ -401,6 +401,10 @@ def _error(error, capability=None):
         if getattr(error, 'response', None) is not None:
             from .rich_inference import response_evidence_to_wire
             details['response'] = dict(version=3, response=response_evidence_to_wire(error.response))
+        from .contracts import CandidateOutputError
+        if type(error) is CandidateOutputError:
+            from .inference import result_to_wire
+            details['candidate'] = dict(version=1, result=result_to_wire(error.result), feedback=error.feedback)
         if capability is not None:
             message = message.replace(capability, '[redacted]')
             details = {name: value.replace(capability, '[redacted]') if isinstance(value, str) else value
@@ -476,7 +480,7 @@ def _raise_error(frame):
     if frame.get('category') == 'provider':
         if (set(frame) != {'version', 'status', 'category', 'index_source', 'message', 'details'}
                 or frame['index_source'] is not None or type(frame['details']) is not dict
-                or set(frame['details']) - {'usage', 'execution', 'response', 'origin'} != {'kind', 'status', 'code', 'type', 'request_id'}):
+                or set(frame['details']) - {'usage', 'execution', 'response', 'origin', 'candidate'} != {'kind', 'status', 'code', 'type', 'request_id'}):
             raise ContractError('Invalid provider response')
         details = frame['details'].copy()
         kind = details.pop('kind')
@@ -494,7 +498,25 @@ def _raise_error(frame):
                 if type(nested) is not dict or set(nested) != {'version', 'response'} or type(nested['version']) is not int or nested['version'] != 3:
                     raise ValueError()
                 details['response'] = response_evidence_from_wire(nested['response'])
-            error = ProviderAccessError(kind, frame['message'], **details)
+            candidate = details.pop('candidate', None)
+            if candidate is not None:
+                from .contracts import CandidateOutputError
+                from .inference import result_from_wire
+                if (type(candidate) is not dict or set(candidate) != {'version', 'result', 'feedback'}
+                        or type(candidate['version']) is not int or candidate['version'] != 1
+                        or kind != 'unknown' or details.get('code') not in ('response_candidate_rejected', 'empty_final_answer')
+                        or details.get('type') != 'response_validation'
+                        or details.get('origin') != 'local_output_validation' or execution != 'completed'):
+                    raise ValueError()
+                normalized = result_from_wire(candidate['result'])
+                if (details.get('usage') != normalized.usage or details.get('response') != normalized.response
+                        or details.get('status') is not None or details.get('request_id') is not None):
+                    raise ValueError()
+                error = CandidateOutputError(normalized, candidate['feedback'])
+                if error.code != details.get('code'):
+                    raise ValueError()
+            else:
+                error = ProviderAccessError(kind, frame['message'], **details)
             if execution is not None:
                 error.execution = execution
         except ValueError:
