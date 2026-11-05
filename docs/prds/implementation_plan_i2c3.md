@@ -100,3 +100,5 @@ alternative remains usable. Failed catalog loading reports a fixed HTTP status
 without publishing response bodies, and browser-request diagnostics include the
 model-status message. Existing request and fetch timeouts are unchanged. These
 controls do not renew unrelated workflow qualification or claim live acceptance.
+
+[Studio label capitalization](implementation_plan_i2c3a.md) defines presentation-only word casing while retaining the catalog contract.

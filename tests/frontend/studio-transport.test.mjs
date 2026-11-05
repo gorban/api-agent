@@ -221,7 +221,7 @@ test('explicit family metadata groups versions and preserves opaque/colliding id
  const c=normalizeCatalog(catalog(rows,{default:'l6'})),groups=modelGroups(c);
  assert.equal(groups.length,5);assert.equal(groups[0].name,'GPT-Luna');
  assert.equal(groups[0].value,'~["family","gpt-luna"]');assert.equal(groups[1].value,'opaque');
- assert.equal(groups[3].name,'opaque-family');assert.equal(groups[4].name,'custom');
+ assert.equal(groups[3].name,'Opaque-Family');assert.equal(groups[4].name,'Custom');
  assert.equal(resolveSelection(c,{model:'["family","gpt-luna"]'}).selection.selected_llm,'["family","gpt-luna"]');
  assert.equal(resolveSelection(c,{family:'gpt-luna',model:''}).selection.selected_llm,'l6');
  assert.equal(resolveSelection(c,{family:'gpt-luna',model:'',version:'5.6'}).selection.selected_llm,'l56');
@@ -249,7 +249,7 @@ test('family provider default uses the configured exact row for reasoning',()=>{
 
 test('family labels remove an exact advertised separated version suffix as one value',()=>{
  const row=(value,label,version,family='family')=>({...model,value,label,version,family});
- for(const [label,version,expected] of [['Family-2024-01-01','2024-01-01','Family'],['Family-alpha-beta','alpha-beta','Family'],['FaMiLy_release-candidate','release-candidate','FaMiLy'],['Different-2024-01-01','2024-01-01','family'],['Family-2024-01-02','2024-01-01','family']]){
+ for(const [label,version,expected] of [['Family-2024-01-01','2024-01-01','Family'],['Family-alpha-beta','alpha-beta','Family'],['FaMiLy_release-candidate','release-candidate','Family'],['Different-2024-01-01','2024-01-01','Family'],['Family-2024-01-02','2024-01-01','Family']]){
   const rows=normalizeCatalog(catalog([row('m',label,version)]));
   assert.equal(modelGroups(rows)[0].name,expected);
   assert.equal(resolveSelection(rows,{model:'m'}).selection.selected_llm,'m');
@@ -277,10 +277,10 @@ test('Studio preserves branded Claude routes without changing full identities or
  const direct=row('', '5.5'),usOld=row('us','4.5'),us=row('us','5.5'),global=row('global','5.5');
  const usLegacy={...row('us','3'),value:'us.anthropic.claude-3-haiku-20240307-v1:0'};
  for(const [rows,names] of [
-  [[usLegacy,usOld,us],['claude-haiku']], [[global],['claude-haiku']], [[direct],['claude-haiku']],
-  [[us,global],['claude-haiku-us','claude-haiku-global']],
-  [[direct,us,global],['claude-haiku','claude-haiku-us','claude-haiku-global']],
-  [[direct,global],['claude-haiku','claude-haiku-global']],
+  [[usLegacy,usOld,us],['Claude-Haiku']], [[global],['Claude-Haiku']], [[direct],['Claude-Haiku']],
+  [[us,global],['Claude-Haiku-Us','Claude-Haiku-Global']],
+  [[direct,us,global],['Claude-Haiku','Claude-Haiku-Us','Claude-Haiku-Global']],
+  [[direct,global],['Claude-Haiku','Claude-Haiku-Global']],
  ]){
   const catalogRows=normalizeCatalog(catalog(rows,{default:rows[0].value}));
   const groups=modelGroups(catalogRows);
@@ -296,8 +296,8 @@ test('Studio preserves branded Claude routes without changing full identities or
 test('Studio keeps generic GPT labels and distinct visible regional targets',()=>{
  const row=(scope)=>({...model,value:scope+'.openai.gpt-6-luna',label:'GPT 6 Luna ['+scope.toUpperCase()+']',family:'gpt-luna-'+scope,version:'6'});
  const us=row('us'),global=row('global');
- assert.equal(modelGroups(normalizeCatalog(catalog([us],{default:us.value})))[0].name,'gpt-luna');
- assert.deepEqual(modelGroups(normalizeCatalog(catalog([us,global],{default:us.value}))).map(group=>group.name),['gpt-luna-us','gpt-luna-global']);
+ assert.equal(modelGroups(normalizeCatalog(catalog([us],{default:us.value})))[0].name,'GPT-Luna');
+ assert.deepEqual(modelGroups(normalizeCatalog(catalog([us,global],{default:us.value}))).map(group=>group.name),['GPT-Luna-Us','GPT-Luna-Global']);
 });
 
 
@@ -313,4 +313,52 @@ test('numeric GPT route families remain distinct from flavor names matching rout
  assert.equal(new Set(groups.map(group=>group.name)).size,3);
  assert.deepEqual(groups.map(group=>group.rows.map(row=>row.selected_llm)),rows.map(row=>[row.value]));
  for(const group of groups)assert.equal(resolveSelection(catalogRows,{family:group.family,model:'',version:group.rows[0].version}).selection.selected_llm,group.rows[0].selected_llm);
+});
+
+test('Studio capitalizes label parts while preserving separators and provider metadata',()=>{
+ const rows=[
+  {...model,value:'Exact/ID_A:v1',label:'gPt--tERRA__cLAuDe/sONNET + aLPHA.βETA gPt4 aGPT éCOLE CLAUDE4',family:null,version:null},
+  {...model,value:'Exact/ID_B:v2',label:'ignored',family:'gpt-terra-direct',version:'2'},
+  {...model,value:'Exact/ID_EMPTY',label:'',family:null,version:null},
+ ];
+ const normalized=normalizeCatalog(catalog(rows,{default:rows[0].value}));
+ const before=structuredClone(normalized);
+ const groups=modelGroups(normalized);
+ assert.deepEqual(groups.map(group=>group.name),['GPT--Terra__Claude/Sonnet + Alpha.Βeta Gpt4 Agpt École Claude4','GPT-Terra','']);
+ assert.deepEqual(normalized,before);
+ assert.deepEqual(groups.map(group=>group.family),[null,'gpt-terra-direct',null]);
+ assert.deepEqual(groups.map(group=>group.rows[0].selected_llm),rows.map(row=>row.value));
+ assert.equal(resolveSelection(normalized,{model:rows[1].value,version:'2'}).selection.selected_llm,rows[1].value);
+});
+
+test('Studio disambiguates case-normalized labels with unmodified full model IDs',()=>{
+ const rows=[
+  {...model,value:'MiXeD.GPT-TERRA/ID_A:v1',label:'cLAuDE-sONNET',family:null,version:null},
+  {...model,value:'Other/ID_B:v2',label:'CLAUDE-SONNET',family:'CLAUDE-SONNET',version:'2'},
+ ];
+ const normalized=normalizeCatalog(catalog(rows,{default:rows[0].value}));
+ const groups=modelGroups(normalized);
+ assert.deepEqual(groups.map(group=>group.name),rows.map(row=>'Claude-Sonnet — '+row.value));
+ assert.deepEqual(groups.map(group=>group.value),[rows[0].value,JSON.stringify(['family','CLAUDE-SONNET'])]);
+ assert.equal(resolveSelection(normalized,{family:'CLAUDE-SONNET',version:'2'}).selection.selected_llm,rows[1].value);
+});
+
+test('Studio keeps normalized aliases unique when a label already resembles an ID suffix',()=>{
+ const rows=[
+  {...model,value:'A',label:'FOO',family:null,version:null},
+  {...model,value:'B',label:'foo',family:null,version:null},
+  {...model,value:'Raw.ID_C',label:'foo — a',family:null,version:null},
+ ];
+ const groups=modelGroups(normalizeCatalog(catalog(rows,{default:'A'})));
+ assert.deepEqual(groups.map(group=>group.name),['Foo — A','Foo — B','Foo — A — Raw.ID_C']);
+ assert.equal(new Set(groups.map(group=>group.name)).size,rows.length);
+ assert.deepEqual(groups.map(group=>group.value),rows.map(row=>row.value));
+});
+
+test('Studio uppercases the first letter after numeric or combining prefixes',()=>{
+ for(const [label,expected] of [['2mODEL','2Model'],['2030','2030'],['́mODEL','́Model'],['2gPT','2Gpt']]){
+  const rows=normalizeCatalog(catalog([{...model,label,version:null,family:null}]));
+  assert.equal(modelGroups(rows)[0].name,expected);
+  assert.equal(rows[0].display_name,label);
+ }
 });

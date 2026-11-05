@@ -80,9 +80,20 @@ export function modelGroups(catalog) {
     const peers = aliases.filter(other => other && other[1] === family);
     group.name = family + (scope && scope !== 'direct' && peers.length > 1 ? '-' + scope : '');
   });
+  groups.forEach(group => {
+    group.name = group.name.replace(/[\p{L}\p{M}\p{N}]+/gu, part => {
+      const lower = part.toLowerCase();
+      if (lower === 'gpt') return 'GPT';
+      if (lower === 'claude') return 'Claude';
+      return lower.replace(/\p{L}/u, first => first.toUpperCase());
+    });
+  });
   const names = groups.map(group => group.name);
+  const used = new Set();
   groups.forEach(group => {
     if (names.filter(name => name === group.name).length > 1) group.name += ' — ' + group.rows[0].selected_llm;
+    while (used.has(group.name)) group.name += ' — ' + group.rows[0].selected_llm;
+    used.add(group.name);
   });
   return groups;
 }
