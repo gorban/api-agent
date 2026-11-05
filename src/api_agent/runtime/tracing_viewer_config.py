@@ -41,7 +41,7 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
     if options.positionals:
         raise ConfigError('Trace viewer requires valid selected dashboard configuration and no positional arguments.')
 
-    def resolve_fields(names, *, fields=None, pinned=None, strict=True):
+    def resolve_fields(names, *, fields=None, pinned=None, strict=True, defer_missing=False):
         fields = dict(schema.fields if fields is None else fields)
         pinned = pinned or {}
         if names - fields.keys():
@@ -65,7 +65,7 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
                        **{name: serialize_value(value.value) for name, value in pinned.items() if name in names}})
         if strict:
             result.raise_for_errors()
-            if result.missing:
+            if result.missing and not defer_missing:
                 raise ConfigError('Trace viewer requires valid selected dashboard configuration and no positional arguments.')
         return replace(result, fields={**result.fields, **{name: value for name, value in pinned.items()
                                                          if name in result.fields}})
@@ -137,7 +137,10 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
         except ValueError:
             raise ConfigError('Invalid trace destination configuration.') from None
 
-    result = resolve_fields(set(names), fields=fields, pinned=pinned)
+    # Validate required route inputs separately before classifying dashboard capability.
+    if strict_endpoint:
+        resolve_fields({selected.endpoint_field}, fields=fields, pinned=pinned)
+    result = resolve_fields(set(names), fields=fields, pinned=pinned, defer_missing=True)
     try:
         selection = admit(result)
     except ConfigError:
@@ -146,7 +149,7 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
         endpoint = selected.endpoint_field
         pinned[endpoint] = ResolvedValue('', 'viewer_auxiliary', True)
         fields[endpoint] = replace(fields[endpoint], default='')
-        result = resolve_fields(set(names), fields=fields, pinned=pinned)
+        result = resolve_fields(set(names), fields=fields, pinned=pinned, defer_missing=True)
         selection = admit(result)
     if selection.declaration.dashboard is None:
         # Export-only credentials must not become dashboard prerequisites, but
@@ -158,6 +161,8 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
             except ConfigError:
                 pass
         raise ConfigError(_dashboard_unavailable(selection, selected, declaration, secret_values=secrets))
+    if result.missing:
+        raise ConfigError('Trace viewer requires valid selected dashboard configuration and no positional arguments.')
 
     def ownership(value):
         descriptor = value.declaration
@@ -232,6 +237,7 @@ def _raw_diagnostic_secrets(profiles, schema, sources):
     names = {name for profile in profiles for name in profile.secret_fields}
     names.update(name for name, field in schema.fields.items() if field.sensitive)
     names.update(profile.dashboard.password_field for profile in profiles if profile.dashboard)
+    names = {name for name in names if type(name) is str}
     fields = [field for name, field in schema.fields.items() if name in names]
     defaults = [field.default for field in fields]
     defaults.extend(row['value'] for field in fields for row in field.conditional_defaults)
