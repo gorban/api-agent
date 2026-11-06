@@ -124,6 +124,23 @@ def test_accounting_source_calls_and_immutability(tmp_path):
         accounting.validate_accounting(bad)
 
 
+@pytest.mark.parametrize('tags,complete', [(frozenset(), True),
+    (frozenset({'requires_owned_ui_session'}), False)])
+def test_owned_ui_call_inventory_is_not_assumed_complete(tags, complete):
+    test = TestIdentity('repo::test.py::test', 'repo', 'test.py',
+                        'test.py::test', tags=tags)
+    artifact = accounting.build_accounting(
+        SimpleNamespace(run_id='00000000-0000-4000-8000-000000000002'),
+        [test], {}, SuiteUsage('run'), [TestResult(test, 'passed')])
+    assert artifact['tests'][0]['calls_complete'] is complete
+    from api_agent.telemetry.estimation import EstimateSnapshot
+    estimate = EstimateSnapshot({}).complete(artifact)[test.id]
+    assert estimate['known_zero'] is complete
+    if not complete:
+        assert estimate['estimated_cost_usd'] is None
+        assert estimate['basis'] == 'unavailable'
+
+
 @pytest.mark.parametrize('change', [lambda v: v.update(version=2), lambda v: v.update(actual_model=2),
  lambda v: v.update(compatibility={}), lambda v: v.update(extra='payload'), lambda v: v.update(rate_card={})])
 def test_metadata_validation(change):

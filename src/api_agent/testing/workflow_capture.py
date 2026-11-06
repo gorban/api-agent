@@ -136,6 +136,17 @@ def provider_capture(provider):
         yield
 
 
+def register_owned_ui_access(boundary, token):
+    """Enroll a test-owned UI credential before its listener can expose it."""
+    from api_agent.testing.authority_scope import current_scope
+    if type(boundary) is not EmissionBoundary or type(token) is not str or not token:
+        raise ContractError('Invalid owned UI credential authority')
+    boundary.register_secret(token)
+    scope = current_scope()
+    if scope is not None:
+        scope.join('ui', boundary)
+
+
 def visit_authorities(visit):
     """Enroll the original live credential owners of a wrapped graph journal."""
     if visit is None:

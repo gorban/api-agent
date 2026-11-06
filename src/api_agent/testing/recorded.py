@@ -168,7 +168,7 @@ def validate_integration_start(tests, config, *, accepted=False, no_std_in=False
                 or ((no_std_in or config.get('NO_STD_IN')) and config.get('START') != 'E2E')):
             raise PermissionError('E2E execution requires explicit acceptance')
         tests = tuple(tests)
-        if not tests or any('requires_ui_session' not in test.tags for test in tests):
+        if not tests or any(not ({'requires_ui_session', 'requires_owned_ui_session'} & set(test.tags)) for test in tests):
             raise ValueError('E2E selections require UI-session tests')
         from .confirmations import confirmation_count
         confirmation_count(config.get('E2E_RERUNS'))

@@ -930,7 +930,9 @@ def _e2e_prepared_ui(request, _test_credential_authority_scope):
     """Every admitted E2E body receives a successfully prepared original UI."""
     if os.environ.get('API_AGENT_INTEGRATION_CONTEXT'):
         data = _test_snapshot(request)
-        if data['config'].get('TUI_MODE') == 'e2e':
+        if (data['config'].get('TUI_MODE') == 'e2e'
+                and getattr(getattr(request, 'node', None), 'get_closest_marker', lambda *_: None)(
+                    'requires_owned_ui_session') is None):
             request.getfixturevalue('ui_provider_session')
 
 
@@ -1238,6 +1240,7 @@ def pytest_runtest_makereport(item, call):
 def pytest_configure(config):
     config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
     config.addinivalue_line("markers", "requires_ui_session: selected integration consumes the UI provider")
+    config.addinivalue_line("markers", "requires_owned_ui_session: selected E2E owns and closes its UI session")
     config.addinivalue_line("markers", "requires_llm: UI integration also consumes the LLM provider")
     config.addinivalue_line("markers", "credential_authorities(*owners): explicitly admit every worker credential producer")
 

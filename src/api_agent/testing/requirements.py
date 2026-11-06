@@ -27,10 +27,12 @@ def plan_integration_requirements(tests):
     """Keep legacy LLM intent; explicit UI-only tests do not consume an LLM.
 
     A UI session test that also consumes an LLM declares ``requires_llm``.
+    An owned-UI E2E test prepares its own browser and provider inside the test.
     Mixed selections union their requirements without changing operation mode.
     """
     tests = tuple(tests)
     return IntegrationRequirementsPlan(
         any('requires_pack_api' in test.tags for test in tests),
         any('requires_ui_session' in test.tags for test in tests),
-        any('requires_ui_session' not in test.tags or 'requires_llm' in test.tags for test in tests))
+        any((not ({'requires_ui_session', 'requires_owned_ui_session'} & set(test.tags)))
+            or 'requires_llm' in test.tags for test in tests))

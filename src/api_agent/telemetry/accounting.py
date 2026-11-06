@@ -165,7 +165,10 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
             compatibility=compatibility(config if test_configs is None else test_configs[test.id]), outcomes=statuses, attempts=len(statuses), calls=own,
             original_estimate=costs.get('estimated_cost_usd'), list_cost_usd=costs.get('list_cost_usd'),
             raw_quota_cost_usd=costs.get('estimated_cost_usd') if costs.get('basis') == 'quota_payment' else None,
-            prediction=prediction, stabilized_estimate=None, calls_complete=calls_complete,
+            # A self-owned UI may call providers outside the framework recorder.
+            # An empty inventory cannot establish zero inference spend there.
+            prediction=prediction, stabilized_estimate=None,
+            calls_complete=calls_complete and 'requires_owned_ui_session' not in getattr(test, 'tags', ()),
             observed_call_count=max(len(own), sum(row['llm_calls'] for row in summary.get('usage_rows', []) if row['session_id'] == test.id))))
     artifact = dict(version=2, estimator_version=5, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
                     quota=quota, tests=records)

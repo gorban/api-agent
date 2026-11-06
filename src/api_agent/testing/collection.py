@@ -53,6 +53,7 @@ class Collector:
     def pytest_configure(self, config):
         config.addinivalue_line("markers", "requires_pack_api: selected integration requires pack API/identity preflight")
         config.addinivalue_line("markers", "requires_ui_session: selected integration consumes the UI provider")
+        config.addinivalue_line("markers", "requires_owned_ui_session: selected E2E owns and closes its UI session")
         config.addinivalue_line("markers", "requires_llm: UI integration also consumes the LLM provider")
         config.addinivalue_line("markers", "feature(name): explicit functional feature for reporting")
         config.addinivalue_line("markers", "unit_platform(*platforms): supported unit host platforms")
