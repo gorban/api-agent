@@ -359,7 +359,7 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             env['PYTHONUNBUFFERED'] = '1'
             backend_descriptor = None
             interaction_descriptor = None
-            if config is not None and config.get('DEBUG') and interaction is not None:
+            if config is not None and interaction is not None:
                 from api_agent.auth.interaction_transport import InteractionServer
                 interaction_server = InteractionServer(interaction)
                 interaction_descriptor = interaction_server.descriptor
@@ -777,8 +777,24 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
         raw('', diagnose(stage, error) + '\n')
         failed = infrastructure_failed = True
     finally:
+        active_error = sys.exception()
+        if active_error is not None and interruption is None:
+            interruption = active_error
+        interaction_cleanup = None
+        interaction_error = None
         if interaction_server is not None:
-            interaction_server.close()
+            try:
+                interaction_server.close()
+            except BaseException as error:
+                from api_agent.providers.control import CleanupPendingError
+                from api_agent.runtime.tasks import offload
+                async def retry_interaction():
+                    await offload(interaction_server.close)
+                interaction_cleanup = CleanupPendingError((interaction_server,), retry_interaction)
+                interaction_error = error
+                failed = infrastructure_failed = True
+                if not isinstance(error, Exception) and interruption is None:
+                    interruption = error
         if backend is not None and not (config is not None and config.get('DEBUG')):
             try:
                 backend.close()
@@ -795,6 +811,23 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     record_local('Integration shared setup backend cleanup', error)
                     chunks.append('Shared setup backend cleanup pending; retry required.\n')
                     failed = infrastructure_failed = True
+        if interaction_cleanup is not None:
+            primary = interruption or publication_error
+            if primary is None:
+                publication_error = interaction_cleanup
+            else:
+                from .suite_lock import _cleanup_receipts
+                receipts = dict.fromkeys(receipt
+                    for source in (primary, publication_error, interaction_error)
+                    for receipt in _cleanup_receipts(source) if receipt is not primary)
+                tail = interaction_cleanup
+                for receipt in receipts:
+                    tail.cleanup_pending = receipt
+                    tail = receipt
+                tail.cleanup_pending = None
+                primary.cleanup_pending = interaction_cleanup
+            record_local('Integration credential interaction cleanup', interaction_error)
+            chunks.append('Credential interaction cleanup pending; retry required.\n')
         try:
             check_cancellation()
             for test in tests:
