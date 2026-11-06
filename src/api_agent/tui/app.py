@@ -61,7 +61,7 @@ def display(value):
 
 
 def display_configuration(field, value):
-    return 'Configured' if field.sensitive and value else display(value)
+    return Text('Configured', justify='right') if field.sensitive and value else display(value)
 
 
 class ButtonFooter(GroupedUserFooter):

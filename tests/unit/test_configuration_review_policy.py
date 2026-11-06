@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from textual.widgets import DataTable
 
 from api_agent.config import compose_schema, load_declarations, load_shared_schema, resolve_config, schema_from_dict
@@ -219,7 +220,8 @@ def test_remote_langfuse_secret_stays_masked_when_saved_and_reopened(tmp_path):
             await pilot.click('#submit')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
-            assert str(table.get_row(name)[1]) == 'Configured'
+            assert table.get_row(name)[1] == Text('Configured', justify='right')
+            assert table.get_row(name)[1].justify == 'right'
             assert secret not in str(table.get_row(name))
             assert app.session.result().values[name] == secret
             assert name in (tmp_path / '.env').read_text()
@@ -240,15 +242,16 @@ def test_sensitive_metadata_rejects_nonboolean_or_nontext_entry(metadata):
         schema_from_dict({'version': 1, 'fields': {'TOKEN': {'type': 'str', **metadata}}})
 
 
-@pytest.mark.parametrize('default', ['', 'synthetic-private-default'])
+@pytest.mark.parametrize('default', ['', 'synthetic-private-default', 'Configured'])
 def test_sensitive_setting_masks_defaults_review_and_cleanup_without_changing_value(tmp_path, default):
     from textual.widgets import Input, Static
     async def scenario():
         app = fixture(tmp_path, fields={'TOKEN': {'type': 'str', 'sensitive': True, 'default': default}})
-        expected = 'Configured' if default else ''
+        expected = Text('Configured', justify='right') if default else ''
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert str(app.screen.query_one(DataTable).get_row('TOKEN')[1]) == expected
+            assert app.screen.query_one(DataTable).get_row('TOKEN')[1] == expected
+            assert getattr(app.screen.query_one(DataTable).get_row('TOKEN')[1], 'justify', None) == ('right' if default else None)
             await pilot.press('e')
             await pilot.pause()
             assert app.screen.query_one(Input).password
@@ -259,12 +262,15 @@ def test_sensitive_setting_masks_defaults_review_and_cleanup_without_changing_va
             await pilot.press('a')
             await pilot.pause()
             assert app.session.result().values['TOKEN'] == default
-            assert str(app.screen.query_one(DataTable).get_row('TOKEN')[1]) == expected
+            assert app.screen.query_one(DataTable).get_row('TOKEN')[1] == expected
+            assert getattr(app.screen.query_one(DataTable).get_row('TOKEN')[1], 'justify', None) == ('right' if default else None)
             app.show_cleanup()
             await pilot.pause()
-            assert str(app.screen.query_one(DataTable).get_row('TOKEN')[2]) == expected
+            assert app.screen.query_one(DataTable).get_row('TOKEN')[2] == expected
+            assert getattr(app.screen.query_one(DataTable).get_row('TOKEN')[2], 'justify', None) == ('right' if default else None)
             app.refresh_rows()
-            assert str(app.screen.query_one(DataTable).get_row('TOKEN')[2]) == expected
+            assert app.screen.query_one(DataTable).get_row('TOKEN')[2] == expected
+            assert getattr(app.screen.query_one(DataTable).get_row('TOKEN')[2], 'justify', None) == ('right' if default else None)
     asyncio.run(scenario())
 
 
@@ -344,3 +350,13 @@ assert 'ordinary diagnostic remains available' in framework
                             capture_output=True, text=True, timeout=20)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_nonsensitive_configured_text_remains_a_literal_value():
+    from api_agent.tui.app import display_configuration
+    schema = schema_from_dict({'version': 1, 'fields': {'LABEL': {'type': 'str'}}})
+
+    value = display_configuration(schema.fields['LABEL'], 'Configured')
+
+    assert value == 'Configured'
+    assert isinstance(value, str)

@@ -2,6 +2,7 @@
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 
 from api_agent.providers.loading import bootstrap_schema
 from api_agent.config import load_shared_schema, resolve_config
@@ -59,7 +60,8 @@ def test_effective_profiles_are_per_identity_literal_and_credential_safe(tmp_pat
     assert lookup[(tests[1].id, 'LLM_DEFAULT_MODEL')][0] == 'workflow-model'
     assert lookup[(tests[1].id, 'LLM_WORKFLOW_TEST_MODEL')] == ('[explicit]', 'interactive')
     assert lookup[(tests[0].id, 'SYNTH_API_MODE')][0] == 'private-value'
-    assert lookup[(tests[0].id, 'PRIVATE_API_MODE')][0] == 'Configured'
+    assert lookup[(tests[0].id, 'PRIVATE_API_MODE')][0] == Text('Configured', justify='right')
+    assert lookup[(tests[0].id, 'PRIVATE_API_MODE')][0].justify == 'right'
     assert 'inherited-private' not in repr(rows) and 'private-auth-value' not in repr(rows)
     assert result.values['LLM_DEFAULT_MODEL'] == 'application-model'
 

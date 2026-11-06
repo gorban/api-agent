@@ -12,6 +12,8 @@ Environment controls and resolved test-worker inputs: [requirements](implementat
 
 ## CLI/configuration review
 
+- [x] Show nonempty sensitive configuration values as a right-aligned **Configured** status, matching **Required**, across configuration review, selected-test review and cleanup. Editing and persistence use the actual masked value; the status is display-only. Empty sensitive values remain empty.
+
 - [x] Human review approved on 2026-10-05 for the current CLI/configuration slice, including declaration-driven review/edit/cleanup, default acknowledgement, source/target behavior and configuration precedence. Duplicate normalized CLI options now fail instead of silently taking the last value. Keep live operation/authentication and integration/E2E follow-through tasks open.
 
 ## Completed runner and authentication follow-through — October 8, 2026
