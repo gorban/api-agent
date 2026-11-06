@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from api_agent.workflows import viewer_build as vb
 from api_agent.workflows.viewer_render import RenderError, ViewBundle, ViewFile
+from test_viewer_configuration import seed_renderer_declaration
 
 
 def entry(root, relative="flow.md.html", heading="# Workflow v2"):
@@ -205,6 +206,7 @@ def test_managed_canonical_selection_accepts_independent_artifacts_but_checks_se
     from api_agent.workflows.definition import load_definition
     import importlib
     runtime = importlib.import_module("api_agent.runtime.view_flow")
+    seed_renderer_declaration(tmp_path)
     minimal_graph(tmp_path)
     minimal_graph(tmp_path, "nested")
     vb.generate_views(tmp_path, renderer=TinyRenderer(), repository_url="//github.com/example/agent")
@@ -235,6 +237,7 @@ def test_managed_view_renders_unstaged_workflow_without_writing_saved_views(tmp_
     from api_agent.workflows import viewer_render
     import importlib
     runtime = importlib.import_module('api_agent.runtime.view_flow')
+    seed_renderer_declaration(tmp_path)
     minimal_graph(tmp_path)
     vb.generate_views(tmp_path, renderer=TinyRenderer(), repository_url='//github.com/example/agent')
     monkeypatch.setattr(runtime, 'load_selected_definition', lambda context: load_definition(
@@ -676,3 +679,30 @@ def test_inventory_accepts_optional_repository_identity_and_missing_source_asset
     monkeypatch.setattr(vb, '_owner_records', lambda *args: ({}, {}))
     monkeypatch.setattr(vb, '_inventory_files', lambda *args, **kwargs: ())
     assert vb._checked_view_inventory(tmp_path) == {}
+
+
+def test_generate_without_renderer_uses_selected_root_dotenv_from_other_directory(tmp_path, monkeypatch):
+    owner = tmp_path / 'owner'
+    caller = tmp_path / 'caller'
+    owner.mkdir()
+    caller.mkdir()
+    minimal_graph(owner)
+    (owner / '.env').write_text('API_AGENT_PLANTUML_JAR=owner-renderer.jar\n')
+    (caller / '.env').write_text('API_AGENT_PLANTUML_JAR=caller-renderer.jar\n')
+    monkeypatch.chdir(caller)
+    monkeypatch.delenv('API_AGENT_PLANTUML_JAR', raising=False)
+    selected_paths = []
+
+    def renderer(path):
+        selected_paths.append(Path(path))
+        return TinyRenderer()
+
+    monkeypatch.setattr(vb, 'default_renderer', renderer)
+    written = vb.generate_views(owner, repository_url='//github.com/example/agent')
+
+    diagram = owner / '.private_resources/diagrams/flow.svg'
+    assert selected_paths == [owner / 'owner-renderer.jar']
+    assert diagram in written
+    assert b'width="1"' in diagram.read_bytes()
+    vb.check_views(owner)
+    assert not (caller / '.private_resources').exists()

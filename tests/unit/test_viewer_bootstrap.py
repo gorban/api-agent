@@ -139,3 +139,27 @@ def test_prepared_viewer_propagates_interrupt_status_without_execution_bootstrap
     assert groups == ('browser',)
     assert viewed == [context]
     assert prepared == []
+
+
+def test_viewer_forwards_declared_cli_renderer_path(monkeypatch, tmp_path):
+    from api_agent.runtime import dependencies, hook_assurance, view_flow
+    monkeypatch.setattr(hook_assurance, 'assure_hook', lambda root: 'present')
+    monkeypatch.setattr(dependencies, 'ensure_environment', lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr(view_flow, 'run_view_flow', lambda context, **kwargs: calls.append(kwargs) or 0)
+    jar = tmp_path / 'renderer.jar'
+    assert main(['--view-flow', '--api-agent-plantuml-jar', str(jar)],
+                base_root=ROOT, _worktrees_verified=True) == 0
+    assert calls == [{'renderer_path': str(jar)}]
+
+
+def test_viewer_cli_can_clear_inherited_renderer_path(monkeypatch):
+    from api_agent.runtime import dependencies, hook_assurance, view_flow
+    monkeypatch.setenv('API_AGENT_PLANTUML_JAR', '/inherited/renderer.jar')
+    monkeypatch.setattr(hook_assurance, 'assure_hook', lambda root: 'present')
+    monkeypatch.setattr(dependencies, 'ensure_environment', lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr(view_flow, 'run_view_flow', lambda context, **kwargs: calls.append(kwargs) or 0)
+    assert main(['--view-flow', '--api-agent-plantuml-jar='],
+                base_root=ROOT, _worktrees_verified=True) == 0
+    assert calls == [{'renderer_path': ''}]

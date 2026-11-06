@@ -145,3 +145,28 @@ not recover older container output.
 Classified scalar capture is limited to 65,536 characters, while recorded workflow
 previews remain capped at 512 characters. Unsupported or unclassified values stay
 withheld. These settings change capture only, not inference inputs or outputs.
+
+
+## Configuration and test process environment
+
+Application settings belong in versioned TOML field declarations. Values follow
+shared and selected-pack defaults, dotenv files, environment, and CLI precedence.
+Bootstrap selectors that locate a runtime or resource pack are resolved before
+that schema exists; their selection contract remains part of launcher help.
+OS paths and desktop capabilities, standardized SDK environment inputs, and
+reserved launcher/worker protocol variables are separate from application settings.
+They do not become additional configuration-review rows merely because a child
+process needs them.
+
+A declaration may opt a non-sensitive field into unit **execution** workers with
+`unit_environment = true` (default: false). The terminal and TUI runners export
+its resolved typed value as an environment literal, so dotenv and CLI overrides
+reach environment-based test fixtures. Paths are anchored before export; booleans
+use `True`/`False`, and JSON objects remain JSON. An inactive or absent opted-in
+field is removed from the execution worker environment, preserving native
+`os.getenv` defaults while clearing stale inherited values. A present explicit
+empty value remains an empty string. Sensitive fields cannot opt in. Only
+collection-neutral fixture inputs, such as artifact output locations, should
+opt in. This execution-only contract does not control pytest collection or change
+its environment, and does not turn internal process-protocol variables into
+user settings.

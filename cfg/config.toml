@@ -8,6 +8,14 @@
 # configuration; explicit .env, environment and CLI assignments still work.
 version = 1
 
+[fields.API_AGENT_PLANTUML_JAR]
+type = "path"
+anchor = "owner_root"
+allow_empty = true
+default = ""
+acknowledge_default = false
+help = "Optional pinned PlantUML renderer JAR for workflow viewing and generation."
+
 [fields.WORKFLOW_GRAPH_TIMEOUT_SECONDS]
 type = "float"
 default = 600.0
@@ -209,6 +217,11 @@ conditional_defaults = [{when = {NO_STD_IN = true}, value = "all"}]
 [fields.RUN_LOG_SOURCE.applies_when]
 TUI_MODE = "run-local"
 COLLECT_ONLY = false
+
+[fields.RESOURCE_PACK_DIR]
+type = "str"
+acknowledge_default = false
+help = "Bootstrap resource-pack selector: set in the process environment or repeat --resource-pack-dir PATH before schema loading; dotenv does not select packs."
 
 [fields.API_AGENT_DIR]
 acknowledge_default = false

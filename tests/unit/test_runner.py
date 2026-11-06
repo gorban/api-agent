@@ -635,3 +635,40 @@ def test_owner_opt_in_does_not_instrument_other_owner_or_inherit_parent_config(t
     assert [test.status for test in result.tests] == ['passed', 'passed'], result.output
     assert result.exit_code == 1
     assert {area.repo: area.complete for area in result.coverage} == {'base': True, 'other': False}
+
+
+def test_resolved_unit_environment_replaces_ambient_values_in_worker(tmp_path, monkeypatch):
+    monkeypatch.setenv('ARTIFACT_ROOT', 'ambient-value')
+    base = fixture_repo(tmp_path / 'base', test='import os\nfrom tiny import VALUE\n'
+        'def test_ok():\n    assert VALUE == 1\n    assert os.environ["ARTIFACT_ROOT"] == "resolved-value"\n')
+    ctx = context(base)
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'),
+                            test_environment={'ARTIFACT_ROOT': 'resolved-value'})
+    assert result.exit_code == 0
+    assert result.tests[0].status == 'passed'
+    assert __import__('os').environ['ARTIFACT_ROOT'] == 'ambient-value'
+
+
+@pytest.mark.parametrize('state, expected', [('missing', 'fallback'), ('inactive', 'fallback'), ('empty', '')])
+def test_unit_environment_preserves_absence_and_explicit_empty_in_real_worker(tmp_path, monkeypatch, state, expected):
+    from api_agent.config import resolve_config, schema_from_dict
+    from api_agent.testing.runner import unit_test_environment
+    monkeypatch.setenv('REPORT_PATH', 'stale-parent-value')
+    schema = schema_from_dict({'version': 1, 'fields': {
+        'ENABLED': {'type': 'bool', 'default': state != 'inactive'},
+        'REPORT_PATH': {'type': 'path', 'anchor': 'owner_root', 'allow_empty': True,
+                        'unit_environment': True, 'applies_when': {'ENABLED': True}},
+    }})
+    provided = {'REPORT_PATH': ''} if state == 'empty' else {'REPORT_PATH': 'stale-parent-value'} if state == 'inactive' else {}
+    resolved = resolve_config(schema, environ=provided, anchors={'owner_root': tmp_path})
+    resolved.raise_for_errors()
+    base = fixture_repo(tmp_path / 'base', test='import os\nfrom tiny import VALUE\n'
+        'def test_ok():\n    assert VALUE == 1\n'
+        f'    assert os.getenv("REPORT_PATH", "fallback") == {expected!r}\n'
+        + ('    assert "REPORT_PATH" not in os.environ\n' if state != 'empty' else ''))
+    ctx = context(base)
+    result = run_unit_tests(ctx, collect_tests(ctx, 'unit'),
+                            test_environment=unit_test_environment(schema, resolved.values))
+    assert result.exit_code == 0, result.output
+    assert result.tests[0].status == 'passed'
+    assert __import__('os').environ['REPORT_PATH'] == 'stale-parent-value'

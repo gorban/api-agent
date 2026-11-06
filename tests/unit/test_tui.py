@@ -1817,3 +1817,34 @@ def test_accept_default_retains_focused_setting_and_updates_source(tmp_path, acc
             assert app.focused_setting()=='SETTING_18' and table.has_focus
             assert table.get_row_at(row)==['SETTING_18','42',app.session._source(tmp_path/'.env')]
     asyncio.run(scenario())
+
+
+def test_tui_forwards_resolved_opted_unit_environment(tmp_path):
+    from api_agent.testing.runner import UnitRunResult
+    identity = Identity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
+    calls = []
+
+    def runner(context, tests, **kwargs):
+        calls.append(kwargs['test_environment'])
+        return UnitRunResult(0, (), (), '')
+
+    async def scenario():
+        app = fixture(tmp_path, mode='unit', collector=lambda *args: [identity], fields={
+            'NO_STD_IN': {'type': 'bool', 'default': True},
+            'REPORT_PATH': {'type': 'str', 'default': 'from-default', 'unit_environment': True},
+        }, argv=['--report-path', 'from-cli'])
+        app.unit_runner = runner
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            from api_agent.testing.selection import SelectionModel
+            app.mode = 'unit'
+            app.selection = SelectionModel([identity])
+            app.show_selection()
+            app.start_unit_run()
+            for _ in range(20):
+                await pilot.pause(.05)
+                if app.unit_result is not None:
+                    break
+            assert calls == [{'REPORT_PATH': 'from-cli'}]
+
+    asyncio.run(scenario())

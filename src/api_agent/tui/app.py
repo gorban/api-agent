@@ -1794,7 +1794,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.run_worker(self._run_units(), group="unit-run", exclusive=True)
 
     async def _run_units(self):
-        from api_agent.testing.runner import run_unit_tests, unit_parallel_jobs
+        from api_agent.testing.runner import run_unit_tests, unit_parallel_jobs, unit_test_environment
         runner = self.unit_runner or run_unit_tests
         try:
             fresh_tests = await self.discover_tests(self.collection_cancel)
@@ -1821,12 +1821,14 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.unit_rows = {test.id: ("PENDING", test.id, "") for test in self.selection.selected_tests}
             self.show_unit_results(self.unit_progress())
             run_values = self.session.result().values
+            test_environment = unit_test_environment(self.session.schema, run_values)
             from api_agent.testing.unit_scope import owner_unit_only, unit_coverage_complete
             result = await asyncio.to_thread(
                 runner, self.context, self.selection.selected_tests,
                 on_event=lambda event: self.call_from_thread(self.unit_event, event),
                 cancel_event=self.collection_cancel,
                 parallel_jobs=unit_parallel_jobs(run_values),
+                **({'test_environment': test_environment} if test_environment else {}),
                 coverage_full=run_values.get('UNIT_COVERAGE_FULL', False),
                 **({'coverage_owner_only': True} if owner_unit_only(self.context, run_values) else {}),
                 **({'successful_test_diagnostics_level': 'info'}

@@ -68,7 +68,7 @@ def _view_context(context, entry):
     return replace(context, workflow_entry=path, workflow_root=root_id, workflow_replacements=())
 
 
-def _prepare_view(context, *, entry=None):
+def _prepare_view(context, *, entry=None, renderer_path=None):
     from api_agent.workflows.viewer_projection import project_view
     from api_agent.workflows.viewer_render import (StaleViewError, build_view_bundle,
                                                     capture_repository_sources)
@@ -86,18 +86,28 @@ def _prepare_view(context, *, entry=None):
     projection = project_view(definition)
     canonical = _canonical_selection(context, definition, projection)
     repositories, repository_sources = capture_repository_sources(definition.roots)
+    renderer_options = {}
+    if not canonical:
+        from api_agent.workflows.viewer_config import resolve_renderer_path
+        from api_agent.workflows.viewer_render import default_renderer
+        if renderer_path is None:
+            renderer_path = resolve_renderer_path(context)
+        renderer_options['renderer'] = default_renderer(renderer_path)
     try:
         bundle = build_view_bundle(projection, roots=definition.roots, verify=canonical,
                                    check_orphans=False,
-                                   repositories=repositories, repository_sources=repository_sources)
+                                   repositories=repositories, repository_sources=repository_sources,
+                                   **renderer_options)
     except StaleViewError:
         # Build a temporary view of the captured working tree. The saved static
         # diagrams and the commit-time check remain untouched.
         from api_agent.workflows.viewer_build import prepare_renderer
-        import os
+        from api_agent.workflows.viewer_config import resolve_renderer_path
         from api_agent.workflows.viewer_render import PlantUMLRenderer, default_renderer
         print('Workflow diagrams changed; preparing a temporary view.', flush=True)
-        renderer = (default_renderer() if os.environ.get('API_AGENT_PLANTUML_JAR')
+        if renderer_path is None:
+            renderer_path = resolve_renderer_path(context)
+        renderer = (default_renderer(renderer_path) if renderer_path
                     else PlantUMLRenderer(prepare_renderer()))
         bundle = build_view_bundle(projection, roots=definition.roots, verify=False,
                                    renderer=renderer, check_orphans=False,
@@ -157,11 +167,12 @@ async def view_flow(context, *, entry=None):
     await _serve_view(_prepare_view(context) if entry is None else _prepare_view(context, entry=entry))
 
 
-def run_view_flow(context, *, entry=None):
+def run_view_flow(context, *, entry=None, renderer_path=None):
     try:
         from api_agent.runtime.frontend import ensure_source_frontend
         ensure_source_frontend()
-        prepared = _prepare_view(context) if entry is None else _prepare_view(context, entry=entry)
+        options = {'renderer_path': renderer_path} if renderer_path is not None else {}
+        prepared = _prepare_view(context, **options) if entry is None else _prepare_view(context, entry=entry, **options)
         asyncio.run(_serve_view(prepared))
     except KeyboardInterrupt:
         return 130

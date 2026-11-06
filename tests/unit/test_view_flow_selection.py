@@ -11,6 +11,8 @@ from api_agent.workflows.viewer_projection import project_view
 from api_agent.workflows import viewer_render
 from api_agent.workflows.viewer_render import RenderError
 
+from test_viewer_configuration import seed_renderer_declaration
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -47,7 +49,8 @@ def test_selected_replacement_uses_temporary_projection(tmp_path):
     assert not _canonical_selection(context(tmp_path), definition, projection)
 
 
-def test_temporary_view_honors_explicit_renderer_and_rejects_other_errors(tmp_path, monkeypatch):
+@pytest.mark.parametrize('resolved_path', [None, '/resolved/renderer.jar'])
+def test_temporary_view_honors_explicit_renderer_and_rejects_other_errors(tmp_path, monkeypatch, resolved_path):
     from api_agent.runtime import view_flow
     from api_agent.workflows import viewer_build
     definition = SimpleNamespace(roots={'base': tmp_path})
@@ -58,7 +61,8 @@ def test_temporary_view_honors_explicit_renderer_and_rejects_other_errors(tmp_pa
     monkeypatch.setattr('api_agent.workflows.viewer_projection.project_view', lambda definition: projection)
     monkeypatch.setattr(viewer_render, 'capture_repository_sources', lambda roots: ({}, ()))
     monkeypatch.setenv('API_AGENT_PLANTUML_JAR', '/explicit/renderer.jar')
-    monkeypatch.setattr(viewer_render, 'default_renderer', lambda: selected_renderer)
+    renderer_paths = []
+    monkeypatch.setattr(viewer_render, 'default_renderer', lambda path: renderer_paths.append(path) or selected_renderer)
     monkeypatch.setattr(viewer_build, 'prepare_renderer', lambda: pytest.fail('explicit renderer ignored'))
     calls = []
     def build(*args, **kwargs):
@@ -67,7 +71,8 @@ def test_temporary_view_honors_explicit_renderer_and_rejects_other_errors(tmp_pa
             raise viewer_render.StaleViewError('stale')
         return bundle
     monkeypatch.setattr(viewer_render, 'build_view_bundle', build)
-    assert view_flow._prepare_view(object())[3] is bundle
+    assert view_flow._prepare_view(object(), renderer_path=resolved_path)[3] is bundle
+    assert renderer_paths == [resolved_path or '/explicit/renderer.jar']
     assert calls[1]['renderer'] is selected_renderer and calls[1]['verify'] is False
 
     def invalid(*args, **kwargs):
@@ -105,6 +110,7 @@ def test_pack_owned_resource_generates_temporary_selected_diagram(tmp_path, monk
     (pack / 'prompt.md').write_text('Synthetic selected prompt.\n')
     (pack / 'config.toml').write_text('version=1\n')
     (pack / 'pack.toml').write_text('version=1\nid="synthetic-pack"\nconfig="config.toml"\n')
+    seed_renderer_declaration(base)
     source_before = {path: path.read_bytes() for path in base.rglob('*') if path.is_file()}
 
     class StubRenderer:
@@ -112,7 +118,7 @@ def test_pack_owned_resource_generates_temporary_selected_diagram(tmp_path, monk
             return (b'<?xml version="1.0"?>\n'
                     b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"/>')
 
-    monkeypatch.setattr(viewer_render, 'default_renderer', StubRenderer)
+    monkeypatch.setattr(viewer_render, 'default_renderer', lambda *args: StubRenderer())
 
     definition, projection, canonical, bundle, repository_sources = _prepare_view(load_launch_context(base, pack))
 
@@ -147,6 +153,7 @@ def test_owner_inline_prompt_uses_temporary_diagram_when_saved_one_is_missing(tm
     (base / 'schema.json').write_text('{"type":"object"}')
     (pack / 'config.toml').write_text('version=1\n')
     (pack / 'pack.toml').write_text('version=1\nid="synthetic-pack"\nconfig="config.toml"\n')
+    seed_renderer_declaration(base)
     launch = load_launch_context(base, pack)
     definition = load_selected_definition(launch)
     projection = project_view(definition)
@@ -194,6 +201,7 @@ source="../library"
 distribution="synthetic-workflow"
 resource="synthetic_workflows"
 ''')
+    seed_renderer_declaration(runtime)
     launch = load_launch_context(runtime, pack)
     definition = load_selected_definition(launch)
     projection = project_view(definition)
@@ -364,3 +372,21 @@ def test_explicit_source_mapping_does_not_borrow_installed_inventory(installed_v
     bundle = object()
     monkeypatch.setattr(viewer_render, 'build_view_bundle', lambda *args, **kwargs: bundle)
     assert _prepare_view(selected, entry=entry)[3] is bundle
+
+
+def test_noncanonical_view_uses_explicit_resolved_renderer(tmp_path, monkeypatch):
+    from api_agent.runtime import view_flow
+    definition = SimpleNamespace(roots={'base': tmp_path})
+    projection, selected_renderer, bundle = object(), object(), object()
+    monkeypatch.setattr(view_flow, 'load_selected_definition', lambda context: definition)
+    monkeypatch.setattr(view_flow, '_canonical_selection', lambda *args: False)
+    monkeypatch.setattr('api_agent.workflows.viewer_projection.project_view', lambda definition: projection)
+    monkeypatch.setattr(viewer_render, 'capture_repository_sources', lambda roots: ({}, ()))
+    received_paths, received_options = [], []
+    monkeypatch.setattr(viewer_render, 'default_renderer',
+                        lambda path: received_paths.append(path) or selected_renderer)
+    monkeypatch.setattr(viewer_render, 'build_view_bundle',
+                        lambda *args, **kwargs: received_options.append(kwargs) or bundle)
+    assert view_flow._prepare_view(object(), renderer_path='/resolved/renderer.jar')[3] is bundle
+    assert received_paths == ['/resolved/renderer.jar']
+    assert received_options[0]['renderer'] is selected_renderer
