@@ -8,6 +8,8 @@ Planned viewer-mode/menu consolidation: [View flow and Trace viewer](implementat
 
 - [x] Implement configuration row-by-row default acceptance/typed edits and conditional revalidation, real `.env` cleanup, Textual mode/focus/footer controls, real pytest collection/selector filtering, overlapping All/tag/file/test selection, and prompt cancellation. At B1, controlled execution and authentication setup were unavailable; the completed follow-through below supersedes that limitation without closing the full application/E2E tasks. Human checkpoint B1 accepted on 2026-10-04 after iterative user review and suite-discovery verification; future unavailable operations remain open.
 
+Environment controls and resolved test-worker inputs: [requirements](implementation_plan_a16.md).
+
 ## CLI/configuration review
 
 - [x] Human review approved on 2026-10-05 for the current CLI/configuration slice, including declaration-driven review/edit/cleanup, default acknowledgement, source/target behavior and configuration precedence. Duplicate normalized CLI options now fail instead of silently taking the last value. Keep live operation/authentication and integration/E2E follow-through tasks open.

@@ -230,13 +230,44 @@ def _production_sources(context, root):
                                if Path(path).is_dir() and any(Path(path).rglob('*.py'))))
 
 
+
+def unit_test_environment(schema, values):
+    """Export resolved collection-neutral fixture inputs; None removes stale keys."""
+    from api_agent.config.editor import serialize_value
+    selected = {}
+    for name, declaration in schema.fields.items():
+        if declaration.unit_environment:
+            if declaration.sensitive:
+                raise ValueError('sensitive fields cannot use unit_environment')
+            if name not in values:
+                selected[name] = None
+            else:
+                value = values[name]
+                selected[name] = '' if value is None else serialize_value(value)
+    return _test_environment(selected)
+
+
+def _test_environment(values):
+    """Validate child environment literals before collection or process startup."""
+    from collections.abc import Mapping
+    if values is None:
+        return {}
+    if not isinstance(values, Mapping) or any(
+            not isinstance(key, str) or not key.isidentifier() or (value is not None and (
+                not isinstance(value, str) or any(character in value for character in ('\0', '\r', '\n'))))
+            for key, value in values.items()):
+        raise ValueError('test_environment requires identifier keys and single-line string values or None')
+    return dict(values)
+
+
 @suite_locked
-def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, coverage_owner_only=False, successful_test_diagnostics_level='warning', evidence_boundary=None):
+def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, coverage_owner_only=False, successful_test_diagnostics_level='warning', evidence_boundary=None, test_environment=None):
     """Run selected collected identities once; preserve owner configs and coverage scope.
 
     Callbacks run on the calling thread. Cancellation terminates and reaps only
     owned process groups. Ordinary skips and incomplete selected tests remain nonpassing.
     """
+    test_environment = _test_environment(test_environment)
     started_at = time.monotonic()
     if successful_test_diagnostics_level not in ('warning', 'info'):
         raise ValueError('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL must be warning or info.')
@@ -260,6 +291,11 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     owner_roots = composition_roots(context) if ordered else (base, owner)
     roots = {repository_label(context, root): root for root in dict.fromkeys(owner_roots)}
     env = os.environ.copy()
+    for name, value in test_environment.items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
     env['API_AGENT_SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL'] = successful_test_diagnostics_level
     from .diagnostics import CredentialScrubber
     stderr_scrub = CredentialScrubber(env, boundary=evidence_boundary)

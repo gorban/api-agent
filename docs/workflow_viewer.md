@@ -136,7 +136,11 @@ relative. Repository identity, the adapter and its allowed mappings are bound in
 the saved diagram provenance.
 
 Preparation uses an owned development cache; `API_AGENT_PLANTUML_JAR` can point
-to an already downloaded JAR with the required digest. The JAR and Java runtime
+to an already downloaded JAR with the required digest. This declared path setting
+uses the usual dotenv, environment, and CLI precedence; `--view-flow` accepts
+`--api-agent-plantuml-jar PATH`. The generation command accepts the same option;
+its dotenv files and relative paths use `--root`. Viewer paths use the selected
+owner root. An explicit empty CLI value selects the default cache. The JAR and Java runtime
 are not shipped in the application wheel; diagrams add no bundled fonts. Generation uses temporary
 PlantUML input and leaves all source changes unstaged. Review declaration,
 companion and SVG changes together before staging them. Normal agent execution

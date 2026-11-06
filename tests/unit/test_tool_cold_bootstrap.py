@@ -104,7 +104,7 @@ def test_terminal_exact_selection_validates_required_tool_inputs(selection_fixtu
     from dataclasses import replace
     context, _ = selection_fixture
     context = replace(context, launcher_root=context.base_root)
-    context.config_path.write_text("version=1\n")
+    context.config_path.write_text('version=1\n[fields.REPORT_PATH]\ntype="str"\nunit_environment=true\n')
     root = Path(__file__).resolve().parents[2]
     selected = [TestIdentity(DUAL, 'base', 'tests/test_flow.py', 'tests/test_flow.py::test_dual')]
     monkeypatch.setattr('api_agent.runtime.resource_pack.load_launch_context', Mock(return_value=context))
@@ -128,7 +128,7 @@ def test_terminal_exact_selection_validates_required_tool_inputs(selection_fixtu
                 return replace(bound, missing=('API_ENDPOINT', 'API_2_ENDPOINT'))
             return bound
         monkeypatch.setattr('api_agent.config.tool_resolution.bind_operation_tools', bind_selected)
-    args = ['--tui-mode=' + mode, '--no-std-in', '--start', '--skip-allure-reporting', DUAL]
+    args = ['--tui-mode=' + mode, '--no-std-in', '--start', '--skip-allure-reporting', '--report-path=resolved-cli-path', DUAL]
     if provided and mode != 'unit':
         args += ['--api-endpoint=https://one.invalid', '--api-2-endpoint=https://two.invalid']
 
@@ -138,6 +138,8 @@ def test_terminal_exact_selection_validates_required_tool_inputs(selection_fixtu
         assert status == 0
         run.assert_called_once()
         assert run.call_args.args[1] == selected
+        if mode == 'unit':
+            assert run.call_args.kwargs['test_environment'] == {'REPORT_PATH': 'resolved-cli-path'}
     else:
         assert status != 0
         run.assert_not_called()

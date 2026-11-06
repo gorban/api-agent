@@ -662,8 +662,11 @@ def generate_views(root: Path, *, renderer: PlantUMLRenderer | None = None,
         for owner, snapshot in output_scopes.items():
             _assert_output_unchanged(snapshot, owner, exclude=exclude)
 
+    if renderer is None:
+        from .viewer_config import resolve_renderer_path
+        renderer = default_renderer(resolve_renderer_path(root=root))
     files = _inventory_files(root, projections, contexts, lambda roots: _recorded_owner_inputs(roots, records),
-                             renderer=renderer or default_renderer(), verify=False, hosted_selected=False)
+                             renderer=renderer, verify=False, hosted_selected=False)
     assert_admitted_unchanged()
     assert_outputs_unchanged()
     planned = [(path, None, body) for path, body in sorted(config_outputs.items())]
@@ -997,14 +1000,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--fix-orphans", action="store_true")
     parser.add_argument("--repository-url")
+    parser.add_argument("--api-agent-plantuml-jar", help="Optional declared renderer JAR path for generation")
     parser.add_argument("--confirm-orphan", type=Path, action="append", default=[])
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
             print(prepare_renderer())
         elif args.command == "generate":
+            renderer_options = {}
+            if args.api_agent_plantuml_jar is not None:
+                from .viewer_config import resolve_renderer_path
+                path = resolve_renderer_path(root=args.root,
+                    argv=['--api-agent-plantuml-jar=' + args.api_agent_plantuml_jar])
+                renderer_options['renderer'] = default_renderer(path)
             for path in generate_views(args.root, fix_orphans=args.fix_orphans,
-                                       confirmed_orphans=tuple(args.confirm_orphan), repository_url=args.repository_url):
+                                       confirmed_orphans=tuple(args.confirm_orphan), repository_url=args.repository_url,
+                                       **renderer_options):
                 print(path)
         else:
             check_views(args.root)

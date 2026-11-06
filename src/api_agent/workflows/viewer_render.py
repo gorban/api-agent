@@ -685,8 +685,10 @@ def _asset_root() -> Path:
     raise RenderError("workflow viewer assets missing")
 
 
-def default_renderer() -> "PlantUMLRenderer":
-    path = os.environ.get("API_AGENT_PLANTUML_JAR")
+def default_renderer(path=None) -> "PlantUMLRenderer":
+    if path is None:
+        from .viewer_config import resolve_renderer_path
+        path = resolve_renderer_path()
     if path:
         jar = Path(path)
     else:

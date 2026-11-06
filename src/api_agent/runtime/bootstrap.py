@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 
-def _extract_option(argv, names, *, multiple=False):
+def _extract_option(argv, names, *, multiple=False, allow_empty=False):
     """Consume a bootstrap option without changing the remaining argument order."""
     remaining, selected = [], [] if multiple else None
     index = 0
@@ -26,7 +26,7 @@ def _extract_option(argv, names, *, multiple=False):
                 raise ValueError(f'{name} requires a directory value')
             value = argv[index]
             index += 1
-        if not value.strip() or value.startswith('--'):
+        if (not allow_empty and not value.strip()) or value.startswith('--'):
             raise ValueError(f'{name} requires a nonempty directory value')
         if multiple:
             selected.append(value)
@@ -256,9 +256,11 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return run_trace_viewer(context, values)
         if view_flow_requested:
             view_arguments, _ = _extract_option(argv, {'--api-agent-dir', '--api_agent_dir'})
+            view_arguments, renderer_override = _extract_option(
+                view_arguments, {'--api-agent-plantuml-jar', '--api_agent_plantuml_jar', '--API_AGENT_PLANTUML_JAR'}, allow_empty=True)
             view_entry = _validate_view_flow_arguments(view_arguments)
             if '--help' in view_arguments or '-h' in view_arguments:
-                print('Usage: ./launch.sh --view-flow [FLOW.md.html] [--resource-pack-dir PATH] [--debug] [--no-std-in]\n'
+                print('Usage: ./launch.sh --view-flow [FLOW.md.html] [--resource-pack-dir PATH] [--api-agent-plantuml-jar PATH] [--debug] [--no-std-in]\n'
                       'Open the selected workflow in a managed headed browser without app or provider startup.\n'
                       'Omit the flow path for the selected application; relative paths use the current directory.\n'
                       'Requires mise; browser prerequisites are prepared only when viewing.')
@@ -267,8 +269,12 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             status = ensure_environment(context, ['--view-flow', *argv], groups=('browser',), **handoff_options)
             if status is not None:
                 return status
+            from api_agent.workflows.viewer_config import resolve_renderer_path
+            renderer_arguments = [] if renderer_override is None else ['--api-agent-plantuml-jar', renderer_override]
+            renderer_path = resolve_renderer_path(context, argv=renderer_arguments)
+            renderer_options = {'renderer_path': renderer_path} if renderer_path or renderer_override is not None else {}
             from api_agent.runtime.view_flow import run_view_flow
-            return run_view_flow(context) if view_entry is None else run_view_flow(context, entry=view_entry)
+            return run_view_flow(context, **renderer_options) if view_entry is None else run_view_flow(context, entry=view_entry, **renderer_options)
         shared = load_shared_schema(context.base_root)
         schema = load_context_schema(context, shared)
         dotenv = {}
@@ -366,7 +372,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             if status is not None:
                 return status
             from api_agent.testing.collection import collect_tests
-            from api_agent.testing.runner import run_unit_tests, format_unit_summary, unit_parallel_jobs
+            from api_agent.testing.runner import run_unit_tests, format_unit_summary, unit_parallel_jobs, unit_test_environment
             tests = collect_tests(context, 'unit', result.positionals)
             from api_agent.testing.unit_scope import unit_default_tests, owner_unit_only, EMPTY_OWNER_UNITS
             if not result.positionals:
@@ -388,8 +394,10 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                     raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
             from api_agent.testing.diagnostics import CredentialScrubber
             unit_scrubber = CredentialScrubber(result.values)
+            test_environment = unit_test_environment(schema, result.values)
             execution = run_unit_tests(context, tests, evidence_boundary=unit_scrubber.boundary, output=lambda chunk: print(chunk, end='', flush=True),
                                        parallel_jobs=unit_parallel_jobs(result.values),
+                                       **({'test_environment': test_environment} if test_environment else {}),
                                        coverage_full=result.values.get('UNIT_COVERAGE_FULL', False),
                                        **({'coverage_owner_only': True} if owner_unit_only(context, result.values) else {}),
                                        **({'successful_test_diagnostics_level': 'info'}
