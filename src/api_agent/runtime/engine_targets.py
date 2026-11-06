@@ -62,7 +62,9 @@ class EngineTarget:
         if selected is None:
             raise EngineTargetError('Selected engine executable is unavailable.')
         try:
-            selected = str(Path(selected).resolve(strict=True))
+            # Preserve argv[0] for symlinked/multicall engine shims. Pin and
+            # revalidate the bytes reached through this invocation path below.
+            selected = str(Path(selected).absolute())
             digest = sha256(Path(selected).read_bytes()).hexdigest()
             identity, transport = verifier(environment, executable=selected, cancelled=cancelled)
         except Exception as error:

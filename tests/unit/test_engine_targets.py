@@ -94,6 +94,35 @@ def test_capture_refuses_missing_executable_and_failed_handshake(tmp_path):
         EngineTarget.capture('first', str(executable), {}, verifier=Mock(side_effect=OSError()))
 
 
+def test_capture_preserves_multicall_engine_invocation_and_refuses_retargeting(tmp_path):
+    import subprocess
+    import sys
+    dispatcher = tmp_path / 'dispatcher'
+    dispatcher.write_text(f'#!{sys.executable}\n'
+        'import sys\nfrom pathlib import Path\n'
+        'if Path(sys.argv[0]).name != "docker": sys.exit(127)\n'
+        'print("unix:///synthetic-engine.sock")\n')
+    dispatcher.chmod(0o700)
+    docker = tmp_path / 'docker'
+    docker.symlink_to(dispatcher)
+
+    def verify(environment, *, executable, cancelled):
+        transport = subprocess.check_output([executable, 'context', 'inspect'],
+                                           env=environment, text=True).strip()
+        return 'a' * 64, transport
+
+    target = EngineTarget.capture('ordinary', str(docker), {}, verifier=verify)
+    assert target.executable == str(docker)
+    target.verify(verifier=verify)
+    replacement = tmp_path / 'replacement'
+    replacement.write_text('#!/bin/sh\nexit 0\n')
+    replacement.chmod(0o700)
+    docker.unlink()
+    docker.symlink_to(replacement)
+    with pytest.raises(EngineTargetError, match='identity changed'):
+        target.verify(verifier=verify)
+
+
 def test_bounded_child_uses_target_transport_and_returns_output(engines, tmp_path):
     (target, _), _, _ = engines
     runner = Mock(return_value='result')
