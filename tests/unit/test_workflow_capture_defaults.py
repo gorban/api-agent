@@ -10,6 +10,64 @@ from api_agent.workflows.capture_authority import resolve_capture_services
 from test_workflow_capture_context import snapshot
 
 
+@pytest.fixture
+def managed_owned_worker(monkeypatch):
+    from api_agent.testing import provider_setup
+    monkeypatch.setenv('API_AGENT_INTEGRATION_CONTEXT', 'synthetic-context')
+    data = snapshot()
+    data['config']['TUI_MODE'] = 'e2e'
+    monkeypatch.setattr(provider_setup, '_test_snapshot', lambda _: data)
+    request = SimpleNamespace(node=SimpleNamespace(get_closest_marker=lambda _: None), fixturenames=())
+    fixture = provider_setup._test_credential_authority_scope.__wrapped__(request)
+    next(fixture)
+    try:
+        yield current_scope()
+    finally:
+        fixture.close()
+
+
+@pytest.mark.asyncio
+async def test_owned_capture_exits_inside_async_task_before_pytest_teardown(managed_owned_worker):
+    import asyncio
+    from api_agent.testing.workflow_capture import provider_capture, register_owned_ui_access
+    authority = EmissionBoundary()
+    register_owned_ui_access(authority, 'synthetic-owned-ui-token')
+    with provider_capture(SimpleNamespace(emissions=authority)):
+        await asyncio.sleep(0)
+        lease = managed_owned_worker.freeze(credential_only=True)
+        lease.release()
+    assert authority in managed_owned_worker.authorities()
+
+
+def test_owned_ui_access_joins_real_managed_freeze_and_redacts_token(monkeypatch):
+    from api_agent.testing import provider_setup
+    from api_agent.testing.workflow_capture import provider_capture, register_owned_ui_access
+    monkeypatch.setenv('API_AGENT_INTEGRATION_CONTEXT', 'synthetic-context')
+    data = snapshot()
+    data['config']['TUI_MODE'] = 'e2e'
+    monkeypatch.setattr(provider_setup, '_test_snapshot', lambda _: data)
+    request = SimpleNamespace(node=SimpleNamespace(get_closest_marker=lambda _: None), fixturenames=())
+    fixture = provider_setup._test_credential_authority_scope.__wrapped__(request)
+    next(fixture)
+    try:
+        scope = current_scope()
+        from api_agent.telemetry.privacy import ContentPolicy
+        authority = EmissionBoundary(ContentPolicy(True))
+        with provider_capture(SimpleNamespace(emissions=authority)):
+            with pytest.raises(ContractError, match='unavailable'):
+                scope.freeze(credential_only=True)
+            register_owned_ui_access(authority, 'synthetic-owned-ui-token')
+            lease = scope.freeze(credential_only=True)
+            try:
+                assert 'synthetic-owned-ui-token' in lease.secrets
+                assert authority.content_export({'message': 'synthetic-owned-ui-token'}) == {
+                    'message': '[REDACTED]'}
+            finally:
+                lease.release()
+    finally:
+        fixture.close()
+
+
 @pytest.mark.parametrize('manifest', [None, ('coordinator',), ('workflow',), ('ui',), ('tools', 'ui')])
 @pytest.mark.parametrize('log', [False, True])
 def test_managed_worker_always_binds_workflow_capture(monkeypatch, manifest, log):
@@ -267,3 +325,20 @@ def test_explicit_managed_manifest_remains_closed_even_when_other_fixtures_are_p
     from api_agent.testing.workflow_capture import managed_workflow_manifest
     assert managed_workflow_manifest(('coordinator',), fixture_names=('workflow_tools',), mode='e2e') == ('workflow',)
     assert managed_workflow_manifest(('ui',), fixture_names=('workflow_tools',)) == ('ui', 'workflow')
+
+
+@pytest.mark.parametrize('boundary,token', [(None, 'secret'),
+    (EmissionBoundary(), None), (EmissionBoundary(), '')])
+def test_owned_ui_rejects_invalid_credential_authority(boundary, token):
+    from api_agent.testing.workflow_capture import register_owned_ui_access
+    with pytest.raises(ContractError, match='Invalid owned UI'):
+        register_owned_ui_access(boundary, token)
+
+
+def test_unmanaged_owned_ui_registers_secret_without_a_managed_scope():
+    from api_agent.testing.workflow_capture import register_owned_ui_access
+    from api_agent.telemetry.privacy import ContentPolicy
+    assert current_scope() is None
+    boundary = EmissionBoundary(ContentPolicy(True))
+    register_owned_ui_access(boundary, 'owned-ui-secret')
+    assert 'owned-ui-secret' not in str(boundary.content_export({'token': 'owned-ui-secret'}))

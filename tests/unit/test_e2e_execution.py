@@ -131,6 +131,30 @@ def test_worker_prepares_ui_before_every_e2e_body(monkeypatch, has_context, mode
         request.getfixturevalue.assert_called_once_with('ui_provider_session')
 
 
+def test_worker_owned_e2e_keeps_capture_but_does_not_prepare_public_ui(monkeypatch):
+    from types import SimpleNamespace
+    from api_agent.testing import provider_setup
+    monkeypatch.setenv('API_AGENT_INTEGRATION_CONTEXT', 'synthetic-owned-context')
+    monkeypatch.setattr(provider_setup, '_test_snapshot',
+                        lambda request: {'config': {'TUI_MODE': 'e2e'}})
+    request = SimpleNamespace(getfixturevalue=Mock(),
+        node=SimpleNamespace(get_closest_marker=lambda name: object() if name == 'requires_owned_ui_session' else None))
+    provider_setup._e2e_prepared_ui.__wrapped__(request, None)
+    request.getfixturevalue.assert_not_called()
+
+
+def test_owned_ui_marker_is_admitted_without_public_provider_preflight(tmp_path):
+    from dataclasses import replace
+    from api_agent.testing.recorded import validate_integration_start
+    from api_agent.testing.requirements import plan_integration_requirements
+    from api_agent.testing.workflow_capture import managed_workflow_manifest
+    context, first, config = selected(tmp_path)
+    owned = replace(first, tags=frozenset({'requires_owned_ui_session'}))
+    assert validate_integration_start((owned,), config, accepted=True) == (owned,)
+    assert plan_integration_requirements((owned,)).provider_kinds == frozenset()
+    assert 'ui' in managed_workflow_manifest(None, mode='e2e')
+
+
 def test_ui_and_tools_dispose_before_shared_fixture_loop_closes():
     import asyncio
     from types import SimpleNamespace

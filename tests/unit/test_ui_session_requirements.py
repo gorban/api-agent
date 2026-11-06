@@ -8,7 +8,8 @@ from api_agent.testing.requirements import plan_integration_requirements
     ([('requires_ui_session',)], {'ui'}),
     ([('requires_ui_session', 'requires_llm')], {'ui','llm'}),
     ([('requires_ui_session',), ()], {'ui','llm'}),
-    ([('requires_ui_session','requires_pack_api')], {'ui','api','upstream','access'})])
+    ([('requires_ui_session','requires_pack_api')], {'ui','api','upstream','access'}),
+    ([('requires_owned_ui_session',)], set())])
 def test_explicit_provider_intent(tags, kinds):
     plan = plan_integration_requirements(SimpleNamespace(tags=item) for item in tags)
     assert plan.provider_kinds == kinds

@@ -139,3 +139,18 @@ for end-of-test inspection.
 Allure stores the screenshot once and places its reference beneath the uniquely
 matching User turn, even after final accounting regrouping. Missing or ambiguous
 owners remain explicitly Unattached. Existing finalized reports are unchanged.
+## Self-owned UI sessions
+
+Pack E2E tests that build and close their own browser, UI and provider lifecycle
+may declare `requires_owned_ui_session` instead of `requires_ui_session`.
+The normal E2E approval, recording, confirmation and credential-authority gates
+still apply. The marker suppresses the framework's additional prepared UI.
+Register the owned UI access token with
+`api_agent.testing.workflow_capture.register_owned_ui_access` before exposing
+the listener, and enroll other credential producers through the normal capture
+scope. The test remains responsible for bounded cleanup.
+
+Such tests may call providers outside the framework recorder. Their call
+inventory is conservatively incomplete for cost estimation; an empty recorder
+does not establish zero spend. Complete provider accounting remains a separate
+integration requirement.
