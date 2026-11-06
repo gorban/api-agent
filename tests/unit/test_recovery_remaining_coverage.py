@@ -1,7 +1,7 @@
 """Failure ownership and private DEBUG interaction joins beyond successful login."""
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -91,7 +91,8 @@ def test_lock_acquired_after_deadline_never_retrieves(monkeypatch):
     lock.release.assert_called_once_with()
 
 
-def test_debug_runner_owns_private_interaction_listener_and_snapshot(tmp_path, monkeypatch):
+@pytest.mark.parametrize('debug', [False, True])
+def test_runner_owns_private_interaction_listener_and_snapshot(tmp_path, monkeypatch, debug):
     from test_integration_runner import fixture_repo, context
     from api_agent.testing.collection import collect_tests
     from api_agent.testing.integration import run_integration_tests
@@ -114,9 +115,54 @@ def test_debug_runner_owns_private_interaction_listener_and_snapshot(tmp_path, m
     ctx = context(base)
     interaction = SimpleNamespace(open=Mock(side_effect=AssertionError('No login requested')))
     result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
-                                   config={'DEBUG': True}, interaction=interaction)
+                                   config={'DEBUG': debug}, interaction=interaction)
     assert result.exit_code == 0 and len(result.tests) == 1 and result.tests[0].status == 'passed'
     interaction.open.assert_not_called()
     assert len(servers) == 1 and servers[0].closed and not servers[0].thread.is_alive()
     with pytest.raises(OSError):
         socket.create_connection(('127.0.0.1', servers[0].descriptor['port']), timeout=.2)
+
+
+@pytest.mark.parametrize('backend_failure', [False, True])
+@pytest.mark.parametrize('server_failure', [RuntimeError, KeyboardInterrupt])
+def test_failed_interaction_disposal_still_closes_backend_and_retains_retry(tmp_path, monkeypatch, backend_failure, server_failure):
+    import asyncio
+    from test_integration_runner import fixture_repo, context
+    from api_agent.testing.collection import collect_tests
+    from api_agent.testing.integration import run_integration_tests
+    from api_agent.auth.interaction_transport import InteractionServer
+    from api_agent.testing.setup_backend import SetupBackend
+    from api_agent.testing.suite_lock import _cleanup_receipts
+    from api_agent.providers.control import CleanupPendingError
+    backend_pending = CleanupPendingError(('backend-owner',), AsyncMock())
+    real_server_close, real_backend_close = InteractionServer.close, SetupBackend.close
+    servers, backend_closes = [], []
+
+    def server_close(server):
+        if server not in servers:
+            servers.append(server)
+            raise server_failure('synthetic prompt close failure')
+        real_server_close(server)
+
+    def backend_close(backend):
+        backend_closes.append(backend)
+        real_backend_close(backend)
+        if backend_failure:
+            raise backend_pending
+
+    monkeypatch.setattr(InteractionServer, 'close', server_close)
+    monkeypatch.setattr(SetupBackend, 'close', backend_close)
+    ctx = context(fixture_repo(tmp_path / 'base'))
+    with pytest.raises((RuntimeError, KeyboardInterrupt)) as caught:
+        run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+                              config={'DEBUG': False}, interaction=SimpleNamespace(open=Mock()))
+    assert backend_closes
+    assert all(backend is backend_closes[0] for backend in backend_closes)
+    receipts = tuple(_cleanup_receipts(caught.value))
+    if backend_failure:
+        assert backend_pending in receipts
+    pending = next(receipt for receipt in receipts if receipt.owners == (servers[0],))
+    assert pending.owners == (servers[0],)
+    for receipt in receipts:
+        asyncio.run(receipt.retry())
+    assert servers[0].closed and not servers[0].thread.is_alive()
