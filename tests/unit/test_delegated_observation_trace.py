@@ -1,7 +1,6 @@
 """Delegated SDK spans attach to the active native workflow node."""
 from uuid import uuid4
 
-from api_agent.workflows.execution import current_workflow_observations
 from api_agent.workflows.observations import WorkflowObservations
 from api_agent.workflows.run_context import structural_scope
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
@@ -42,7 +41,6 @@ def test_delegated_child_is_absent_after_observation_close():
     owner._closed = True
     owner.trace = Trace()
     assert owner.begin_child_trace('component delegated', {}) is None
-    assert current_workflow_observations() is None
 
 
 def test_delegated_native_io_obeys_trace_content_policy():

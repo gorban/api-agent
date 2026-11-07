@@ -85,10 +85,10 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
         !(ownedFrameSelector && node.matches(ownedFrameSelector)) :
         node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript')) ||
       (node.localName === 'svg' && !icons.includes(node.outerHTML) && !buttonIcon(node));
-    if (opaque && computed.display === 'contents') throw 'display_contents';
+    if ((opaque || contentMasked) && computed.display === 'contents') throw 'display_contents';
     if (!opaque && !effects.length && !contentMasked) continue;
     const properties = [...new Set([...(opaque ? ['opacity','content-visibility','animation','transition'] : []),
-      ...(contentMasked ? ['clip-path'] : []), ...effects])];
+      ...(contentMasked ? ['opacity','clip-path'] : []), ...effects])];
     const originalStyle = node.getAttribute('style');
     const previous = properties.map(property => [property,
       node.style.getPropertyValue(property), node.style.getPropertyPriority(property)]);
@@ -100,7 +100,10 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
       node.style.setProperty('animation', 'none', 'important');
       node.style.setProperty('transition', 'none', 'important');
     }
-    if (contentMasked) node.style.setProperty('clip-path', 'inset(0)', 'important');
+    if (contentMasked) {
+      node.style.setProperty('opacity', '0', 'important');
+      node.style.setProperty('clip-path', 'inset(0)', 'important');
+    }
     for (const effect of effects) node.style.setProperty(effect, 'none', 'important');
     const overrides = properties.map(property => [property,
       node.style.getPropertyValue(property), node.style.getPropertyPriority(property)]);
@@ -217,7 +220,8 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     if (opaque && (!isolated?.opaque || style.opacity !== '0' ||
         style.contentVisibility !== 'hidden' || style.display === 'contents')) return reject('isolation_verify');
     if (isolated && !node.isConnected) return reject('document_changed');
-    if (contentMasked && style.clipPath !== 'inset(0px)') return reject('isolation_verify');
+    if (contentMasked && (style.opacity !== '0' || style.clipPath !== 'inset(0px)' ||
+        style.display === 'contents')) return reject('isolation_verify');
     // Each text node belongs to one element. Ancestor textContent/innerText
     // repeats large inert bundles many times, exhausting the fixed budget even
     // when the rendered page is small. The root visible-text walk below still
@@ -233,7 +237,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     characters += texts.reduce((sum, text) => sum + text.length, 0);
     if (characters > 1048576) return reject('text_budget');
     rows.push({index, parent: nodes.indexOf(node.parentElement),
-      forced: opaque || inert || contentMasked,
+      forced: opaque || inert || contentMasked, contentMasked,
       texts});
   }
   const stack = [document.documentElement], visible = [];
@@ -485,7 +489,14 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         # Keep original pixels unavailable rather than guess at their spans.
         if _sensitive(rows, boundary, exclude_masked_subtrees=boundary.policy.allow_content is not True):
             return reject('registered_secret')
-        masked = {row['index'] for row in rows if row['forced']}
+        def inside_content_mask(row):
+            index = row['index']
+            while index >= 0:
+                if rows[index].get('contentMasked', False):
+                    return True
+                index = rows[index]['parent']
+            return False
+        masked = {row['index'] for row in rows if row['forced'] and not inside_content_mask(row)}
         locators = [page.locator(f'[{marker}-node="{index}"]') for index in sorted(masked)]
         image = await page.screenshot(type='png', full_page=False, mask=locators,
                                       mask_color='#000000',

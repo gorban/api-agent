@@ -20,14 +20,16 @@ async def _region_pixels(page, png, box):
       canvas.width = image.width; canvas.height = image.height;
       const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
       const data = context.getImageData(box.x, box.y, box.width, box.height).data;
-      let ink = false, red = false, black = true;
+      let ink = false, red = false, blue = false, black = true, blackPixel = false;
       for (let index = 0; index < data.length; index += 4) {
         const [r,g,b] = data.slice(index, index + 3);
         ink ||= r < 245 || g < 245 || b < 245;
         red ||= r > 200 && g < 80 && b < 80;
+        blue ||= r < 80 && g < 80 && b > 180;
         black &&= r === 0 && g === 0 && b === 0;
+        blackPixel ||= r < 50 && g < 50 && b < 50;
       }
-      return {ink, red, black};
+      return {ink, red, blue, black, blackPixel};
     }''', {'png': base64.b64encode(png).decode(), 'box': box})
 
 
@@ -88,8 +90,9 @@ async def test_omitted_content_masks_chat_dialog_and_preserves_shell_pixels():
                     '[data-testid="clarification-content"]',
                     '[data-testid="mutation-confirmation-content"]',
                     '[data-testid="agent-prompt-input"]'):
-                assert (await _region_pixels(page, image,
-                    await page.locator(selector).bounding_box()))['black'] is True
+                region = await _region_pixels(page, image,
+                    await page.locator(selector).bounding_box())
+                assert region['blackPixel'] is False and region['blue'] is False
             for selector in ('#toolbar', '#model-picker'):
                 assert (await _region_pixels(page, image,
                     await page.locator(selector).bounding_box()))['red'] is True
@@ -162,7 +165,7 @@ async def test_studio_default_content_policy_masks_conversation_and_composer():
                 region = await _region_pixels(page, image, {'x': box['x'] + 2,
                     'y': box['y'] + 2, 'width': box['width'] - 4,
                     'height': box['height'] - 4})
-                assert region['black'] is True, (selector, region)
+                assert region['blackPixel'] is False, (selector, region)
             assert (await _region_pixels(page, image,
                 await page.locator('#chrome').bounding_box()))['red'] is True
             assert (await _region_pixels(page, image,
@@ -199,6 +202,40 @@ async def test_masked_content_open_popover_cannot_escape_into_screenshot():
                 content_mask_selector='#conversation', content_mask_anchor='#panel',
                 unavailable=reasons.append) is None
             assert reasons == ['content_top_layer']
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_tall_masked_transcript_preserves_controls_outside_scroll_clip():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 600, 'height': 300})
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+                <body style="margin:0;background:white">
+                  <div id="panel" style="position:absolute;left:100px;top:20px;width:300px;background:white">
+                    <div id="toolbar" style="height:30px;background:red">Static toolbar</div>
+                    <div style="height:100px;overflow:auto">
+                      <section id="conversation" style="height:600px;background:blue">Private transcript</section>
+                    </div>
+                    <div id="model" style="height:30px;background:red">Static model picker</div>
+                    <div id="composer" style="height:30px;background:red">Static composer</div>
+                  </div>
+                </body>'''))
+            await page.goto(origin + '/')
+            image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='#conversation', content_mask_anchor='#panel')
+            assert image is not None
+            for selector in ('#toolbar', '#model', '#composer'):
+                box = await page.locator(selector).bounding_box()
+                assert (await _region_pixels(page, image, box))['red'] is True
+            transcript = await page.locator('#conversation').bounding_box()
+            visible = {**transcript, 'height': 50}
+            region = await _region_pixels(page, image, visible)
+            assert region['ink'] is False and region['blue'] is False
         finally:
             await browser.close()
 
