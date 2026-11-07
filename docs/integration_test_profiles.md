@@ -59,3 +59,16 @@ Acceptance requires inert admission, exact identities, explicit empty semantics,
 allowed-model enforcement, identity/environment invariance, order/concurrency
 isolation, backend/worker timeout consistency and source-bound workflow evidence.
 Live qualification remains a separate explicitly authorized operation.
+
+Pack owners may declare scenario defaults in a root `test-profiles.toml` with
+`version = 1`, `requires_provider = "relative/factory.py:symbol"`, and the same
+named `profiles` cases/settings tables. Only exact identities inside that owner's
+admitted integration/E2E suites apply; the resolved selected provider must match.
+Pack settings are restricted to shared test-specific controls. In particular,
+`LLM_E2E_TEST_MODEL` supplies a scenario model independently of the application
+model. An explicit test override (including empty) wins. Selected-test Review
+includes these values and fingerprints the declaration before execution. Ordered
+pack admission captures its bounded regular-file bytes or its absence; symlinks
+are rejected and changes after admission invalidate the composition. Picker cost
+estimates also invalidate when an optional profile is added, changed or removed.
+The E2E model control is applicable only in E2E mode.

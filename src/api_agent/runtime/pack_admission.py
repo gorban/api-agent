@@ -59,13 +59,14 @@ def admit(layer, manifest):
     declarations = [manifest]
     for relative in dict.fromkeys(paths):
         declarations.append(capture(layer.pack_root, relative))
-    project = layer.pack_root / 'pyproject.toml'
-    absent = ()
-    if project.exists() or project.is_symlink():
-        declarations.append(capture(layer.pack_root, 'pyproject.toml'))
-    else:
-        absent = ('pyproject.toml',)
-    contribution = PackContribution(layer.pack_id, layer.pack_root, layer.owner_root, tuple(declarations), absent,
+    absent = []
+    for relative in ('pyproject.toml', 'test-profiles.toml'):
+        optional = layer.pack_root / relative
+        if optional.exists() or optional.is_symlink():
+            declarations.append(capture(layer.pack_root, relative))
+        else:
+            absent.append(relative)
+    contribution = PackContribution(layer.pack_id, layer.pack_root, layer.owner_root, tuple(declarations), tuple(absent),
                                     physical_identity(layer.pack_root), physical_identity(layer.owner_root))
     contribution.verify()
     return contribution

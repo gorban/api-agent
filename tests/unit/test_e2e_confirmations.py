@@ -48,6 +48,40 @@ def identity():
                         tags=frozenset({'requires_ui_session'}))
 
 
+@pytest.mark.parametrize('interrupted', [False, True])
+def test_auth_storage_survives_confirmation_waves_but_not_suite(monkeypatch, interrupted):
+    from pathlib import Path
+    test = identity()
+    directories = []
+
+    def execute(context, tests, **options):
+        directory = Path(options['suite_directory'])
+        assert directory.is_dir()
+        directories.append(directory)
+        saved = directory / 'auth-marker'
+        if len(directories) == 1:
+            saved.write_text('suite-owned')
+        else:
+            assert saved.read_text() == 'suite-owned'
+            if interrupted:
+                raise KeyboardInterrupt
+        options['on_result'](TestResult(test, 'failed' if len(directories) == 1 else 'passed'))
+        return integration.IntegrationRunResult(0, (), '')
+
+    monkeypatch.setattr(integration, '_run_integration_tests', execute)
+    if interrupted:
+        with pytest.raises(KeyboardInterrupt):
+            integration.run_integration_tests(object(), [test], accepted=True,
+                config={'TUI_MODE': 'e2e', 'E2E_RERUNS': 2})
+    else:
+        result = integration.run_integration_tests(object(), [test], accepted=True,
+            config={'TUI_MODE': 'e2e', 'E2E_RERUNS': 2})
+        assert result.tests[0].status == 'passed'
+    assert len(set(directories)) == 1
+    assert len(directories) == (2 if interrupted else 3)
+    assert not directories[0].exists()
+
+
 @pytest.mark.parametrize('statuses,expected', [(['passed'], 'passed'),
     (['failed', 'passed', 'passed'], 'passed'), (['error', 'passed', 'passed'], 'passed'),
     (['broken', 'passed', 'passed'], 'passed'), (['failed', 'failed'], 'failed'),

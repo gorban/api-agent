@@ -12,7 +12,7 @@ from api_agent.providers.selection import ModelSelectionPolicy
 # Providers may additionally declare their own API/generation controls. Identity,
 # credentials, policies and security configuration can never be profile inputs.
 SHARED_KEYS = frozenset({
-    'LLM_DEFAULT_MODEL', 'LLM_REASONING_EFFORT', 'LLM_SETUP_REQUEST_TIMEOUT_SECONDS',
+    'LLM_E2E_TEST_MODEL', 'LLM_DEFAULT_MODEL', 'LLM_REASONING_EFFORT', 'LLM_SETUP_REQUEST_TIMEOUT_SECONDS',
     'WORKFLOW_MAX_PASSES', 'WORKFLOW_COMPONENT_TIMEOUT_SECONDS',
     'WORKFLOW_GRAPH_TIMEOUT_SECONDS', 'WORKFLOW_LLM_TIMEOUT_SECONDS',
     'LLM_WORKFLOW_TEST_MODEL', 'LLM_WORKFLOW_TEST_MAX_GRAPHS', 'LLM_REASONING_TEST_MODEL',
@@ -130,9 +130,64 @@ def _test_root(test, owner_root, context=None):
     if context is None:
         context = SimpleNamespace(base_root=owner_root, owner_root=owner_root)
     roots = tuple(dict.fromkeys(Path(root).resolve() for root in
-                                (context.base_root, context.owner_root)))
+                                (context.base_root, context.owner_root, *(layer.owner_root for layer in getattr(context, "pack_layers", ())))))
     matches = [root for root in roots if repository_label(context, root) == test.repo]
     return matches[0] if len(matches) == 1 else None
+
+
+def pack_profile_sources(context):
+    """Only launch-admitted physical pack owners may declare scenario defaults."""
+    if context is None:
+        return ()
+    layers = getattr(context, 'pack_layers', ()) or (context,)
+    return tuple((layer, Path(layer.owner_root) / 'test-profiles.toml')
+                 for layer in layers if getattr(layer, 'pack_root', None) is not None
+                 and Path(layer.pack_root).resolve() == Path(layer.owner_root).resolve())
+
+
+def _pack_profile(test, root, config, context):
+    from api_agent.runtime.pack_admission import capture, declaration_bodies, verify_composition
+    schema = load_shared_schema()
+    verify_composition(context)
+    contributions = getattr(context, 'pack_contributions', ())
+    bodies = declaration_bodies(context)
+    for layer, path in pack_profile_sources(context):
+        if root is None or root.resolve() != Path(layer.owner_root).resolve():
+            continue
+        if contributions:
+            body = bodies.get(path)
+        else:
+            body = capture(layer.pack_root, path.name).body if path.exists() or path.is_symlink() else None
+        if body is None:
+            continue
+        data = tomllib.loads(body.decode())
+        if (set(data) != {'version', 'requires_provider', 'profiles'} or data['version'] != 1
+                or type(data['requires_provider']) is not str or type(data['profiles']) is not dict):
+            raise ValueError('Invalid pack test profile declaration')
+        expected = provider_location(data['requires_provider'], owner_root=layer.owner_root)
+        selected = provider_location(config['LLM_PROVIDER'], owner_root=context.owner_root) if config.get('LLM_PROVIDER') else None
+        admitted = set()
+        for name, profile in data['profiles'].items():
+            if (type(profile) is not dict or set(profile) != {'cases', 'settings'}
+                    or type(profile['cases']) is not list or not profile['cases']
+                    or type(profile['settings']) is not dict):
+                raise ValueError('Invalid pack test profile')
+            for case in profile['cases']:
+                if (type(case) is not str or not re.fullmatch(r'[^:]+\.py::test_[^/]+', case)
+                        or case in admitted):
+                    raise ValueError('Pack profiles require unique exact test identities')
+                module = (root / case.split('::')[0]).resolve()
+                suites = (*layer.tests.get('integration', ()), *layer.tests.get('e2e', ()))
+                if not module.is_relative_to(root.resolve()) or not any(
+                        module.is_relative_to(Path(suite).resolve()) for suite in suites):
+                    raise ValueError('Pack profile case is outside its admitted test suites')
+                admitted.add(case)
+            for key, value in profile['settings'].items():
+                if key not in TEST_KEYS or key not in schema.fields or schema.fields[key].sensitive:
+                    raise ValueError('Forbidden pack test profile setting: ' + key)
+                convert_value(schema.fields[key], value, external=False, anchors=None)
+            if selected == expected and test.node_id in profile['cases']:
+                yield path, name, schema, profile['settings']
 
 
 def resolve_test_profiles(tests, config, *, owner_root, fields=None, context=None):
@@ -169,6 +224,14 @@ def resolve_test_profiles(tests, config, *, owner_root, fields=None, context=Non
                         continue
                     values[key] = convert_value(schema.fields[key], value, external=False, anchors=None)
                     provenance[key] = f'provider_test_profile:{path.name}:{name}'
+        for path, name, schema, settings in _pack_profile(test, root, config, context):
+            for key, value in settings.items():
+                explicit = key in config if fields is None else bool(getattr(fields.get(key), 'explicit', False))
+                if explicit:
+                    provenance[key] = getattr(fields.get(key), 'source', 'explicit_mapping') if fields is not None else 'explicit_mapping'
+                else:
+                    values[key] = convert_value(schema.fields[key], value, external=False, anchors=None)
+                    provenance[key] = f'pack_test_profile:{path.name}:{name}'
         for key, nonconsumers in INACTIVE_BUNDLED_CONTROLS.items():
             if test.node_id not in nonconsumers:
                 continue
@@ -180,7 +243,7 @@ def resolve_test_profiles(tests, config, *, owner_root, fields=None, context=Non
             values[key] = deepcopy(inactive_defaults[key])
             provenance[key] = 'inactive_bundled_test_control:shared_default'
         policy = ModelSelectionPolicy(values)
-        for key in ('LLM_WORKFLOW_TEST_MODEL', 'LLM_REASONING_TEST_MODEL', 'LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL'):
+        for key in ('LLM_E2E_TEST_MODEL', 'LLM_WORKFLOW_TEST_MODEL', 'LLM_REASONING_TEST_MODEL', 'LLM_STUDIO_TEST_DEFAULT_MODEL', 'LLM_STUDIO_TEST_SELECTED_MODEL'):
             if key in provenance and values.get(key):
                 policy.require_allowed(values[key])
         output[test.id] = {'node_id': test.node_id, 'repo': test.repo, 'config': values, 'provenance': provenance}

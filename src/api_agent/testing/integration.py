@@ -32,7 +32,7 @@ from .collection import repository_label, CollectionError, collect_tests
 from .contracts import RunnerEvent, TestResult
 from .diagnostics import format_exception
 from .processes import finalize
-from .suite_lock import suite_locked, retain_suite_cleanup
+from .suite_lock import suite_locked
 from api_agent.providers.setup_transport import _diagnostic
 
 _RUNNER_OPERATION = threading.local()
@@ -47,7 +47,10 @@ def _admit_operation(function):
             raise SuiteBusyError('An integration operation is already active in this owner.')
         _RUNNER_OPERATION.active = True
         try:
-            return function(*args, **kwargs)
+            # Confirmation waves and repository workers belong to one operation.
+            # Their individual snapshot directories have shorter lifetimes.
+            with tempfile.TemporaryDirectory(prefix='api-agent-suite-') as directory:
+                return function(*args, **dict(kwargs, suite_directory=directory))
         finally:
             _RUNNER_OPERATION.active = False
     return guarded
@@ -133,7 +136,7 @@ def _complete_report(rows):
 def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                           on_event=None, output=None, cancel_event=None,
                           parallel_jobs=0, before_run=None, on_result=None,
-                          after_run=None, config=None, config_fields=None, resolved_test_profiles=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None, evidence_boundary=None, explicit_debug_test_ids=()):
+                          after_run=None, config=None, config_fields=None, resolved_test_profiles=None, unattended_index_source=None, interaction=None, quota_observer=None, tool_plan=None, evidence_boundary=None, explicit_debug_test_ids=(), suite_directory=None):
     """Run freshly collected integration identities once, with no retry/coverage gate.
 
     ``accepted`` must represent the picker's explicit Continue action. This
@@ -415,9 +418,10 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     if config is not None:
                         from .provider_setup import write_launch_snapshot
                         env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
+                            suite_directory=suite_directory,
                             unattended_index_source=unattended_index_source, config_fields=config_fields,
-                            test_profiles=({identity.node_id: backend_descriptor[identity.id] for identity in selected.values()}
-                                           if backend_descriptor is not None else None), password_manager_registry=manager_registry,
+                            test_profiles={identity.node_id: (backend_descriptor[identity.id] if backend_descriptor is not None
+                                           else test_profiles[identity.id]) for identity in selected.values()}, password_manager_registry=manager_registry,
                             interaction_descriptor=interaction_descriptor,
                             **({'tool_plan': tool_plan,
                                 'tool_cases': {identity.node_id: identity.id for identity in selected.values()}}

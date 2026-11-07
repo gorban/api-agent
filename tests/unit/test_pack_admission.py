@@ -434,3 +434,33 @@ def test_auxiliary_alias_swap_preserves_admitted_source_provenance(tmp_path):
     assert schema.fields['CAPTURED'].contribution_origin == first / 'provider.toml'
     assert first / 'provider.toml' in reads.files
     verify_composition(context, expected_identity)
+
+
+@pytest.mark.parametrize('change', ['add', 'change', 'delete', 'symlink'])
+def test_pack_profile_presence_and_content_are_admitted(tmp_path, change):
+    first, second = pack(tmp_path, 'first'), pack(tmp_path, 'second')
+    profile = first / 'test-profiles.toml'
+    if change != 'add':
+        profile.write_text('version=1\n')
+    context = load_launch_context(BASE, [first, second])
+    contribution = context.pack_contributions[0]
+    if change == 'add':
+        assert 'test-profiles.toml' in contribution.absent_declarations
+        profile.write_text('version=1\n')
+    else:
+        assert next(row.body for row in contribution.declarations if row.relative_path == 'test-profiles.toml') == b'version=1\n'
+        if change == 'change':
+            profile.write_text('version=2\n')
+        else:
+            profile.unlink()
+            if change == 'symlink':
+                profile.symlink_to(first / 'config.toml')
+    with pytest.raises(ResourcePackError):
+        verify_composition(context)
+
+
+def test_pack_profile_symlink_is_rejected_during_admission(tmp_path):
+    first, second = pack(tmp_path, 'first'), pack(tmp_path, 'second')
+    (first / 'test-profiles.toml').symlink_to(first / 'config.toml')
+    with pytest.raises(ResourcePackError, match='bounded regular'):
+        load_launch_context(BASE, [first, second])
