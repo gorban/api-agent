@@ -141,6 +141,24 @@ def test_owned_ui_call_inventory_is_not_assumed_complete(tags, complete):
         assert estimate['basis'] == 'unavailable'
 
 
+def test_native_invocation_is_incomplete_historical_inventory_without_provider_call():
+    from api_agent.telemetry.estimation import EstimateSnapshot
+    test = TestIdentity('native', 'repo', 'test.py', 'test.py::native')
+    usage = SuiteUsage('run')
+    usage.record_external_invocation(session_id=test.id,
+        invocation_id='00000000-0000-4000-8000-000000000011')
+    artifact = accounting.build_accounting(
+        SimpleNamespace(run_id='00000000-0000-4000-8000-000000000002'),
+        [test], {}, usage, [TestResult(test, 'passed')])
+    row = artifact['tests'][0]
+    assert row['calls'] == []
+    assert row['observed_call_count'] == 1
+    assert row['calls_complete'] is False
+    estimate = EstimateSnapshot({}).complete(artifact)[test.id]
+    assert estimate['known_zero'] is False
+    assert estimate['estimated_cost_usd'] is None
+
+
 @pytest.mark.parametrize('change', [lambda v: v.update(version=2), lambda v: v.update(actual_model=2),
  lambda v: v.update(compatibility={}), lambda v: v.update(extra='payload'), lambda v: v.update(rate_card={})])
 def test_metadata_validation(change):

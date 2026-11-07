@@ -27,6 +27,28 @@ def test_skip_routes_accepted_integration_without_reporting_setup(monkeypatch, t
     assert len(calls) == 1 and calls[0]['accepted'] is True
 
 
+def test_skip_reporting_keeps_native_event_turn_count_and_unknown_tokens(monkeypatch, tmp_path):
+    import json
+    from uuid import uuid4
+    from api_agent.testing import integration
+    from api_agent.testing.contracts import RunnerEvent
+    test = TestIdentity('owner::test.py::test_native', 'owner', 'test.py', 'test.py::test_native')
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
+    def execute(*args, **kwargs):
+        kwargs['on_event'](RunnerEvent('native_invocation', 'owner', test,
+            text=json.dumps({'invocation_id': str(uuid4()), 'turn_id': str(uuid4())})))
+        return SimpleNamespace(exit_code=0, tests=(), cancelled=False, inspections=())
+    monkeypatch.setattr(integration, 'run_integration_tests', execute)
+    lines = []
+    result = run_launched_integration(context, (test,),
+        {'SKIP_ALLURE_REPORTING': True, 'TUI_MODE': 'integration'},
+        accepted=True, usage_output=lines.append)
+    assert result.usage['prompt_count'] == 1
+    assert result.usage['unmeasured_calls'] == {test.id: 1}
+    assert 'Full user turns: 1' in lines[-1]
+    assert 'total: unavailable' in lines[-1]
+
+
 def test_skip_option_uses_boolean_cli_and_configuration_precedence():
     from api_agent.config import load_shared_schema, resolve_config
     schema = load_shared_schema()

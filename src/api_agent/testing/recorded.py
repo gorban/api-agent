@@ -709,6 +709,9 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 data = evidence_boundary.content_export(json.loads(row.text))
                 row = replace(row, text=json.dumps(data, allow_nan=False))
                 capture(row, usage)
+            if row.kind == 'native_invocation':
+                from .inference_usage import capture_external_invocation
+                capture_external_invocation(row, usage)
             if row.kind == 'inference_content':
                 from .inference_content import content_attachment
                 from api_agent.telemetry.inference_diagnostics import diagnostic_attachment

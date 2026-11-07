@@ -10,7 +10,7 @@ from uuid import uuid4
 _TRUSTED_ICONS = ['<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>', '<svg viewBox="0 0 24 24" width="23" height="23" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9.5 3-.7 2.2-2 .9-2.1-.5-2.5 4.3 1.5 1.7v2.3l-1.5 1.7 2.5 4.3 2.1-.5 2 .9.7 2.2h5l.7-2.2 2-.9 2.1.5 2.5-4.3-1.5-1.7v-2.3l1.5-1.7-2.5-4.3-2.1.5-2-.9-.7-2.2z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3.3"/></svg>']
 
 
-_INSPECT = r'''({marker, token, verify, trustedIcons}) => {
+_INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames}) => {
   const icons = trustedIcons.map(html => new DOMParser().parseFromString(html, 'text/html').body.firstElementChild.outerHTML);
   const authentication = node => node.matches('input,textarea,select,[contenteditable]') && (
     /password|credential|secret|authorization|authentication|login|username|one-time-code|otp|passkey|cc-number|cc-csc|(?:api|access|auth|refresh|bearer)[\s_-]*(?:key|token)/i.test(
@@ -18,7 +18,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons}) => {
        ...[...(node.labels || [])].map(label => label.textContent),
        ...(node.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => document.getElementById(id)?.textContent)].join(' ')) ||
     /^(?:token|key)$/i.test(node.id) || /^(?:token|key)$/i.test(node.name));
-  if (window.top !== window || document.querySelector('iframe,frame')) return null;
+  if (window.top !== window || (!allowFrames && document.querySelector('iframe,frame'))) return null;
   if (document.querySelector('#send:disabled, .message.draft')) return null;
   if (verify && document.documentElement.getAttribute(marker) !== token) return null;
   document.documentElement.setAttribute(marker, token);
@@ -60,7 +60,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons}) => {
 }'''
 
 
-async def capture_studio_viewport(page, boundary, origin):
+async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_frames=False):
     """Return masked original PNG, or None when owned safety is unavailable.
 
     Authentication controls and unsupported rendering surfaces are masked.
@@ -74,12 +74,13 @@ async def capture_studio_viewport(page, boundary, origin):
     expected = urlsplit(origin)
     actual = urlsplit(page.url)
     if (actual.scheme, actual.netloc, actual.path, actual.query, actual.fragment) != (
-            expected.scheme, expected.netloc, '/', '', ''):
+            expected.scheme, expected.netloc, path, '', ''):
         return None
-    if len(page.frames) != 1:
+    if not allow_frames and len(page.frames) != 1:
         return None
     marker, token = 'data-evidence-' + uuid4().hex, uuid4().hex
-    rows = await page.evaluate(_INSPECT, {'marker': marker, 'token': token, 'trustedIcons': _TRUSTED_ICONS})
+    rows = await page.evaluate(_INSPECT, {'marker': marker, 'token': token,
+        'trustedIcons': _TRUSTED_ICONS, 'allowFrames': allow_frames})
     try:
         if rows is None:
             return None
@@ -94,8 +95,9 @@ async def capture_studio_viewport(page, boundary, origin):
         locators = [page.locator(f'[{marker}-node="{index}"]') for index in sorted(masked)]
         image = await page.screenshot(type='png', full_page=False, mask=locators,
                                       mask_color='#000000', animations='disabled')
-        after = await page.evaluate(_INSPECT, {'marker': marker, 'token': token, 'verify': True, 'trustedIcons': _TRUSTED_ICONS})
-        result = image if after == rows and page.url == origin.rstrip('/') + '/' else None
+        after = await page.evaluate(_INSPECT, {'marker': marker, 'token': token,
+            'verify': True, 'trustedIcons': _TRUSTED_ICONS, 'allowFrames': allow_frames})
+        result = image if after == rows and page.url == origin.rstrip('/') + path else None
     finally:
         await page.evaluate('''marker => {
           for (const node of document.querySelectorAll('[' + marker + '-node]'))

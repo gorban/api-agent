@@ -126,6 +126,7 @@ class SuiteUsage:
         self._unknown: dict[tuple[str, str, str], set[str]] = {}
         self._known: dict[tuple[str, str, str], dict[str, int]] = {}
         self._prompts: dict[tuple[str, str], str] = {}
+        self._external_invocations: dict[tuple[str, str], str] = {}
         self.inference_calls = {}
         self.contaminated = False
         self._lock = RLock()
@@ -211,6 +212,25 @@ class SuiteUsage:
                 raise ValueError('prompt identity reused with another kind')
             self._prompts[key] = kind
             return prior is None
+
+    def record_external_invocation(self, *, session_id: str, invocation_id: str,
+                                   turn_id: str | None = None) -> bool:
+        """Count an owned native turn whose provider usage was not observed.
+
+        This records only the invocation boundary. Token amounts remain unknown.
+        Repeated delivery of the same identity cannot inflate the count.
+        """
+        if any(type(value) is not str or not value for value in (session_id, invocation_id, turn_id or invocation_id)):
+            raise ValueError('session_id and invocation_id are required')
+        key = (session_id, invocation_id)
+        with self._lock:
+            if key in self._external_invocations:
+                if self._external_invocations[key] != (turn_id or invocation_id):
+                    raise ValueError('Conflicting native invocation turn')
+                return False
+            self._external_invocations[key] = turn_id or invocation_id
+            self._prompts[(session_id, self._external_invocations[key])] = 'initial'
+            return True
 
     def observe_snapshot(self, phase, snapshot):
         if phase not in ('before', 'after') or not isinstance(snapshot, (QuotaSnapshot, QuotaReadError)):
@@ -306,6 +326,8 @@ class SuiteUsage:
                 if call.get('usage') is None:
                     session = call['test_id']
                     report['unmeasured_calls'][session] = report['unmeasured_calls'].get(session, 0) + 1
+            for session, _ in self._external_invocations:
+                report['unmeasured_calls'][session] = report['unmeasured_calls'].get(session, 0) + 1
             if any(quote is not None for _, quote in self._costs.calls.values()):
                 prompts_by_session = {session: sum(key[0] == session for key in self._prompts)
                                       for session, _ in self._costs.calls.values()}

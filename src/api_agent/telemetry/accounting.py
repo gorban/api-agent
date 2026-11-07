@@ -155,7 +155,8 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
     records = []
     calls = list(usage.inference_calls.values())
     selected_ids = {test.id for test in tests}
-    calls_complete = not (any(call['test_id'] not in selected_ids for call in calls) or any(row['session_id'] not in selected_ids for row in summary.get('usage_rows', [])))
+    unmeasured = summary.get('unmeasured_calls', {})
+    calls_complete = not (any(call['test_id'] not in selected_ids for call in calls) or any(row['session_id'] not in selected_ids for row in summary.get('usage_rows', [])) or any(test_id not in selected_ids for test_id in unmeasured))
     for test in tests:
         own = [deepcopy(call) for call in calls if call['test_id'] == test.id]
         statuses = [outcome.status for outcome in outcomes if outcome.identity.id == test.id]
@@ -168,8 +169,8 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
             # A self-owned UI may call providers outside the framework recorder.
             # An empty inventory cannot establish zero inference spend there.
             prediction=prediction, stabilized_estimate=None,
-            calls_complete=calls_complete and 'requires_owned_ui_session' not in getattr(test, 'tags', ()),
-            observed_call_count=max(len(own), sum(row['llm_calls'] for row in summary.get('usage_rows', []) if row['session_id'] == test.id))))
+            calls_complete=calls_complete and not unmeasured.get(test.id, 0) and 'requires_owned_ui_session' not in getattr(test, 'tags', ()),
+            observed_call_count=max(len(own), sum(row['llm_calls'] for row in summary.get('usage_rows', []) if row['session_id'] == test.id)) + unmeasured.get(test.id, 0)))
     artifact = dict(version=2, estimator_version=5, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
                     quota=quota, tests=records)
     validate_accounting(artifact)

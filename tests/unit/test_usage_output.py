@@ -85,6 +85,110 @@ def test_unknown_failed_calls_do_not_erase_reported_spend_or_claim_zero():
     assert has_tokens(legacy, 'first') and 'total: 5' in tokens_text(legacy, 'first')
 
 
+def test_native_invocation_without_provider_observation_is_counted_but_tokens_unknown():
+    from api_agent.telemetry.usage import SuiteUsage
+    from api_agent.telemetry.usage_output import tokens_text
+    usage = SuiteUsage('run')
+    assert usage.record_external_invocation(session_id='native', invocation_id='turn-1')
+    assert not usage.record_external_invocation(session_id='native', invocation_id='turn-1')
+    with pytest.raises(ValueError, match='Conflicting'):
+        usage.record_external_invocation(session_id='native', invocation_id='turn-1', turn_id='other-turn')
+    report = usage.report()
+    assert report['prompt_count'] == 1
+    assert report['unmeasured_calls'] == {'native': 1}
+    assert 'Full user turns: 1' in final_usage_text(report)
+    assert 'total: unavailable' in tokens_text(report)
+    assert 'total: unavailable' in tokens_text(report, 'native')
+
+
+def test_native_event_capture_deduplicates_turns_and_rejects_content(tmp_path, monkeypatch):
+    import json
+    from uuid import uuid4
+    from types import SimpleNamespace
+    from api_agent.telemetry.usage import SuiteUsage
+    from api_agent.testing.inference_usage import publish_external_invocation, capture_external_invocation
+    path = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test_file.py::test_native (call)')
+    turn_id = str(uuid4())
+    for _ in range(2):
+        assert publish_external_invocation(str(uuid4()), turn_id=turn_id)
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    assert all(row['node'] == 'test_file.py::test_native' and row['kind'] == 'native_invocation'
+               for row in events)
+    tracker = SuiteUsage('run')
+    for row in events:
+        event = SimpleNamespace(text=json.dumps(row['data']), identity=SimpleNamespace(id='native'))
+        assert capture_external_invocation(event, tracker)
+        assert not capture_external_invocation(event, tracker)
+    report = tracker.report()
+    assert report['prompt_count'] == 1
+    assert report['unmeasured_calls'] == {'native': 2}
+    bad = SimpleNamespace(text=json.dumps({**events[0]['data'], 'prompt': 'private'}),
+                          identity=SimpleNamespace(id='native'))
+    with pytest.raises(ValueError, match='Invalid native invocation event'):
+        capture_external_invocation(bad, tracker)
+
+
+def test_native_event_requires_owned_uuid_identity_and_sink(monkeypatch, tmp_path):
+    import json
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from api_agent.telemetry.usage import SuiteUsage
+    from api_agent.testing.inference_usage import publish_external_invocation, capture_external_invocation
+    invocation = str(uuid4())
+    monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS', raising=False)
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test_file.py::test_native (call)')
+    assert not publish_external_invocation(invocation)
+    path = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    assert publish_external_invocation(invocation)
+    assert json.loads(path.read_text())['node'] == 'test_file.py::test_native'
+    monkeypatch.delenv('PYTEST_CURRENT_TEST')
+    assert not publish_external_invocation(invocation)
+    with pytest.raises(ValueError, match='UUID'):
+        publish_external_invocation('bad')
+    with pytest.raises(ValueError, match='UUID'):
+        publish_external_invocation(invocation, turn_id='bad')
+    with pytest.raises(ValueError, match='Invalid native invocation identity'):
+        publish_external_invocation(invocation.upper())
+    with pytest.raises(ValueError, match='Invalid native invocation identity'):
+        publish_external_invocation(1)
+    with pytest.raises(ValueError, match='Invalid native turn identity'):
+        publish_external_invocation(invocation, turn_id=invocation.upper())
+    with pytest.raises(ValueError, match='Invalid native turn identity'):
+        publish_external_invocation(invocation, turn_id=1)
+    tracker = SuiteUsage('run')
+    with pytest.raises(ValueError, match='required'):
+        tracker.record_external_invocation(session_id='', invocation_id=invocation)
+    event = SimpleNamespace(text=json.dumps({'invocation_id': invocation, 'turn_id': invocation}),
+                            identity=None)
+    with pytest.raises(ValueError, match='test identity'):
+        capture_external_invocation(event, tracker)
+    event.identity = SimpleNamespace(id='native')
+    event.text = json.dumps({'invocation_id': 'bad', 'turn_id': invocation})
+    with pytest.raises(ValueError, match='UUID'):
+        capture_external_invocation(event, tracker)
+    event.text = json.dumps({'invocation_id': invocation.upper(), 'turn_id': invocation})
+    with pytest.raises(ValueError, match='Invalid native invocation identity'):
+        capture_external_invocation(event, tracker)
+    event.text = json.dumps({'invocation_id': invocation, 'turn_id': 1})
+    with pytest.raises(ValueError, match='Invalid native invocation identity'):
+        capture_external_invocation(event, tracker)
+
+
+def test_native_event_suppressed_after_test_evidence_closes(tmp_path, monkeypatch):
+    from uuid import uuid4
+    from api_agent.testing.inference_usage import publish_external_invocation
+    from api_agent.workflows.run_context import test_evidence
+    path = tmp_path / 'events.jsonl'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test_file.py::test_native (call)')
+    with test_evidence(False):
+        assert publish_external_invocation(str(uuid4())) is False
+    assert not path.exists()
+
+
 def test_each_count_displays_its_scoped_cost_and_identifies_subset_amounts():
     from api_agent.telemetry.usage_output import tokens_text
     report = {'usage_rows':[{'session_id':'one', 'input_tokens':10, 'output_tokens':5,

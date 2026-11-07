@@ -59,6 +59,9 @@ def run_launched_integration(context, tests, config, *, accepted=False,
                 data = boundary.content_export(data)
                 row = replace(row, text=json.dumps(data, allow_nan=False))
                 capture(row, usage)
+            if row.kind == 'native_invocation':
+                from .inference_usage import capture_external_invocation
+                capture_external_invocation(row, usage)
             if options.get('on_event') is not None:
                 options['on_event'](row)
 

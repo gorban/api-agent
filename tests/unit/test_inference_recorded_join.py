@@ -9,6 +9,32 @@ import httpx
 import pytest
 
 
+def test_native_worker_event_reaches_recorded_usage_and_incomplete_history(tmp_path):
+    from api_agent.testing.collection import collect_tests
+    from api_agent.testing.recorded import run_recorded_integration
+    from test_integration_runner import fixture_repo, context
+    base = fixture_repo(tmp_path / 'base',
+        'from uuid import uuid4\n'
+        'from api_agent.testing.inference_usage import publish_external_invocation\n'
+        'def test_native():\n'
+        '    assert publish_external_invocation(str(uuid4()))\n')
+    ctx = context(base)
+    selected = collect_tests(ctx, 'integration')
+    lines = []
+    result = run_recorded_integration(ctx, selected,
+        {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
+         'ALLURE_RESULTS_DIR': tmp_path / 'allure', 'TEST_PARALLEL_JOBS': 0},
+        accepted=True, storage=SimpleNamespace(persist=lambda directory, manifest: None),
+        usage_output=lines.append)
+    assert result.exit_code == 0 and result.usage['prompt_count'] == 1
+    assert result.usage['unmeasured_calls'] == {selected[0].id: 1}
+    assert 'Full user turns: 1' in lines[-1]
+    assert 'total: unavailable' in lines[-1]
+    inventory = json.loads((result.directory / 'accounting.json').read_text())['tests'][0]
+    assert inventory['calls'] == [] and inventory['observed_call_count'] == 1
+    assert inventory['calls_complete'] is False
+
+
 @pytest.mark.parametrize('jobs,debug', [(0,False),(2,False),(0,True),(2,True)])
 @pytest.mark.parametrize('mode', ['responses','completions'])
 @pytest.mark.parametrize('status', [200,403])

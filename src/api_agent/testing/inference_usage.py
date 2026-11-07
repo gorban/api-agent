@@ -11,6 +11,42 @@ _TIMING = {'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outc
 _TURN = ContextVar('inference_user_turn', default=None)
 
 
+def publish_external_invocation(invocation_id: str, *, turn_id: str | None = None) -> bool:
+    """Publish a content-free native graph boundary with no token observation."""
+    from api_agent.workflows.run_context import test_evidence_allowed
+    if not test_evidence_allowed():
+        return False
+    if type(invocation_id) is not str or str(UUID(invocation_id)) != invocation_id:
+        raise ValueError('Invalid native invocation identity')
+    if turn_id is None:
+        from api_agent.workflows.run_context import current_turn_id
+        turn_id = current_turn_id() or invocation_id
+    if type(turn_id) is not str or str(UUID(turn_id)) != turn_id:
+        raise ValueError('Invalid native turn identity')
+    path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
+    node = os.environ.get('PYTEST_CURRENT_TEST')
+    if not path or not node:
+        return False
+    with open(path, 'a', encoding='utf-8') as stream:
+        stream.write(json.dumps({'kind': 'native_invocation', 'node': node.rsplit(' ', 1)[0],
+                                 'data': {'invocation_id': invocation_id, 'turn_id': turn_id}}) + '\n')
+    return True
+
+
+def capture_external_invocation(event, tracker) -> bool:
+    """Admit only the two UUIDs from an owned native invocation event."""
+    data = json.loads(event.text)
+    if type(data) is not dict or set(data) != {'invocation_id', 'turn_id'}:
+        raise ValueError('Invalid native invocation event')
+    for value in data.values():
+        if type(value) is not str or str(UUID(value)) != value:
+            raise ValueError('Invalid native invocation identity')
+    if event.identity is None:
+        raise ValueError('Native invocation requires test identity')
+    return tracker.record_external_invocation(session_id=event.identity.id,
+        invocation_id=data['invocation_id'], turn_id=data['turn_id'])
+
+
 @contextmanager
 def user_turn(identifier, kind='initial'):
     """Workflow boundary: several model calls may belong to one user prompt."""
