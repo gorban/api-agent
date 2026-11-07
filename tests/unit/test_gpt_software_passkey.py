@@ -349,3 +349,19 @@ def test_non_authorization_main_documents_are_blocked(software, url):
     asyncio.run(owner._navigation({'requestId': 'document', 'frameId': 'main', 'request': {'url': url}}))
     channel.send.assert_awaited_once_with('Fetch.failRequest',
         {'requestId': 'document', 'errorReason': 'BlockedByClient'})
+
+
+@pytest.mark.parametrize('url,allowed', [
+    ('https://us.stage.id.trimblecloud.com/oauth/authorize', True),
+    ('https://eu.stage.id.trimblecloud.com/oauth/authorize', False),
+    ('https://us.stage.id.trimblecloud.com.evil.test/oauth/authorize', False),
+    ('http://us.stage.id.trimblecloud.com/oauth/authorize', False),
+    ('https://us.stage.id.trimblecloud.com:444/oauth/authorize', False)])
+def test_navigation_handoffs_require_explicit_exact_origin(software, url, allowed):
+    original, channel = software
+    owner = SoftwarePasskey(original.session, original.credential,
+        trusted_origin='https://stage.id.trimblecloud.com',
+        navigation_origins=('https://us.stage.id.trimblecloud.com',))
+    owner.channel = channel
+    asyncio.run(owner._navigation({'requestId': 'handoff', 'request': {'url': url}}))
+    assert channel.send.call_args.args[0] == ('Fetch.continueRequest' if allowed else 'Fetch.failRequest')

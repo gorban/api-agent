@@ -30,7 +30,8 @@ def _reason_phrase(status):
 
 class SoftwarePasskey:
     """Own import and removal on the original page, including uncertain replies."""
-    def __init__(self, session, credential, *, trusted_origin='https://auth.openai.com', callback_url=None):
+    def __init__(self, session, credential, *, trusted_origin='https://auth.openai.com', callback_url=None,
+                 navigation_origins=()):
         self.session = session
         self.credential = credential
         self.channel = None
@@ -39,6 +40,9 @@ class SoftwarePasskey:
         self.closing = None
         self.closed = False
         self.trusted_origin = trusted_origin
+        # Caller-validated, exact origins for regional identity handoffs. This
+        # never changes the credential's RP or response delegation restrictions.
+        self.navigation_origins = frozenset(navigation_origins)
         self.callback_url = callback_url
         self.intercepting = False
         self.navigation_tasks = set()
@@ -67,7 +71,7 @@ class SoftwarePasskey:
                 origin = f'{location.scheme}://{location.netloc}'
                 callback = self.callback_url is not None and url.split('?', 1)[0] == self.callback_url
                 child = event.get('frameId', self.main_frame) != self.main_frame
-                allowed = child or origin == self.trusted_origin or callback
+                allowed = child or origin == self.trusted_origin or origin in self.navigation_origins or callback
                 method = 'Fetch.continueRequest' if allowed else 'Fetch.failRequest'
                 if not allowed:
                     parameters['errorReason'] = 'BlockedByClient'
