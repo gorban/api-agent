@@ -7,6 +7,7 @@ import importlib.util
 import inspect
 from pathlib import Path
 import sys
+import tomllib
 from types import MappingProxyType, ModuleType
 from .contracts import ProviderCapabilities, OPERATION_METHODS, LLM_FEATURES, OperationalError
 import uuid
@@ -384,6 +385,7 @@ class _PendingContribution:
     introduced: frozenset
     provider: bool
     owner_root: object
+    provider_defaults: tuple = ()
 
 
 def contribution_schema(declaration, base_schema, *, deferred=None, _provider=False, _owner_root=None, body=None):
@@ -391,8 +393,31 @@ def contribution_schema(declaration, base_schema, *, deferred=None, _provider=Fa
     from api_agent.config.declarations import ConfigSchema, load_declarations, compose_schema
     prior = ConfigSchema({name: value for batch in (deferred or ())
         for name, value in batch.overrides.fields.items()})
-    contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default',
-                                    predicate_context=prior, **({'body': body} if body is not None else {}))
+    raw = body if body is not None else Path(declaration).read_bytes()
+    data = tomllib.loads(raw.decode())
+    has_defaults = 'provider_defaults' in data
+    defaults = data.pop('provider_defaults', [])
+    if type(defaults) is not list or len(defaults) > 16:
+        raise ValueError('provider_defaults must be a bounded array')
+    captured_defaults = []
+    for row in defaults:
+        if (type(row) is not dict or set(row) != {'provider', 'settings'}
+                or type(row['provider']) is not str or type(row['settings']) is not dict
+                or not row['settings'] or set(row['settings']) - {
+                    'LLM_ALLOWED_MODELS', 'LLM_DEFAULT_MODEL', 'LLM_REASONING_EFFORT'}):
+            raise ValueError('Invalid exact-provider model defaults')
+        target = provider_location(row['provider'], owner_root=Path(declaration).parent)
+        captured_defaults.append((target, dict(row['settings'])))
+    if has_defaults:
+        from api_agent.config.declarations import schema_from_dict
+        from api_agent.config.source_reads import record_file, record_link
+        location = Path(declaration).absolute() if body is not None else Path(declaration).resolve()
+        record_link(Path(declaration).absolute(), location)
+        record_file(location, location.parent, raw)
+        contributed = schema_from_dict(data, base_schema=base_schema, source='pack_default', predicate_context=prior)
+    else:
+        contributed = load_declarations(declaration, base_schema=base_schema, source='pack_default',
+                                        predicate_context=prior, **({'body': body} if body is not None else {}))
     origin = Path(declaration).absolute() if body is not None else Path(declaration).resolve()
     contributed = ConfigSchema({name: replace(value, contribution_origin=origin)
                                 for name, value in contributed.fields.items()})
@@ -403,6 +428,8 @@ def contribution_schema(declaration, base_schema, *, deferred=None, _provider=Fa
                                 if value.override_if_present})
         contributed = ConfigSchema({name: value for name, value in contributed.fields.items()
                                     if not value.override_if_present})
+    if captured_defaults and deferred is None:
+        raise ValueError('Exact-provider defaults require provider discovery')
     # An already composed schema may be supplied as a fresh session baseline.
     # Identical declarations are inert, not grants to replace another owner.
     unchanged = {name for name, declaration in contributed.fields.items()
@@ -416,7 +443,8 @@ def contribution_schema(declaration, base_schema, *, deferred=None, _provider=Fa
         # Preserve raw authority and file order for final composition.
         deferred.append(_PendingContribution(pending,
             ConfigSchema({**contributed.fields, **pending.fields}),
-            frozenset(contributed.fields.keys() - base_schema.fields.keys()), _provider, _owner_root))
+            frozenset(contributed.fields.keys() - base_schema.fields.keys()), _provider, _owner_root,
+            tuple((target, settings, origin) for target, settings in captured_defaults)))
     return schema
 
 
@@ -676,6 +704,23 @@ def bootstrap_schema(base_schema, argv, environ, dotenv, overrides=None, *,
         if not pending:
             from api_agent.config.declarations import ConfigSchema
             schema = _replay_contributions(base_schema, deferred)
+            # Explicit pack opt-ins alter defaults only, after ordinary provider
+            # declarations. Discovery and all constraints retain their authority.
+            from api_agent.config.resolve import convert_value
+            fields = dict(schema.fields)
+            for batch in deferred:
+                for target, settings, origin in batch.provider_defaults:
+                    if target != discovered.get('LLM_PROVIDER'):
+                        continue
+                    for key, value in settings.items():
+                        field = fields.get(key)
+                        if field is None or field.sensitive:
+                            raise ValueError('Unknown or sensitive provider default: ' + key)
+                        converted = convert_value(field, value, external=False, anchors=None)
+                        fields[key] = replace(field, default=converted, conditional_defaults=(),
+                            default_source='pack_default', contribution_origin=origin)
+            if fields != schema.fields:
+                schema = ConfigSchema(fields)
             # Discovery is intentionally fixed before optional late overrides.
             # Compare *resolved* selections, including conditional defaults, and
             # do not let HELP/applicability hide a changed graph from this guard.

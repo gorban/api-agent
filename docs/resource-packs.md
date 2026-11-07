@@ -182,3 +182,24 @@ treated alike. Includes resolve within their own manifest; missing includes,
 cycles and colliding names fail. Only selected groups and their includes are
 evaluated. A matching optional extra contributes additively, preserving existing
 packs. Requirements use the existing PEP 508 and direct-URL validation policy.
+
+A file listed in `[providers].configs` can opt into defaults for an exact selected
+LLM provider without replacing its implementation or authentication configuration:
+
+```toml
+version = 1
+[[provider_defaults]]
+provider = "../../api-agent/src/api_agent/llm_providers/bedrock/factory.py:factory"
+[provider_defaults.settings]
+LLM_ALLOWED_MODELS = 'us[.]openai[.]gpt-(?:5|6)[.].+-luna'
+```
+
+The provider path is relative to the declaration file's directory, preserving its
+owner when inherited by another pack. The canonical factory path and symbol must
+match the selected LLM provider. Only `LLM_ALLOWED_MODELS`, `LLM_DEFAULT_MODEL`,
+and `LLM_REASONING_EFFORT` are allowed; values retain the selected schema's types
+and constraints. These explicit opt-ins replace default metadata after ordinary
+provider declarations. Dotenv, environment, CLI and interactive choices remain
+higher priority. Ordinary provider declarations still take precedence over
+ordinary pack fields. The original declaration bytes participate in configuration
+source tracking and ordered pack admission.
