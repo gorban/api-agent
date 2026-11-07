@@ -40,6 +40,9 @@ can provide that interface. Follow its
 [Docker CLI compatibility guide](https://podman-desktop.io/docs/migrating-from-docker/aliasing-the-docker-cli)
 and [Compose setup](https://podman-desktop.io/docs/compose/setting-up-compose).
 Compose is a separate provider; installing Podman alone does not install it.
+The provider must support Docker Compose options, including
+`--project-directory`. Docker Compose itself can use Podman's socket; a
+`podman-compose` version that rejects these options is not sufficient.
 
 For commands you type in a POSIX-compatible interactive shell, an alias is handy:
 
@@ -59,7 +62,9 @@ exec podman "$@"
 
 Make that file executable (`chmod +x "$HOME/.local/bin/docker"` for the example
 location), and ensure its directory is on `PATH`. Do not overwrite an existing
-Docker executable. This wrapper forwards arguments unchanged; `docker compose`
+Docker executable. Putting this directory first on `PATH` selects Podman ahead
+of other Docker installations; skip the wrapper when you intend to use Docker.
+This wrapper forwards arguments unchanged; `docker compose`
 becomes `podman compose`, which still needs its separate Compose provider.
 
 Also enable Podman's local API socket so Compose and the launcher's engine
@@ -74,7 +79,7 @@ From the same environment where you will run `./launch.sh`, check:
 
 ```sh
 env docker info
-env docker compose version
+env docker compose --project-directory "$PWD" version
 ```
 
 Using `env` bypasses shell aliases and checks the executable the launcher can

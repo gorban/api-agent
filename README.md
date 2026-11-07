@@ -56,10 +56,13 @@ connections, start local services, run tests and inspect failures.
 
 On Unix-like systems with a POSIX shell,
 [mise](https://mise.jdx.dev/installing-mise.html) is always required.
-Docker is a development dependency required
+Docker or Podman is an optional development dependency required
 [only for certain local services](docs/prerequisites.md#when-docker-is-needed),
-tools and tests. Mise supplies this
-project's Python, uv, Node.js and npm; you do not need to install those separately.
+tools and tests. Either must provide an executable named `docker`, Compose support
+and a matching local Docker-compatible API socket. For Podman, see the
+[executable alias example](docs/prerequisites.md#using-podman-with-docker-commands);
+a shell-only `alias docker=podman` does not reach launcher subprocesses.
+Mise supplies this project's Python, uv, Node.js and npm; you do not need to install those separately.
 Install mise with one of these official commands:
 
 ```sh

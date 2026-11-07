@@ -1574,3 +1574,25 @@ def test_engine_image_id_prefix_normalization_keeps_exact_identity_and_pin(setup
     engine.image_inspections[pin][0]['RepoDigests'] = [pin.split(':4.14.0')[0] + '@sha256:' + 'f' * 64]
     with pytest.raises(p.PrerequisiteError, match='incompatible'):
         manager.acquire()
+
+
+@pytest.mark.parametrize('actual', ['sha256:' + 'a' * 64, 'a' * 64])
+def test_pinned_image_id_accepts_engine_normalized_image_name(setup, actual):
+    create, engine, _, _, _ = setup
+    manager = create()
+    manager.specs['jaeger']['image'] = 'sha256:' + 'a' * 64
+    item = p.ManagedService('1' * 64, 'jaeger', 'localhost/example:latest', actual,
+        manager.fingerprints['jaeger'], True, None, manager.specs['jaeger']['profiles'][0])
+    assert manager._compatible({'container': item}, 30) == {'jaeger': item}
+    assert not engine.commands
+
+
+@pytest.mark.parametrize('actual', ['sha256:' + 'b' * 64, 'b' * 64, None, 'example:latest'])
+def test_pinned_image_id_rejects_wrong_or_missing_runtime_image_id(setup, actual):
+    create, _, _, _, _ = setup
+    manager = create()
+    pin = manager.specs['jaeger']['image'] = 'sha256:' + 'a' * 64
+    item = p.ManagedService('1' * 64, 'jaeger', pin, actual,
+        manager.fingerprints['jaeger'], True, None, manager.specs['jaeger']['profiles'][0])
+    with pytest.raises(p.PrerequisiteError, match='incompatible'):
+        manager._compatible({'container': item}, 30)

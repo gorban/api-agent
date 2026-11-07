@@ -1024,6 +1024,10 @@ class PrerequisiteManager:
                     # Engines may normalize Config.Image (including adding :latest).
                     # The running image ID and the requested repo digest are proof.
                     image_matches = verified[image_key]
+            elif re.fullmatch(r'sha256:[0-9a-f]{64}', expected):
+                # Engines can retain the source tag as Config.Image for an ID pin.
+                # The running image ID, not that display name, proves identity.
+                image_matches = item.image_id in {expected, expected.removeprefix('sha256:')}
             else:
                 image_matches = item.image == expected
             if (item.service in desired or not image_matches
