@@ -9,6 +9,7 @@ import inspect
 import os
 from pathlib import Path
 import stat
+import sys
 import traceback
 from uuid import uuid4
 
@@ -1273,3 +1274,16 @@ def pytest_runtest_setup(item):
                     for key, source in provenance.items()}
         rendered = json.dumps(evidence, sort_keys=True, default=str)
         item.user_properties.append(('integration_test_profile', rendered))
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Give an optional owned trace one final worker-local cleanup attempt."""
+    from .workflow_trace import drain_pending_workflow_trace
+    try:
+        if not asyncio.run(drain_pending_workflow_trace()):
+            print('WARNING: Tracing cleanup remains pending after session finish.',
+                  file=sys.stderr, flush=True)
+    except Exception:
+        print('WARNING: Tracing cleanup remains pending after session finish.',
+              file=sys.stderr, flush=True)

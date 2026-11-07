@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from threading import Thread
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -145,6 +146,373 @@ def test_owned_native_trace_scope_disabled_keeps_original_factory():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('scenario_fails', [False, True])
+def test_owned_native_trace_delivery_warns_without_masking_scenario(monkeypatch, capsys,
+                                                                    scenario_fails):
+    from api_agent.testing import workflow_trace
+    from api_agent.telemetry.tracing import TraceDeliveryError, TRACE_DELIVERY_WARNING
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    runtime = SimpleNamespace(astart=AsyncMock(),
+        aclose=AsyncMock(side_effect=TraceDeliveryError('private transport detail')))
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: runtime)
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2]) as scoped:
+            assert scoped is not original
+            if scenario_fails:
+                raise AssertionError('original scenario failure')
+    if scenario_fails:
+        with pytest.raises(AssertionError, match='original scenario failure'):
+            asyncio.run(run())
+    else:
+        asyncio.run(run())
+    runtime.astart.assert_awaited_once()
+    runtime.aclose.assert_awaited_once()
+    assert capsys.readouterr().err == 'WARNING: ' + TRACE_DELIVERY_WARNING + '\n'
+
+
+def test_owned_native_trace_setup_failure_warns_and_keeps_original_factory(monkeypatch, capsys):
+    from api_agent.testing import workflow_trace
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    runtime = SimpleNamespace(astart=AsyncMock(side_effect=RuntimeError('private setup detail')),
+        aclose=AsyncMock())
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: runtime)
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2]) as scoped:
+            assert scoped is original
+    asyncio.run(run())
+    runtime.aclose.assert_awaited_once()
+    assert capsys.readouterr().err == 'WARNING: Tracing setup failed; continuing without tracing.\n'
+
+
+def test_owned_native_trace_acquires_collector_before_export_and_releases_after_flush(monkeypatch):
+    from api_agent.testing import workflow_trace
+    from api_agent.runtime import tracing_collector_snapshot
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    events = []
+    class Manager:
+        timeout = 5
+        def now(self):
+            return 0
+        def acquire(self, **_kwargs):
+            events.append('acquire')
+        def release(self, **_kwargs):
+            events.append('release')
+    class Runtime:
+        async def astart(self):
+            events.append('start')
+        async def aclose(self):
+            events.append('flush')
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: Runtime())
+    monkeypatch.setattr(tracing_collector_snapshot, 'verify_collector_binding',
+        lambda *_args: None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'collector_from_snapshot',
+        lambda *_args: Manager())
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2],
+                collector_snapshot={'trace_collector_plan': {'version': 2}}) as scoped:
+            assert scoped is not original
+            events.append('scenario')
+    asyncio.run(run())
+    assert events == ['acquire', 'start', 'scenario', 'flush', 'release']
+
+
+def test_owned_native_trace_retains_collector_until_cross_loop_cleanup_retry(monkeypatch, capsys):
+    from api_agent.testing import workflow_trace, provider_setup
+    from api_agent.runtime import tracing_collector_snapshot
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    events = []
+    class Manager:
+        timeout = 5
+        def now(self): return 0
+        def acquire(self, **_kwargs): events.append('acquire')
+        def release(self, **_kwargs): events.append('release')
+    class Runtime:
+        attempts = 0
+        async def astart(self): events.append('start')
+        async def aclose(self):
+            self.attempts += 1
+            events.append('close')
+            if self.attempts < 3:
+                raise RuntimeError('private cleanup detail')
+    monkeypatch.setattr(workflow_trace, '_pending', None)
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: Runtime())
+    monkeypatch.setattr(tracing_collector_snapshot, 'verify_collector_binding', lambda *_args: None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'collector_from_snapshot', lambda *_args: Manager())
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2],
+                collector_snapshot={'trace_collector_plan': {'version': 2}}) as scoped:
+            assert scoped is not original
+    asyncio.run(run())
+    assert events == ['acquire', 'start', 'close']
+    assert workflow_trace._pending is not None
+    assert asyncio.run(workflow_trace.drain_pending_workflow_trace()) is False
+    assert events == ['acquire', 'start', 'close', 'close']
+    assert workflow_trace._pending is not None
+    provider_setup.pytest_sessionfinish(None, 0)
+    assert events == ['acquire', 'start', 'close', 'close', 'close', 'release']
+    assert workflow_trace._pending is None
+    assert 'private cleanup detail' not in capsys.readouterr().err
+
+
+def test_owned_native_trace_cancelled_acquire_finishes_cleanup_before_propagation(monkeypatch):
+    from api_agent.testing import workflow_trace
+    from api_agent.runtime import tracing_collector_snapshot
+    from pathlib import Path
+    from threading import Event
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    entered, release = Event(), Event()
+    events = []
+    class Manager:
+        timeout = 5
+        def now(self): return 0
+        def acquire(self, **_kwargs):
+            entered.set()
+            release.wait(2)
+            events.append('acquire')
+        def release(self, **_kwargs): events.append('release')
+    class Runtime:
+        async def astart(self): events.append('start')
+        async def aclose(self): events.append('close')
+    monkeypatch.setattr(workflow_trace, '_pending', None)
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: Runtime())
+    monkeypatch.setattr(tracing_collector_snapshot, 'verify_collector_binding', lambda *_args: None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'collector_from_snapshot', lambda *_args: Manager())
+
+    async def run():
+        async def scope():
+            async with workflow_trace.owned_workflow_trace(original, resolved,
+                    owner_root=Path(__file__).resolve().parents[2],
+                    collector_snapshot={'trace_collector_plan': {'version': 2}}):
+                pytest.fail('cancelled acquisition admitted a scenario')
+        task = asyncio.create_task(scope())
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(run())
+    assert events == ['acquire', 'close', 'release']
+    assert workflow_trace._pending is None
+
+
+def test_owned_native_trace_self_cancelled_disposal_retains_owner(monkeypatch, capsys):
+    from api_agent.testing import workflow_trace
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    runtime = SimpleNamespace(astart=AsyncMock(),
+        aclose=AsyncMock(side_effect=[asyncio.CancelledError(), None]))
+    monkeypatch.setattr(workflow_trace, '_pending', None)
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: runtime)
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2]):
+            pass
+    asyncio.run(run())
+    assert workflow_trace._pending is not None
+    assert asyncio.run(workflow_trace.drain_pending_workflow_trace()) is True
+    assert workflow_trace._pending is None
+    assert 'WARNING: Tracing cleanup failed; resources remain owned for retry.' in capsys.readouterr().err
+
+
+def test_overlapping_owned_native_trace_scope_warns_without_replacing_owner(monkeypatch, capsys):
+    from api_agent.testing import workflow_trace
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    runtime = SimpleNamespace(astart=AsyncMock(), aclose=AsyncMock())
+    monkeypatch.setattr(workflow_trace, '_pending', None)
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: runtime)
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2]) as outer:
+            assert outer is not original
+            async with workflow_trace.owned_workflow_trace(original, resolved,
+                    owner_root=Path(__file__).resolve().parents[2]) as inner:
+                assert inner is original
+    asyncio.run(run())
+    runtime.astart.assert_awaited_once()
+    runtime.aclose.assert_awaited_once()
+    assert workflow_trace._pending is None
+    assert capsys.readouterr().err == (
+        'WARNING: Tracing is already active in this worker; continuing without tracing.\n')
+
+
+@pytest.mark.parametrize('status', [200, 400])
+def test_owned_native_trace_managed_loopback_collector_lifetime(monkeypatch, capsys, status):
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+    from api_agent.testing import workflow_trace
+    from api_agent.runtime import tracing_collector_snapshot
+    from pathlib import Path
+    received, events = [], []
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(self.rfile.read(int(self.headers['Content-Length'])))
+            self.send_response(status)
+            self.end_headers()
+        def log_message(self, *_args): pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    class Manager:
+        timeout = 5
+        def now(self): return 0
+        def acquire(self, **_kwargs):
+            events.append('acquire')
+            self.thread = Thread(target=server.serve_forever, daemon=True)
+            self.thread.start()
+        def release(self, **_kwargs):
+            events.append('release')
+            assert received
+            server.shutdown()
+            self.thread.join()
+    resolved = config(TRACE_EXPORT_ENDPOINT=f'http://127.0.0.1:{server.server_port}/v1/traces')
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    monkeypatch.setattr(workflow_trace, '_pending', None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'verify_collector_binding', lambda *_args: None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'collector_from_snapshot', lambda *_args: Manager())
+    try:
+        async def run():
+            async with workflow_trace.owned_workflow_trace(original, resolved,
+                    owner_root=Path(__file__).resolve().parents[2],
+                    collector_snapshot={'trace_collector_plan': {'version': 2}}) as scoped:
+                assert scoped is not original
+                graph = str(uuid4())
+                adapter = scoped.create(definition())
+                adapter.observe(dict(event='scope_start', scope_id=graph, owner='GRAPH', kind='graph'))
+                adapter.observe(dict(event='scope_end', scope_id=graph, owner='GRAPH', kind='graph', outcome='passed'))
+                adapter.close()
+                adapter.finalize()
+                events.append('scenario')
+        asyncio.run(run())
+    finally:
+        server.server_close()
+    assert events == ['acquire', 'scenario', 'release']
+    spans = [span for body in received for resource in
+        ExportTraceServiceRequest.FromString(body).resource_spans for scope in resource.scope_spans
+        for span in scope.spans]
+    assert 'graph GRAPH' in {span.name for span in spans}
+    diagnostic = capsys.readouterr().err
+    if status == 200:
+        assert diagnostic == ''
+    else:
+        from api_agent.telemetry.tracing import TRACE_DELIVERY_WARNING
+        assert diagnostic == 'WARNING: ' + TRACE_DELIVERY_WARNING + '\n'
+
+
+@pytest.mark.parametrize('failure', [RuntimeError('private release'), asyncio.CancelledError()])
+def test_owned_trace_resources_retain_failed_collector_release_for_retry(failure, capsys):
+    from api_agent.testing.workflow_trace import _TraceResources
+    runtime = SimpleNamespace(aclose=AsyncMock())
+    class Manager:
+        attempts = 0
+        def release(self, **_kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise failure
+    owner = _TraceResources(runtime)
+    owner.manager = Manager()
+    assert asyncio.run(owner.aclose()) is False
+    assert not owner.closed and owner.runtime_closed
+    assert asyncio.run(owner.aclose()) is True
+    assert asyncio.run(owner.aclose()) is True
+    runtime.aclose.assert_awaited_once()
+    assert owner.manager.attempts == 2
+    assert 'private release' not in capsys.readouterr().err
+
+
+def test_owned_trace_scope_skips_new_owner_while_prior_cleanup_pending(monkeypatch, capsys):
+    from api_agent.testing import workflow_trace
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    owner = SimpleNamespace(closed=False, aclose=AsyncMock(return_value=False))
+    monkeypatch.setattr(workflow_trace, '_pending', owner)
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2]) as scoped:
+            assert scoped is original
+    asyncio.run(run())
+    owner.aclose.assert_awaited_once()
+    assert workflow_trace._pending is owner
+    assert capsys.readouterr().err == (
+        'WARNING: Tracing cleanup remains pending; continuing without tracing.\n')
+
+
+def test_owned_trace_binding_admission_failure_warns_without_allocating_runtime(monkeypatch, capsys):
+    from api_agent.testing import workflow_trace
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    def fail(*_args, **_kwargs):
+        raise RuntimeError('private admission detail')
+    monkeypatch.setattr(workflow_trace, 'admit_binding', fail)
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2]) as scoped:
+            assert scoped is original
+    asyncio.run(run())
+    assert capsys.readouterr().err == 'WARNING: Tracing setup failed; continuing without tracing.\n'
+
+
+def test_owned_trace_external_collector_receipt_needs_no_managed_lease(monkeypatch):
+    from api_agent.testing import workflow_trace
+    from api_agent.runtime import tracing_collector_snapshot
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    runtime = SimpleNamespace(astart=AsyncMock(), aclose=AsyncMock())
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(tracing_collector_snapshot, 'verify_collector_binding', lambda *_args: None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'collector_from_snapshot', lambda *_args: None)
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2],
+                collector_snapshot={'trace_collector_plan': {'version': 2}}) as scoped:
+            assert scoped is not original
+    asyncio.run(run())
+    runtime.astart.assert_awaited_once()
+    runtime.aclose.assert_awaited_once()
+
+
+@pytest.mark.parametrize('result', [False, RuntimeError('private drain detail')])
+def test_worker_session_end_reports_retained_trace_cleanup_without_private_detail(
+        monkeypatch, capsys, result):
+    from api_agent.testing import provider_setup, workflow_trace
+    drain = AsyncMock(side_effect=result if isinstance(result, Exception) else None,
+                      return_value=result if result is False else None)
+    monkeypatch.setattr(workflow_trace, 'drain_pending_workflow_trace', drain)
+    provider_setup.pytest_sessionfinish(None, 0)
+    drain.assert_awaited_once()
+    assert capsys.readouterr().err == (
+        'WARNING: Tracing cleanup remains pending after session finish.\n')
+
+
 def test_owned_native_trace_scope_closes_after_scenario_failure():
     from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
     from api_agent.testing.workflow_trace import owned_workflow_trace
@@ -177,21 +545,20 @@ def test_owned_native_trace_scope_closes_after_scenario_failure():
 
 
 @pytest.mark.parametrize('plan', [None, {}, {'version': 2}])
-def test_owned_native_trace_scope_rejects_missing_or_changed_collector_receipt(plan):
+def test_owned_native_trace_scope_warns_and_disables_changed_collector_receipt(plan, capsys):
     from api_agent.testing.workflow_trace import owned_workflow_trace
     from pathlib import Path
     resolved = config(API_KEY='private-sentinel')
     original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(secrets=('private-sentinel',)))
 
     async def run():
-        with pytest.raises(ValueError) as failure:
-            async with owned_workflow_trace(original, resolved,
-                    owner_root=Path(__file__).resolve().parents[2],
-                    collector_snapshot={'trace_collector_plan': plan}):
-                pytest.fail('unverified trace owner admitted')
-        assert 'private-sentinel' not in str(failure.value)
+        async with owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2],
+                collector_snapshot={'trace_collector_plan': plan}) as scoped:
+            assert scoped is original
 
     asyncio.run(run())
+    assert capsys.readouterr().err == 'WARNING: Tracing setup failed; continuing without tracing.\n'
 
 
 @pytest.mark.parametrize('log,trace', [(False,False),(False,True),(True,False),(True,True)])
