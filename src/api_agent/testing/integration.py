@@ -611,7 +611,12 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                     elif row['kind'] == 'inference_content':
                                         # Evidence is accepted only from the bounded sidecar.
                                         continue
-                                    elif row['kind'] == 'browser_attachment' and (config or {}).get('LOG_CONTENT') is True:
+                                    elif row['kind'] == 'browser_attachment' and (
+                                            (config or {}).get('LOG_CONTENT') is True or
+                                            (type(row.get('data')) is dict and
+                                             row['data'].get('masked_content') is True and
+                                             bool({'requires_ui_session', 'requires_owned_ui_session'}
+                                                  & set(identity.tags)))):
                                         from .browser_attachments import read_attachment
                                         count, size = browser_sizes.get(identity.id, (0, 0))
                                         if count >= 64 or size >= 16 * 1024 * 1024:

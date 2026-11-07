@@ -240,6 +240,14 @@ class WorkflowObservations:
         # manual contract. Runtime-owned SDK exporters expose explicit admission.
         return not self._closed and self.trace is not None and getattr(self.trace, 'active', True) is not False
 
+    def begin_child_trace(self, name, structural, *, parent=None, payload=None):
+        """Begin a delegated operation beneath the current workflow node."""
+        if not self._trace_active():
+            return None
+        from .run_context import current_structural_scope
+        ancestor = parent if parent is not None else self._spans.get(current_structural_scope())
+        return self.trace.begin(name, structural, parent=ancestor, payload=payload)
+
     def _trace_row(self, row, *, _finalizing=False, _parent=None, _terminal_ns=None):
         if _finalizing and self._closed:
             self.trace_losses.record()

@@ -28,6 +28,15 @@ def test_round_trip_preserves_original_immutable_bytes(channel, monkeypatch):
     assert (channel.parent/event['data']['name']).stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize('invalid_marker', [None, 1, 'true'])
+def test_invalid_masked_content_marker_cannot_publish_pixels(channel, invalid_marker):
+    supplied = ('UI success context 1 page 1', PNG_SIGNATURE + b'private', 'image/png')
+    with pytest.raises(ValueError, match='Invalid browser attachment policy'):
+        attachments.publish_attachment(supplied, masked_content=invalid_marker)
+    assert not channel.exists()
+    assert not list(channel.parent.glob('*.evidence'))
+
+
 @pytest.mark.parametrize('missing',['API_AGENT_INTEGRATION_EVENTS','PYTEST_CURRENT_TEST'])
 def test_outside_launch_does_not_create_files(channel,monkeypatch,missing):
     monkeypatch.delenv(missing)
@@ -64,6 +73,17 @@ def test_descriptor_cannot_redirect_or_replace_identity(channel,change):
     row=json.loads(channel.read_text())['data']
     row.update(change)
     with pytest.raises(ValueError): attachments.read_attachment(row,channel.parent)
+
+
+@pytest.mark.parametrize('invalid_marker', [False, None, 1, 'true'])
+def test_invalid_masked_descriptor_is_rejected_before_file_read(channel, invalid_marker, monkeypatch):
+    attachments.publish_attachment(('UI success context 1 page 1', PNG_SIGNATURE, 'image/png'))
+    row = json.loads(channel.read_text())['data']
+    row['masked_content'] = invalid_marker
+    monkeypatch.setattr(attachments.os, 'open', lambda *args, **kwargs:
+        pytest.fail('invalid descriptor reached file read'))
+    with pytest.raises(ValueError, match='Invalid browser attachment policy'):
+        attachments.read_attachment(row, channel.parent)
 
 
 @pytest.mark.parametrize('damage',['hash','mode','large','symlink','fifo','content'])
@@ -131,6 +151,35 @@ def test_ui():
             conversation_id='00000000-0000-0000-0000-000000000001',
             turn_id='00000000-0000-0000-0000-000000000002')
     assert any(row.kind=='inspection_lost' for row in events)
+
+
+@pytest.mark.parametrize('ui_marker', ['requires_ui_session', 'requires_owned_ui_session'])
+def test_real_ui_worker_transports_explicit_masked_image_with_content_off(tmp_path, ui_marker):
+    from types import SimpleNamespace
+    from api_agent.testing.collection import collect_tests
+    from api_agent.testing.integration import run_integration_tests
+    suite = tmp_path / 'tests/integration'
+    suite.mkdir(parents=True)
+    (suite / 'test_ui.py').write_text('''import pytest
+from api_agent.testing.browser_attachments import publish_attachment
+from api_agent.testing.browser_evidence import PNG_SIGNATURE
+@pytest.mark.''' + ui_marker + '''
+def test_ui():
+    publish_attachment(('UI success context 1 page 1',
+        PNG_SIGNATURE + b'masked-pixels', 'image/png'), masked_content=True)
+''')
+    context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path,
+        suite_paths=lambda mode: [suite])
+    config = {'LOG_CONTENT': False}
+    selected = collect_tests(context, 'integration', config=config)
+    events = []
+    result = run_integration_tests(context, selected, accepted=True,
+        config=config, on_event=events.append)
+    assert result.exit_code == 0
+    images = [event for event in events if event.kind == 'browser_attachment']
+    assert len(images) == 1
+    assert images[0].attachment[1] == PNG_SIGNATURE + b'masked-pixels'
+    assert json.loads(images[0].text)['masked_content'] is True
 
 
 @pytest.mark.parametrize('enabled,has_attachment',[(True,True),(True,False),(False,True)])

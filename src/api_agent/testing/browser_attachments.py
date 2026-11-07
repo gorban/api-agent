@@ -34,7 +34,7 @@ def validate_owner(owner, boundary=None):
     return dict(owner)
 
 
-def publish_attachment(attachment, *, owner=None):
+def publish_attachment(attachment, *, owner=None, masked_content=False):
     """Freeze safe provider bytes; return whether the event was accepted."""
     event_path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
     node = os.environ.get('PYTEST_CURRENT_TEST')
@@ -45,6 +45,8 @@ def publish_attachment(attachment, *, owner=None):
         raise ValueError('Invalid browser attachment')
     if owner is not None:
         owner = validate_owner(owner)
+    if type(masked_content) is not bool:
+        raise ValueError('Invalid browser attachment policy')
     name = uuid4().hex + '.evidence'
     path = Path(event_path).parent / name
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -54,6 +56,8 @@ def publish_attachment(attachment, *, owner=None):
         'name':name, 'title':title, 'mime':mime, 'sha256':hashlib.sha256(content).hexdigest()}}
     if owner is not None:
         row['data']['owner'] = owner
+    if masked_content:
+        row['data']['masked_content'] = True
     with open(event_path, 'a', encoding='utf-8') as stream:
         stream.write(json.dumps(row, allow_nan=False) + '\n')
     return True
@@ -79,10 +83,12 @@ def _valid(title, content, mime):
 
 def validate_descriptor(row):
     """Validate only the fixed transport descriptor, before touching files."""
-    if (type(row) is not dict or set(row) not in ({'name','title','mime','sha256'}, {'name','title','mime','sha256','owner'})
+    if (type(row) is not dict or set(row) - {'owner', 'masked_content'} != {'name','title','mime','sha256'}
             or type(row['name']) is not str or not _NAME.fullmatch(row['name'])
             or type(row['sha256']) is not str or not re.fullmatch('[0-9a-f]{64}',row['sha256'])):
         raise ValueError('Invalid browser attachment descriptor')
+    if 'masked_content' in row and row['masked_content'] is not True:
+        raise ValueError('Invalid browser attachment policy')
     if 'owner' in row:
         validate_owner(row['owner'])
 

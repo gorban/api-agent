@@ -93,6 +93,32 @@ def test_content_off_never_inspects_browser(operation):
     asyncio.run(owner.capture('failure'))
 
 
+def test_content_off_selected_provider_emits_masked_attachment(operation, monkeypatch, tmp_path):
+    import json
+    from pathlib import Path
+    from api_agent.testing.browser_evidence import PNG_SIGNATURE
+    from api_agent.testing.browser_attachments import read_attachment
+    image = PNG_SIGNATURE + b'masked-owned-pixels'
+    provider = SimpleNamespace(
+        implementation=SimpleNamespace(capabilities=ProviderCapabilities('ui', ('capture_evidence',))),
+        require=Mock(return_value=SimpleNamespace(acapture_evidence=AsyncMock(return_value=image))))
+    owner = operation.create(LOG_CONTENT=False)
+    owner.prepared = SimpleNamespace(provider=provider)
+    page = object()
+    operation.browser.session = SimpleNamespace(context=SimpleNamespace(pages=(page,)))
+    event_file = tmp_path / 'events.jsonl'
+    event_file.touch()
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(event_file))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test_ui_runtime.py::test_masked (call)')
+
+    asyncio.run(owner.capture('success'))
+
+    descriptor = json.loads(event_file.read_text())['data']
+    assert descriptor['masked_content'] is True
+    assert read_attachment(descriptor, Path(tmp_path))[1] == image
+    provider.require.assert_called_once_with('ui', 'capture_evidence')
+
+
 @pytest.mark.parametrize('capability,session', [(False,False),(False,True),(True,True)])
 def test_content_capture_uses_only_advertised_policy(operation,monkeypatch,capability,session):
     from api_agent.testing import browser_evidence, browser_attachments

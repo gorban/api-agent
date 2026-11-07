@@ -83,3 +83,37 @@ def test_allure_notice_uses_selected_intent_and_never_worker_pixels_when_disable
         assert result.manifest['files'][images[0]['source']] == notice.ASSET_SHA256
     else:
         assert not images
+
+
+@pytest.mark.parametrize('ui_marker', ['requires_ui_session', 'requires_owned_ui_session'])
+def test_recorded_ui_accepts_marked_masked_png_without_withheld_placeholder(tmp_path, ui_marker):
+    from api_agent.testing import recorded
+    from api_agent.testing.contracts import RunnerEvent, TestResult
+    from api_agent.testing.integration import IntegrationRunResult
+    from api_agent.testing.browser_evidence import PNG_SIGNATURE
+    from test_recorded_integration import fixture, Storage
+    context, identity, config = fixture(tmp_path)
+    selected = replace(identity, tags={ui_marker})
+    config['LOG_CONTENT'] = False
+    image = ('UI success context 1 page 1', PNG_SIGNATURE + b'masked-pixels', 'image/png')
+    descriptor = {'name': '0' * 32 + '.evidence', 'title': image[0],
+        'mime': image[2], 'sha256': hashlib.sha256(image[1]).hexdigest(),
+        'masked_content': True}
+
+    def runner(context, tests, **hooks):
+        hooks['before_run']()
+        hooks['on_event'](RunnerEvent('browser_attachment', identity=selected,
+            text=json.dumps(descriptor), attachment=image))
+        outcome = TestResult(selected, 'passed')
+        hooks['on_result'](outcome)
+        result = IntegrationRunResult(0, (outcome,), '')
+        hooks['after_run'](result)
+        return result
+
+    result = recorded.run_recorded_integration(context, [selected], config,
+        accepted=True, storage=Storage(), runner=runner)
+    assert result.persisted
+    row = json.loads(next(result.directory.glob('*-result.json')).read_text())
+    images = [item for item in row['attachments'] if item['type'] == 'image/png']
+    assert len(images) == 1 and images[0]['name'] == image[0]
+    assert (result.directory / images[0]['source']).read_bytes() == image[1]

@@ -274,7 +274,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         seen = set()
         recording_ids = {}
         content = {}
-        ui_test_ids = {test.id for test in tests if 'requires_ui_session' in test.tags}
+        ui_test_ids = {test.id for test in tests if
+            {'requires_ui_session', 'requires_owned_ui_session'} & set(test.tags)}
         workflow_steps = {}
         workflow_journals = {}
         payload_stores = {}
@@ -286,6 +287,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         browser_attachment_sizes = {}
         browser_budget_reported = set()
         browser_receipts = set()
+        masked_browser_tests = set()
         call_scope_owners = {}
         incomplete_inference_evidence = {}
         scoped_inference_loss = {}
@@ -402,7 +404,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 for item in place_evidence(steps, scoped_attachments.get(test_id, ()),
                     call_scopes=call_scope_owners[test_id]))
             attachments = tuple(attachments)
-            if config.get('LOG_CONTENT') is not True and result.identity.id in ui_test_ids:
+            if (config.get('LOG_CONTENT') is not True and result.identity.id in ui_test_ids
+                    and result.identity.id not in masked_browser_tests):
                 from .withheld_screenshot import withheld_attachment
                 attachments += (withheld_attachment(),)
             recorder.update_test_evidence(recording_ids[test_id], attachments=attachments,
@@ -624,8 +627,6 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 scoped_inference_loss.setdefault(row.identity.id, set()).add(tuple(data[k] for k in
                     ('invocation_id', 'visit_id', 'call_id', 'direction')))
             if row.kind == 'browser_attachment':
-                if config.get('LOG_CONTENT') is not True:
-                    return
                 if row.attachment is not None:
                     from .browser_attachments import _valid, validate_owner, validate_descriptor
                     import hashlib
@@ -633,6 +634,10 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                     if not _valid(title, pixels, mime):
                         raise ValueError('Invalid browser attachment')
                     descriptor = json.loads(row.text) if row.text else None
+                    if config.get('LOG_CONTENT') is not True and (
+                            descriptor is None or descriptor.get('masked_content') is not True
+                            or row.identity.id not in ui_test_ids):
+                        return
                     owner = None
                     if descriptor is not None:
                         validate_descriptor(descriptor)
@@ -662,6 +667,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                         content.setdefault(row.identity.id, []).append(frozen)
                     else:
                         queue_attachment(row.identity.id, owner, frozen)
+                    if descriptor is not None and descriptor.get('masked_content') is True and frozen[2] == 'image/png':
+                        masked_browser_tests.add(row.identity.id)
             if row.kind == 'workflow_evidence':
                 from api_agent.workflows.evidence import attachment
                 raw_packet = json.loads(row.text)

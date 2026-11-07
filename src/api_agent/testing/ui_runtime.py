@@ -120,8 +120,9 @@ class UIIntegrationOwner:
     async def capture(self, phase, *, owner=None):
         from .browser_evidence import capture_ui_evidence
         from .browser_attachments import publish_attachment
-        # Do not even inspect browser/provider state when content is disabled.
-        if self.emissions.policy.allow_content is not True:
+        provider = None if self.prepared is None else self.prepared.provider
+        if (self.emissions.policy.allow_content is not True and
+                (provider is None or 'capture_evidence' not in provider.implementation.capabilities.operations)):
             return
         if owner is not None:
             from .ui_turn import UITurn
@@ -149,13 +150,13 @@ class UIIntegrationOwner:
             except (ValueError, TypeError):
                 return
         session = self.browser_owner.session
-        provider = None if self.prepared is None else self.prepared.provider
         policy = None
         if provider is not None and 'capture_evidence' in provider.implementation.capabilities.operations:
             async def policy(page, boundary):
                 return await provider.require('ui','capture_evidence').acapture_evidence(page=page, boundary=boundary)
         contexts = () if session is None else (session.context,)
-        submit = publish_attachment
+        submit = (publish_attachment if self.emissions.policy.allow_content is True else
+            lambda attachment: publish_attachment(attachment, masked_content=True))
         if owner is not None:
             # A turn belongs to the prepared application's current page only.
             page = None if self.prepared is None or self.prepared.session is None else self.prepared.session.page
@@ -175,7 +176,9 @@ class UIIntegrationOwner:
                         self._turn_bytes += len(content)
                 # Credential registration may change while provider capture awaits.
                 if self.emissions.content_export(owner) == owner:
-                    accepted = publish_attachment(attachment, owner=dict(owner))
+                    accepted = (publish_attachment(attachment, owner=dict(owner))
+                        if self.emissions.policy.allow_content is True else
+                        publish_attachment(attachment, owner=dict(owner), masked_content=True))
                     if accepted is True and phase == 'success' and attachment[2] == 'image/png':
                         self._latest_turn_page = page
         with independent_timeout_scope():
@@ -183,11 +186,12 @@ class UIIntegrationOwner:
                 # Retain other windows and their original context/page numbers.
                 excluded = (self._latest_turn_page,) if phase == 'success' and self._latest_turn_page is not None else ()
                 await capture_ui_evidence(contexts, self.emissions, submit, capture_policy=policy,
-                    phase=phase, exclude_pages=excluded)
+                    phase=phase, exclude_pages=excluded, allow_masked_content=True)
                 return
             try:
                 async with component_timeout('UI turn evidence', 6):
-                    await capture_ui_evidence(contexts, self.emissions, submit, capture_policy=policy, phase=phase)
+                    await capture_ui_evidence(contexts, self.emissions, submit, capture_policy=policy,
+                        phase=phase, allow_masked_content=True)
             except Exception:
                 import json
                 try:

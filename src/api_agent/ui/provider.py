@@ -122,7 +122,9 @@ class DemoUIProvider:
         if self.closed or self.process is None:
             return None
         from .evidence import capture_studio_viewport
-        return await capture_studio_viewport(page, boundary, self._evidence_origin)
+        return await capture_studio_viewport(page, boundary, self._evidence_origin,
+            content_mask_selector='#conversation, #prompt, #reply-context, #prompt-error, #status, #failure',
+            content_mask_anchor='#chat-stage')
 
     async def aclose(self):
         self.closed = True

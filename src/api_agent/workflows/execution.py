@@ -156,6 +156,11 @@ async def _repair_owner(frame):
 
 
 _CURRENT_JOURNAL = ContextVar('workflow_journal', default=None)
+
+
+def current_workflow_observations():
+    """Return the observation owner bound to the executing workflow task."""
+    return _CURRENT_JOURNAL.get()
 _CURRENT_SERVICES = ContextVar('workflow_invocation_services', default=None)
 
 

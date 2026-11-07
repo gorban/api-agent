@@ -485,7 +485,9 @@ class TraceRuntime:
         self.mapping = admit_mapping(binding.mapping if binding is not None else mapping or TraceMapping())
         from .operation import TraceLoss
         self.losses = TraceLoss()
+        self._model_lock = Lock()
         self._catalog_model_identities = frozenset()
+        self._selected_model_identities = frozenset()
         self._response_model_identities = frozenset()
         self.bind_model_identities(model_identities)
         policy = ContentPolicy.from_config(config, field_name="TRACELOOP_TRACE_CONTENT")
@@ -536,19 +538,37 @@ class TraceRuntime:
                 or any(type(value) is not str or not 0 < len(value) <= 200
                        or not value.isprintable() for value in model_identities)):
             raise TraceError('Trace model identities must be a bounded collection of identifiers.')
-        self._catalog_model_identities = frozenset(model_identities)
-        self._model_identities = self._catalog_model_identities | self._response_model_identities
+        with self._model_lock:
+            self._catalog_model_identities = frozenset(model_identities)
+            self._model_identities = (self._catalog_model_identities
+                                      | self._selected_model_identities | self._response_model_identities)
+
+    def admit_catalog_selection(self, selected_model):
+        """Add one model confirmed by an owning catalog without replacing peers."""
+        if (type(selected_model) is not str or not 0 < len(selected_model) <= 200
+                or not selected_model.isprintable()):
+            raise TraceError('Invalid selected trace model identity.')
+        with self._model_lock:
+            if (selected_model not in self._selected_model_identities
+                    and len(self._selected_model_identities) >= 256):
+                self.losses.record()
+                return
+            self._selected_model_identities = self._selected_model_identities | {selected_model}
+            self._model_identities = (self._catalog_model_identities
+                                      | self._selected_model_identities | self._response_model_identities)
 
     def admit_provider_model(self, result):
         """Admit a served alias from the validated shared provider result only."""
         from api_agent.providers.llm import LLMResult
         if not isinstance(result, LLMResult) or result.actual_model is None or not self.active:
             return
-        if result.actual_model not in self._response_model_identities and len(self._response_model_identities) >= 256:
-            self.losses.record()
-            return
-        self._response_model_identities = self._response_model_identities | {result.actual_model}
-        self._model_identities = self._catalog_model_identities | self._response_model_identities
+        with self._model_lock:
+            if result.actual_model not in self._response_model_identities and len(self._response_model_identities) >= 256:
+                self.losses.record()
+                return
+            self._response_model_identities = self._response_model_identities | {result.actual_model}
+            self._model_identities = (self._catalog_model_identities
+                                      | self._selected_model_identities | self._response_model_identities)
 
     def is_model_identity(self, value):
         """Return whether the owner catalog currently admits this exact identity."""

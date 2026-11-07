@@ -24,7 +24,7 @@ class OwnedFrameContract:
 _TRUSTED_ICONS = ['<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>', '<svg viewBox="0 0 24 24" width="23" height="23" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9.5 3-.7 2.2-2 .9-2.1-.5-2.5 4.3 1.5 1.7v2.3l-1.5 1.7 2.5 4.3 2.1-.5 2 .9.7 2.2h5l.7-2.2 2-.9 2.1.5 2.5-4.3-1.5-1.7v-2.3l1.5-1.7-2.5-4.3-2.1.5-2-.9-.7-2.2z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3.3"/></svg>']
 
 
-_PREPARE = r'''({trustedIcons, ownedFrameSelector}) => {
+_PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
   const saved = new Map();
   const icons = trustedIcons.map(html => new DOMParser().parseFromString(html, 'text/html').body.firstElementChild.outerHTML);
   const buttonIcon = node => {
@@ -73,6 +73,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector}) => {
   }
   for (const node of nodes) {
     const computed = getComputedStyle(node);
+    const contentMasked = !!contentMaskSelector && node.matches(contentMaskSelector);
     const pseudoStyles = pseudos.map(pseudo => getComputedStyle(node, pseudo));
     const cssUrl = [computed, ...pseudoStyles].some(hasUrl);
     const effects = ['filter','backdrop-filter','-webkit-box-reflect'].filter(property => {
@@ -85,9 +86,9 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector}) => {
         node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript')) ||
       (node.localName === 'svg' && !icons.includes(node.outerHTML) && !buttonIcon(node));
     if (opaque && computed.display === 'contents') throw 'display_contents';
-    if (!opaque && !effects.length) continue;
+    if (!opaque && !effects.length && !contentMasked) continue;
     const properties = [...new Set([...(opaque ? ['opacity','content-visibility','animation','transition'] : []),
-      ...effects])];
+      ...(contentMasked ? ['clip-path'] : []), ...effects])];
     const originalStyle = node.getAttribute('style');
     const previous = properties.map(property => [property,
       node.style.getPropertyValue(property), node.style.getPropertyPriority(property)]);
@@ -99,6 +100,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector}) => {
       node.style.setProperty('animation', 'none', 'important');
       node.style.setProperty('transition', 'none', 'important');
     }
+    if (contentMasked) node.style.setProperty('clip-path', 'inset(0)', 'important');
     for (const effect of effects) node.style.setProperty(effect, 'none', 'important');
     const overrides = properties.map(property => [property,
       node.style.getPropertyValue(property), node.style.getPropertyPriority(property)]);
@@ -137,7 +139,7 @@ _RESTORE = r'''prepared => {
 }'''
 
 
-_INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSelector, diagnose, prepared}) => {
+_INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSelector, contentMaskSelector, contentMaskAnchor, contentMaskRequirements, diagnose, prepared}) => {
   const reject = reason => diagnose ? {unavailable:reason} : null;
   const icons = trustedIcons.map(html => new DOMParser().parseFromString(html, 'text/html').body.firstElementChild.outerHTML);
   const buttonIcon = node => {
@@ -170,6 +172,20 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
   document.documentElement.setAttribute(marker, token);
   const found = document.querySelectorAll('*');
   if (found.length > 10000) return reject('node_budget');
+  if (contentMaskSelector && (!document.querySelector(contentMaskAnchor) ||
+      !document.querySelector(contentMaskSelector)))
+    return reject('content_mask_missing');
+  if (contentMaskSelector) {
+    const maskedRoots = [...document.querySelectorAll(contentMaskSelector)];
+    const elevated = [...document.querySelectorAll(':popover-open, :modal')];
+    if (document.fullscreenElement) elevated.push(document.fullscreenElement);
+    if (elevated.some(node => maskedRoots.some(root => root === node || root.contains(node))))
+      return reject('content_top_layer');
+  }
+  for (const [parentSelector, childSelector] of contentMaskRequirements || []) {
+    const parent = document.querySelector(parentSelector);
+    if (parent && !parent.querySelector(childSelector)) return reject('content_mask_missing');
+  }
   const nodes = [...found], rows = [];
   let characters = 0;
   for (const [index, node] of nodes.entries()) {
@@ -190,6 +206,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     if ([style, ...renderedPseudos].some(computed =>
       [computed.filter, computed.backdropFilter, computed.webkitBoxReflect].some(value =>
         value && value !== 'none'))) return reject('css_effect');
+    const contentMasked = !!contentMaskSelector && node.matches(contentMaskSelector);
     const opaque = imageStyle || authentication(node) || !!node.shadowRoot ||
       (node.matches('iframe,frame') ?
         !(ownedFrameSelector && node.matches(ownedFrameSelector)) :
@@ -200,6 +217,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     if (opaque && (!isolated?.opaque || style.opacity !== '0' ||
         style.contentVisibility !== 'hidden' || style.display === 'contents')) return reject('isolation_verify');
     if (isolated && !node.isConnected) return reject('document_changed');
+    if (contentMasked && style.clipPath !== 'inset(0px)') return reject('isolation_verify');
     // Each text node belongs to one element. Ancestor textContent/innerText
     // repeats large inert bundles many times, exhausting the fixed budget even
     // when the rendered page is small. The root visible-text walk below still
@@ -215,7 +233,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     characters += texts.reduce((sum, text) => sum + text.length, 0);
     if (characters > 1048576) return reject('text_budget');
     rows.push({index, parent: nodes.indexOf(node.parentElement),
-      forced: opaque || inert,
+      forced: opaque || inert || contentMasked,
       texts});
   }
   const stack = [document.documentElement], visible = [];
@@ -358,12 +376,19 @@ async def _renderer_literals(session, records, boundary):
 
 
 async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_frames=False,
-                                  owned_frames=None, unavailable=None, stage=None):
+                                  owned_frames=None, content_mask_selector=None,
+                                  content_mask_anchor=None,
+                                  content_mask_requirements=(),
+                                  unavailable=None, stage=None):
     """Return masked original PNG, or None when owned safety is unavailable.
 
     Authentication controls and unsupported rendering surfaces are hidden and
-    masked before capture. Ordinary form values and the exact authored navigation
-    SVGs remain visible. An explicit ``owned_frames`` contract admits original
+    masked before capture. When content is withheld, the selected provider supplies
+    owned conversation selectors and an anchor; their painted regions are clipped
+    and masked while surrounding controls remain visible. Top-layer descendants
+    are rejected because they can paint outside the clipped region. With content enabled,
+    ordinary form values and exact authored navigation SVGs remain visible.
+    An explicit ``owned_frames`` contract admits original
     application frame pixels after frame identity and literal credential checks.
     Browser strings remain transient and are never attachment metadata. The
     caller owns exception isolation.
@@ -378,7 +403,19 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         if stage is not None:
             stage(name, int((monotonic() - started) * 1000))
 
-    if boundary.policy.allow_content is not True or not origin:
+    if not origin or (boundary.policy.allow_content is not True and
+            (not content_mask_selector or not content_mask_anchor)):
+        return reject('policy')
+    if content_mask_selector is not None and (type(content_mask_selector) is not str or
+            not content_mask_selector or len(content_mask_selector) > 512):
+        return reject('policy')
+    if content_mask_anchor is not None and (type(content_mask_anchor) is not str or
+            not content_mask_anchor or len(content_mask_anchor) > 256):
+        return reject('policy')
+    if (type(content_mask_requirements) is not tuple or len(content_mask_requirements) > 8 or
+            any(type(pair) is not tuple or len(pair) != 2 or
+                any(type(selector) is not str or not selector or len(selector) > 256
+                    for selector in pair) for pair in content_mask_requirements)):
         return reject('policy')
     if owned_frames is not None and (
             type(owned_frames) is not OwnedFrameContract or not owned_frames.selector
@@ -423,7 +460,8 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
             return reject('shadow_audit')
         prepared = await page.evaluate_handle(_PREPARE, {
             'trustedIcons': _TRUSTED_ICONS,
-            'ownedFrameSelector': owned_frames.selector if owned_frames else None})
+            'ownedFrameSelector': owned_frames.selector if owned_frames else None,
+            'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None})
         reason = await prepared.evaluate('state => state.reason')
         mark('prepared')
         if reason:
@@ -431,6 +469,9 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         rows = await page.evaluate(_INSPECT, {'marker': marker, 'token': token,
             'trustedIcons': _TRUSTED_ICONS, 'allowFrames': allow_frames,
             'ownedFrameSelector': owned_frames.selector if owned_frames else None,
+            'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None,
+            'contentMaskAnchor': content_mask_anchor if boundary.policy.allow_content is not True else None,
+            'contentMaskRequirements': content_mask_requirements if boundary.policy.allow_content is not True else (),
             'diagnose': unavailable is not None, 'prepared': prepared})
         if isinstance(rows, dict) and rows.get('unavailable'):
             return reject(rows['unavailable'])
@@ -442,7 +483,7 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         # A registered credential in ordinary page content is not safely
         # localized by ancestor pruning: split/repeated secrets can overlap.
         # Keep original pixels unavailable rather than guess at their spans.
-        if _sensitive(rows, boundary):
+        if _sensitive(rows, boundary, exclude_masked_subtrees=boundary.policy.allow_content is not True):
             return reject('registered_secret')
         masked = {row['index'] for row in rows if row['forced']}
         locators = [page.locator(f'[{marker}-node="{index}"]') for index in sorted(masked)]
@@ -453,6 +494,9 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         after = await page.evaluate(_INSPECT, {'marker': marker, 'token': token,
             'verify': True, 'trustedIcons': _TRUSTED_ICONS, 'allowFrames': allow_frames,
             'ownedFrameSelector': owned_frames.selector if owned_frames else None,
+            'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None,
+            'contentMaskAnchor': content_mask_anchor if boundary.policy.allow_content is not True else None,
+            'contentMaskRequirements': content_mask_requirements if boundary.policy.allow_content is not True else (),
             'diagnose': unavailable is not None, 'prepared': prepared})
         mark('verified')
         try:
@@ -502,15 +546,24 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
             boundary.content_export({'text': unquote(literal)}).get('text') != unquote(literal)
             for literal in renderer_literals):
         return reject('registered_secret')
-    return result if not _sensitive(rows, boundary) else reject('registered_secret')
+    return result if not _sensitive(rows, boundary,
+        exclude_masked_subtrees=boundary.policy.allow_content is not True) else reject('registered_secret')
 
 
-def _sensitive(rows, boundary):
+def _sensitive(rows, boundary, *, exclude_masked_subtrees=False):
     generation, snapshot = boundary.snapshot_content()
     seen = set()
     for row in rows:
         if row['forced']:
             continue
+        if exclude_masked_subtrees:
+            parent = row['parent']
+            while parent >= 0:
+                if rows[parent]['forced']:
+                    break
+                parent = rows[parent]['parent']
+            if parent >= 0:
+                continue
         for text in row['texts']:
             if text in seen:
                 continue

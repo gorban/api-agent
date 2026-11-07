@@ -46,6 +46,163 @@ def _proxied_context(page):
     return SimpleNamespace(new_cdp_session=lambda _: page.context.new_cdp_session(page))
 
 
+@pytest.mark.asyncio
+async def test_omitted_content_masks_chat_dialog_and_preserves_shell_pixels():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 640, 'height': 360})
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+                <body style="margin:0;background:white">
+                  <nav id="shell" style="height:60px;background:rgb(255,0,0)">Nx shell</nav>
+                  <dialog open data-testid="agent-chat-panel" style="position:absolute;left:100px;top:80px;width:300px;height:200px;background:white">
+                    <div id="toolbar" style="height:20px;background:red">Maximize</div>
+                    <div data-testid="agent-conversation-content" style="height:40px;background:blue">User request and assistant response
+                      <div id="escaped" style="position:fixed;left:10px;top:320px;width:100px;height:20px;background:blue">escaped secret</div>
+                    </div>
+                    <section aria-label="Clarification questions"><div data-testid="clarification-content" style="height:30px;background:blue">Clarification content</div></section>
+                    <section aria-label="Mutation confirmation"><div data-testid="mutation-confirmation-content"><div style="height:30px;background:blue">Approval summary</div><div style="height:30px;background:blue">Mutation request</div></div></section>
+                    <div id="model-picker" style="height:20px;background:red">Model</div>
+                    <textarea data-testid="agent-prompt-input" style="display:block;height:30px;background:blue">private draft</textarea>
+                    <iframe src="about:blank" style="width:40px;height:30px"></iframe>
+                  </dialog>
+                </body>'''))
+            await page.goto(origin + '/')
+            boundary = EmissionBoundary(ContentPolicy(False))
+            image = await capture_studio_viewport(page, boundary, origin,
+                allow_frames=True, content_mask_anchor='[data-testid="agent-chat-panel"]',
+                content_mask_selector=('[data-testid="agent-conversation-content"], '
+                    '[data-testid="clarification-content"], '
+                    '[data-testid="mutation-confirmation-content"], '
+                    '[data-testid="agent-prompt-input"]'),
+                content_mask_requirements=(
+                    ('[data-testid="agent-chat-panel"]', '[data-testid="agent-conversation-content"]'),
+                    ('[aria-label="Clarification questions"]', '[data-testid="clarification-content"]'),
+                    ('[aria-label="Mutation confirmation"]', '[data-testid="mutation-confirmation-content"]')))
+            assert image is not None
+            shell = await page.locator('#shell').bounding_box()
+            assert (await _region_pixels(page, image, shell))['red'] is True
+            for selector in ('[data-testid="agent-conversation-content"]',
+                    '[data-testid="clarification-content"]',
+                    '[data-testid="mutation-confirmation-content"]',
+                    '[data-testid="agent-prompt-input"]'):
+                assert (await _region_pixels(page, image,
+                    await page.locator(selector).bounding_box()))['black'] is True
+            for selector in ('#toolbar', '#model-picker'):
+                assert (await _region_pixels(page, image,
+                    await page.locator(selector).bounding_box()))['red'] is True
+            escaped = await page.locator('#escaped').bounding_box()
+            assert (await _region_pixels(page, image, escaped))['ink'] is False
+            assert await page.locator('[data-testid="agent-chat-panel"]').evaluate(
+                '(node) => node.style.background') == 'white'
+            assert await page.locator('[data-testid="agent-conversation-content"]').evaluate(
+                '(node) => node.style.clipPath') == ''
+            boundary.register_secret('registered-outside-secret')
+            await page.locator('#shell').evaluate(
+                '(node) => { node.textContent = "registered-outside-secret"; }')
+            assert await capture_studio_viewport(page, boundary, origin,
+                allow_frames=True, content_mask_anchor='[data-testid="agent-chat-panel"]',
+                content_mask_selector='[data-testid="agent-conversation-content"]') is None
+            await page.locator('#shell').evaluate('(node) => { node.textContent = "Nx shell"; }')
+            for section, required in (
+                    ('[data-testid="agent-conversation-content"]',
+                     ('[data-testid="agent-chat-panel"]', '[data-testid="agent-conversation-content"]')),
+                    ('[data-testid="clarification-content"]',
+                     ('[aria-label="Clarification questions"]', '[data-testid="clarification-content"]')),
+                    ('[data-testid="mutation-confirmation-content"]',
+                     ('[aria-label="Mutation confirmation"]', '[data-testid="mutation-confirmation-content"]'))):
+                target = await page.locator(section).element_handle()
+                await target.evaluate('(node) => node.removeAttribute("data-testid")')
+                assert await capture_studio_viewport(page,
+                    EmissionBoundary(ContentPolicy(False)), origin, allow_frames=True,
+                    content_mask_anchor='[data-testid="agent-chat-panel"]',
+                    content_mask_selector='[data-testid="agent-prompt-input"]',
+                    content_mask_requirements=(required,)) is None
+                await target.evaluate('(node, value) => node.setAttribute("data-testid", value)',
+                    section.split('"')[1])
+            await page.locator('[data-testid="agent-chat-panel"]').evaluate(
+                '(node) => node.remove()')
+            assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_anchor='[data-testid="agent-chat-panel"]',
+                content_mask_selector='[data-testid="agent-conversation-content"]') is None
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_studio_default_content_policy_masks_conversation_and_composer():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 640, 'height': 360})
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+                <body style="margin:0;background:white">
+                  <header id="chrome" style="height:60px;background:red">Studio</header>
+                  <div class="content"><div id="chat-stage" style="height:200px;background:blue">
+                    <div id="conversation">Request, response, clarification and approval</div>
+                    <textarea id="prompt">secret draft</textarea>
+                    <div id="model-control" style="height:20px;background:red">Model and send</div>
+                  </div>
+                  <div id="status">private error</div></div>
+                  <dialog id="failure">private failure</dialog>
+                </body>'''))
+            await page.goto(origin + '/')
+            provider = DemoUIProvider({}, {})
+            provider.process = object()
+            provider._evidence_origin = origin
+            image = await provider.acapture_evidence(page=page,
+                boundary=EmissionBoundary(ContentPolicy(False)))
+            assert image is not None
+            for selector in ('#conversation', '#prompt', '#status'):
+                box = await page.locator(selector).bounding_box()
+                region = await _region_pixels(page, image, {'x': box['x'] + 2,
+                    'y': box['y'] + 2, 'width': box['width'] - 4,
+                    'height': box['height'] - 4})
+                assert region['black'] is True, (selector, region)
+            assert (await _region_pixels(page, image,
+                await page.locator('#chrome').bounding_box()))['red'] is True
+            assert (await _region_pixels(page, image,
+                await page.locator('#model-control').bounding_box()))['red'] is True
+            original = await provider.acapture_evidence(page=page,
+                boundary=EmissionBoundary(ContentPolicy(True)))
+            assert original is not None
+            assert (await _region_pixels(page, original,
+                await page.locator('#conversation').bounding_box()))['black'] is False
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_masked_content_open_popover_cannot_escape_into_screenshot():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 600, 'height': 300})
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+                <body><div id="panel"><div id="conversation" style="width:100px;height:40px;background:blue">
+                  <div id="secret-popover" popover style="position:fixed;left:300px;top:100px;background:red">registered-secret</div>
+                </div><div id="toolbar">Static controls</div></div></body>'''))
+            await page.goto(origin + '/')
+            await page.locator('#secret-popover').evaluate('(node) => node.showPopover()')
+            assert await page.locator('#secret-popover').evaluate(
+                '(node) => node.matches(":popover-open")') is True
+            boundary = EmissionBoundary(ContentPolicy(False))
+            boundary.register_secret('registered-secret')
+            reasons = []
+            assert await capture_studio_viewport(page, boundary, origin,
+                content_mask_selector='#conversation', content_mask_anchor='#panel',
+                unavailable=reasons.append) is None
+            assert reasons == ['content_top_layer']
+        finally:
+            await browser.close()
+
+
 _OWNED_FRAME = OwnedFrameContract('iframe[data-testid="chat-message-html"]',
     '/assets/agent-html-runtime/renderer.html', 'allow-scripts')
 
@@ -178,6 +335,36 @@ def test_policy_rejects_unowned_or_disabled_document(enabled, origin, url, frame
     assert asyncio.run(capture_studio_viewport(page, EmissionBoundary(ContentPolicy(enabled)), origin)) is None
     page.evaluate.assert_not_called()
     page.screenshot.assert_not_called()
+
+
+@pytest.mark.parametrize('mask_options', [
+    {'content_mask_selector': '#conversation'},
+    {'content_mask_selector': 7, 'content_mask_anchor': '#panel'},
+    {'content_mask_selector': 'x' * 513, 'content_mask_anchor': '#panel'},
+    {'content_mask_selector': '#conversation', 'content_mask_anchor': 7},
+    {'content_mask_selector': '#conversation', 'content_mask_anchor': 'x' * 257},
+    {'content_mask_selector': '#conversation', 'content_mask_anchor': '#panel',
+     'content_mask_requirements': []},
+    {'content_mask_selector': '#conversation', 'content_mask_anchor': '#panel',
+     'content_mask_requirements': (('#panel', '#conversation'),) * 9},
+    {'content_mask_selector': '#conversation', 'content_mask_anchor': '#panel',
+     'content_mask_requirements': (['#panel', '#conversation'],)},
+    {'content_mask_selector': '#conversation', 'content_mask_anchor': '#panel',
+     'content_mask_requirements': (('#panel', ''),)},
+    {'content_mask_selector': '#conversation', 'content_mask_anchor': '#panel',
+     'content_mask_requirements': (('#panel', 'x' * 257),)},
+])
+def test_invalid_content_mask_contract_rejects_before_browser_access(mask_options):
+    class NoBrowserAccessPage:
+        @property
+        def url(self):
+            raise AssertionError('invalid mask reached browser state')
+
+    reasons = []
+    assert asyncio.run(capture_studio_viewport(NoBrowserAccessPage(),
+        EmissionBoundary(ContentPolicy(False)), 'http://localhost:9000',
+        unavailable=reasons.append, **mask_options)) is None
+    assert reasons == ['policy']
 
 
 @pytest.mark.parametrize('rows,verified,expected', [
@@ -363,7 +550,9 @@ def test_running_provider_delegates_capture_to_owned_policy(monkeypatch):
     provider._evidence_origin = 'http://localhost:9000'
     page, boundary = object(), object()
     assert asyncio.run(provider.acapture_evidence(page=page, boundary=boundary)) == b'owned-png'
-    policy.assert_awaited_once_with(page, boundary, 'http://localhost:9000')
+    policy.assert_awaited_once_with(page, boundary, 'http://localhost:9000',
+        content_mask_selector='#conversation, #prompt, #reply-context, #prompt-error, #status, #failure',
+        content_mask_anchor='#chat-stage')
 
 
 def test_browser_content_enabled_preserves_prompt_response_and_only_owned_icons():

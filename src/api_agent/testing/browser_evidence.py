@@ -19,7 +19,8 @@ PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 
 
 async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None,
-                              phase='failure', exclude_pages=(), capture_timeout_seconds=5):
+                              phase='failure', exclude_pages=(), capture_timeout_seconds=5,
+                              allow_masked_content=False):
     """Submit immutable attachments before caller-owned browser teardown.
 
     ``capture_policy(page, boundary)`` is async and returns safely masked PNG
@@ -27,6 +28,8 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
     any page/frame-specific safety checks. It must not navigate or rearrange the
     page: failure evidence preserves the current viewport. Success-specific
     preparation belongs to the caller, before this function.
+    ``allow_masked_content`` opts in an owned provider policy to produce bounded
+    masked pixels while content logging is off; the default remains no capture.
 
     ``submit((title, bytes, MIME))`` is synchronous, bounded and nonblocking;
     the caller binds it to the current test/attempt's immutable recording path.
@@ -39,7 +42,7 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
     """
     if type(capture_timeout_seconds) is not int or not 1 <= capture_timeout_seconds <= 20:
         raise ValueError('Invalid UI capture timeout')
-    if boundary.policy.allow_content is not True:
+    if boundary.policy.allow_content is not True and not allow_masked_content:
         return ()
     if phase not in ('success', 'failure'):
         return ()
