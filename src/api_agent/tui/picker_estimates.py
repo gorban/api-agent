@@ -50,6 +50,10 @@ class PickerEstimates:
             if location:
                 factory, _ = provider_location(location, owner_root=session.context.owner_root)
                 source = factory.parent / 'test-profiles.toml'
+            from api_agent.testing.test_profiles import pack_profile_sources
+            pack_sources = tuple(path for _, path in pack_profile_sources(session.context))
+            if pack_sources:
+                source = pack_sources + ((source,) if source else ())
             before = _profile_revision(source)
             snapshot = build_estimator(self.app.context, self.selection.tests, review.execution)
             try:

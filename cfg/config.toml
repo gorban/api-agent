@@ -500,6 +500,15 @@ validation = "positive"
 default = 7
 help = "Days of compatible finalized integration/E2E accounting history used for advance cost predictions and subscription calibration. Cached history appears immediately; background synchronization never starts services or login. Older records remain preserved but are outside this estimation window."
 
+[fields.LLM_E2E_TEST_MODEL]
+acknowledge_default = false
+type = "str"
+default = ""
+review_optional = true
+help = "Exact model ID for an E2E scenario; scenario profiles supply defaults independently of the application model."
+[fields.LLM_E2E_TEST_MODEL.applies_when]
+TUI_MODE = "e2e"
+
 [fields.LLM_WORKFLOW_TEST_MODEL]
 acknowledge_default = false
 type = "str"

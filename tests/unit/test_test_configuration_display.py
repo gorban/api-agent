@@ -233,3 +233,24 @@ def test_selected_review_passes_collection_context_for_implicit_base_cases(tmp_p
     assert rows[(tests[0].id, key)][1] == 'inactive_bundled_test_control:shared_default'
     assert rows[(tests[1].id, key)][0] == '1024'
     assert rows[(tests[1].id, key)][1].endswith(':workflow')
+
+
+@pytest.mark.parametrize('change', ['add', 'change', 'delete'])
+def test_selected_review_tracks_optional_pack_profiles(tmp_path, monkeypatch, change):
+    from types import SimpleNamespace
+    from api_agent.tui.test_configuration import selected_review
+    profile = tmp_path / 'test-profiles.toml'
+    if change != 'add':
+        profile.write_text('version=1\n')
+    snapshot = SimpleNamespace(execution=SimpleNamespace(values={}), schema=object(),
+                               sources_current=lambda: True)
+    context = SimpleNamespace(owner_root=tmp_path, pack_root=tmp_path)
+    session = SimpleNamespace(context=context, review_snapshot=lambda: snapshot)
+    monkeypatch.setattr('api_agent.tui.test_configuration.profile_rows', lambda *args, **kwargs: [])
+    review = selected_review(session, [])
+    assert review.sources_current()
+    if change == 'delete':
+        profile.unlink()
+    else:
+        profile.write_text('version=2\n')
+    assert not review.sources_current()

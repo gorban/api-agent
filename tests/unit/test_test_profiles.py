@@ -614,3 +614,151 @@ def test_inactive_profile_condition_has_no_settings(synthetic_declaration, monke
     _, _, profiles = load_synthetic_declaration(monkeypatch, synthetic_declaration,
         lambda data: data.update(applies_when={'EXAMPLE_API_MODE': 'completions'}))
     assert profiles == {}
+
+
+@pytest.fixture
+def pack_scenario(tmp_path):
+    root = tmp_path / 'pack'
+    root.mkdir()
+    suite = root / 'owned_e2e'
+    suite.mkdir()
+    (root / 'llm').mkdir()
+    provider = root / 'llm/provider.py'
+    provider.write_text('def factory(): pass\n')
+    path = root / 'test-profiles.toml'
+    path.write_text('''version = 1
+requires_provider = "llm/provider.py:factory"
+[profiles.shell]
+cases = ["owned_e2e/test_shell.py::test_shell"]
+[profiles.shell.settings]
+LLM_E2E_TEST_MODEL = "gpt-5.6-luna"
+''')
+    context = SimpleNamespace(base_root=ROOT, owner_root=root, pack_root=root,
+                              tests={'e2e': (suite,)})
+    case = TestIdentity('pack:shell', 'pack', 'owned_e2e/test_shell.py',
+                        'owned_e2e/test_shell.py::test_shell', root=root)
+    return context, case, path, provider
+
+
+def test_pack_scenario_default_is_exact_and_preserves_application(pack_scenario):
+    context, case, _, provider = pack_scenario
+    config = {'LLM_PROVIDER': str(provider) + ':factory', 'LLM_DEFAULT_MODEL': 'gpt-6'}
+    other = TestIdentity('pack:other', 'pack', case.file, case.node_id + '[variant]', root=case.root)
+    rows = resolve_test_profiles([case, other], config, owner_root=context.owner_root, context=context)
+    assert rows[case.id]['config']['LLM_E2E_TEST_MODEL'] == 'gpt-5.6-luna'
+    assert rows[case.id]['provenance']['LLM_E2E_TEST_MODEL'].startswith('pack_test_profile:')
+    assert rows[case.id]['config']['LLM_DEFAULT_MODEL'] == 'gpt-6'
+    assert 'LLM_E2E_TEST_MODEL' not in rows[other.id]['config']
+    assert 'LLM_E2E_TEST_MODEL' not in config
+
+
+@pytest.mark.parametrize('value', ['', 'gpt-6'])
+def test_pack_scenario_explicit_model_wins(pack_scenario, value):
+    context, case, _, provider = pack_scenario
+    config = {'LLM_PROVIDER': str(provider) + ':factory', 'LLM_E2E_TEST_MODEL': value}
+    row = resolve_test_profiles([case], config, owner_root=context.owner_root, context=context)[case.id]
+    assert row['config']['LLM_E2E_TEST_MODEL'] == value
+    assert row['provenance']['LLM_E2E_TEST_MODEL'] == 'explicit_mapping'
+
+
+def test_pack_scenario_does_not_apply_to_other_provider_or_untrusted_root(pack_scenario):
+    context, case, _, _ = pack_scenario
+    (context.owner_root / 'llm/other.py').write_text('def factory(): pass\n')
+    config = {'LLM_PROVIDER': str(context.owner_root / 'llm/other.py') + ':factory'}
+    row = resolve_test_profiles([case], config, owner_root=context.owner_root, context=context)[case.id]
+    assert row['provenance'] == {}
+    row = resolve_test_profiles([case], config, owner_root=context.owner_root)[case.id]
+    assert row['provenance'] == {}
+
+
+@pytest.mark.parametrize('before,after', [
+    ('LLM_E2E_TEST_MODEL', 'LLM_DEFAULT_MODEL'),
+    ('owned_e2e/test_shell.py', '../outside.py'),
+    ('owned_e2e/test_shell.py', 'unit/test_shell.py'),
+])
+def test_pack_scenario_rejects_unsafe_declarations(pack_scenario, before, after):
+    context, case, path, provider = pack_scenario
+    path.write_text(path.read_text().replace(before, after))
+    with pytest.raises(ValueError):
+        resolve_test_profiles([case], {'LLM_PROVIDER': str(provider) + ':factory'},
+                              owner_root=context.owner_root, context=context)
+
+
+@pytest.mark.parametrize('value', ['', 'gpt-6'])
+def test_pack_scenario_resolved_explicit_provenance_wins(pack_scenario, value):
+    from api_agent.config.resolve import ResolvedValue
+    context, case, _, provider = pack_scenario
+    config = {'LLM_PROVIDER': str(provider) + ':factory', 'LLM_DEFAULT_MODEL': 'gpt-6',
+              'LLM_E2E_TEST_MODEL': value}
+    before = deepcopy(config)
+    fields = {'LLM_E2E_TEST_MODEL': ResolvedValue(value, 'environment', True)}
+    row = resolve_test_profiles([case], config, owner_root=context.owner_root,
+                                context=context, fields=fields)[case.id]
+    assert row['config']['LLM_E2E_TEST_MODEL'] == value
+    assert row['provenance']['LLM_E2E_TEST_MODEL'] == 'environment'
+    assert config == before
+
+
+@pytest.mark.parametrize('mode', ['e2e', 'unit', 'integration', 'run-local', 'unattended-auth'])
+def test_e2e_model_control_is_scoped_to_e2e(mode):
+    from api_agent.config.resolve import _matches
+    field = load_shared_schema().fields['LLM_E2E_TEST_MODEL']
+    assert _matches(field.applies_when, {'TUI_MODE': mode}) == (mode == 'e2e')
+
+
+def test_pack_scenario_rejects_symlink_without_composition(pack_scenario):
+    from api_agent.runtime.resource_pack import ResourcePackError
+    context, case, path, provider = pack_scenario
+    body = path.read_bytes()
+    target = path.with_name('actual.toml')
+    target.write_bytes(body)
+    path.unlink()
+    path.symlink_to(target)
+    with pytest.raises(ResourcePackError, match='bounded regular'):
+        resolve_test_profiles([case], {'LLM_PROVIDER': str(provider) + ':factory'},
+                              owner_root=context.owner_root, context=context)
+
+
+def test_pack_scenario_uses_admitted_bytes_and_rejects_later_changes(pack_scenario, monkeypatch):
+    from api_agent.runtime.pack_admission import PackContribution, capture, physical_identity
+    from api_agent.runtime.resource_pack import ResourcePackError
+    context, case, path, provider = pack_scenario
+    identity = physical_identity(context.pack_root)
+    context.pack_contributions = (PackContribution('pack', context.pack_root, context.owner_root,
+        (capture(context.pack_root, path.name),), (), identity, identity),)
+    original = Path.read_text
+    def prohibit_profile_read(self, *args, **kwargs):
+        if self == path:
+            pytest.fail('Pack profiles must use admitted bytes')
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', prohibit_profile_read)
+    row = resolve_test_profiles([case], {'LLM_PROVIDER': str(provider) + ':factory'},
+        owner_root=context.owner_root, context=context)[case.id]
+    assert row['config']['LLM_E2E_TEST_MODEL'] == 'gpt-5.6-luna'
+    path.write_text('version=2\n')
+    with pytest.raises(ResourcePackError, match='changed'):
+        resolve_test_profiles([case], {'LLM_PROVIDER': str(provider) + ':factory'},
+            owner_root=context.owner_root, context=context)
+
+
+@pytest.mark.parametrize('before,after', [
+    ('version = 1', 'version = 2'),
+    ('[profiles.shell.settings]', '[profiles.shell.settings]\nEXTRA = "forbidden"'),
+    ('cases = ["owned_e2e/test_shell.py::test_shell"]', 'cases = []'),
+    ('cases = ["owned_e2e/test_shell.py::test_shell"]', 'cases = ["not-a-node"]'),
+])
+def test_pack_scenario_rejects_malformed_declarations(pack_scenario, before, after):
+    context, case, path, provider = pack_scenario
+    path.write_text(path.read_text().replace(before, after))
+    with pytest.raises(ValueError):
+        resolve_test_profiles([case], {'LLM_PROVIDER': str(provider) + ':factory'},
+                              owner_root=context.owner_root, context=context)
+
+
+def test_absent_pack_profile_keeps_application_defaults(pack_scenario):
+    context, case, path, provider = pack_scenario
+    path.unlink()
+    config = {'LLM_PROVIDER': str(provider) + ':factory', 'LLM_DEFAULT_MODEL': 'gpt-6'}
+    row = resolve_test_profiles([case], config, owner_root=context.owner_root, context=context)[case.id]
+    assert row['config'] == config
+    assert row['provenance'] == {}

@@ -72,7 +72,7 @@ def _configured_request(request, config):
 
 
 def write_launch_snapshot(directory, context, config, *, unattended_index_source=None, setup_backend=None,
-                          password_manager_registry=None, interaction_descriptor=None, tool_plan=None, tool_cases=None, test_profiles=None, config_fields=None):
+                          password_manager_registry=None, interaction_descriptor=None, tool_plan=None, tool_cases=None, test_profiles=None, config_fields=None, suite_directory=None):
     """Write configuration to a protected, operation-owned IPC file."""
     path = Path(directory) / 'launch.json'
     from api_agent.auth.managers import registry_for_context
@@ -80,6 +80,8 @@ def write_launch_snapshot(directory, context, config, *, unattended_index_source
                 else password_manager_registry)
     data = {'version': 1, 'owner_root': str(context.owner_root), 'config': dict(config),
             'password_manager_definitions': _manager_definitions(registry)}
+    if suite_directory is not None:
+        data['suite_directory'] = str(Path(suite_directory).absolute())
     if getattr(context, 'external_pack', False):
         data['password_manager_pack_root'] = str(context.pack_root)
     from .workflow_capture import capture_sources
@@ -152,12 +154,15 @@ def _read_snapshot():
             raise ValueError
         data = json.loads(raw)
         required = {'version', 'owner_root', 'config', 'password_manager_definitions'}
-        if (not required <= set(data) or set(data) - required - {'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles', 'test_profile_rate_cards', 'capture_sources', 'trace_collector_plan', 'trace_context'}
+        if (not required <= set(data) or set(data) - required - {'suite_directory', 'unattended_index_source', 'setup_backend', 'password_manager_pack_root', 'interaction', 'tool_plan', 'tool_cases', 'base_root', 'pack_root', 'inventory_authority', 'test_profiles', 'test_profile_rate_cards', 'capture_sources', 'trace_collector_plan', 'trace_context'}
                 or ('unattended_index_source' in data and not isinstance(data['unattended_index_source'], str))
                 or not isinstance(data['password_manager_definitions'], list)
                 or type(data['version']) is not int
                 or data['version'] != 1 or not isinstance(data['config'], dict)
                 or not isinstance(data['owner_root'], str) or not Path(data['owner_root']).is_absolute()):
+            raise ValueError
+        if 'suite_directory' in data and (type(data['suite_directory']) is not str
+                or not Path(data['suite_directory']).is_absolute()):
             raise ValueError
         from .workflow_capture import capture_config
         capture_config(data['config'], data.get('capture_sources', {}))
@@ -886,6 +891,18 @@ def _worker_interaction(data):
     from api_agent.auth.interaction_transport import InteractionClient
     return InteractionClient(data['interaction'])
 
+
+
+def integration_context_directory():
+    """Return protected operation storage shared by all confirmation waves."""
+    data = _read_snapshot()
+    path = Path(os.environ['API_AGENT_INTEGRATION_CONTEXT'])
+    directory = Path(data.get('suite_directory', path.parent))
+    metadata = directory.lstat()
+    if (path.name != 'launch.json' or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700):
+        raise ContractError('Integration suite directory must be private.')
+    return directory
 
 
 def _test_snapshot(request):

@@ -52,12 +52,15 @@ class SelectedReview:
 
 def _profile_revision(path):
     from api_agent.testing.cost_context import file_fingerprint
+    if isinstance(path, tuple):
+        return tuple(_profile_revision(item) for item in path)
     return (path.resolve(), path.exists(), file_fingerprint(path)) if path is not None else None
 
 
 def selected_review(session, tests):
     """All declaration discovery and snapshot resolution belong to the read worker."""
     from api_agent.providers.loading import provider_location
+    from api_agent.testing.test_profiles import pack_profile_sources
     if hasattr(session, 'select_operation'):
         session.select_operation(tests)
     snapshot = session.review_snapshot()
@@ -66,6 +69,9 @@ def selected_review(session, tests):
     if location:
         factory, _ = provider_location(location, owner_root=session.context.owner_root)
         source = factory.parent / 'test-profiles.toml'
+    pack_sources = tuple(path for _, path in pack_profile_sources(session.context))
+    if pack_sources:
+        source = pack_sources + ((source,) if source else ())
     before = _profile_revision(source)
     rows = profile_rows(tests, snapshot.execution, snapshot.schema, session.context.owner_root, context=session.context)
     review = SelectedReview(snapshot, rows, source, before)

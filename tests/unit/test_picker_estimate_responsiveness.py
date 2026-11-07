@@ -348,3 +348,28 @@ def test_selected_context_still_raises_the_original_union_error_after_fallback(t
     assert caught.value is error
     assert select.call_args_list[0].args == (('synthetic-test',),)
     assert select.call_args_list[1].args[0].mode == 'collection'
+
+
+@pytest.mark.parametrize('change', ['add', 'change', 'delete'])
+def test_estimator_read_tracks_optional_pack_profile(tmp_path, monkeypatch, change):
+    from types import SimpleNamespace
+    from api_agent.tui.picker_estimates import PickerEstimates
+    from api_agent.tui.test_configuration import _profile_revision
+    profile = tmp_path / 'test-profiles.toml'
+    if change != 'add':
+        profile.write_text('version=1\n')
+    context = SimpleNamespace(owner_root=tmp_path, pack_root=tmp_path)
+    result = SimpleNamespace(values={})
+    review = SimpleNamespace(execution=result)
+    session = SimpleNamespace(context=context, review_snapshot=lambda: review)
+    app = SimpleNamespace(context=context, _cost_history_generation=0)
+    monkeypatch.setattr('api_agent.tui.picker_estimates.build_estimator', lambda *args: EstimateSnapshot({}))
+    reader = PickerEstimates(app, object(), SimpleNamespace(tests=()))
+    _, _, source, before = reader.read(session)
+    assert source == (profile,)
+    assert _profile_revision(source) == before
+    if change == 'delete':
+        profile.unlink()
+    else:
+        profile.write_text('version=2\n')
+    assert _profile_revision(source) != before
