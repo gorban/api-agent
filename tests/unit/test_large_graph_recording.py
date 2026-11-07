@@ -237,7 +237,11 @@ def test_real_worker_reports_bounded_evidence_overflow_without_leaking_credentia
     assert all(0 < len(data) <= 200 * 1024 for _, _, data in parts)
     assert all(SECRET.encode() not in blob for blob in sidecars + [events])
     assert b'request-part-' not in events and b'response-start-' not in events
-    assert all(row.get('kind') != 'inference_content' for row in map(json.loads, events.splitlines()))
+    # This snapshot is taken while the worker still appends journal events.
+    # Only newline-committed records are complete JSON; the raw-byte privacy
+    # assertions above also cover any in-progress final record.
+    complete_events = (line for line in events.splitlines(keepends=True) if line.endswith(b'\n'))
+    assert all(row.get('kind') != 'inference_content' for row in map(json.loads, complete_events))
     notice, = result.directory.glob('inference-evidence-incomplete-*.txt')
     assert 'truncated' in notice.read_text().lower()
     assert SECRET not in ''.join(path.read_text(errors='replace') for path in result.directory.iterdir() if path.is_file())

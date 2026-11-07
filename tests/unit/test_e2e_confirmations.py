@@ -299,15 +299,15 @@ def test_recorder_rejects_unauthorized_confirmation_identity(tmp_path, mode, att
 
 @pytest.mark.parametrize('synthetic', [False, True])
 def test_recorder_projection_write_failure_blocks_publication(tmp_path, monkeypatch, synthetic):
-    from pathlib import Path
+    from api_agent.testing import recording
     recorder = RunRecorder(tmp_path / 'results', RunIdentity.create('suite', 'e2e'))
     recorder.record_test(TestResult(identity(), 'passed' if synthetic else 'failed'))
-    original = Path.open
-    def open_file(path, *args, **kwargs):
+    original = recording._exclusive_private_open
+    def open_file(path):
         if path.suffix == '.tmp' and len(recorder._results) == (2 if synthetic else 1):
             raise OSError('projection disk unavailable')
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, 'open', open_file)
+        return original(path)
+    monkeypatch.setattr(recording, '_exclusive_private_open', open_file)
     with pytest.raises(OSError, match='projection disk unavailable'):
         recorder.finalize(status='failed', e2e_reruns=0)
     assert not (recorder.directory / 'manifest.json').exists()

@@ -58,6 +58,142 @@ def collector():
         thread.join()
 
 
+def test_owned_native_trace_scope_exports_graph_without_model_call():
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+    from api_agent.testing.workflow_trace import owned_workflow_trace
+    from pathlib import Path
+    with collector() as (endpoint, received):
+        resolved = config(TRACE_EXPORT_ENDPOINT=endpoint, API_KEY='private-sentinel')
+        original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(secrets=('private-sentinel',)))
+
+        async def run():
+            async with owned_workflow_trace(original, resolved, owner_root=Path(__file__).resolve().parents[2]) as scoped:
+                assert scoped is not original
+                adapter = scoped.create(definition())
+                graph, node = str(uuid4()), str(uuid4())
+                adapter.observe(dict(event='scope_start', scope_id=graph, owner='GRAPH', kind='graph'))
+                adapter.observe(dict(event='scope_start', scope_id=node, parent_id=graph, owner='Make', kind='node'))
+                adapter.observe(dict(event='scope_end', scope_id=node, owner='Make', kind='node', outcome='passed'))
+                adapter.observe(dict(event='scope_end', scope_id=graph, owner='GRAPH', kind='graph', outcome='passed'))
+                adapter.close()
+                adapter.finalize()
+            assert not scoped.trace.active
+
+        asyncio.run(run())
+        spans = [span for _, body in received for resource in
+            ExportTraceServiceRequest.FromString(body).resource_spans for scope in resource.scope_spans
+            for span in scope.spans]
+        assert {'graph GRAPH', 'node Make'} <= {span.name for span in spans}
+        assert b'private-sentinel' not in b''.join(body for _, body in received)
+
+
+def test_truncated_native_trace_capture_explains_empty_payload_without_content():
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+    with collector() as (endpoint, received):
+        resolved = config(trace=True, TRACE_EXPORT_ENDPOINT=endpoint)
+        runtime = TraceRuntime(resolved, boundary=EmissionBoundary())
+
+        async def run():
+            await runtime.astart()
+            try:
+                adapter = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(),
+                    trace=runtime).create(definition())
+                graph, node = str(uuid4()), str(uuid4())
+                adapter.observe(dict(event='scope_start', scope_id=graph, owner='GRAPH', kind='graph'))
+                adapter.observe(dict(event='scope_start', scope_id=node, parent_id=graph,
+                    owner='Make', kind='node'))
+                adapter.capture_json(visit_id=node, direction='input',
+                    values={'text': 'ordinary'},
+                    schema={'type': 'object', 'properties': {'text': {'type': 'string'}}})
+                adapter.capture_json(visit_id=node, direction='output',
+                    values={'text': 'private-sentinel' + 'x' * 65536},
+                    schema={'type': 'object', 'properties': {'text': {'type': 'string'}}})
+                adapter.observe(dict(event='scope_end', scope_id=node, owner='Make', kind='node', outcome='passed'))
+                adapter.observe(dict(event='scope_end', scope_id=graph, owner='GRAPH', kind='graph', outcome='passed'))
+                adapter.close()
+                adapter.finalize()
+            finally:
+                await runtime.aclose()
+
+        asyncio.run(run())
+        events = [event for _, body in received for resource in
+            ExportTraceServiceRequest.FromString(body).resource_spans for scope in resource.scope_spans
+            for span in scope.spans for event in span.events]
+        captures = [{attribute.key: next(iter(attribute.value.ListFields()))[1] for attribute in event.attributes}
+                    for event in events if any(attribute.key == 'direction' for attribute in event.attributes)]
+        assert len(captures) == 2
+        by_direction = {row['direction']: row for row in captures}
+        assert by_direction['input']['reason'] == 'captured'
+        assert 'detail' not in by_direction['input']
+        assert by_direction['output']['reason'] == 'truncated'
+        assert by_direction['output']['values'] == '{}'
+        assert by_direction['output']['detail'] == 'Payload exceeded a capture limit.'
+        assert b'private-sentinel' not in b''.join(body for _, body in received)
+
+
+def test_owned_native_trace_scope_disabled_keeps_original_factory():
+    from api_agent.testing.workflow_trace import owned_workflow_trace
+    from pathlib import Path
+    resolved = config(mode='')
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+
+    async def run():
+        async with owned_workflow_trace(original, resolved, owner_root=Path(__file__).resolve().parents[2],
+                collector_snapshot={'config': resolved.values}) as scoped:
+            assert scoped is original
+
+    asyncio.run(run())
+
+
+def test_owned_native_trace_scope_closes_after_scenario_failure():
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+    from api_agent.testing.workflow_trace import owned_workflow_trace
+    from pathlib import Path
+    with collector() as (endpoint, received):
+        resolved = config(TRACE_EXPORT_ENDPOINT=endpoint)
+        original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+        scoped = None
+
+        async def run():
+            nonlocal scoped
+            with pytest.raises(RuntimeError, match='scenario failed'):
+                async with owned_workflow_trace(original, resolved,
+                        owner_root=Path(__file__).resolve().parents[2]) as scoped:
+                    graph = str(uuid4())
+                    adapter = scoped.create(definition())
+                    adapter.observe(dict(event='scope_start', scope_id=graph, owner='GRAPH', kind='graph'))
+                    adapter.observe(dict(event='scope_end', scope_id=graph, owner='GRAPH', kind='graph', outcome='failed'))
+                    adapter.close()
+                    adapter.finalize()
+                    raise RuntimeError('scenario failed')
+            assert scoped is not None and not scoped.trace.active
+
+        asyncio.run(run())
+        graph_spans = [span for _, body in received for resource in
+            ExportTraceServiceRequest.FromString(body).resource_spans for scope in resource.scope_spans
+            for span in scope.spans if span.name == 'graph GRAPH']
+        assert len(graph_spans) == 1
+        assert graph_spans[0].status.code == 2
+
+
+@pytest.mark.parametrize('plan', [None, {}, {'version': 2}])
+def test_owned_native_trace_scope_rejects_missing_or_changed_collector_receipt(plan):
+    from api_agent.testing.workflow_trace import owned_workflow_trace
+    from pathlib import Path
+    resolved = config(API_KEY='private-sentinel')
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(secrets=('private-sentinel',)))
+
+    async def run():
+        with pytest.raises(ValueError) as failure:
+            async with owned_workflow_trace(original, resolved,
+                    owner_root=Path(__file__).resolve().parents[2],
+                    collector_snapshot={'trace_collector_plan': plan}):
+                pytest.fail('unverified trace owner admitted')
+        assert 'private-sentinel' not in str(failure.value)
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('log,trace', [(False,False),(False,True),(True,False),(True,True)])
 @pytest.mark.parametrize('mode', ['OTEL', 'LangFuse'])
 def test_independent_projections_and_real_serialized_ancestry(log, trace, mode):

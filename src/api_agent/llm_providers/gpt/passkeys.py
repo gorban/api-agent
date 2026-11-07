@@ -150,6 +150,10 @@ class SoftwarePasskey:
                 await self.channel.send('Fetch.disable')
                 self.intercepting = False
                 self.channel.remove_listener('Fetch.requestPaused', self._paused)
+            # Interception is gone and the authenticator was removed above.
+            # A pending continuation can no longer complete after Fetch.disable.
+            for task in tuple(self.navigation_tasks):
+                task.cancel()
             await asyncio.gather(*tuple(self.navigation_tasks), return_exceptions=True)
             await self.channel.detach()
             self.channel = None

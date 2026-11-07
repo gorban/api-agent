@@ -19,7 +19,7 @@ PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 
 
 async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None,
-                              phase='failure', exclude_pages=()):
+                              phase='failure', exclude_pages=(), capture_timeout_seconds=5):
     """Submit immutable attachments before caller-owned browser teardown.
 
     ``capture_policy(page, boundary)`` is async and returns safely masked PNG
@@ -37,6 +37,8 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
     exception messages become metadata. Returned tuples contain successful
     submissions only; the caller need not retain them.
     """
+    if type(capture_timeout_seconds) is not int or not 1 <= capture_timeout_seconds <= 20:
+        raise ValueError('Invalid UI capture timeout')
     if boundary.policy.allow_content is not True:
         return ()
     if phase not in ('success', 'failure'):
@@ -81,7 +83,7 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
             emitted = False
             if capture_policy is not None:
                 try:
-                    async with component_timeout('UI browser evidence', 5):
+                    async with component_timeout('UI browser evidence', capture_timeout_seconds):
                         candidate = await capture_policy(page, boundary)
                         image = None
                         if (type(candidate) is bytes and candidate.startswith(PNG_SIGNATURE)

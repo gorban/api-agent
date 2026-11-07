@@ -484,9 +484,12 @@ class WorkflowObservations:
                 span = self._spans.get(visit_id)
                 if span is not None:
                     try:
+                        reason = classify_capture(trace_values, trace_report, capture_reason)
                         event = dict(event_id=row['event_id'], direction=direction, values=trace_values,
-                                     reason=classify_capture(trace_values, trace_report, capture_reason),
+                                     reason=reason,
                                      capture_class='schema_user_io')
+                        if reason == 'truncated':
+                            event['detail'] = 'Payload exceeded a capture limit.'
                         if tool_invocation_id is not None:
                             event['tool_invocation_id'] = tool_invocation_id
                         if cause_id is not None:

@@ -100,6 +100,32 @@ def test_disconnected_browser_revokes_material(software):
     channel.send.assert_not_called()
 
 
+def test_cleanup_drains_paused_navigation_after_revoking_authenticator(software):
+    owner, channel = software
+    async def scenario():
+        await owner.prepare()
+        paused, cancelled = asyncio.Event(), asyncio.Event()
+        async def send(method, _=None):
+            if method == 'Fetch.continueResponse':
+                paused.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+        channel.send.side_effect = send
+        owner._paused({'requestId': 'paused', 'responseStatusCode': 200,
+                       'responseHeaders': []})
+        await paused.wait()
+        await asyncio.wait_for(owner.aclose(), 1)
+        methods = [call.args[0] for call in channel.send.call_args_list]
+        assert methods.index('WebAuthn.removeVirtualAuthenticator') < methods.index('WebAuthn.disable')
+        assert methods.index('WebAuthn.disable') < methods.index('Fetch.disable')
+        assert owner.closed and cancelled.is_set()
+        channel.detach.assert_awaited_once()
+    asyncio.run(scenario())
+
+
 def test_cancelled_import_finishes_before_removal(software):
     owner, channel = software
     async def scenario():

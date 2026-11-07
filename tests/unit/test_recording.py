@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import stat
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,30 @@ def result(status='passed'):
     test = TestIdentity('example::tests/test_demo.py::test_ok', 'example', 'tests/test_demo.py',
                         'tests/test_demo.py::test_ok')
     return TestResult(test, status, 1.25, 'secret traceback')
+
+
+def test_recorded_browser_artifact_is_private_from_creation(tmp_path):
+    tmp_path.chmod(0o755)
+    recorder = RunRecorder(tmp_path, identity())
+    source = recorder.record_artifact('browser.png', b'\x89PNG\r\n\x1a\nprivate pixels')
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / source).stat().st_mode) == 0o600
+
+
+def test_settled_test_evidence_keeps_private_file_mode(tmp_path):
+    recorder = RunRecorder(tmp_path, identity())
+    filename = recorder.record_test(result())
+    recorder.update_test_evidence(filename, attachments=(), steps=[])
+    assert stat.S_IMODE((tmp_path / filename).stat().st_mode) == 0o600
+
+
+def test_recording_refuses_symlink_directory(tmp_path):
+    target = tmp_path / 'target'
+    target.mkdir()
+    alias = tmp_path / 'alias'
+    alias.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match='symlink'):
+        RunRecorder(alias, identity())
 
 
 def test_allure_hierarchy_and_attachments(tmp_path):

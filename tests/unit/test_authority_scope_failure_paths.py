@@ -224,9 +224,10 @@ def test_close_drains_failed_evidence_job():
 
 
 def test_recorder_removes_partially_written_artifact_and_cannot_finalize(tmp_path, monkeypatch):
+    import builtins
     from pathlib import Path
     recorder = RunRecorder(tmp_path, RunIdentity.create('synthetic', 'integration'))
-    open_path = Path.open
+    original_open = builtins.open
     class FailedWriter:
         def __init__(self, stream):
             self.stream = stream
@@ -239,9 +240,9 @@ def test_recorder_removes_partially_written_artifact_and_cannot_finalize(tmp_pat
             self.stream.write(data[:1])
             raise OSError('synthetic write failure')
     def open_with_failure(path, mode='r', *args, **kwargs):
-        stream = open_path(path, mode, *args, **kwargs)
-        return FailedWriter(stream) if path.name == 'partial.json' and mode == 'xb' else stream
-    monkeypatch.setattr(Path, 'open', open_with_failure)
+        stream = original_open(path, mode, *args, **kwargs)
+        return FailedWriter(stream) if Path(path).name == 'partial.json' and mode == 'xb' else stream
+    monkeypatch.setattr(builtins, 'open', open_with_failure)
     with pytest.raises(OSError):
         recorder.record_artifact('partial.json', b'payload')
     assert not (tmp_path / 'partial.json').exists()

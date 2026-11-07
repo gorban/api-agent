@@ -1,6 +1,7 @@
 """Controlled UI capture contracts; no live browser or credential access."""
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -26,6 +27,32 @@ def test_content_off_does_not_enumerate_or_submit():
     assert capture(Unreadable(), boundary=EmissionBoundary(), capture_policy=policy, submit=submit) == ()
     policy.assert_not_called()
     submit.assert_not_called()
+
+
+def test_selected_owned_capture_uses_bounded_timeout(monkeypatch):
+    durations = []
+    @asynccontextmanager
+    async def timed(name, seconds):
+        durations.append((name, seconds))
+        yield
+    monkeypatch.setattr(evidence, 'component_timeout', timed)
+    page = object()
+    assert capture([SimpleNamespace(pages=[page])], capture_policy=AsyncMock(return_value=PNG),
+        capture_timeout_seconds=20)[0][2] == 'image/png'
+    assert durations == [('UI browser evidence', 20)]
+    for invalid in (0, 21, 5.0, True):
+        with pytest.raises(ValueError, match='capture timeout'):
+            capture([SimpleNamespace(pages=[page])], capture_policy=AsyncMock(return_value=PNG),
+                capture_timeout_seconds=invalid)
+
+
+def test_selected_timeout_allows_a_slow_owned_page_without_changing_default():
+    async def slow_page(*args):
+        await asyncio.sleep(1.2)
+        return PNG
+    context = [SimpleNamespace(pages=[object()])]
+    assert capture(context, capture_policy=slow_page, capture_timeout_seconds=1)[0][2] == 'application/json'
+    assert capture(context, capture_policy=slow_page, capture_timeout_seconds=2)[0][2] == 'image/png'
 
 
 @pytest.mark.parametrize('phase', ['success', 'failure'])

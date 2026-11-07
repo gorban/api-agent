@@ -3,7 +3,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 from uuid import UUID, uuid4
 
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
@@ -21,6 +23,11 @@ def _safe_component(value):
     if not isinstance(value, str) or not value or value in {'.', '..'} or any(c in value for c in '/\\\0'):
         raise ValueError('Invalid identity component')
     return value
+
+
+def _exclusive_private_open(path):
+    return open(path, 'xb', opener=lambda target, flags: os.open(
+        target, flags | getattr(os, 'O_NOFOLLOW', 0), 0o600))
 
 
 @dataclass(frozen=True)
@@ -49,7 +56,11 @@ class RunRecorder:
             raise TypeError('A valid RunIdentity is required')
         self.identity = identity
         self.directory = Path(directory)
-        self.directory.mkdir(parents=True, exist_ok=True)
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.directory.is_symlink():
+            raise ValueError('Run recording directory cannot be a symlink')
+        if stat.S_IMODE(self.directory.stat().st_mode) != 0o700:
+            self.directory.chmod(0o700)
         self._files = set()
         self._results = []
         self._finalized = False
@@ -65,7 +76,7 @@ class RunRecorder:
         path = self.directory / name
         created = False
         try:
-            with path.open('xb') as stream:
+            with _exclusive_private_open(path) as stream:
                 created = True
                 stream.write(data)
         except OSError:
@@ -171,7 +182,7 @@ class RunRecorder:
         row['steps'] = safe_steps
         temporary = self.directory / f'.{uuid4()}.tmp'
         try:
-            with temporary.open('xb') as stream:
+            with _exclusive_private_open(temporary) as stream:
                 stream.write(json.dumps(row, sort_keys=True, allow_nan=False).encode())
             temporary.replace(path)
         except (OSError, ValueError):
@@ -248,7 +259,7 @@ class RunRecorder:
                 row['attachments'].append({'name': 'Test cost estimate', 'source': name, 'type': 'application/json'})
                 temporary = self.directory / f'.{uuid4()}.tmp'
                 try:
-                    with temporary.open('xb') as stream:
+                    with _exclusive_private_open(temporary) as stream:
                         stream.write(json.dumps(row, sort_keys=True).encode())
                     temporary.replace(path)
                 except (OSError, ValueError):
@@ -270,7 +281,7 @@ class RunRecorder:
             row['steps'] = steps
             temporary = self.directory / f'.{uuid4()}.tmp'
             try:
-                with temporary.open('xb') as stream:
+                with _exclusive_private_open(temporary) as stream:
                     stream.write(json.dumps(row, sort_keys=True).encode())
                 temporary.replace(path)
             except (OSError, ValueError):
@@ -328,7 +339,7 @@ class RunRecorder:
                     row['statusDetails'] = {'message': 'Required confirmations did not complete'}
                 temporary = self.directory / f'.{uuid4()}.tmp'
                 try:
-                    with temporary.open('xb') as stream:
+                    with _exclusive_private_open(temporary) as stream:
                         stream.write(json.dumps(row, sort_keys=True).encode())
                     temporary.replace(path)
                 except OSError:
@@ -360,7 +371,7 @@ class RunRecorder:
                 row['status'] = 'failed'
                 temporary = self.directory / f'.{uuid4()}.tmp'
                 try:
-                    with temporary.open('xb') as stream:
+                    with _exclusive_private_open(temporary) as stream:
                         stream.write(json.dumps(row, sort_keys=True).encode())
                     temporary.replace(path)
                 except OSError:
@@ -382,7 +393,7 @@ class RunRecorder:
                 try:
                     row = json.loads(path.read_bytes())
                     row['attachments'].extend(shared_rows)
-                    with temporary.open('xb') as stream:
+                    with _exclusive_private_open(temporary) as stream:
                         stream.write(json.dumps(row, sort_keys=True).encode())
                     temporary.replace(path)
                 except (OSError, ValueError, KeyError):
