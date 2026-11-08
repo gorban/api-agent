@@ -87,6 +87,7 @@ class WorkflowObservations:
         from api_agent.telemetry.operation import TraceLoss
         self.trace_losses = getattr(trace, 'losses', None) or TraceLoss()
         self._spans = {}
+        self._trace_context = None
         self._scope_failures = {}
         self._visit_call_kinds = {}
         self._call_payloads = {}
@@ -192,6 +193,10 @@ class WorkflowObservations:
     def finalize(self):
         return self.journal.finalize()
 
+    def export_trace_context(self):
+        """Retain the explicit graph span identity after SDK disposal, without content."""
+        return dict(self._trace_context) if self._trace_context is not None else None
+
     def report_outcome(self, scope_id, outcome):
         """Explicit producer outcome while its originating scope is still open."""
         from api_agent.telemetry.outcomes import ExecutionOutcome
@@ -282,6 +287,11 @@ class WorkflowObservations:
             self._spans[row['scope_id']] = self.trace.begin(
                 kind + ' ' + owner, structural, parent=parent,
                 start_time=int(row['started_ms'] * 1_000_000) if row.get('started_ms') is not None else None)
+            if kind == 'graph' and row.get('parent_id') is None:
+                from api_agent.telemetry.trace_ownership import validate_parent
+                context = self._spans[row['scope_id']].export_context()
+                if context is not None:
+                    self._trace_context = {**validate_parent(context), 'root_kind': 'graph'}
         elif event == 'scope_end':
             span = self._spans.pop(row['scope_id'], None)
             self._scope_failures.pop(row['scope_id'], None)

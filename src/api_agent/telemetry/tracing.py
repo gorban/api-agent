@@ -145,6 +145,36 @@ def _structural(boundary, payload, model_identities=frozenset()):
             if type(value) is list and len(value) <= 8 and all(type(item) is str and item in
                     ('stop', 'length', 'tool_calls', 'content_filter', 'end_turn', 'max_tokens', 'stop_sequence', 'tool_use', 'guardrail_intervened', 'content_filtered', 'other') for item in value):
                 clean[key] = value
+        elif key == 'api_agent.provider.failure.class':
+            if type(value) is str and value in ('provider', 'policy_block'):
+                clean[key] = value
+        elif key == 'api_agent.provider.failure.http_status':
+            if type(value) is int and 100 <= value <= 599:
+                clean[key] = value
+        elif key in ('api_agent.provider.retry.attempt', 'api_agent.provider.retry.total'):
+            if type(value) is int and 1 <= value <= 100:
+                clean[key] = value
+        elif key == 'api_agent.provider.operation':
+            if type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/-]{0,95}', value):
+                clean[key] = value
+        elif key == 'api_agent.provider.failure.type':
+            if type(value) is str and value in ('content_policy_violation', 'invalid_request_error',
+                    'rate_limit_error', 'authentication_error', 'permission_error', 'server_error'):
+                clean[key] = value
+        elif key == 'api_agent.provider.failure.code':
+            if type(value) is str and value in ('content_blocked', 'content_filter',
+                    'context_length_exceeded', 'rate_limit_exceeded', 'invalid_api_key', 'insufficient_quota'):
+                clean[key] = value
+        elif key == 'api_agent.provider.failure.recommendation':
+            if type(value) is str and value in ('block', 'allow', 'review'):
+                clean[key] = value
+        elif key == 'api_agent.provider.failure.categories':
+            if type(value) is list and len(value) <= 16 and all(type(item) is str and item in (
+                    'jailbreak_attempt', 'hate', 'hate/threatening', 'harassment',
+                    'harassment/threatening', 'self-harm', 'self-harm/intent', 'self-harm/instructions',
+                    'sexual', 'sexual/minors', 'violence', 'violence/graphic', 'illicit', 'illicit/violent')
+                    for item in value):
+                clean[key] = value
         elif key == 'api_agent.failure.cause':
             from .outcomes import OutcomeCause
             if type(value) is str and value in frozenset(item.value for item in OutcomeCause):
