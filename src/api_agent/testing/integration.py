@@ -449,6 +449,14 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     if parallel_jobs:
                         args += ['-n', str(parallel_jobs), '--dist=worksteal']
                     args.extend(selected)
+                    coverage_directory = None
+                    if config is not None and config.get('E2E_COVERAGE') is True:
+                        from .e2e_coverage import prepare
+                        from .runner import _production_sources
+                        sources = tuple(path for source_root in owner_roots
+                                        for path in _production_sources(context, Path(source_root).resolve()))
+                        coverage_directory = owner / 'artifacts/e2e-coverage' / uuid4().hex
+                        prepare(coverage_directory, sources, args, env)
                     liveness_read = liveness_write = None
                     if os.name == 'posix':
                         liveness_read, liveness_write = os.pipe()
@@ -777,6 +785,12 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 local += worker_output
                             local_diagnostics.setdefault(identity.id, []).append(local)
                         finish(repo, identity, reports.get(identity.id, []), 'cancelled' if cancelled else 'error')
+                if coverage_directory is not None:
+                    from .e2e_coverage import finalize as finalize_coverage
+                    receipt = finalize_coverage(coverage_directory,
+                        selection=[identity.id for identity in selected.values()], parallel_jobs=parallel_jobs,
+                        e2e_reruns=0, complete=not cancelled and not infrastructure_failed)
+                    raw(repo, 'E2E diagnostic coverage: ' + receipt['report'] + '\n')
                 if cancelled:
                     break
     except BaseException as error:
@@ -921,6 +935,10 @@ def run_integration_tests(context, tests, **options):
     tests = validate_integration_start(tests, config,
         accepted=options.get('accepted', False), no_std_in=options.get('no_std_in', False))
     allowance = confirmation_count(config.get('E2E_RERUNS'))
+    if config.get('E2E_COVERAGE') is True and (allowance != 0 or options.get('parallel_jobs', 0) != 8):
+        raise ValueError('E2E coverage diagnostic requires --e2e-reruns 0 and eight parallel workers')
+    if config.get('E2E_COVERAGE') is True and config.get('DEBUG') is True:
+        raise ValueError('E2E coverage diagnostic requires owned shutdown; disable retained DEBUG inspection')
     logical = {test.id: test for test in tests}
     histories = {test.id: [] for test in tests}
     attempts, chunks, inspections = [], [], []

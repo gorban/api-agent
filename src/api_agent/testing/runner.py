@@ -163,18 +163,25 @@ class Events:
                   traceback=str(report.longrepr) if report.failed else '')
 with open(os.environ['API_AGENT_UNIT_SELECTION'], encoding='utf-8') as selection_file:
     selected_nodes = list(dict.fromkeys(json.load(selection_file)))
-selected_files = list(dict.fromkeys(node.split('::', 1)[0] for node in selected_nodes))
-collection_root = os.path.commonpath([os.path.dirname(os.path.abspath(path)) for path in selected_files])
+selected_files = list(dict.fromkeys(os.path.abspath(node.split('::', 1)[0]) for node in selected_nodes))
 from pathlib import Path
 selection_plugin = Path(os.environ['API_AGENT_UNIT_SELECTION']).parent / 'api_agent_unit_selection.py'
 selection_plugin.write_text("""import json, os, pytest
 from pathlib import Path
 from api_agent.testing.applicability import unit_platform_plugin
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     config.pluginmanager.register(unit_platform_plugin(), "unit_platform")
+    # Initial conftest discovery used exact files. Normal collection can now
+    # scan each admitted directory once without importing sibling conftests.
+    config.args[:] = collection_roots
 with open(os.environ['API_AGENT_UNIT_SELECTION'], encoding='utf-8') as stream:
     selected_nodes = list(dict.fromkeys(json.load(stream)))
-selected_files = {Path(os.path.abspath(node.split('::', 1)[0])) for node in selected_nodes}
+file_paths = list(dict.fromkeys(Path(os.path.abspath(node.split('::', 1)[0])) for node in selected_nodes))
+selected_files = set(file_paths)
+directories = list(dict.fromkeys(path.parent for path in file_paths))
+collection_roots = [str(path) for path in directories
+                    if not any(path != other and path.is_relative_to(other) for other in directories)]
 @pytest.hookimpl(tryfirst=True)
 def pytest_ignore_collect(collection_path, config):
     if collection_path.is_dir():
@@ -195,7 +202,10 @@ def pytest_collection_modifyitems(session, config, items):
     items[:] = [by_node[node] for node in selected_nodes]
 """, encoding='utf-8')
 sys.path.insert(0, str(selection_plugin.parent))
-status = pytest.main(sys.argv[2:] + ['-p', 'api_agent_unit_selection'] + [collection_root], plugins=[Events()])
+# File arguments constrain pytest's eager initial conftest discovery. The
+# selection plugin switches to unique directories only after that phase, so
+# normal collection visits each module once rather than rescanning per file.
+status = pytest.main(sys.argv[2:] + ['-p', 'api_agent_unit_selection'] + selected_files, plugins=[Events()])
 import os
 if os.environ.get('API_AGENT_COVERAGE_OUTPUT'):
     from pathlib import Path

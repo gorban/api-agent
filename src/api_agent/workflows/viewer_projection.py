@@ -172,6 +172,10 @@ def project_view(definition) -> ViewerProjection:
     if hasattr(definition, 'nodes'):
         add_reference('state_schema', definition.entry, None, 1, definition.schema_source,
                       registry=definition.schema_name)
+        if definition.application_binding is not None:
+            registry, source = definition.application_binding
+            add_reference('native_source', definition.entry, None, 1, source,
+                          registry=registry, role='application')
         for row in definition.nodes:
             add_reference('native_source', definition.selected_declarations[row['ID']][2], row['ID'], 1,
                           row['Source'], registry=row['Registry'], role=row['Kind'])

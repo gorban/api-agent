@@ -70,7 +70,9 @@ def test_ordered_tabs_use_one_original_browser(run_ui, debug):
     host = SimpleNamespace(entry_url='http://127.0.0.1:124/r/flow.html', aclose=AsyncMock())
     ui = SimpleNamespace(aclose=AsyncMock())
     async def prepare_ui(*, browser_owner):
+        factory.assert_not_called()  # selected UI must be ready before browser creation
         borrowed = await browser_owner.start()
+        assert await browser_owner.start() is borrowed
         assert borrowed.browser is session.browser and borrowed.context is context
         assert borrowed.page is ui_page
         await borrowed.page.goto('http://localhost:9443')
@@ -150,7 +152,10 @@ def test_startup_failure_releases_owned_resources_and_preserves_retry(failure):
     args, kwargs = host_factory.call_args
     assert args[0] is prepared[3] and kwargs['projection'] is prepared[1]
     assert kwargs['repository_sources'] is prepared[4]
-    browser.aclose.assert_awaited_once()
+    if failure in {'missing-ui', 'ui-retained', 'cleanup', 'ui-replaced'}:
+        browser.aclose.assert_not_awaited()
+    else:
+        browser.aclose.assert_awaited_once()
     host.aclose.assert_awaited_once()
     assert not owner._failed_owners
 
@@ -317,7 +322,9 @@ def test_closed_during_flow_navigation_does_not_allocate_ui_tab():
         context = SimpleNamespace(new_page=AsyncMock(return_value=flow))
         browser = SimpleNamespace(start=AsyncMock(return_value=SimpleNamespace(page=home,context=context)),aclose=AsyncMock())
         host = SimpleNamespace(entry_url='http://localhost/flow',aclose=AsyncMock())
-        prepare_ui = AsyncMock()
+        async def prepare(*, browser_owner):
+            await browser_owner.start()
+        prepare_ui = AsyncMock(side_effect=prepare)
         owner = LocalBrowserOwner(None,{'RUN_UI':True},'http://localhost/',prepare_ui=prepare_ui,
             browser_factory=Mock(return_value=browser),prepare_view=lambda _:(None,None,None,None,None),
             host_factory=AsyncMock(return_value=host))
@@ -330,7 +337,7 @@ def test_closed_during_flow_navigation_does_not_allocate_ui_tab():
         with pytest.raises(RuntimeError, match='closed during preparation'):
             await starting
         context.new_page.assert_awaited_once()
-        prepare_ui.assert_not_awaited()
+        prepare_ui.assert_awaited_once()
         browser.aclose.assert_awaited_once()
         host.aclose.assert_awaited_once()
     asyncio.run(exercise())
@@ -585,3 +592,10 @@ def test_other_local_browser_cleanup_failure_is_not_terminal_browser_proof(faile
     assert caught.value is pending
     inspection.settle_terminated_inspection.assert_not_awaited()
     assert getattr(owner, failed) is owned
+
+
+def test_borrowed_page_retains_original_session_without_owning_it():
+    session = object()
+    owner = BorrowedBrowserPage(session)
+    assert asyncio.run(owner.start()) is session
+    asyncio.run(owner.aclose())

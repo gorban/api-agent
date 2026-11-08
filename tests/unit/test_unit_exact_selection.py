@@ -114,6 +114,27 @@ def test_selected_files_are_unique_and_keep_cross_file_requested_order(selected_
     assert len([row for row in reports if row.get('phase') == 'call']) == 3
 
 
+@pytest.mark.parametrize('jobs', [0, 2])
+def test_disjoint_selected_suites_do_not_load_sibling_conftest(selected_unit_process, jobs):
+    root, run = selected_unit_process
+    for name in ('first_suite', 'second_suite'):
+        directory = root / name
+        directory.mkdir()
+        (directory / ('test_' + name + '.py')).write_text('def test_selected():\n    pass\n')
+    sibling = root / 'tests'
+    sibling.mkdir()
+    (sibling / 'conftest.py').write_text(
+        'raise RuntimeError("UNSELECTED_CONFTEST_INITIALIZED")\n')
+    nodes = [name + '/test_' + name + '.py::test_selected'
+             for name in ('first_suite', 'second_suite')]
+
+    process, reports = run(nodes, jobs=jobs)
+
+    assert process.returncode == 0, process.stdout + process.stderr
+    assert sorted(row['node'] for row in reports if row.get('phase') == 'call') == nodes
+    assert 'UNSELECTED_CONFTEST_INITIALIZED' not in process.stdout + process.stderr
+
+
 @pytest.mark.parametrize('symlink', [False, True])
 def test_nested_selected_paths_preserve_alias_and_owner_conftest(selected_unit_process, symlink):
     root, run = selected_unit_process
@@ -137,3 +158,40 @@ def test_nested_selected_paths_preserve_alias_and_owner_conftest(selected_unit_p
     assert json.loads((root / 'args-main.json').read_text()) == [str(selected)]
     assert [json.loads(line) for line in (root / 'files-main.jsonl').read_text().splitlines()] == [
         str(selected / 'test_target.py')]
+
+
+@pytest.mark.parametrize('jobs', [0, 2])
+def test_root_selected_file_does_not_initialize_sibling_tests_conftest(selected_unit_process, jobs):
+    root, run = selected_unit_process
+    sibling = root / 'tests'
+    sibling.mkdir()
+    (sibling / 'conftest.py').write_text('raise RuntimeError("UNSELECTED_ROOT_CONFTEST")\n')
+    nodes = ['test_cases.py::test_case[first]']
+
+    process, reports = run(nodes, jobs=jobs)
+
+    assert process.returncode == 0, process.stdout + process.stderr
+    assert [row['node'] for row in reports if row.get('phase') == 'call'] == nodes
+    assert 'UNSELECTED_ROOT_CONFTEST' not in process.stdout + process.stderr
+
+
+@pytest.mark.parametrize('jobs', [0, 2])
+def test_many_selected_files_are_collected_once_without_quadratic_routing(selected_unit_process, jobs):
+    root, run = selected_unit_process
+    nodes = []
+    for index in range(12):
+        filename = f'test_selected_{index:02}.py'
+        (root / filename).write_text('def test_selected():\n    pass\n')
+        nodes.append(filename + '::test_selected')
+
+    process, reports = run(list(reversed(nodes)), jobs=jobs)
+
+    assert process.returncode == 0, process.stdout + process.stderr
+    expected = {str(root / node.split('::')[0]) for node in nodes}
+    for path in root.glob('files-*.jsonl'):
+        collected = [json.loads(line) for line in path.read_text().splitlines()]
+        assert len(collected) == len(expected)
+        assert set(collected) == expected
+    assert sorted(row['node'] for row in reports if row.get('phase') == 'call') == sorted(nodes)
+    for path in root.glob('nodes-*.json'):
+        assert json.loads(path.read_text()) == list(reversed(nodes))

@@ -5,10 +5,34 @@ from api_agent.workflows.local_application import LocalChatApplication
 
 def selected_application(definition, *, config=None):
     """Admit the useful demo explicitly; preserve the one-call chat policy."""
+    from api_agent.workflows.stateful import StatefulDefinition
+    if isinstance(definition, StatefulDefinition):
+        return _stateful_application(definition, config=config)
     if getattr(definition, 'tool_usages', ()):
         from api_agent.workflows.demo_application import UsefulDemoApplication
         return UsefulDemoApplication(definition, config=config)
     return LocalChatApplication(definition, config=config)
+
+
+def _stateful_application(definition, *, config=None):
+    """Load a selected application's adapter from its immutable native closure."""
+    from collections.abc import Mapping
+    from api_agent.workflows.stateful import load_stateful_catalog
+    binding = definition.application_binding
+    if binding is None:
+        raise ContractError('Selected stateful workflow requires an application binding.')
+    registry, source = binding
+    catalog = load_stateful_catalog(definition, config=config)
+    factory = catalog.namespaces[source].get(registry)
+    if not callable(factory):
+        raise ContractError('Selected application factory must be callable.')
+    application = factory(definition, config=dict(config or {}))
+    if (getattr(application, 'definition', None) is not definition
+            or not callable(getattr(application, 'complete', None))
+            or not isinstance(getattr(application, 'timeouts', None), Mapping)
+            or type(getattr(application, 'requires_api', None)) is not bool):
+        raise ContractError('Selected application factory returned an invalid application.')
+    return application
 
 
 class RuntimeToolOwner:

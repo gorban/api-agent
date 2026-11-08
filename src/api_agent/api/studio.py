@@ -35,7 +35,7 @@ class StudioBackend:
     def __init__(self, *, owner, describe, complete, policy, origin, nonce,
                  scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None,
                  on_error=None, max_output_tokens=200000, trace_owner=None,
-                 advertised_origin=None):
+                 advertised_origin=None, result_projector=None):
         parts = urlsplit(origin)
         if (parts.scheme not in ('http', 'https') or parts.hostname not in ('localhost', '127.0.0.1', '::1')
                 or parts.path or parts.query or parts.fragment or parts.username or parts.password
@@ -51,6 +51,9 @@ class StudioBackend:
             origin = advertised_origin
         if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= chat_contract.MAX_OUTPUT_TOKENS:
             raise ValueError('Invalid output-token ceiling')
+        if result_projector is not None and not callable(result_projector):
+            raise ValueError('Invalid application result projector')
+        self.result_projector = result_projector
         self.trace_owner = trace_owner
         self.max_output_tokens = max_output_tokens
         self.owner, self.describe, self.complete, self.policy = owner, describe, complete, policy
@@ -319,7 +322,8 @@ class StudioBackend:
                                             chunk_bytes += len(event.payload.text.encode())
                                             if chunk_bytes > 131072 or len(chunks) > 4096:
                                                 raise ContractError('Application stream exceeds byte limit')
-                                            await queue.put(('token', {'content': event.payload.text}))
+                                            if self.result_projector is None:
+                                                await queue.put(('token', {'content': event.payload.text}))
                                         elif event.kind == 'reasoning_summary':
                                             await summary(event.payload.text)
                                         elif event.kind == 'completed':
@@ -328,13 +332,15 @@ class StudioBackend:
                                             raise ContractError('Unsupported application stream event')
                                 if final is None or ''.join(chunks) != final['response_text']:
                                     raise ContractError('Invalid stream completion')
-                                return final
+                                from .application_result import project_application_result
+                                return project_application_result(final, self.result_projector)
                             async def operation(*, auth):
                                 return await self.complete(value, auth=auth, context=context)
                             final = chat_contract.result(session_id, await self.owner.call(operation, context=context))
                             if completed_summaries:
                                 final['reasoning_summary'] = '\n\n'.join(completed_summaries)
-                            return final
+                            from .application_result import project_application_result
+                            return project_application_result(final, self.result_projector)
                 response_owner = ResponseCleanup(self, session_id) if capability == 'chat_stream' else None
                 if session_id in self._responses or len(self._responses) >= self.lifecycle.max_active + self.lifecycle.max_terminal:
                     return self._response({'code': 'session_unavailable'}, 409)
@@ -435,7 +441,7 @@ class StudioBackend:
                 return
             if terminal.state != 'completed':
                 raise terminal.error
-            if self.stream is None:
+            if self.stream is None or self.result_projector is not None:
                 if terminal.result.get('reasoning_summary') and not summary_emitted:
                     yield chat_contract.frame('reasoning_token', {'content': terminal.result['reasoning_summary']})
                 yield chat_contract.frame('token', {'content': terminal.result['response_text']})

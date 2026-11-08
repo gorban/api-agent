@@ -238,6 +238,7 @@ class LocalRunOwner:
             policy=ModelSelectionPolicy(config.values),
             origin=config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/'),
             nonce=nonce, scrub=lambda message: 'Selected provider rejected the request.',
+            result_projector=getattr(self._graph, 'project_result', None),
             **({'timeout': self._graph.timeouts['GRAPH']}
                if getattr(self._graph, 'timeouts', {}).get('GRAPH') is not None else {}),
             on_error=self._execution_error,
@@ -245,6 +246,7 @@ class LocalRunOwner:
             max_output_tokens=config.values.get('LLM_MAX_OUTPUT_TOKENS', 200000))
         services = {**runtime.services, 'studio_backend': backend, 'ui_access_token': nonce,
                     'workflow_complete': workflow_complete,
+                    'workflow_application': self._graph,
                     'ensure_llm_ready': self._llm.ensure_ready,
                     'ui_processes': StudioProcesses(ssl_context=verified_client_context(str(material.ca_file)),
                         log_callback=lambda text: self._log('ui', text), emissions=runtime.emissions)}
@@ -277,11 +279,11 @@ class LocalRunOwner:
         self._starting = asyncio.current_task()
         self._start_done.clear()
         try:
+            self._publish('starting', components=(LocalComponent('agent', 'starting'),))
+            self._startup_stage('configuration')
+            await asyncio.sleep(0)
+            self._config = self.resolve()
             async with component_timeout('Local application preparation', 120):
-                self._publish('starting', components=(LocalComponent('agent', 'starting'),))
-                self._startup_stage('configuration')
-                await asyncio.sleep(0)
-                self._config = self.resolve()
                 if self._config.errors or self._config.missing:
                     raise ValueError('invalid_runtime_configuration')
                 if self.prepare_view is _prepare_view:
@@ -307,6 +309,9 @@ class LocalRunOwner:
                 self._startup_stage('application construction')
                 await asyncio.sleep(0)
                 self._graph = self.application_factory(self._prepared[0], config=self._config.values)
+                close_application = getattr(self._graph, 'aclose', None)
+                if callable(close_application):
+                    self._stack.push(close_application)
                 selected_tools = getattr(self._config, 'tool_plan', None)
                 self._requires_api = (not (selected_tools is not None and selected_tools.tools)
                     and getattr(self._graph, 'requires_api', False) is True)
@@ -395,49 +400,49 @@ class LocalRunOwner:
                 await self._tracing_dashboard.start()
                 if self._tracing_dashboard.diagnostic:
                     self._log('agent', self._tracing_dashboard.diagnostic.rstrip('\n') + '\n')
-                from api_agent.runtime.local_browser import LocalBrowserOwner
-                factory = self.browser_factory or LocalBrowserOwner
-                home = self._session.callback.origin + '/'
-                self._browser = factory(self.context, self._config.values, home,
-                    prepare_ui=self._ui, prepare_view=lambda context: self._prepared,
-                    tracing=self._tracing_dashboard)
-                self._stack.push(self._browser.aclose)
-                self._startup_stage('browser')
-                await self._browser.start()
-                if self._stop.is_set():
-                    raise asyncio.CancelledError
-                destinations = [LocalDestination('agent', home), LocalDestination('flow', self._browser.flow_url)]
-                components = [LocalComponent('agent', 'ready'), LocalComponent('tracing', self._tracing_dashboard.state),
-                              LocalComponent('flow', 'ready'), LocalComponent('ui', 'disabled')]
-                if self._tracing_dashboard.viewer_url is not None:
-                    destinations.insert(1, LocalDestination('tracing', self._tracing_dashboard.viewer_url))
-                if self._config.values.get('RUN_UI'):
-                    components[-1] = LocalComponent('ui', 'ready')
-                    destinations.append(LocalDestination('ui', self._config.values['UI_LISTENER_URL']))
-                infrastructure = self._session.infrastructure
-                if infrastructure is not None:
-                    from api_agent.runtime.tasks import offload
-                    inventory = await offload(infrastructure.status)
-                    self._infra_sources = {self._planned_sources.get(item.service, 'api-agent/' + item.service): item.id for item in inventory}
-                    components.extend(LocalComponent(
-                        'service:' + self._planned_sources.get(item.service, 'api-agent/' + item.service),
-                        'unavailable' if not item.running else 'degraded' if item.health == 'unhealthy' else 'ready')
-                        for item in inventory)
-                    from api_agent.runtime.local_status import safe_destination
-                    for service, endpoints in infrastructure.endpoints.items():
-                        for endpoint in endpoints:
-                            if safe_destination(endpoint.host):
-                                destinations.append(LocalDestination('service:' + service + ':' + endpoint.name, endpoint.host))
-                    with independent_timeout_scope():
-                        self._log_task = asyncio.create_task(self._capture_logs())
-                    self._stack.push(self._close_logs)
-                session = self._browser.session
-                self._publish('ready', components=components, destinations=destinations,
-                    inspection=session.inspection_endpoint if session is not None else None)
-                self._starting = None
-                self._start_done.set()
-                self._log('agent', 'Local application is ready.\n')
-                return self.snapshot
+            from api_agent.runtime.local_browser import LocalBrowserOwner
+            factory = self.browser_factory or LocalBrowserOwner
+            home = self._session.callback.origin + '/'
+            self._browser = factory(self.context, self._config.values, home,
+                prepare_ui=self._ui, prepare_view=lambda context: self._prepared,
+                tracing=self._tracing_dashboard)
+            self._stack.push(self._browser.aclose)
+            self._startup_stage('browser')
+            await self._browser.start()
+            if self._stop.is_set():
+                raise asyncio.CancelledError
+            destinations = [LocalDestination('agent', home), LocalDestination('flow', self._browser.flow_url)]
+            components = [LocalComponent('agent', 'ready'), LocalComponent('tracing', self._tracing_dashboard.state),
+                          LocalComponent('flow', 'ready'), LocalComponent('ui', 'disabled')]
+            if self._tracing_dashboard.viewer_url is not None:
+                destinations.insert(1, LocalDestination('tracing', self._tracing_dashboard.viewer_url))
+            if self._config.values.get('RUN_UI'):
+                components[-1] = LocalComponent('ui', 'ready')
+                destinations.append(LocalDestination('ui', self._config.values['UI_LISTENER_URL']))
+            infrastructure = self._session.infrastructure
+            if infrastructure is not None:
+                from api_agent.runtime.tasks import offload
+                inventory = await offload(infrastructure.status)
+                self._infra_sources = {self._planned_sources.get(item.service, 'api-agent/' + item.service): item.id for item in inventory}
+                components.extend(LocalComponent(
+                    'service:' + self._planned_sources.get(item.service, 'api-agent/' + item.service),
+                    'unavailable' if not item.running else 'degraded' if item.health == 'unhealthy' else 'ready')
+                    for item in inventory)
+                from api_agent.runtime.local_status import safe_destination
+                for service, endpoints in infrastructure.endpoints.items():
+                    for endpoint in endpoints:
+                        if safe_destination(endpoint.host):
+                            destinations.append(LocalDestination('service:' + service + ':' + endpoint.name, endpoint.host))
+                with independent_timeout_scope():
+                    self._log_task = asyncio.create_task(self._capture_logs())
+                self._stack.push(self._close_logs)
+            session = self._browser.session
+            self._publish('ready', components=components, destinations=destinations,
+                inspection=session.inspection_endpoint if session is not None else None)
+            self._starting = None
+            self._start_done.set()
+            self._log('agent', 'Local application is ready.\n')
+            return self.snapshot
         except BaseException as primary:
             self._starting = None
             self._start_done.set()

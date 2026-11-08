@@ -44,7 +44,7 @@ class PreparedUISession:
     async def start(self):
         owns_start = False
         try:
-            async with component_timeout('UI session preparation', 60), self._lock:
+            async with component_timeout('UI session preparation', self.config.get('UI_PREPARATION_TIMEOUT_SECONDS', 60)), self._lock:
                 if self.closed:
                     raise SessionClosedError('UI session owner is closed')
                 if self._ready:
