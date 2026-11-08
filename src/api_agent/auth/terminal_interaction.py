@@ -51,7 +51,9 @@ class _Channel:
                 return
             self.pending_prompt = (self.pending_prompt + text).replace('\r', '\n').rsplit('\n', 1)[-1][-4096:]
             line = self.pending_prompt.rstrip()
-            self.input_ready = (line.endswith((':', '?'))
+            # Output streams can arrive out of order. Guidance cannot retract
+            # an unanswered prompt; consuming a reply resets readiness.
+            self.input_ready = (self.input_ready or line.endswith((':', '?'))
                                 or re.search(r'\[[^\[\]]*[/|,][^\[\]]*\]$', line) is not None)
             if len(self.pending_text) + len(text) > 65536:
                 from .credentials import CredentialRecoveryError

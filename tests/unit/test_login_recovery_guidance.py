@@ -274,3 +274,43 @@ def test_private_recovery_keeps_inherited_buffering_environment(tmp_path, monkey
     assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic', _NORMAL_RECOVERY_SECONDS) == (inherited or 'unset') + '\n'
     assert not interaction.channel.output
     assert os.environ.get('PYTHONUNBUFFERED') == inherited
+
+
+def test_login_pending_prompt_survives_older_stdout_guidance(tmp_path, monkeypatch):
+    import io
+    import time
+    from api_agent.auth.terminal_interaction import TerminalInteraction
+
+    ready = tmp_path / 'both-streams-ready'
+    cli = executable(tmp_path, f"""
+from pathlib import Path
+print('Touch your security key.', flush=True)
+sys.stderr.write('Password: ')
+sys.stderr.flush()
+Path({str(ready)!r}).touch()
+assert input() == 'synthetic-response'
+""")
+    original = recovery.selectors.DefaultSelector
+
+    class BothStreamsReady(original):
+        def select(self, timeout=None):
+            # Synchronize the first sweep with both child writes: the relay
+            # observes PTY prompt before the older stdout guidance.
+            until = time.monotonic() + _NORMAL_RECOVERY_SECONDS
+            while not ready.exists():
+                assert time.monotonic() < until
+                time.sleep(.001)
+            return super().select(timeout)
+
+    monkeypatch.setattr(recovery.selectors, 'DefaultSelector', BothStreamsReady)
+    reader, writer = os.pipe()
+    os.write(writer, b'synthetic-response\n')
+    os.close(writer)
+    output = io.StringIO()
+    with os.fdopen(reader) as source:
+        interaction = TerminalInteraction(source, output)
+        assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic',
+                                _NORMAL_RECOVERY_SECONDS, login_only=True) == ''
+        assert not interaction.channels
+    assert 'Password: Touch your security key.' in output.getvalue()
+    assert 'synthetic-response' not in output.getvalue()
