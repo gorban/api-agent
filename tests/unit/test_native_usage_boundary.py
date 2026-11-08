@@ -33,7 +33,7 @@ def test_boundary_event_is_content_free_and_survives_disabled_capture(tmp_path, 
         cache_read_tokens=None, cache_creation_tokens=0, reasoning_tokens=None,
         unknown_fields=['cache_read_tokens', 'reasoning_tokens'])],
         'measured_calls': {'test': 2}, 'unmeasured_model_calls': {'test': 1}}, 'test')
-    assert result['account_boundary']['token_deltas']['input_tokens'] == 40
+    assert result['account_boundary']['category_deltas']['input_tokens'] == 40
     assert result['measured_model_calls']['count'] == 2
     assert result['measured_model_calls']['categories']['input_tokens'] == 8
     assert result['measured_model_calls']['categories']['cached_input_tokens'] is None
@@ -70,6 +70,9 @@ def test_recorder_attaches_boundary_and_reconciliation_without_adding_tokens(tmp
     assert native['before']['categories']['input_tokens'] == 40
     recon = json.loads((run.directory / attachments['Usage reconciliation']['source']).read_text())
     assert recon['status'] == 'unavailable'
+    assert recon['account_boundary']['category_deltas'] == dict(
+        input_tokens=40, output_tokens=10, cached_input_tokens=3,
+        cache_write_tokens=0, reasoning_tokens=2, total_tokens=50)
     suite = json.loads((run.directory / attachments['Suite usage']['source']).read_text())
     assert suite['usage_rows'] == []
 
@@ -86,7 +89,7 @@ def test_missing_or_decreasing_boundary_categories_do_not_claim_complete(field, 
         cache_creation_tokens=0, reasoning_tokens=0, total_tokens=2)]}
     result = reconciliation(data, report, 't')
     assert result['status'] == 'partial'
-    assert result['account_boundary']['token_deltas'][field] is None
+    assert result['account_boundary']['category_deltas'][field] is None
 
 
 @pytest.mark.parametrize('change', [
@@ -134,7 +137,7 @@ def test_reconciliation_marks_incomplete_or_reset_boundaries_unavailable(reason)
         data['after']['captured_at'] = 0
     result = reconciliation(data, {}, 'test')
     assert result['account_boundary']['pct_used_delta'] is None
-    assert set(result['account_boundary']['token_deltas'].values()) == {None}
+    assert set(result['account_boundary']['category_deltas'].values()) == {None}
 
 
 def test_no_sink_or_forbidden_test_evidence_is_inert(monkeypatch):
@@ -163,7 +166,7 @@ def test_complete_reconciliation_keeps_scopes_and_reported_lower_bounds_separate
     assert result['status'] == 'complete'
     assert result['measured_model_calls']['scope'] == 'test'
     assert result['measured_model_calls']['known_subtotals']['input_tokens'] == 8
-    assert result['account_boundary']['token_deltas']['input_tokens'] == 40
+    assert result['account_boundary']['category_deltas']['input_tokens'] == 40
     row['unknown_fields'] = ['input_tokens']
     report['unmeasured_native_invocations'] = {'t': 1}
     result = reconciliation(boundary(), report, 't')

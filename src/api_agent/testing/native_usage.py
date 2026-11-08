@@ -112,7 +112,7 @@ def reconciliation(boundary, report, test_id):
             'reset_detected': reset,
             'reset_markers_consistent': (before['reset_at'] == after['reset_at'])
                 if before['reset_at'] is not None and after['reset_at'] is not None else None,
-            'token_deltas': deltas,
+            'category_deltas': deltas,
             'pct_used_delta': pct_after - pct_before if has_boundary and not reset
                 and pct_before is not None and pct_after is not None else None,
             'pct_used_is_coarse': True}}

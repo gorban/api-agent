@@ -118,6 +118,9 @@ def test_delegated_calls_export_exact_hierarchy_and_separate_boundary(tmp_path, 
     attachment = next(item for item in row['attachments'] if item['name'] == 'Native model usage boundary')
     boundary = json.loads((result.directory / attachment['source']).read_text())
     assert boundary['scope'] == 'account_boundary' and boundary['after']['categories']['input_tokens'] == 900
+    attachment = next(item for item in row['attachments'] if item['name'] == 'Usage reconciliation')
+    reconciliation = json.loads((result.directory / attachment['source']).read_text())
+    assert reconciliation['account_boundary']['category_deltas'] == dict.fromkeys(TOKENS, 900)
     artifacts = '\n'.join(path.read_text() for path in result.directory.rglob('*') if path.is_file())
     assert secret not in artifacts and hidden not in artifacts
 
