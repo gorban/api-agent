@@ -81,10 +81,17 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
     bodies = declaration_bodies(context)
     immutable = bool(getattr(context, 'pack_contributions', ()))
     dependencies = []
-    library_root = getattr(context, 'workflow_base_root', None)
+    tooling_root = getattr(context, 'tooling_base_root', None)
+    if not immutable and tooling_root is not None:
+        from .pack_admission import admit_project
+        admit_project(tooling_root, 'tooling-project', getattr(context, 'tooling_library_files', None))
+    libraries = ((getattr(context, 'workflow_base_root', None),
+                  getattr(context, 'workflow_library_files', None)),
+                 (getattr(context, 'tooling_base_root', None),
+                  getattr(context, 'tooling_library_files', None)))
     projects = {}
     documents = {}
-    roots = (context.base_root, context.pack_root, library_root,
+    roots = (context.base_root, context.pack_root, *(root for root, _ in libraries),
              *(layer.pack_root for layer in getattr(context, 'pack_layers', ())))
     for root in dict.fromkeys(Path(root) if immutable else Path(root).resolve()
                               for root in roots if root is not None):
@@ -104,21 +111,19 @@ def requirements(context, *, collect=False, groups=(), selected_provider_manifes
                 with manifest.open('rb') as handle:
                     documents[root] = tomllib.load(handle)
             projects[root] = documents[root].get('project', {})
-    library_project = (projects.get(Path(library_root) if immutable else Path(library_root).resolve(), {})
-                       if library_root is not None and getattr(context, 'workflow_library_files', None) is None
-                       else {})
     normalize = lambda value: re.sub(r'[-_.]+', '-', value).lower()
-    local_projects = {normalize(library_project['name']): library_project} if library_project.get('name') else {}
-    local_roots = {name: Path(library_root) if immutable else Path(library_root).resolve()
-                   for name in local_projects}
-    for layer in getattr(context, 'pack_layers', ()):
-        project = projects.get(layer.pack_root, {})
+    local_projects, local_roots = {}, {}
+    source_roots = tuple(Path(root) if immutable else Path(root).resolve()
+                         for root, owned in libraries if root is not None and owned is None)
+    source_roots += tuple(layer.pack_root for layer in getattr(context, 'pack_layers', ()))
+    for root in source_roots:
+        project = projects.get(root, {})
         if project.get('name'):
             name = normalize(project['name'])
-            if name in local_roots and local_roots[name] != layer.pack_root:
+            if name in local_roots and local_roots[name] != root:
                 raise ValueError('Selected source packs have conflicting distribution identities')
             local_projects[name] = project
-            local_roots[name] = layer.pack_root
+            local_roots[name] = root
     expanded_extras = set()
 
     def add_requirement(raw):

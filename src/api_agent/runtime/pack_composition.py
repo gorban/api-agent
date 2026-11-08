@@ -76,6 +76,9 @@ def load_ordered_context(base_root, directories, launcher_root=None):
     if graph.workflow_base_root is not None and graph.workflow_base_root != selected.base_root:
         project_contributions.append(admit_project(graph.workflow_base_root, 'workflow-project',
                                                    graph.workflow_library_files))
+    if tooling is not None and tooling.tooling_base_root is not None and tooling.tooling_base_root != selected.base_root:
+        project_contributions.append(admit_project(tooling.tooling_base_root, 'tooling-project',
+                                                   tooling.tooling_library_files))
     return replace(selected, pack_layers=layers, pack_contributions=contributions, project_contributions=tuple(project_contributions), defaults=MappingProxyType(defaults),
         tests=MappingProxyType(tests),
         provider_config_paths=_collect(layers, 'provider_config_paths'),
@@ -94,7 +97,10 @@ def load_ordered_context(base_root, directories, launcher_root=None):
         workflow_base_root=graph.workflow_base_root,
         workflow_library_files=graph.workflow_library_files,
         workflow_replacements=graph.workflow_replacements,
-        tool_catalog_path=tooling.tool_catalog_path if tooling is not None else None)
+        tool_catalog_path=tooling.tool_catalog_path if tooling is not None else None,
+        tooling_pack_root=tooling.pack_root if tooling is not None else None,
+        tooling_base_root=tooling.tooling_base_root if tooling is not None else None,
+        tooling_library_files=tooling.tooling_library_files if tooling is not None else None)
 
 
 def _validate_auxiliary_ownership(layer, bodies):
