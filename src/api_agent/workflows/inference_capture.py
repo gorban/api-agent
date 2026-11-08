@@ -13,6 +13,21 @@ _DIRECT_ROWS = ContextVar('provider_payload_direct_rows', default=None)
 _DISPATCH = ContextVar('provider_response_dispatch', default=None)
 _WITHHELD = ContextVar('provider_inference_content_withheld', default=False)
 _DEFERRED = ContextVar('provider_admitted_capture_rows', default=None)
+_SOURCE_OBSERVER = ContextVar('provider_source_capture_observer', default=None)
+
+
+@contextmanager
+def observe_source_captures(observer):
+    """Observe source-admitted phases through the owning runtime's delivery ledger."""
+    token = _SOURCE_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _SOURCE_OBSERVER.reset(token)
+
+
+def current_source_capture_observer():
+    return _SOURCE_OBSERVER.get()
 
 
 @contextmanager
@@ -270,8 +285,11 @@ def capture_transport_diagnostics(value):
 
 def _report_capture_loss(call_id=None, direction=None):
     """Report lost workflow evidence through the runner's acknowledged channel."""
-    import os
-    node = os.environ.get('PYTEST_CURRENT_TEST')
+    from .run_context import test_evidence_allowed
+    if not test_evidence_allowed():
+        return
+    from api_agent.testing.inference_usage import _delegated_node
+    node = _delegated_node()
     if not node:
         import logging
         logging.getLogger(__name__).warning('Workflow inference evidence could not be recorded')
@@ -289,7 +307,7 @@ def _report_capture_loss(call_id=None, direction=None):
                 scope = dict(invocation_id=invocation_id, visit_id=visit_id, call_id=call_id, direction=direction)
         except (ValueError, TypeError):
             pass
-    notify_failure(node.rsplit(' ', 1)[0], scope)
+    notify_failure(node, scope)
 
 
 @contextmanager
@@ -303,7 +321,7 @@ def defer_inference_captures():
         _DEFERRED.reset(token)
 
 
-def publish_deferred_captures(state, receipts):
+def publish_deferred_captures(state, receipts, *, observer=None):
     """Join physical phases only to a uniquely evidenced terminal call."""
     grouped = {}
     lost = state['lost']
@@ -326,7 +344,46 @@ def publish_deferred_captures(state, receipts):
             clean['_source'] = 'fallback'
         grouped.setdefault(key, []).append(clean)
     for identifier, rows in grouped.items():
-        capture_rows(select_capture_rows(rows), identifier)
+        selected = select_capture_rows(rows)
+        if observer is None:
+            capture_rows(selected, identifier)
+        else:
+            try:
+                owner = current_workflow_visit()
+                boundary = None if owner is None else (getattr(owner[0], 'boundary', None)
+                    or getattr(owner[0], '_boundary', None))
+                if boundary is None:
+                    _report_capture_loss(identifier)
+                    continue
+                # Credentials may have changed since the source admitted a phase.
+                # Recheck that source snapshot against the live authority before IPC.
+                from .capture import project_values, capture_reason
+                fresh = []
+                for row in selected:
+                    clean = dict(row)
+                    reason = row.get('reason')
+                    if not boundary.policy.allow_content or reason in ('withheld', 'unavailable'):
+                        clean.update(content={}, reason=reason if reason == 'unavailable' else 'withheld')
+                    else:
+                        name = 'llm_request' if row['phase'] == 'request' else 'llm_response'
+                        report = set()
+                        projected = project_values({name: row['content']}, {'type': 'object'},
+                            boundary, report=report, max_bytes=4 * 1024 * 1024, _provider_content=True)
+                        value = projected.get(name, {})
+                        clean.update(content=value, reason=capture_reason(value, report, reason))
+                    fresh.append(clean)
+                capture_rows(fresh, identifier)
+                observer(fresh, identifier)
+            except BaseException:
+                owner = current_workflow_visit()
+                if owner is not None:
+                    getattr(owner[0], 'journal', owner[0]).record_evidence_loss()
+                try:
+                    _report_capture_loss(identifier)
+                except BaseException:
+                    import logging
+                    logging.getLogger(__name__).warning('Source capture publication is unavailable')
+
     if lost:
         import logging
         logging.getLogger(__name__).warning('Workflow inference capture physical owner unavailable')
