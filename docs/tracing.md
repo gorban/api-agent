@@ -180,6 +180,13 @@ message. Existing native keys and unavailable/withheld dispositions are preserve
 an annotation that cannot fit does not erase the original response.
 
 Fixed failure cause/code metadata remains useful without content permission.
+Trusted provider adapters can also publish finite, allowlisted failure facts:
+HTTP status, provider type/code, policy recommendation/categories, and explicit
+retry attempt/limit. These structural fields never include provider messages,
+response bodies, prompts, or stacks, regardless of content permission. Unknown
+provider labels are omitted. `WorkflowObservations.export_trace_context()` retains
+the explicit graph span's validated trace/span IDs after closure so local evidence
+can link to the exported trace without depending on ambient OTEL state.
 When a trusted boundary has one canonical failed-call identity,
 `api_agent.outcome.cause_id` links affected node and terminal graph/request spans
 to that call. Missing or ambiguous identity stays unavailable. Application
