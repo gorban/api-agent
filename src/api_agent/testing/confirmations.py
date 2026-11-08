@@ -45,11 +45,14 @@ def logical_usage(report, owners):
     for name in ('usage_rows', 'usage_observations'):
         for row in result.get(name, ()):
             row['session_id'] = owners.get(row['session_id'], row['session_id'])
-    unmeasured = {}
-    for key, count in result.get('unmeasured_calls', {}).items():
-        owner = owners.get(key, key)
-        unmeasured[owner] = unmeasured.get(owner, 0) + count
-    result['unmeasured_calls'] = unmeasured
+    for name in ('unmeasured_calls', 'measured_calls', 'unmeasured_model_calls',
+                 'unmeasured_native_invocations', 'unobserved_calls'):
+        counts = {}
+        for key, count in result.get(name, {}).items():
+            owner = owners.get(key, key)
+            counts[owner] = counts.get(owner, 0) + count
+        if name in result:
+            result[name] = counts
     groups = {}
     for key, row in result.get('test_costs', {}).items():
         groups.setdefault(owners.get(key, key), []).append(row)

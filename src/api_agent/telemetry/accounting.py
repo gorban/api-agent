@@ -110,8 +110,9 @@ def validate_metadata(value):
 
 
 def validate_evidence(value):
-    if (type(value) is not dict or set(value) - {'reasoning_effort', 'conversation_id', 'response', 'transport_attempts'} != {'call_id', 'selection', 'actual_model', 'usage', 'quote', 'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision'}
+    if (type(value) is not dict or set(value) - {'reasoning_effort', 'conversation_id', 'invocation_id', 'response', 'transport_attempts'} != {'call_id', 'selection', 'actual_model', 'usage', 'quote', 'started_at', 'finished_at', 'attempt', 'turn_id', 'turn_kind', 'outcome', 'service_tier', 'serving_revision'}
             or (value.get('reasoning_effort') is not None and (type(value['reasoning_effort']) is not str or value['reasoning_effort'] not in ('off', 'low', 'medium', 'high')))
+            or ('invocation_id' in value and not _uuid(value['invocation_id']))
             or ('conversation_id' in value and not _uuid(value['conversation_id']))
             or not _uuid(value['call_id']) or not _identifier(value['selection'])
             or any(not _identifier(value[key], nullable=True) for key in ('actual_model', 'service_tier', 'serving_revision'))):
@@ -170,7 +171,7 @@ def build_accounting(identity, tests, config, usage, outcomes, *, estimator=None
             # An empty inventory cannot establish zero inference spend there.
             prediction=prediction, stabilized_estimate=None,
             calls_complete=calls_complete and not unmeasured.get(test.id, 0) and 'requires_owned_ui_session' not in getattr(test, 'tags', ()),
-            observed_call_count=max(len(own), sum(row['llm_calls'] for row in summary.get('usage_rows', []) if row['session_id'] == test.id)) + unmeasured.get(test.id, 0)))
+            observed_call_count=max(len(own), sum(row['llm_calls'] for row in summary.get('usage_rows', []) if row['session_id'] == test.id)) + summary.get('unobserved_calls', {}).get(test.id, max(0, unmeasured.get(test.id, 0) - sum(call.get('usage') is None for call in own)))))
     artifact = dict(version=2, estimator_version=5, run_id=identity.run_id, rate_card=deepcopy(config.get('_COST_RATE_CARD')),
                     quota=quota, tests=records)
     validate_accounting(artifact)

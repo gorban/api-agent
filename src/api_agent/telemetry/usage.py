@@ -126,7 +126,9 @@ class SuiteUsage:
         self._unknown: dict[tuple[str, str, str], set[str]] = {}
         self._known: dict[tuple[str, str, str], dict[str, int]] = {}
         self._prompts: dict[tuple[str, str], str] = {}
+        self._provisional_prompts: set[tuple[str, str]] = set()
         self._external_invocations: dict[tuple[str, str], str] = {}
+        self._external_inventory = {}
         self.inference_calls = {}
         self.contaminated = False
         self._lock = RLock()
@@ -148,12 +150,17 @@ class SuiteUsage:
             prior = self.inference_calls.get(call_id)
             value = deepcopy(evidence)
             value['test_id'] = session_id
+            invocation = value.get('invocation_id')
+            if invocation is not None:
+                for (test, native), (expected, _) in self._external_inventory.items():
+                    if test == session_id and call_id in expected and native != invocation:
+                        raise ValueError('Conflicting native call owner')
             if prior is not None:
                 if (prior['test_id'] != session_id
                         or ('reasoning_effort' in prior) != ('reasoning_effort' in value)
                         or ('conversation_id' in prior) != ('conversation_id' in value)
                         or any(prior.get(key) != value.get(key)
-                        for key in ('call_id', 'selection', 'started_at', 'attempt', 'turn_id', 'turn_kind', 'reasoning_effort', 'conversation_id'))):
+                        for key in ('call_id', 'selection', 'started_at', 'attempt', 'turn_id', 'turn_kind', 'reasoning_effort', 'conversation_id', 'invocation_id'))):
                     raise ValueError('Conflicting inference identity')
                 if (prior.get('usage') is not None or prior.get('finished_at') is not None) and prior != value:
                     raise ValueError('Conflicting inference evidence')
@@ -208,13 +215,14 @@ class SuiteUsage:
         key = (turn_id, prompt_id)
         with self._lock:
             prior = self._prompts.get(key)
-            if prior is not None and prior != kind:
+            if prior is not None and prior != kind and key not in self._provisional_prompts:
                 raise ValueError('prompt identity reused with another kind')
+            self._provisional_prompts.discard(key)
             self._prompts[key] = kind
             return prior is None
 
     def record_external_invocation(self, *, session_id: str, invocation_id: str,
-                                   turn_id: str | None = None) -> bool:
+                                   turn_id: str | None = None, call_ids=None, complete=False) -> bool:
         """Count an owned native turn whose provider usage was not observed.
 
         This records only the invocation boundary. Token amounts remain unknown.
@@ -224,12 +232,33 @@ class SuiteUsage:
             raise ValueError('session_id and invocation_id are required')
         key = (session_id, invocation_id)
         with self._lock:
+            if key in self._external_invocations and self._external_invocations[key] != (turn_id or invocation_id):
+                raise ValueError('Conflicting native invocation turn')
+            if call_ids is not None:
+                from api_agent.testing.inference_usage import _validate_inventory
+                _validate_inventory(call_ids, complete)
+                inventory = (frozenset(call_ids), complete)
+                prior_inventory = self._external_inventory.get(key)
+                if prior_inventory is not None and prior_inventory != inventory:
+                    raise ValueError('Conflicting native call inventory')
+                for other_key, (other_calls, _) in self._external_inventory.items():
+                    if other_key != key and other_key[0] == session_id and other_calls & inventory[0]:
+                        raise ValueError('Native call claimed by multiple invocations')
+                for call_id in inventory[0]:
+                    call = self.inference_calls.get(call_id)
+                    if call is not None and (call['test_id'] != session_id or call.get('invocation_id') != invocation_id
+                                             or call.get('turn_id') != (turn_id or invocation_id)):
+                        raise ValueError('Conflicting native call owner')
+                self._external_inventory[key] = inventory
             if key in self._external_invocations:
-                if self._external_invocations[key] != (turn_id or invocation_id):
-                    raise ValueError('Conflicting native invocation turn')
                 return False
             self._external_invocations[key] = turn_id or invocation_id
-            self._prompts[(session_id, self._external_invocations[key])] = 'initial'
+            prompt = (session_id, self._external_invocations[key])
+            if prompt not in self._prompts:
+                # Native entry knows the turn exists, but only a call receipt
+                # supplies its authoritative initial/clarification/approval kind.
+                self._prompts[prompt] = 'initial'
+                self._provisional_prompts.add(prompt)
             return True
 
     def observe_snapshot(self, phase, snapshot):
@@ -326,8 +355,29 @@ class SuiteUsage:
                 if call.get('usage') is None:
                     session = call['test_id']
                     report['unmeasured_calls'][session] = report['unmeasured_calls'].get(session, 0) + 1
-            for session, _ in self._external_invocations:
-                report['unmeasured_calls'][session] = report['unmeasured_calls'].get(session, 0) + 1
+            report['measured_calls'] = {}
+            report['unmeasured_model_calls'] = {}
+            for call in self.inference_calls.values():
+                sources = [call.get('usage')]
+                if call.get('transport_attempts') is not None:
+                    sources = [item['usage'] for item in call['transport_attempts']['attempts']]
+                measured = any(type(source) is dict and any(type(value) is int for value in source.values()) for source in sources)
+                target = report['measured_calls'] if measured else report['unmeasured_model_calls']
+                target[call['test_id']] = target.get(call['test_id'], 0) + 1
+            report['native_invocation_count'] = len(self._external_invocations)
+            report['unmeasured_native_invocations'] = {}
+            report['unobserved_calls'] = {}
+            for key, turn in self._external_invocations.items():
+                session, invocation = key
+                expected, complete = self._external_inventory.get(key, (frozenset(), False))
+                observed = {call['call_id'] for call in self.inference_calls.values()
+                            if call['test_id'] == session and call.get('turn_id') == turn
+                            and call.get('invocation_id') == invocation}
+                missing = len(expected - observed)
+                if not complete or expected != observed:
+                    report['unmeasured_native_invocations'][session] = report['unmeasured_native_invocations'].get(session, 0) + 1
+                    report['unobserved_calls'][session] = report['unobserved_calls'].get(session, 0) + missing
+                    report['unmeasured_calls'][session] = report['unmeasured_calls'].get(session, 0) + max(1, missing)
             if any(quote is not None for _, quote in self._costs.calls.values()):
                 prompts_by_session = {session: sum(key[0] == session for key in self._prompts)
                                       for session, _ in self._costs.calls.values()}

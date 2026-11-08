@@ -31,7 +31,8 @@ def test_native_worker_event_reaches_recorded_usage_and_incomplete_history(tmp_p
     assert 'Full user turns: 1' in lines[-1]
     assert 'total: unavailable' in lines[-1]
     inventory = json.loads((result.directory / 'accounting.json').read_text())['tests'][0]
-    assert inventory['calls'] == [] and inventory['observed_call_count'] == 1
+    assert inventory['calls'] == [] and inventory['observed_call_count'] == 0
+    assert result.usage['native_invocation_count'] == 1
     assert inventory['calls_complete'] is False
 
 

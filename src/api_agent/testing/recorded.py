@@ -291,6 +291,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         call_scope_owners = {}
         incomplete_inference_evidence = {}
         scoped_inference_loss = {}
+        native_boundaries = {}
 
         def queue_attachment(test_id, owner, frozen):
             from uuid import uuid4
@@ -341,6 +342,11 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         def record_evidence(result):
             test_id = result.identity.id
             attachments = list(content.pop(test_id, ()))
+            from .native_usage import reconciliation
+            for packet in native_boundaries.pop(test_id, ()):
+                data = reconciliation(packet['boundary'], usage.report(), test_id)
+                queue_attachment(test_id, packet['owner'], ('Usage reconciliation',
+                    json.dumps(evidence_boundary.content_export(data), allow_nan=False).encode(), 'application/json'))
             reasons = incomplete_inference_evidence.get(test_id, set())
             if reasons:
                 source = 'inference-evidence-incomplete-' + str(list(recording_ids).index(test_id)) + '.txt'
@@ -716,6 +722,17 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 data = evidence_boundary.content_export(json.loads(row.text))
                 row = replace(row, text=json.dumps(data, allow_nan=False))
                 capture(row, usage)
+            if row.kind == 'native_usage_boundary':
+                from .native_usage import validate_packet
+                packet = validate_packet(json.loads(row.text))
+                from .evidence import _safe_owner
+                _safe_owner(packet['owner'], evidence_boundary)
+                packets = native_boundaries.setdefault(row.identity.id, [])
+                if len(packets) >= 64:
+                    raise ValueError('Native usage boundary recording limit exceeded')
+                packets.append(packet)
+                queue_attachment(row.identity.id, packet['owner'], ('Native model usage boundary',
+                    json.dumps(evidence_boundary.content_export(packet['boundary']), allow_nan=False).encode(), 'application/json'))
             if row.kind == 'native_invocation':
                 from .inference_usage import capture_external_invocation
                 capture_external_invocation(row, usage)

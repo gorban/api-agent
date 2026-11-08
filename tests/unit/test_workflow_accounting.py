@@ -348,3 +348,26 @@ def test_frozen_occurrence_keeps_requested_actual_provider_and_version_facts():
     assert {key: joined['tests'][0]['leaf_calls'][0][key] for key in expected} == expected
     from api_agent.testing.workflow_accounting import _call_facts
     assert all(_call_facts({})[key] is None for key in expected)
+
+
+def test_explicit_call_invocation_mismatch_has_no_token_leaf_facts():
+    identifier = '00000000-0000-4000-8000-000000000014'
+    journal = recorded_call(identifier)
+    call = dict(call_id=identifier, invocation_id='00000000-0000-4000-8000-000000000099',
+        turn_id=journal['turn_id'], selection='model', outcome='completed',
+        usage={'input_tokens': 13, 'output_tokens': 7, 'cached_input_tokens': 0, 'reasoning_tokens': 0})
+    joined, facts = join_workflow_accounting({'test': [journal]},
+        {'tests': [dict(test_id='test', calls=[call], calls_complete=True)]},
+        admissions={journal['projection']['definition_id']: journal['projection']})
+    record = joined['tests'][0]
+    assert record['attribution'] == 'partial'
+    assert record['mismatched_invocation_call_ids'] == [identifier]
+    assert record['leaf_calls'] == [] and facts == {}
+    graph = dict(name='graph GRAPH', parameters=[dict(name='invocation_id', value=journal['invocation_id']),
+        dict(name='scope_id', value='graph')], steps=[dict(name='node Make',
+        parameters=[dict(name='scope_id', value='visit')], steps=[dict(name='call '+identifier,
+        parameters=[dict(name='input_tokens', value='13')], steps=[])])])
+    steps = apply_frozen_steps([graph], 'test', facts)
+    leaf = steps[0]['steps'][0]['steps'][0]
+    assert leaf['parameters'] == [dict(name='accounting', value='unknown')]
+    assert {row['name']: row['value'] for row in steps[0]['steps'][0]['parameters']}['inclusive_input_tokens'] == 'unknown'
