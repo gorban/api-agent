@@ -10,6 +10,23 @@ from api_agent.providers.generation_attempts import (
 from api_agent.providers.llm import Usage
 
 
+def test_provider_rate_limited_kind_keeps_transport_rate_limit_classification():
+    from api_agent.providers.contracts import ProviderAccessError
+
+    ledger = TransportAttemptLedger(2)
+    token = ledger.begin(1)
+    error = ProviderAccessError('rate_limited', 'Rate limit exceeded', status=429)
+    error.http_status = 429
+    error.execution = 'possibly_executed'
+    ledger.finish(token, error=error, retry_delay_seconds=0.2)
+
+    row = ledger.snapshot()['attempts'][0]
+    assert row['error_kind'] == 'rate_limit'
+    assert row['status'] == 429
+    assert row['usage'] is None
+    assert row['execution'] == 'possibly_executed'
+
+
 def test_failed_and_recovered_attempts_keep_distinct_usage_and_known_subtotals():
     events = []
     ledger = TransportAttemptLedger(2, observer=lambda phase, row: events.append((phase, row)))

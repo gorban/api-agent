@@ -2512,7 +2512,8 @@ def test_stateful_parent_lends_provider_without_checkpoint_or_history_to_child_g
 
 
 @pytest.mark.parametrize('log', [False, True])
-def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, log):
+@pytest.mark.parametrize('awaited', [False, True])
+def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, log, awaited):
     from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
     root, entry = fixture_graph
     source = root / 'native.py'
@@ -2522,10 +2523,16 @@ def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, lo
     journal = WorkflowJournal(definition, log_content=log, content_policy=ContentPolicy(log), boundary=boundary)
     def project(direction, values=None):
         return {'prompt': 'question registered-credential'} if direction == 'input' else {'html': 'x' * 4801}
+    projected = []
+    async def project_async(direction, values=None):
+        await asyncio.sleep(0)
+        projected.append(direction)
+        return project(direction, values)
+    projection = project_async if awaited else project
     workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
         reducers={'messages': add_messages}, journal=journal,
-        services={'emissions': boundary, 'node_io_projections': {'intake': project, 'finish': project},
-                  'graph_io_projection': project})
+        services={'emissions': boundary, 'node_io_projections': {'intake': projection, 'finish': projection},
+                  'graph_io_projection': projection})
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0,
         'records': ['private-record' * 10000]}, thread_id='projected'))
     assert result['records'] == ['private-record' * 10000]
@@ -2535,6 +2542,7 @@ def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, lo
     validate_journal(packet)
     captures = [row for row in packet['events'] if row['event'] == 'capture']
     assert len(captures) == 6
+    assert projected == (['input', 'input', 'output', 'input', 'output', 'output'] if awaited else [])
     assert 'private-record' not in str(captures)
     assert 'registered-credential' not in str(captures)
     if log:
@@ -2546,7 +2554,8 @@ def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, lo
 
 @pytest.mark.parametrize('scope', ['node', 'graph'])
 @pytest.mark.parametrize('invalid', ['return', 'raise'])
-def test_io_projection_failure_warns_without_failing_workflow(fixture_graph, scope, invalid, caplog):
+@pytest.mark.parametrize('awaited', [False, True])
+def test_io_projection_failure_warns_without_failing_workflow(fixture_graph, scope, invalid, caplog, awaited):
     root, entry = fixture_graph
     definition = load_stateful_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition)
@@ -2554,8 +2563,14 @@ def test_io_projection_failure_warns_without_failing_workflow(fixture_graph, sco
         if invalid == 'raise':
             raise RuntimeError('private arbitrary callback detail')
         return []
-    services = ({'node_io_projections': {'intake': projection}} if scope == 'node'
-                else {'graph_io_projection': projection})
+    invoked = []
+    async def project_async(*args):
+        await asyncio.sleep(0)
+        invoked.append(args[0])
+        return projection(*args)
+    callback = project_async if awaited else projection
+    services = ({'node_io_projections': {'intake': callback}} if scope == 'node'
+                else {'graph_io_projection': callback})
     workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
         reducers={'messages': add_messages}, journal=journal, services=services)
 
@@ -2566,6 +2581,7 @@ def test_io_projection_failure_warns_without_failing_workflow(fixture_graph, sco
     assert any(row['reason'] == 'unavailable' for row in captures)
     assert 'Workflow I/O capture unavailable: projection failed' in caplog.text
     assert 'private arbitrary callback detail' not in caplog.text
+    assert invoked == (['input', 'output'] if awaited else [])
 
 
 @pytest.mark.parametrize('recorded', [False, True])
