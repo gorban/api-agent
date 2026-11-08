@@ -12,6 +12,16 @@ from api_agent.ui.evidence import (OwnedFrameContract, _owned_application_frames
 from api_agent.ui.provider import DemoUIProvider
 
 
+async def _painted_baseline(page):
+    # Navigation/load does not guarantee the first compositor frame exists.
+    # Allow font layout and two rendering-frame turns before pixel preconditions.
+    await page.evaluate("""async () => {
+      await document.fonts.ready;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }""")
+    return await page.screenshot()
+
+
 async def _region_pixels(page, png, box):
     return await page.evaluate('''async ({png,box}) => {
       const image = new Image(); image.src = 'data:image/png;base64,' + png;
@@ -978,7 +988,7 @@ def test_browser_content_enabled_preserves_prompt_response_and_only_owned_icons(
                 await page.route('http://localhost:9000/', lambda route: route.fulfill(content_type='text/html', body=body))
                 await page.goto('http://localhost:9000/')
                 boundary = EmissionBoundary(ContentPolicy(True), secrets=('synthetic-credential',))
-                original = await page.screenshot()
+                original = await _painted_baseline(page)
                 pixels = await capture_studio_viewport(page, boundary, 'http://localhost:9000')
                 assert pixels is not None
                 unchanged = await page.evaluate('''async images => {
@@ -1282,7 +1292,7 @@ def test_nx_viewport_withholds_pseudo_url_outside_host(pseudo, pseudo_surface):
                     return pseudo.content.includes('url(') || pseudo.backgroundImage.includes('url(');
                 }''' % pseudo)
                 escaped = {'x': 308, 'y': 28, 'width': 112, 'height': 46}
-                raw = await page.screenshot()
+                raw = await _painted_baseline(page)
                 assert (await _region_pixels(page, raw, escaped))['ink']
                 masked = await capture_studio_viewport(page,
                     EmissionBoundary(ContentPolicy(True), secrets=('secret-marker',)),
@@ -1316,7 +1326,7 @@ def test_nx_viewport_withholds_border_image_outside_host():
                     '</style></head><body><div id="host"></div></body></html>'))
                 await page.goto(origin + '/da2/Home')
                 assert await page.evaluate("() => getComputedStyle(document.querySelector('#host')).borderImageSource.includes('url(')")
-                raw = await page.screenshot()
+                raw = await _painted_baseline(page)
                 outside = await page.evaluate('''async png => {
                   const image=new Image(); image.src='data:image/png;base64,'+png;
                   await image.decode(); const canvas=document.createElement('canvas');
@@ -1362,7 +1372,7 @@ def test_nx_viewport_withholds_css_image_reflection_outside_host(escape_style):
                 escaped = ({'x': 240, 'y': 40, 'width': 120, 'height': 40}
                     if escape_style.startswith('filter:') else
                     {'x': 180, 'y': 40, 'width': 120, 'height': 40})
-                raw = await page.screenshot()
+                raw = await _painted_baseline(page)
                 assert (await _region_pixels(page, raw, escaped))['ink']
                 reasons = []
                 masked = await capture_studio_viewport(page,
@@ -1396,7 +1406,7 @@ def test_top_layer_backdrop_url_withholds_independent_pixels():
                     content_type='text/html', body=body))
                 await page.goto('http://localhost:9000/')
                 await page.locator('dialog').evaluate('node => node.showModal()')
-                assert (await _region_pixels(page, await page.screenshot(),
+                assert (await _region_pixels(page, await _painted_baseline(page),
                     {'x': 2, 'y': 2, 'width': 40, 'height': 40}))['red']
                 reasons = []
                 assert await capture_studio_viewport(page,
@@ -1450,7 +1460,7 @@ def test_closed_shadow_host_with_display_contents_fails_closed():
                     });</script>'''))
                 await page.goto('http://localhost:9000/')
                 assert await page.evaluate("document.querySelector('x-secret').shadowRoot === null")
-                raw = await page.screenshot()
+                raw = await _painted_baseline(page)
                 assert (await _region_pixels(page, raw,
                     {'x': 8, 'y': 8, 'width': 200, 'height': 24}))['red']
                 reasons = []
@@ -1486,7 +1496,7 @@ def test_closed_shadow_audit_covers_unregistered_and_nested_hosts(host):
                 await page.route('http://localhost:9000/', lambda route: route.fulfill(
                     content_type='text/html', body=body))
                 await page.goto('http://localhost:9000/')
-                assert (await _region_pixels(page, await page.screenshot(),
+                assert (await _region_pixels(page, await _painted_baseline(page),
                     {'x': 8, 'y': 8, 'width': 200, 'height': 24}))['red']
                 reasons = []
                 captured = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)),
@@ -1520,7 +1530,7 @@ def test_visible_inert_megabyte_is_isolated_before_budget_exclusion():
                 await page.route('http://localhost:9000/', lambda route: route.fulfill(
                     content_type='text/html', body=body))
                 await page.goto('http://localhost:9000/')
-                raw = await page.screenshot()
+                raw = await _painted_baseline(page)
                 assert (await _region_pixels(page, raw,
                     {'x': 10, 'y': 5, 'width': 180, 'height': 20}))['red']
                 image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)),
