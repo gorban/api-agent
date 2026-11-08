@@ -45,10 +45,18 @@ def admit_terminal_call_receipt(row, journal):
             or row.get('visit_id', owner[1]) != owner[1]
             or row.get('attempt_id', owner[2]) != owner[2]):
         return
-    if receipts is not None and len(receipts) < 128 and not any(
-            prior['call_id'] == row['call_id'] for prior in receipts):
+    prior = next((item for item in receipts or () if item['call_id'] == row['call_id']), None)
+    if prior is not None and 'quote' in row:
+        if any(prior.get(key) != row.get(key) for key in
+               ('selection', 'usage', 'outcome', 'actual_model', 'transport_attempts')) or (
+                'quote' in prior and prior['quote'] != row['quote']):
+            getattr(journal, 'journal', journal).record_evidence_loss()
+            return
+        from copy import deepcopy
+        prior['quote'] = deepcopy(row['quote'])
+    elif receipts is not None and len(receipts) < 128 and prior is None:
         receipts.append({key: row[key] for key in
-            ('call_id', 'selection', 'usage', 'outcome', 'actual_model', 'reasoning_effort', 'response', 'transport_attempts') if key in row})
+            ('call_id', 'selection', 'usage', 'outcome', 'actual_model', 'reasoning_effort', 'response', 'transport_attempts', 'quote') if key in row})
 
 
 def current_tool_capture_services():

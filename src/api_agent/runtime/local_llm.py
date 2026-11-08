@@ -2,9 +2,10 @@
 import asyncio
 import inspect
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from itertools import islice
 from types import MappingProxyType
 import time
@@ -20,7 +21,7 @@ from api_agent.providers.inference import async_request_to_wire, usage_to_wire
 from api_agent.providers.loading import aload_provider
 from api_agent.providers.progress import component_timeout, report_timeout, independent_timeout_scope
 from api_agent.providers.selection import ModelSelectionPolicy
-from api_agent.providers.sessions import _Owner, _drain, LLMSessionOwner, InspectionOwner, ScopedLLMCredentials
+from api_agent.providers.sessions import _Owner, _drain, _consume, LLMSessionOwner, InspectionOwner, ScopedLLMCredentials
 from api_agent.providers.shared_setup import SharedSetupOwner
 from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
 
@@ -71,12 +72,14 @@ class LocalLLM(_Owner):
     ``call`` adapts Studio callbacks, which themselves use describe/complete;
     it deliberately does not authenticate before calling those callbacks.
     Every request receives a fresh deadline unless its caller supplies a context.
-    Usage is bounded, content-free and never published as test evidence.
+    Usage is bounded and content-free. An explicit caller may observe receipts
+    originated here; existing central publishers retain their own receipts.
     """
     def __init__(self, config, owner_root, *, emissions=None, registry=None,
                  unattended_index_source=None, interaction_owner=None,
                  loader=aload_provider, timeout=120, cleanup_timeout=5,
-                 on_session=None, on_status=None, trace=None, session_owner_factory=None):
+                 on_session=None, on_status=None, trace=None, session_owner_factory=None,
+                 on_terminal_receipt=None):
         super().__init__(cleanup_timeout)
         if type(timeout) not in (int, float) or not 0 < timeout < float('inf'):
             raise ValueError('Invalid local inference timeout')
@@ -84,6 +87,11 @@ class LocalLLM(_Owner):
                 or inspect.iscoroutinefunction(session_owner_factory)
                 or inspect.iscoroutinefunction(getattr(session_owner_factory, "__call__", None))):
             raise ValueError('Invalid session owner factory')
+        if on_terminal_receipt is not None and (not callable(on_terminal_receipt)
+                or inspect.iscoroutinefunction(on_terminal_receipt)
+                or inspect.iscoroutinefunction(getattr(on_terminal_receipt, '__call__', None))):
+            raise ValueError('Invalid terminal receipt observer')
+        self.on_terminal_receipt = on_terminal_receipt
         self.session_owner_factory = session_owner_factory
         self.config = MappingProxyType(deepcopy(dict(config)))
         self.owner_root = owner_root
@@ -96,6 +104,8 @@ class LocalLLM(_Owner):
         self.provider = self.session = self.shared = None
         self._initialization = None
         self._helpers, self._calls = set(), set()
+        self._receipt_tasks = set()
+        self._foreign_receipt_tasks = set()
         self._active = set()
         self._requests = {}
         self._contexts = {}
@@ -357,6 +367,8 @@ class LocalLLM(_Owner):
 
     async def _complete_owned(self, request, *, context=None):
         accounted_failure_id = None
+        observer = self.on_terminal_receipt
+        observer_context = copy_context()
         async def complete():
             nonlocal request, accounted_failure_id
             request = configured_request(request, self.config.get('LLM_CACHE_POLICY'),
@@ -369,6 +381,7 @@ class LocalLLM(_Owner):
                 error = None
                 receipts = []
                 started = time.monotonic()
+                started_at = datetime.now(timezone.utc).isoformat()
                 from api_agent.providers.generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger, attach_transport_attempts
                 ledger = TransportAttemptLedger(self.config.get('LLM_MAX_ATTEMPTS', 5),
                     quote=lambda result: self.emissions.content_export(quote_cost(provider.implementation, request, result)))
@@ -420,16 +433,44 @@ class LocalLLM(_Owner):
                     # A central publisher may already have admitted terminal calls
                     # during this exact operation. Reuse those receipts; a separate
                     # local UUID would charge and instrument the same work twice.
-                    if len(receipts) == 1:
-                        receipts[0]['transport_attempts'] = row['transport_attempts']
-                        if 'quote' in row:
-                            receipts[0]['quote'] = row['quote']
+                    # Central receipts already own their physical attempts and
+                    # quotes. The enclosing runtime cannot replace that evidence
+                    # with its separate transport ledger or republish it.
                     if error is not None and len(receipts) <= 1:
                         from api_agent.telemetry.outcomes import retain_failure
                         accounted_failure_id = receipts[0]['call_id'] if receipts else row['call_id']
                         retain_failure(error, cause_id=accounted_failure_id, provider=True)
                     self._usage.extend(receipts or [row])
                     del self._usage[:-128]
+                    if observer is not None and not receipts:
+                        observed = {**row, 'started_at': started_at,
+                                    'finished_at': datetime.now(timezone.utc).isoformat()}
+                        try:
+                            returned = observer_context.run(observer, deepcopy(observed))
+                            if inspect.iscoroutine(returned):
+                                returned.close()
+                                self._status('accounting', 'unavailable')
+                            elif inspect.isawaitable(returned):
+                                task = asyncio.ensure_future(returned)
+                                if task.get_loop() is not asyncio.get_running_loop():
+                                    # A foreign task cannot be awaited or drained on this loop.
+                                    # Keep disposal ownership until its own loop confirms stop.
+                                    self._foreign_receipt_tasks.add(task)
+                                    if task.get_loop().is_running():
+                                        task.get_loop().call_soon_threadsafe(task.cancel)
+                                    else:
+                                        task.cancel()
+                                else:
+                                    self._receipt_tasks.add(task)
+                                    task.add_done_callback(_consume)
+                                    task.add_done_callback(self._receipt_tasks.discard)
+                                    task.add_done_callback(self._cancel_requested.discard)
+                                    if task not in self._cancel_requested:
+                                        self._cancel_requested.add(task)
+                                        task.cancel()
+                                self._status('accounting', 'unavailable')
+                        except BaseException:
+                            self._status('accounting', 'unavailable')
         try:
             return await self._run(complete, context)
         except BaseException as error:
@@ -445,6 +486,12 @@ class LocalLLM(_Owner):
         with independent_timeout_scope():
             async with report_timeout('Local LLM cleanup', self._timeout):
                 await _drain(self._calls, self._timeout, self._cancel_requested)
+                await _drain(self._receipt_tasks, self._timeout, self._cancel_requested)
+                for task in tuple(self._foreign_receipt_tasks):
+                    if not task.done():
+                        raise CleanupPendingError((self,), self.aclose)
+                    _consume(task)
+                    self._foreign_receipt_tasks.remove(task)
                 if self._recovery is not None:
                     await _drain((self._recovery,), self._timeout, self._cancel_requested)
                 if self._initialization is not None:

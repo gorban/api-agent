@@ -710,7 +710,7 @@ def test_dispatched_plain_failure_retains_mode_partial_usage_and_original_status
     asyncio.run(scenario())
 
 
-def test_failed_central_receipt_keeps_ledger_when_no_quote_available(selected):
+def test_failed_central_receipt_does_not_invent_missing_ledger_or_quote(selected):
     from uuid import uuid4
     from api_agent.providers.contracts import ProviderAccessError
     from api_agent.workflows.attribution import bind_workflow_visit, current_workflow_visit
@@ -734,7 +734,7 @@ def test_failed_central_receipt_keeps_ledger_when_no_quote_available(selected):
                 await owner.complete(request())
             assert caught.value is failure
             assert len(owner.usage) == 1 and owner.usage[0]['call_id'] == identifier
-            assert owner.usage[0]['transport_attempts']['attempts'][0]['outcome'] == 'failed'
+            assert 'transport_attempts' not in owner.usage[0]
             assert 'quote' not in owner.usage[0]
         finally:
             await owner.aclose()
