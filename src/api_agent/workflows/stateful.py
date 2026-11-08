@@ -41,10 +41,12 @@ _PY_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
 _LOADED_DEPENDENCIES = {}
 
 
-def _project_capture(journal, projection, direction, visit_id, *args):
+async def _project_capture(journal, projection, direction, visit_id, *args):
     """An optional observation projection cannot fail application execution."""
     try:
         values = projection(direction, *args)
+        if inspect.isawaitable(values):
+            values = await values
         if type(values) is not dict:
             raise TypeError('I/O projection must return a dictionary')
         return values
@@ -748,7 +750,7 @@ class StatefulWorkflow:
                     return
                 projection = (self._services.get().get('node_io_projections') or {}).get(row['ID'])
                 if projection is not None:
-                    values = _project_capture(journal, projection, direction, visit_id, values)
+                    values = await _project_capture(journal, projection, direction, visit_id, values)
                     if values is None:
                         return
                 contract = captures.get(direction)
@@ -999,7 +1001,7 @@ class StatefulWorkflow:
                 projection = self._services.get().get('graph_io_projection')
                 journal = self._journal.get()
                 if projection is not None and journal is not None:
-                    values = _project_capture(journal, projection, direction, budget.id)
+                    values = await _project_capture(journal, projection, direction, budget.id)
                     if values is None:
                         return
                     from .capture_authority import capture_node
