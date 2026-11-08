@@ -124,8 +124,15 @@ The selected UI provider supplies the existing original-viewport safety policy.
 With LOG_CONTENT=True, each admitted turn captures only the prepared application's
 current page, after the caller's rendering check, with the same credential masking
 and live safety checks as final UI evidence. TRACELOOP_TRACE_CONTENT has no effect
-on screenshot permission. Disabled content never inspects the browser and retains
-the existing test-level withholding notice.
+on screenshot permission. With LOG_CONTENT=False, a provider with an explicit
+masked-content contract can capture the same layout with black confidential
+interiors, keeping surrounding cards, borders and controls visible. The included
+Studio and Nx shell contracts cover prompts, responses, reasoning, clarification
+and approval content. Generated response frames remain completely masked.
+Masks are clipped to visible content, and capture refuses missing markers or
+layout changes rather than revealing content or covering unrelated controls.
+Providers without that contract retain the withholding notice without inspecting
+the browser.
 
 Each turn capture uses a cooperative six-second deadline; cancellation cleanup
 may take longer. Capture remains best effort. Unavailable or rejected pixels

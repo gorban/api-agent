@@ -25,7 +25,33 @@ _TRUSTED_ICONS = ['<svg viewBox="0 0 24 24" width="22" height="22" fill="none" s
 
 
 _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
-  const saved = new Map();
+  const saved = new Map(), masks = new Map();
+  const maskBox = node => {
+    const box = node.getBoundingClientRect();
+    let left = Math.max(0, box.left), top = Math.max(0, box.top);
+    let right = Math.min(innerWidth, box.right), bottom = Math.min(innerHeight, box.bottom);
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent), clip = parent.getBoundingClientRect();
+      const scaleX = parent.offsetWidth ? clip.width / parent.offsetWidth : 1;
+      const scaleY = parent.offsetHeight ? clip.height / parent.offsetHeight : 1;
+      if (style.clipPath !== 'none' && style.clipPath !== 'inset(0px)') throw 'content_clip';
+      if (style.clipPath === 'inset(0px)') {
+        left = Math.max(left, clip.left); right = Math.min(right, clip.right);
+        top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+      }
+      const paintClip = /\b(paint|content|strict)\b/.test(style.contain);
+      if (paintClip || /^(hidden|clip|scroll|auto)$/.test(style.overflowX)) {
+        const edge = clip.left + parent.clientLeft * scaleX;
+        left = Math.max(left, edge); right = Math.min(right, edge + parent.clientWidth * scaleX);
+      }
+      if (paintClip || /^(hidden|clip|scroll|auto)$/.test(style.overflowY)) {
+        const edge = clip.top + parent.clientTop * scaleY;
+        top = Math.max(top, edge); bottom = Math.min(bottom, edge + parent.clientHeight * scaleY);
+      }
+    }
+    return [left, top, Math.max(0, right-left), Math.max(0, bottom-top)];
+  };
+
   const icons = trustedIcons.map(html => new DOMParser().parseFromString(html, 'text/html').body.firstElementChild.outerHTML);
   const buttonIcon = node => {
     if (node.localName !== 'svg' || !node.closest('button[type="button"][aria-label]') ||
@@ -51,6 +77,10 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
     /^(?:token|key)$/i.test(node.id) || /^(?:token|key)$/i.test(node.name));
   const nodes = [...document.querySelectorAll('*')];
   if (nodes.length > 10000) return {saved, reason:'node_budget'};
+  const contentRoots = nodes.filter(node => contentMaskSelector && node.matches(contentMaskSelector));
+  const layout = contentRoots.length ? nodes.filter(node =>
+    !contentRoots.some(root => root !== node && root.contains(node)))
+    .map(node => [node, node.getBoundingClientRect().toJSON()]) : [];
   const pseudos = ['::before','::after','::marker','::backdrop','::file-selector-button',
     '::first-letter','::first-line','::placeholder'];
   const urlProperties = [...new Set([
@@ -87,13 +117,21 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
       (node.localName === 'svg' && !icons.includes(node.outerHTML) && !buttonIcon(node));
     if ((opaque || contentMasked) && computed.display === 'contents') throw 'display_contents';
     if (!opaque && !effects.length && !contentMasked) continue;
-    const properties = [...new Set([...(opaque ? ['opacity','content-visibility','animation','transition'] : []),
-      ...(contentMasked ? ['opacity','clip-path'] : []), ...effects])];
+    const properties = [...new Set([...(opaque ? ['opacity','content-visibility','contain-intrinsic-size','animation','transition'] : []),
+      ...(contentMasked ? ['opacity','clip-path','content-visibility','contain-intrinsic-size'] : []), ...effects])];
     const originalStyle = node.getAttribute('style');
     const previous = properties.map(property => [property,
       node.style.getPropertyValue(property), node.style.getPropertyPriority(property)]);
     const record = {opaque, previous, originalStyle, preparedStyle:null, overrides:[]};
     saved.set(node, record);
+    if (opaque || contentMasked) {
+      const size = (axis, edges) => Math.max(0, (parseFloat(computed[axis]) || 0) -
+        (computed.boxSizing === 'border-box' ? edges.reduce((sum, edge) =>
+          sum + (parseFloat(computed[edge]) || 0), 0) : 0));
+      node.style.setProperty('contain-intrinsic-size',
+        size('width', ['paddingLeft','paddingRight','borderLeftWidth','borderRightWidth']) + 'px ' +
+        size('height', ['paddingTop','paddingBottom','borderTopWidth','borderBottomWidth']) + 'px', 'important');
+    }
     if (opaque) {
       node.style.setProperty('opacity', '0', 'important');
       node.style.setProperty('content-visibility', 'hidden', 'important');
@@ -101,6 +139,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
       node.style.setProperty('transition', 'none', 'important');
     }
     if (contentMasked) {
+      node.style.setProperty('content-visibility', 'hidden', 'important');
       node.style.setProperty('opacity', '0', 'important');
       node.style.setProperty('clip-path', 'inset(0)', 'important');
     }
@@ -110,19 +149,39 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
     record.preparedStyle = node.getAttribute('style');
     record.overrides = overrides;
   }
-  return {saved, urlProperties, reason:null, nodeIds:new WeakMap(), nextNodeId:0};
+  // Size containment must not move cards or controls (for example through
+  // collapsed margins). Unsupported authored layouts fail closed.
+  for (const [node, before] of layout) {
+    const after = node.getBoundingClientRect();
+    if (['x','y','width','height'].some(key => Math.abs(after[key] - before[key]) > .02))
+      throw 'content_layout';
+  }
+  // Playwright masks ignore overflow clipping. Use bounded, invisible proxies
+  // for the visible intersection so tall transcripts cannot cover the composer.
+  for (const node of contentRoots) {
+    const box = maskBox(node), proxy = document.createElement('div');
+    masks.set(proxy, {node, box});
+    for (const [property, value] of Object.entries({position:'fixed', left:box[0]+'px',
+      top:box[1]+'px', width:box[2]+'px', height:box[3]+'px', opacity:'0',
+      margin:'0', padding:'0', border:'0', transform:'none', 'pointer-events':'none'}))
+      proxy.style.setProperty(property, value, 'important');
+    document.documentElement.append(proxy);
+  }
+  return {saved, masks, urlProperties, reason:null, nodeIds:new WeakMap(), nextNodeId:0};
   } catch (error) {
+    for (const proxy of masks.keys()) proxy.remove();
     for (const [node, record] of saved) {
       if (record.originalStyle === null) node.removeAttribute('style');
       else node.setAttribute('style', record.originalStyle);
     }
     return {saved:new Map(), urlProperties,
-      reason:error === 'display_contents' ? 'display_contents' : 'prepare_error'};
+      reason:['display_contents','content_layout','content_clip'].includes(error) ? error : 'prepare_error'};
   }
 }'''
 
 
 _RESTORE = r'''prepared => {
+  for (const proxy of prepared.masks?.keys() || []) proxy.remove();
   for (const [node, record] of prepared.saved) {
     if (node.getAttribute('style') === record.preparedStyle) {
       if (record.originalStyle === null) node.removeAttribute('style');
@@ -144,6 +203,32 @@ _RESTORE = r'''prepared => {
 
 _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSelector, contentMaskSelector, contentMaskAnchor, contentMaskRequirements, diagnose, prepared}) => {
   const reject = reason => diagnose ? {unavailable:reason} : null;
+  const maskBox = node => {
+    const box = node.getBoundingClientRect();
+    let left = Math.max(0, box.left), top = Math.max(0, box.top);
+    let right = Math.min(innerWidth, box.right), bottom = Math.min(innerHeight, box.bottom);
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent), clip = parent.getBoundingClientRect();
+      const scaleX = parent.offsetWidth ? clip.width / parent.offsetWidth : 1;
+      const scaleY = parent.offsetHeight ? clip.height / parent.offsetHeight : 1;
+      if (style.clipPath !== 'none' && style.clipPath !== 'inset(0px)') throw 'content_clip';
+      if (style.clipPath === 'inset(0px)') {
+        left = Math.max(left, clip.left); right = Math.min(right, clip.right);
+        top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+      }
+      const paintClip = /\b(paint|content|strict)\b/.test(style.contain);
+      if (paintClip || /^(hidden|clip|scroll|auto)$/.test(style.overflowX)) {
+        const edge = clip.left + parent.clientLeft * scaleX;
+        left = Math.max(left, edge); right = Math.min(right, edge + parent.clientWidth * scaleX);
+      }
+      if (paintClip || /^(hidden|clip|scroll|auto)$/.test(style.overflowY)) {
+        const edge = clip.top + parent.clientTop * scaleY;
+        top = Math.max(top, edge); bottom = Math.min(bottom, edge + parent.clientHeight * scaleY);
+      }
+    }
+    return [left, top, Math.max(0, right-left), Math.max(0, bottom-top)];
+  };
+
   const icons = trustedIcons.map(html => new DOMParser().parseFromString(html, 'text/html').body.firstElementChild.outerHTML);
   const buttonIcon = node => {
     if (node.localName !== 'svg' || !node.closest('button[type="button"][aria-label]') ||
@@ -186,8 +271,15 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
       return reject('content_top_layer');
   }
   for (const [parentSelector, childSelector] of contentMaskRequirements || []) {
-    const parent = document.querySelector(parentSelector);
-    if (parent && !parent.querySelector(childSelector)) return reject('content_mask_missing');
+    for (const parent of document.querySelectorAll(parentSelector))
+      if (!parent.matches(childSelector) && !parent.querySelector(childSelector)) return reject('content_mask_missing');
+  }
+  for (const [proxy, {node, box}] of prepared.masks) {
+    const actual = proxy.getBoundingClientRect();
+    if (!node.isConnected || !proxy.isConnected ||
+        JSON.stringify(maskBox(node)) !== JSON.stringify(box) ||
+        [actual.x, actual.y, actual.width, actual.height].some((value, index) =>
+          Math.abs(value - box[index]) > .02)) return reject('content_mask_geometry');
   }
   const nodes = [...found], rows = [];
   let characters = 0;
@@ -221,7 +313,8 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     if (opaque && (!isolated?.opaque || style.opacity !== '0' ||
         style.contentVisibility !== 'hidden' || style.display === 'contents')) return reject('isolation_verify');
     if (isolated && !node.isConnected) return reject('document_changed');
-    if (contentMasked && (style.opacity !== '0' || style.clipPath !== 'inset(0px)' ||
+    if (contentMasked && (style.opacity !== '0' || style.contentVisibility !== 'hidden' ||
+        style.clipPath !== 'inset(0px)' ||
         style.display === 'contents')) return reject('isolation_verify');
     // Each text node belongs to one element. Ancestor textContent/innerText
     // repeats large inert bundles many times, exhausting the fixed budget even
@@ -239,7 +332,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     characters += texts.reduce((sum, text) => sum + text.length, 0);
     if (characters > 1048576) return reject('text_budget');
     rows.push({index, parent: nodes.indexOf(node.parentElement), id:prepared.nodeIds.get(node),
-      forced: opaque || inert || contentMasked, contentMasked,
+      forced: opaque || inert || contentMasked || prepared.masks.has(node), contentMasked,
       texts});
   }
   const stack = [document.documentElement], visible = [];

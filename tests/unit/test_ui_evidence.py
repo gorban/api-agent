@@ -49,6 +49,216 @@ def _proxied_context(page):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('surface', ['popover', 'dialog'])
+async def test_content_mask_hides_transient_top_layer_descendants(surface):
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    element = ('<div id="escape" popover' if surface == 'popover' else '<dialog id="escape"')
+    close = '</div>' if surface == 'popover' else '</dialog>'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 600, 'height': 360})
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body=
+                '<body style="margin:0;background:white"><main id="panel">'
+                '<div id="private"><p style="margin:0">Confidential answer</p>' + element +
+                ' style="position:fixed;inset:auto;left:300px;top:250px;margin:0;border:0;'
+                'width:200px;height:50px;background:red">Confidential escape' + close +
+                '</div><button id="send">Send</button></main></body>'))
+            await page.goto(origin + '/')
+            before = await page.locator('#private').bounding_box()
+            controls = await page.locator('#send').bounding_box()
+            async def screenshot(**kwargs):
+                assert await page.locator('#private').bounding_box() == before
+                assert await page.locator('#send').bounding_box() == controls
+                await page.locator('#escape').evaluate('''(node, surface) => {
+                  if (surface === 'popover') node.showPopover(); else node.showModal();
+                }''', surface)
+                image = await page.screenshot(**kwargs)
+                await page.locator('#escape').evaluate('''(node, surface) => {
+                  if (surface === 'popover') node.hidePopover(); else node.close();
+                }''', surface)
+                return image
+            proxy = SimpleNamespace(url=page.url, frames=page.frames, screenshot=screenshot,
+                evaluate=page.evaluate, evaluate_handle=page.evaluate_handle,
+                locator=page.locator, context=_proxied_context(page))
+            image = await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='#private', content_mask_anchor='#panel')
+            assert image is not None
+            region = await _region_pixels(page, image,
+                {'x': 300, 'y': 250, 'width': 200, 'height': 50})
+            assert not region['red'] and not region['ink']
+            assert (await _region_pixels(page, image, before))['black']
+            assert await page.locator('#private').get_attribute('style') is None
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_content_mask_rejects_size_containment_that_moves_outer_controls():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+              <body style="margin:0"><main id="panel"><section id="private">
+                <p style="margin:20px 0">Confidential answer</p>
+              </section><button id="send">Send</button></main></body>'''))
+            await page.goto(origin + '/')
+            before = await page.locator('#send').bounding_box()
+            reasons = []
+            assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='#private', content_mask_anchor='#panel',
+                unavailable=reasons.append) is None
+            assert reasons == ['content_layout']
+            assert await page.locator('#send').bounding_box() == before
+            assert await page.locator('#private').get_attribute('style') is None
+            assert await page.locator('html > div').count() == 0
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_unsupported_ancestor_clip_withholds_pixels_and_restores_styles():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+              <body><main id="panel"><div style="clip-path:circle(40%)">
+                <div id="private" style="height:40px">Confidential answer</div>
+              </div><button>Send</button></main></body>'''))
+            await page.goto(origin + '/')
+            reasons = []
+            assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='#private', content_mask_anchor='#panel',
+                unavailable=reasons.append) is None
+            assert reasons == ['content_clip']
+            assert await page.locator('#private').get_attribute('style') == 'height:40px'
+            assert await page.locator('html > div').count() == 0
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mutation', ['proxy_move', 'content_resize', 'proxy_remove', 'capture_failure'])
+async def test_content_mask_proxies_reject_changed_geometry_and_always_cleanup(mutation):
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+              <body><main id="panel"><div id="scroll" style="height:80px;overflow:auto">
+                <section id="private" style="height:400px">Confidential</section>
+              </div><button>Send</button></main></body>'''))
+            await page.goto(origin + '/')
+            async def screenshot(**kwargs):
+                image = await page.screenshot(**kwargs)
+                if mutation == 'proxy_move':
+                    await page.locator('html > div').evaluate(
+                        "node => node.style.setProperty('left', '400px', 'important')")
+                elif mutation == 'proxy_remove':
+                    await page.locator('html > div').evaluate('node => node.remove()')
+                elif mutation == 'content_resize':
+                    await page.locator('#scroll').evaluate("node => node.style.height = '40px'")
+                else:
+                    raise RuntimeError('capture failed')
+                return image
+            proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                screenshot=screenshot, evaluate=page.evaluate,
+                evaluate_handle=page.evaluate_handle, locator=page.locator,
+                context=_proxied_context(page))
+            reasons = []
+            if mutation == 'capture_failure':
+                with pytest.raises(RuntimeError, match='capture failed'):
+                    await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
+                        origin, content_mask_selector='#private', content_mask_anchor='#panel')
+            else:
+                assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
+                    origin, content_mask_selector='#private', content_mask_anchor='#panel',
+                    unavailable=reasons.append) is None
+                assert reasons == ['content_mask_geometry']
+            assert await page.locator('html > div').count() == 0
+            assert await page.locator('#private').get_attribute('style') == 'height:400px'
+            assert await page.evaluate("[...document.querySelectorAll('*')].every(node => [...node.attributes].every(attr => !attr.name.startsWith('data-evidence-')))")
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_content_mask_requires_an_interior_in_every_authored_card():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+              <body><main id="panel"><article><div class="private">First answer</div></article>
+                <article>Unmarked second answer</article></main></body>'''))
+            await page.goto(origin + '/')
+            reasons = []
+            assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='.private', content_mask_anchor='#panel',
+                content_mask_requirements=(('article', '.private'),),
+                unavailable=reasons.append) is None
+            assert reasons == ['content_mask_missing']
+            assert await page.locator('html > div').count() == 0
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_masked_message_interiors_are_black_and_card_borders_and_controls_survive():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 640, 'height': 360})
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+                <body style="margin:0;background:white"><main id="panel">
+                  <fieldset id="card" style="margin:20px;width:350px;border:4px solid red;padding:10px">
+                    <legend>Response</legend>
+                    <div id="response" class="private" style="height:60px;background:blue">Confidential response</div>
+                    <details open><summary id="reasoning-toggle">Reasoning</summary>
+                      <div id="reasoning" class="private" style="height:30px;background:blue">Confidential reasoning</div>
+                    </details>
+                  </fieldset>
+                  <section id="prompt-card" style="margin:20px;border:4px solid red;padding:8px">
+                    <textarea id="prompt" class="private" style="display:block;width:300px;height:30px;background:blue">Confidential draft</textarea>
+                    <button id="send">Send</button><select id="model"><option>Model</option></select>
+                  </section>
+                </main></body>'''))
+            await page.goto(origin + '/')
+            before = await page.locator('#card').bounding_box()
+            image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='.private', content_mask_anchor='#panel')
+            assert image is not None
+            assert await page.locator('#card').bounding_box() == before
+            for selector in ('#response', '#reasoning', '#prompt'):
+                box = await page.locator(selector).bounding_box()
+                interior = {**box, 'x': box['x'] + 3, 'y': box['y'] + 3,
+                    'width': box['width'] - 6, 'height': box['height'] - 6}
+                assert (await _region_pixels(page, image, interior))['black']
+            for selector in ('#card', '#prompt-card'):
+                assert (await _region_pixels(page, image,
+                    await page.locator(selector).bounding_box()))['red']
+            for selector in ('#reasoning-toggle', '#send', '#model'):
+                region = await _region_pixels(page, image,
+                    await page.locator(selector).bounding_box())
+                assert region['ink'] and not region['black']
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_omitted_content_masks_chat_dialog_and_preserves_shell_pixels():
     from playwright.async_api import async_playwright
     origin = 'http://localhost:9000'
@@ -92,7 +302,7 @@ async def test_omitted_content_masks_chat_dialog_and_preserves_shell_pixels():
                     '[data-testid="agent-prompt-input"]'):
                 region = await _region_pixels(page, image,
                     await page.locator(selector).bounding_box())
-                assert region['blackPixel'] is False and region['blue'] is False
+                assert region['black'] is True
             for selector in ('#toolbar', '#model-picker'):
                 assert (await _region_pixels(page, image,
                     await page.locator(selector).bounding_box()))['red'] is True
@@ -146,7 +356,7 @@ async def test_studio_default_content_policy_masks_conversation_and_composer():
                 <body style="margin:0;background:white">
                   <header id="chrome" style="height:60px;background:red">Studio</header>
                   <div class="content"><div id="chat-stage" style="height:200px;background:blue">
-                    <div id="conversation">Request, response, clarification and approval</div>
+                    <div id="conversation" class="message-body">Request, response, clarification and approval</div>
                     <textarea id="prompt">secret draft</textarea>
                     <div id="model-control" style="height:20px;background:red">Model and send</div>
                   </div>
@@ -165,7 +375,7 @@ async def test_studio_default_content_policy_masks_conversation_and_composer():
                 region = await _region_pixels(page, image, {'x': box['x'] + 2,
                     'y': box['y'] + 2, 'width': box['width'] - 4,
                     'height': box['height'] - 4})
-                assert region['blackPixel'] is False, (selector, region)
+                assert region['black'] is True, (selector, region)
             assert (await _region_pixels(page, image,
                 await page.locator('#chrome').bounding_box()))['red'] is True
             assert (await _region_pixels(page, image,
@@ -175,6 +385,33 @@ async def test_studio_default_content_policy_masks_conversation_and_composer():
             assert original is not None
             assert (await _region_pixels(page, original,
                 await page.locator('#conversation').bounding_box()))['black'] is False
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', ['conversation', 'message_body', 'prompt'])
+async def test_studio_content_policy_rejects_missing_authored_content_hooks(missing):
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+              <body><main id="chat-stage"><section id="conversation">
+                <article class="message"><div class="message-body">First answer</div></article>
+                <article class="message"><div id="second" class="message-body">Second answer</div></article>
+              </section><textarea id="prompt">Private draft</textarea></main></body>'''))
+            await page.goto(origin + '/')
+            selector, attribute = {'conversation': ('#conversation', 'id'),
+                'message_body': ('#second', 'class'), 'prompt': ('#prompt', 'id')}[missing]
+            await page.locator(selector).evaluate('(node, name) => node.removeAttribute(name)', attribute)
+            provider = DemoUIProvider({}, {})
+            provider.process = object()
+            provider._evidence_origin = origin
+            assert await provider.acapture_evidence(page=page,
+                boundary=EmissionBoundary(ContentPolicy(False))) is None
         finally:
             await browser.close()
 
@@ -207,7 +444,8 @@ async def test_masked_content_open_popover_cannot_escape_into_screenshot():
 
 
 @pytest.mark.asyncio
-async def test_tall_masked_transcript_preserves_controls_outside_scroll_clip():
+@pytest.mark.parametrize('clipping', ['overflow:auto', 'contain:paint', 'clip-path:inset(0)'])
+async def test_tall_masked_transcript_preserves_controls_outside_scroll_clip(clipping):
     from playwright.async_api import async_playwright
     origin = 'http://localhost:9000'
     async with async_playwright() as playwright:
@@ -218,13 +456,13 @@ async def test_tall_masked_transcript_preserves_controls_outside_scroll_clip():
                 <body style="margin:0;background:white">
                   <div id="panel" style="position:absolute;left:100px;top:20px;width:300px;background:white">
                     <div id="toolbar" style="height:30px;background:red">Static toolbar</div>
-                    <div style="height:100px;overflow:auto">
+                    <div style="height:100px;CLIPPING">
                       <section id="conversation" style="height:600px;background:blue">Private transcript</section>
                     </div>
                     <div id="model" style="height:30px;background:red">Static model picker</div>
                     <div id="composer" style="height:30px;background:red">Static composer</div>
                   </div>
-                </body>'''))
+                </body>'''.replace('CLIPPING', clipping)))
             await page.goto(origin + '/')
             image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
                 origin, content_mask_selector='#conversation', content_mask_anchor='#panel')
@@ -235,7 +473,7 @@ async def test_tall_masked_transcript_preserves_controls_outside_scroll_clip():
             transcript = await page.locator('#conversation').bounding_box()
             visible = {**transcript, 'height': 50}
             region = await _region_pixels(page, image, visible)
-            assert region['ink'] is False and region['blue'] is False
+            assert region['black'] is True
         finally:
             await browser.close()
 
@@ -321,7 +559,7 @@ async def test_masked_capture_rejects_changes_outside_hidden_transcript(mutation
             assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
                 origin, content_mask_selector='#conversation', content_mask_anchor='#panel',
                 unavailable=reasons.append) is None
-            assert reasons == ['document_changed' if mutation != 'root_style' else 'isolation_verify']
+            assert reasons == ['isolation_verify' if mutation == 'root_style' else 'document_changed']
         finally:
             await browser.close()
 
@@ -674,8 +912,12 @@ def test_running_provider_delegates_capture_to_owned_policy(monkeypatch):
     page, boundary = object(), object()
     assert asyncio.run(provider.acapture_evidence(page=page, boundary=boundary)) == b'owned-png'
     policy.assert_awaited_once_with(page, boundary, 'http://localhost:9000',
-        content_mask_selector='#conversation, #prompt, #reply-context, #prompt-error, #status, #failure',
-        content_mask_anchor='#chat-stage')
+        content_mask_selector=('.message-body, .reasoning-preview, .reasoning-summary, .error-note, '
+            '.response-question > *, #prompt, #reply-context, #prompt-error, #status, #failure-message'),
+        content_mask_anchor='#chat-stage',
+        content_mask_requirements=(('#chat-stage', '#conversation'),
+                                   ('#chat-stage textarea', '#prompt'),
+                                   ('.message', '.message-body'),))
 
 
 def test_browser_content_enabled_preserves_prompt_response_and_only_owned_icons():
