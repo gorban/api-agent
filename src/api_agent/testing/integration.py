@@ -606,6 +606,8 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                         emit(RunnerEvent('quota_snapshot', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'inference_usage':
                                         emit(RunnerEvent('inference_usage', repo, identity, text=json.dumps(row['data'])))
+                                    elif row['kind'] == 'native_usage_boundary':
+                                        emit(RunnerEvent('native_usage_boundary', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'native_invocation':
                                         emit(RunnerEvent('native_invocation', repo, identity, text=json.dumps(row['data'])))
                                     elif row['kind'] == 'inference_content':

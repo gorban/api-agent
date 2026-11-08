@@ -163,3 +163,42 @@ Such tests may call providers outside the framework recorder. Their call
 inventory is conservatively incomplete for cost estimation; an empty recorder
 does not establish zero spend. Complete provider accounting remains a separate
 integration requirement.
+
+### Delegated provider accounting
+
+Delegated runtimes publish structural usage through
+`api_agent.testing.inference_usage.publish_delegated_usage`, independently of
+content and trace capture. Capture `capture_delegated_owner()` at physical-call
+start and pass its immutable snapshot at completion. It retains the owning
+journal invocation, visit, attempt, turn, conversation and turn kind even when
+completion executes in another context. Legacy child runners bind
+`delegated_test_node(parent_node)` around dispatch; the task-local binding and
+the captured owner preserve launcher test attribution without changing
+`PYTEST_CURRENT_TEST` across concurrent tasks. Supply the canonical UUID call/run ID, selected
+and actual model, timezone-aware start/end, terminal outcome, and normalized
+usage. The usage fields are `input_tokens`, `output_tokens`,
+`cached_input_tokens`, `reasoning_tokens`, and optional `cache_write_tokens`;
+unknown values remain `None`, including when other dimensions are measured.
+Use the same call ID for duplicate deliveries. A transport-attempt ledger replaces
+parent usage for suite summation. Several calls sharing a turn count as one user
+prompt. Cancellation is a failed terminal call; missing usage is never zero.
+
+Publish the native graph invocation at entry with `publish_external_invocation`.
+At closure, publish the same invocation and turn IDs with `call_ids` containing
+all physical call UUIDs and `complete=True` only when enumeration is complete.
+Partial or capped enumeration uses `complete=False`. An open/incomplete inventory
+or an expected call without a receipt retains partial accounting. Inventories
+match exact call sets within the owning invocation; unexpected calls and
+overlapping invocation claims cannot establish complete attribution. Graph
+invocation counts are reported separately from measured physical calls. Account
+boundary quota observations remain separate reconciliation evidence.
+
+Delegated model calls retain structural usage with either content flag disabled.
+In Allure, inspect the call's token parameters and **Suite usage**; missing
+categories remain unknown, while `transport_known_*` parameters retain reported
+lower bounds when the SDK's internal transport retry inventory is unavailable.
+A separate **Native model usage boundary** attachment contains the fixed-schema
+before/after account counters. **Usage reconciliation** places those account
+changes beside the measured test totals, with explicit unknown call/inventory
+counts. These account counters are never added to call totals or allocated to
+individual calls. A zero `pctUsed` change is coarse and can conceal smaller spend.

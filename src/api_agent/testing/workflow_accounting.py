@@ -107,14 +107,18 @@ def join_workflow_accounting(journals, accounting, *, admissions=None):
         mismatched_turns = sorted(identifier for identifier in set(calls) & set(observed)
                                   if calls[identifier].get('turn_id') != observed_turns[identifier]
                                   or calls[identifier].get('conversation_id') != observed_conversations[identifier])
+        mismatched_invocations = sorted(identifier for identifier in set(calls) & set(observed)
+                                        if 'invocation_id' in calls[identifier]
+                                        and calls[identifier]['invocation_id'] != observed_invocations[identifier])
         status = ('complete' if not missing and not unowned and not duplicates
-                  and not mismatched_turns
+                  and not mismatched_turns and not mismatched_invocations
                   and frozen['calls_complete'] and all(route['route_completeness'] == 'complete' for route in routes)
                   and all(route['definition_binding'] == 'verified' for route in routes)
                   else 'partial')
         scope_facts.completeness[test_id] = dict(calls_complete=frozen['calls_complete'], attribution=status)
         for identifier, visits in observed.items():
             if (identifier not in calls or len(visits) != 1 or identifier in mismatched_turns
+                    or identifier in mismatched_invocations
                     or any(route['definition_binding'] != 'verified' for route in routes)):
                 for invocation_id, visit_id in observed_owners[identifier]:
                     scope_facts.unknown[(test_id, invocation_id, visit_id)].add(identifier)
@@ -130,6 +134,7 @@ def join_workflow_accounting(journals, accounting, *, admissions=None):
                             allocation_basis=allocation.get('basis', 'unavailable'),
                             missing_accounting_call_ids=missing, unowned_accounting_call_ids=unowned,
                             mismatched_turn_call_ids=mismatched_turns,
+                            mismatched_invocation_call_ids=mismatched_invocations,
                             duplicate_journal_call_ids=sorted(duplicates),
                             conversations=_conversation_summaries(calls, complete=frozen['calls_complete'], attribution=status),
                             leaf_calls=[dict(call_id=identifier, visit_id=visits[0], invocation_id=observed_invocations[identifier],

@@ -152,7 +152,8 @@ def test_native_invocation_is_incomplete_historical_inventory_without_provider_c
         [test], {}, usage, [TestResult(test, 'passed')])
     row = artifact['tests'][0]
     assert row['calls'] == []
-    assert row['observed_call_count'] == 1
+    assert row['observed_call_count'] == 0
+    assert usage.report()['native_invocation_count'] == 1
     assert row['calls_complete'] is False
     estimate = EstimateSnapshot({}).complete(artifact)[test.id]
     assert estimate['known_zero'] is False
