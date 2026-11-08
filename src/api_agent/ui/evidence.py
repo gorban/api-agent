@@ -34,10 +34,28 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
       const style = getComputedStyle(parent), clip = parent.getBoundingClientRect();
       const scaleX = parent.offsetWidth ? clip.width / parent.offsetWidth : 1;
       const scaleY = parent.offsetHeight ? clip.height / parent.offsetHeight : 1;
-      if (style.clipPath !== 'none' && style.clipPath !== 'inset(0px)') throw 'content_clip';
-      if (style.clipPath === 'inset(0px)') {
-        left = Math.max(left, clip.left); right = Math.min(right, clip.right);
-        top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+      if (style.clipPath !== 'none') {
+        // Computed inset offsets use the ancestor border box. Rounded corners
+        // share this conservative rectangle; unsupported shapes stay withheld.
+        const inset = /^inset\(([^()]*)\)$/.exec(style.clipPath);
+        if (!inset || inset[1].length > 512) throw 'content_clip';
+        const parts = inset[1].trim().split(/\s+round\s+/);
+        const length = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(px|%)$/;
+        const offsets = parts[0].trim().split(/\s+/);
+        if (parts.length > 2 || offsets.length > 4 || !offsets.every(value => length.test(value)))
+          throw 'content_clip';
+        if (parts.length === 2) {
+          const radii = parts[1].split('/').map(part => part.trim().split(/\s+/));
+          if (radii.length > 2 || radii.some(values => values.length > 4 ||
+              !values.every(value => length.test(value) && parseFloat(value) >= 0))) throw 'content_clip';
+        }
+        const [a,b=a,c=a,d=b] = offsets;
+        const resolve = (value, extent, scale) => parseFloat(value) *
+          (value.endsWith('%') ? extent / 100 : scale);
+        left = Math.max(left, clip.left + resolve(d, clip.width, scaleX));
+        right = Math.min(right, clip.right - resolve(b, clip.width, scaleX));
+        top = Math.max(top, clip.top + resolve(a, clip.height, scaleY));
+        bottom = Math.min(bottom, clip.bottom - resolve(c, clip.height, scaleY));
       }
       const paintClip = /\b(paint|content|strict)\b/.test(style.contain);
       if (paintClip || /^(hidden|clip|scroll|auto)$/.test(style.overflowX)) {
@@ -95,12 +113,34 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
   ])];
   const hasUrl = computed => urlProperties.some(property =>
     /url\s*\(/i.test(computed.getPropertyValue(property)));
+  let restoreFocus = () => {};
   try {
   for (const node of nodes) {
     const backdrop = getComputedStyle(node, '::backdrop');
     if (hasUrl(backdrop) || (backdrop.content && !['none','normal'].includes(backdrop.content)))
       return {saved, urlProperties, reason:'backdrop'};
   }
+  // Skipping a subtree may blur its focused control. Recover only that
+  // capture-induced loss; any newer focus or user interaction takes priority.
+  let focused = document.activeElement;
+  while (focused?.shadowRoot?.activeElement) focused = focused.shadowRoot.activeElement;
+  let focusHidden = false, interrupted = false;
+  const interfere = () => { interrupted = true; };
+  const events = ['focusin','pointerdown','keydown'];
+  for (const event of events) document.addEventListener(event, interfere, true);
+  const containsFocus = node => {
+    for (let candidate = focused; candidate; candidate = candidate.getRootNode()?.host)
+      if (candidate === node || node.contains(candidate)) return true;
+    return false;
+  };
+  restoreFocus = () => {
+    for (const event of events) document.removeEventListener(event, interfere, true);
+    if (!focusHidden || interrupted || !focused?.isConnected ||
+        ![null,document.body,document.documentElement].includes(document.activeElement)) return;
+    // Chromium focus preserves the current input selection. Focus handlers may
+    // update that selection, and their newer range remains authoritative.
+    focused.focus({preventScroll:true});
+  };
   for (const node of nodes) {
     const computed = getComputedStyle(node);
     const contentMasked = !!contentMaskSelector && node.matches(contentMaskSelector);
@@ -115,6 +155,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
         !(ownedFrameSelector && node.matches(ownedFrameSelector)) :
         node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript')) ||
       (node.localName === 'svg' && !icons.includes(node.outerHTML) && !buttonIcon(node));
+    if (opaque || contentMasked) focusHidden ||= containsFocus(node);
     if ((opaque || contentMasked) && computed.display === 'contents') throw 'display_contents';
     if (!opaque && !effects.length && !contentMasked) continue;
     const properties = [...new Set([...(opaque ? ['opacity','content-visibility','contain-intrinsic-size','animation','transition'] : []),
@@ -167,13 +208,14 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
       proxy.style.setProperty(property, value, 'important');
     document.documentElement.append(proxy);
   }
-  return {saved, masks, urlProperties, reason:null, nodeIds:new WeakMap(), nextNodeId:0};
+  return {saved, masks, restoreFocus, urlProperties, reason:null, nodeIds:new WeakMap(), nextNodeId:0};
   } catch (error) {
     for (const proxy of masks.keys()) proxy.remove();
     for (const [node, record] of saved) {
       if (record.originalStyle === null) node.removeAttribute('style');
       else node.setAttribute('style', record.originalStyle);
     }
+    restoreFocus();
     return {saved:new Map(), urlProperties,
       reason:['display_contents','content_layout','content_clip'].includes(error) ? error : 'prepare_error'};
   }
@@ -198,6 +240,7 @@ _RESTORE = r'''prepared => {
     }
     if (record.originalStyle === null && !node.style.length) node.removeAttribute('style');
   }
+  prepared.restoreFocus?.();
 }'''
 
 
@@ -211,10 +254,28 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
       const style = getComputedStyle(parent), clip = parent.getBoundingClientRect();
       const scaleX = parent.offsetWidth ? clip.width / parent.offsetWidth : 1;
       const scaleY = parent.offsetHeight ? clip.height / parent.offsetHeight : 1;
-      if (style.clipPath !== 'none' && style.clipPath !== 'inset(0px)') throw 'content_clip';
-      if (style.clipPath === 'inset(0px)') {
-        left = Math.max(left, clip.left); right = Math.min(right, clip.right);
-        top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+      if (style.clipPath !== 'none') {
+        // Computed inset offsets use the ancestor border box. Rounded corners
+        // share this conservative rectangle; unsupported shapes stay withheld.
+        const inset = /^inset\(([^()]*)\)$/.exec(style.clipPath);
+        if (!inset || inset[1].length > 512) throw 'content_clip';
+        const parts = inset[1].trim().split(/\s+round\s+/);
+        const length = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(px|%)$/;
+        const offsets = parts[0].trim().split(/\s+/);
+        if (parts.length > 2 || offsets.length > 4 || !offsets.every(value => length.test(value)))
+          throw 'content_clip';
+        if (parts.length === 2) {
+          const radii = parts[1].split('/').map(part => part.trim().split(/\s+/));
+          if (radii.length > 2 || radii.some(values => values.length > 4 ||
+              !values.every(value => length.test(value) && parseFloat(value) >= 0))) throw 'content_clip';
+        }
+        const [a,b=a,c=a,d=b] = offsets;
+        const resolve = (value, extent, scale) => parseFloat(value) *
+          (value.endsWith('%') ? extent / 100 : scale);
+        left = Math.max(left, clip.left + resolve(d, clip.width, scaleX));
+        right = Math.min(right, clip.right - resolve(b, clip.width, scaleX));
+        top = Math.max(top, clip.top + resolve(a, clip.height, scaleY));
+        bottom = Math.min(bottom, clip.bottom - resolve(c, clip.height, scaleY));
       }
       const paintClip = /\b(paint|content|strict)\b/.test(style.contain);
       if (paintClip || /^(hidden|clip|scroll|auto)$/.test(style.overflowX)) {
