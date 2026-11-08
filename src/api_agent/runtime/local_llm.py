@@ -372,11 +372,12 @@ class LocalLLM(_Owner):
                 from api_agent.providers.generation_attempts import TransportAttemptLedger, bind_transport_attempt_ledger, attach_transport_attempts
                 ledger = TransportAttemptLedger(self.config.get('LLM_MAX_ATTEMPTS', 5),
                     quote=lambda result: self.emissions.content_export(quote_cost(provider.implementation, request, result)))
+                from api_agent.workflows.inference_capture import bind_response_dispatch, bind_inference_call, current_inference_call, defer_inference_captures, publish_deferred_captures
+                call_id = current_inference_call() or str(uuid4())
                 try:
                     self._status('request', 'executing')
                     from api_agent.workflows.attribution import bind_terminal_call_receipts
-                    from api_agent.workflows.inference_capture import bind_response_dispatch
-                    with bind_transport_attempt_ledger(ledger), bind_response_dispatch() as dispatch, bind_terminal_call_receipts() as receipts:
+                    with defer_inference_captures() as captures, bind_transport_attempt_ledger(ledger), bind_response_dispatch() as dispatch, bind_terminal_call_receipts() as receipts, bind_inference_call(call_id):
                         result = await shared.complete(request)
                     result = attach_transport_attempts(result, ledger.snapshot())
                     self._status('request', 'completed')
@@ -389,7 +390,7 @@ class LocalLLM(_Owner):
                 finally:
                     from api_agent.providers.inference import error_usage
                     usage = result.usage if result is not None else error_usage(error) or dispatch['usage']
-                    row = {'call_id': str(uuid4()), 'selection': request.selected_llm,
+                    row = {'call_id': call_id, 'selection': request.selected_llm,
                            'outcome': result.outcome if result is not None else
                                'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed',
                            'usage': None if usage is None else usage_to_wire(usage),
@@ -407,6 +408,7 @@ class LocalLLM(_Owner):
                         pass
                     from api_agent.workflows.attribution import current_workflow_visit
                     owner = current_workflow_visit()
+                    publish_deferred_captures(captures, receipts or [row])
                     if owner is not None and not receipts:
                         journal, visit_id, attempt_id = owner
                         journal.record_call(call_id=row['call_id'], elapsed=time.monotonic() - started, visit_id=visit_id,

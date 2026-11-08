@@ -264,9 +264,9 @@ class SharedSetupOwner(_Owner):
         request_wire = await async_request_to_wire(request)
         async def invoke(*, auth):
             nonlocal request, request_wire
-            from api_agent.workflows.inference_capture import capture_inference, bind_inference_call, prepare_capture_auth
+            from api_agent.workflows.inference_capture import capture_inference, bind_inference_call, current_inference_call, prepare_capture_auth
             await prepare_capture_auth(auth)
-            cause_id = str(uuid4())
+            cause_id = current_inference_call() or str(uuid4())
             with bind_inference_call(cause_id):
                 effective_capture = self._captures_effective_payload
                 if effective_capture is None:
