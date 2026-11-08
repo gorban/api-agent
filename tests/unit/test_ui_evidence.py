@@ -121,6 +121,43 @@ async def test_content_mask_rejects_size_containment_that_moves_outer_controls()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('clip', [
+    'inset(var(--agent-chat-clip-top, 0px) 0 0 0 round 0 0 1rem 1rem)',
+    'inset(10% 5%)',
+    'inset(20px 10px 5px)',
+    'inset(20px 10px 5px 15px round 8px / 4px 6px)',
+])
+async def test_rounded_nx_panel_inset_masks_only_visible_content_and_keeps_composer(clip):
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 600, 'height': 360})
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+              <body style="margin:0;background:white"><main id="panel">
+                <div id="surface" style="--agent-chat-clip-top:20px;width:300px;height:120px;clip-path:CLIP">
+                  <div id="private" style="height:600px">Confidential answer</div>
+                </div><button id="send" style="display:block;height:40px;width:300px;background:red">Send</button>
+              </main></body>'''.replace('CLIP', clip)))
+            await page.goto(origin + '/')
+            reasons = []
+            image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='#private', content_mask_anchor='#panel',
+                unavailable=reasons.append)
+            assert image is not None, reasons
+            assert (await _region_pixels(page, image,
+                {'x': 30, 'y': 30, 'width': 240, 'height': 70}))['black']
+            assert not (await _region_pixels(page, image,
+                {'x': 0, 'y': 0, 'width': 300, 'height': 5}))['ink']
+            assert (await _region_pixels(page, image,
+                await page.locator('#send').bounding_box()))['red']
+            assert await page.locator('html > div').count() == 0
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_unsupported_ancestor_clip_withholds_pixels_and_restores_styles():
     from playwright.async_api import async_playwright
     origin = 'http://localhost:9000'
