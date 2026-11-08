@@ -21,16 +21,75 @@ class OwnedFrameContract:
     sandbox: str
 
 
+@dataclass(frozen=True, slots=True)
+class OwnedChromeContract:
+    """Exact provider-authored chrome; its source owns nested UI and static assets.
+
+    Original source-owned SVG/static image pixels are admitted after literal
+    credential checks, like owned application frames. This does not certify
+    arbitrary information encoded into image or vector pixels.
+    """
+
+    selector: str
+    shadow_selectors: tuple[str, ...] = ()
+    svg_selector: str | None = None
+    image_selector: str | None = None
+    image_sources: tuple[str, ...] = ()
+    image_source_properties: tuple[str, ...] = ()
+
+
+def _valid_owned_chrome(chrome):
+    if type(chrome) is not OwnedChromeContract:
+        return False
+    for value, optional in ((chrome.selector, False), (chrome.svg_selector, True),
+                            (chrome.image_selector, True)):
+        if optional and value is None:
+            continue
+        if type(value) is not str or not value or len(value) > 256:
+            return False
+    for values, count, length in ((chrome.shadow_selectors, 16, 256),
+                                  (chrome.image_sources, 8, 65536),
+                                  (chrome.image_source_properties, 8, 256)):
+        if type(values) is not tuple or len(values) > count:
+            return False
+        if any(type(value) is not str or not value or len(value) > length for value in values):
+            return False
+    return True
+
+
 _TRUSTED_ICONS = ['<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>', '<svg viewBox="0 0 24 24" width="23" height="23" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9.5 3-.7 2.2-2 .9-2.1-.5-2.5 4.3 1.5 1.7v2.3l-1.5 1.7 2.5 4.3 2.1-.5 2 .9.7 2.2h5l.7-2.2 2-.9 2.1.5 2.5-4.3-1.5-1.7v-2.3l1.5-1.7-2.5-4.3-2.1.5-2-.9-.7-2.2z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3.3"/></svg>']
 
 
-_PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
+_PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOwned, chromeConfig, contentMaskSelector}) => {
   const saved = new Map(), masks = new Map();
+  const ownedHosts = new Set(ownedShadowSelector ? document.querySelectorAll(ownedShadowSelector) : []);
+  const chromeRoots = chromeOwned ? [...ownedHosts] : [];
+  if (chromeOwned) chromeConfig.imageSources = [...chromeConfig.imageSources,
+    ...chromeRoots.flatMap(root => chromeConfig.imageSourceProperties.map(path =>
+      path.split('.').reduce((value, key) => value?.[key], root)))
+      .filter(value => typeof value === 'string' && value.length <= 65536)];
+  const composedParent = node => node.assignedSlot || node.parentElement || node.getRootNode().host || null;
+  const composedContains = (root, node) => {
+    for (let current = node; current; current = composedParent(current))
+      if (current === root) return true;
+    return false;
+  };
+  const insideChrome = node => chromeRoots.some(root => composedContains(root, node));
+  const staticImage = node => {
+    if (node.localName !== 'img' || !insideChrome(node) || !chromeConfig.imageSelector ||
+        !node.matches(chromeConfig.imageSelector) || !node.complete ||
+        !node.naturalWidth || node.hasAttribute('srcset')) return false;
+    try {
+      const source = new URL(node.currentSrc || node.src, location.href);
+      return chromeConfig.imageSources.some(value => new URL(value, location.href).href === source.href);
+    } catch { return false; }
+  };
+
   const maskBox = node => {
     const box = node.getBoundingClientRect();
     let left = Math.max(0, box.left), top = Math.max(0, box.top);
     let right = Math.min(innerWidth, box.right), bottom = Math.min(innerHeight, box.bottom);
-    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    for (let parent = composedParent(node); parent; parent = composedParent(parent)) {
       const style = getComputedStyle(parent), clip = parent.getBoundingClientRect();
       const scaleX = parent.offsetWidth ? clip.width / parent.offsetWidth : 1;
       const scaleY = parent.offsetHeight ? clip.height / parent.offsetHeight : 1;
@@ -91,13 +150,22 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
     /password|credential|secret|authorization|authentication|login|username|one-time-code|otp|passkey|cc-number|cc-csc|(?:api|access|auth|refresh|bearer)[\s_-]*(?:key|token)/i.test(
       [node.type, node.id, node.name, node.autocomplete, node.getAttribute('aria-label'), node.getAttribute('placeholder'),
        ...[...(node.labels || [])].map(label => label.textContent),
-       ...(node.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => document.getElementById(id)?.textContent)].join(' ')) ||
+       ...(node.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => node.getRootNode().getElementById?.(id)?.textContent)].join(' ')) ||
     /^(?:token|key)$/i.test(node.id) || /^(?:token|key)$/i.test(node.name));
-  const nodes = [...document.querySelectorAll('*')];
+  const nodes = [], scopes = [document];
+  while (scopes.length && nodes.length <= 10000) {
+    for (const node of scopes.pop().querySelectorAll('*')) {
+      nodes.push(node);
+      if (node.shadowRoot && (ownedHosts.has(node) || (insideChrome(node) && chromeConfig.shadowSelectors.some(selector => node.matches(selector))))) {
+        ownedHosts.add(node); scopes.push(node.shadowRoot);
+      }
+      if (nodes.length > 10000) break;
+    }
+  }
   if (nodes.length > 10000) return {saved, reason:'node_budget'};
   const contentRoots = nodes.filter(node => contentMaskSelector && node.matches(contentMaskSelector));
   const layout = contentRoots.length ? nodes.filter(node =>
-    !contentRoots.some(root => root !== node && root.contains(node)))
+    !contentRoots.some(root => root !== node && composedContains(root, node)))
     .map(node => [node, node.getBoundingClientRect().toJSON()]) : [];
   const pseudos = ['::before','::after','::marker','::backdrop','::file-selector-button',
     '::first-letter','::first-line','::placeholder'];
@@ -130,7 +198,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
   for (const event of events) document.addEventListener(event, interfere, true);
   const containsFocus = node => {
     for (let candidate = focused; candidate; candidate = candidate.getRootNode()?.host)
-      if (candidate === node || node.contains(candidate)) return true;
+      if (composedContains(node, candidate)) return true;
     return false;
   };
   restoreFocus = () => {
@@ -150,11 +218,12 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
       const value = computed.getPropertyValue(property);
       return value && value !== 'none';
     });
-    const opaque = cssUrl || !!node.shadowRoot ||
+    const opaque = cssUrl || (!!node.shadowRoot && !ownedHosts.has(node)) ||
       authentication(node) || (node.matches('iframe,frame') ?
         !(ownedFrameSelector && node.matches(ownedFrameSelector)) :
-        node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript')) ||
-      (node.localName === 'svg' && !icons.includes(node.outerHTML) && !buttonIcon(node));
+        (node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript') && !staticImage(node))) ||
+      (node.localName === 'svg' && !(insideChrome(node) && chromeConfig.svgSelector &&
+        node.matches(chromeConfig.svgSelector) && !node.querySelector('foreignObject,image,filter,script')) && !icons.includes(node.outerHTML) && !buttonIcon(node));
     if (opaque || contentMasked) focusHidden ||= containsFocus(node);
     if ((opaque || contentMasked) && computed.display === 'contents') throw 'display_contents';
     if (!opaque && !effects.length && !contentMasked) continue;
@@ -208,7 +277,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
       proxy.style.setProperty(property, value, 'important');
     document.documentElement.append(proxy);
   }
-  return {saved, masks, restoreFocus, urlProperties, reason:null, nodeIds:new WeakMap(), nextNodeId:0};
+  return {saved, masks, ownedHosts, chromeRoots, chromeConfig, restoreFocus, urlProperties, reason:null, nodeIds:new WeakMap(), nextNodeId:0, marked:new Set()};
   } catch (error) {
     for (const proxy of masks.keys()) proxy.remove();
     for (const [node, record] of saved) {
@@ -240,17 +309,38 @@ _RESTORE = r'''prepared => {
     }
     if (record.originalStyle === null && !node.style.length) node.removeAttribute('style');
   }
+  for (const node of prepared.marked || []) node.removeAttribute(prepared.marker + '-node');
   prepared.restoreFocus?.();
 }'''
 
 
-_INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSelector, contentMaskSelector, contentMaskAnchor, contentMaskRequirements, diagnose, prepared}) => {
+_INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSelector, ownedShadowSelector, chromeOwned, chromeConfig, contentMaskSelector, contentMaskAnchor, contentMaskRequirements, diagnose, prepared}) => {
   const reject = reason => diagnose ? {unavailable:reason} : null;
+  const ownedHosts = prepared.ownedHosts;
+  const chromeRoots = prepared.chromeRoots;
+  chromeConfig = prepared.chromeConfig;
+  const composedParent = node => node.assignedSlot || node.parentElement || node.getRootNode().host || null;
+  const composedContains = (root, node) => {
+    for (let current = node; current; current = composedParent(current))
+      if (current === root) return true;
+    return false;
+  };
+  const insideChrome = node => chromeRoots.some(root => composedContains(root, node));
+  const staticImage = node => {
+    if (node.localName !== 'img' || !insideChrome(node) || !chromeConfig.imageSelector ||
+        !node.matches(chromeConfig.imageSelector) || !node.complete ||
+        !node.naturalWidth || node.hasAttribute('srcset')) return false;
+    try {
+      const source = new URL(node.currentSrc || node.src, location.href);
+      return chromeConfig.imageSources.some(value => new URL(value, location.href).href === source.href);
+    } catch { return false; }
+  };
+
   const maskBox = node => {
     const box = node.getBoundingClientRect();
     let left = Math.max(0, box.left), top = Math.max(0, box.top);
     let right = Math.min(innerWidth, box.right), bottom = Math.min(innerHeight, box.bottom);
-    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    for (let parent = composedParent(node); parent; parent = composedParent(parent)) {
       const style = getComputedStyle(parent), clip = parent.getBoundingClientRect();
       const scaleX = parent.offsetWidth ? clip.width / parent.offsetWidth : 1;
       const scaleY = parent.offsetHeight ? clip.height / parent.offsetHeight : 1;
@@ -313,27 +403,37 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     /password|credential|secret|authorization|authentication|login|username|one-time-code|otp|passkey|cc-number|cc-csc|(?:api|access|auth|refresh|bearer)[\s_-]*(?:key|token)/i.test(
       [node.type, node.id, node.name, node.autocomplete, node.getAttribute('aria-label'), node.getAttribute('placeholder'),
        ...[...(node.labels || [])].map(label => label.textContent),
-       ...(node.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => document.getElementById(id)?.textContent)].join(' ')) ||
+       ...(node.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => node.getRootNode().getElementById?.(id)?.textContent)].join(' ')) ||
     /^(?:token|key)$/i.test(node.id) || /^(?:token|key)$/i.test(node.name));
   if (window.top !== window || (!allowFrames && document.querySelector('iframe,frame'))) return reject('frame');
   if (document.querySelector('#send:disabled, .message.draft')) return reject('draft');
   if (verify && document.documentElement.getAttribute(marker) !== token) return reject('document_changed');
   document.documentElement.setAttribute(marker, token);
-  const found = document.querySelectorAll('*');
+  const found = [], scopes = [document];
+  while (scopes.length && found.length <= 10000) {
+    for (const node of scopes.pop().querySelectorAll('*')) {
+      found.push(node);
+      if (node.shadowRoot && (ownedHosts.has(node) || (insideChrome(node) && chromeConfig.shadowSelectors.some(selector => node.matches(selector))))) {
+        ownedHosts.add(node); scopes.push(node.shadowRoot);
+      }
+      if (found.length > 10000) break;
+    }
+  }
   if (found.length > 10000) return reject('node_budget');
-  if (contentMaskSelector && (!document.querySelector(contentMaskAnchor) ||
-      !document.querySelector(contentMaskSelector)))
+  if (contentMaskSelector && (!found.some(node => node.matches(contentMaskAnchor)) ||
+      !found.some(node => node.matches(contentMaskSelector))))
     return reject('content_mask_missing');
   if (contentMaskSelector) {
-    const maskedRoots = [...document.querySelectorAll(contentMaskSelector)];
-    const elevated = [...document.querySelectorAll(':popover-open, :modal')];
+    const maskedRoots = found.filter(node => node.matches(contentMaskSelector));
+    const elevated = found.filter(node => node.matches(':popover-open, :modal, :fullscreen'));
     if (document.fullscreenElement) elevated.push(document.fullscreenElement);
-    if (elevated.some(node => maskedRoots.some(root => root === node || root.contains(node))))
+    if (elevated.some(node => maskedRoots.some(root => composedContains(root, node))))
       return reject('content_top_layer');
   }
   for (const [parentSelector, childSelector] of contentMaskRequirements || []) {
-    for (const parent of document.querySelectorAll(parentSelector))
-      if (!parent.matches(childSelector) && !parent.querySelector(childSelector)) return reject('content_mask_missing');
+    const children = found.filter(node => node.matches(childSelector));
+    for (const parent of found.filter(node => node.matches(parentSelector)))
+      if (!children.some(child => composedContains(parent, child))) return reject('content_mask_missing');
   }
   for (const [proxy, {node, box}] of prepared.masks) {
     const actual = proxy.getBoundingClientRect();
@@ -346,6 +446,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
   let characters = 0;
   for (const [index, node] of nodes.entries()) {
     node.setAttribute(marker + '-node', String(index));
+    prepared.marker = marker; prepared.marked.add(node);
     if (!prepared.nodeIds.has(node)) prepared.nodeIds.set(node, prepared.nextNodeId++);
     const style = getComputedStyle(node);
     const beforeStyle = getComputedStyle(node, '::before');
@@ -364,11 +465,12 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
       [computed.filter, computed.backdropFilter, computed.webkitBoxReflect].some(value =>
         value && value !== 'none'))) return reject('css_effect');
     const contentMasked = !!contentMaskSelector && node.matches(contentMaskSelector);
-    const opaque = imageStyle || authentication(node) || !!node.shadowRoot ||
+    const opaque = imageStyle || authentication(node) || (!!node.shadowRoot && !ownedHosts.has(node)) ||
       (node.matches('iframe,frame') ?
         !(ownedFrameSelector && node.matches(ownedFrameSelector)) :
-        node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript')) ||
-      (node.localName === 'svg' && !icons.includes(node.outerHTML.replace(/ data-evidence-[^= ]+="[^"]*"/g, '')) &&
+        (node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript') && !staticImage(node))) ||
+      (node.localName === 'svg' && !(insideChrome(node) && chromeConfig.svgSelector &&
+        node.matches(chromeConfig.svgSelector) && !node.querySelector('foreignObject,image,filter,script')) && !icons.includes(node.outerHTML.replace(/ data-evidence-[^= ]+="[^"]*"/g, '')) &&
         !buttonIcon(node));
     const isolated = prepared?.saved.get(node);
     if (opaque && (!isolated?.opaque || style.opacity !== '0' ||
@@ -392,7 +494,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
                      .map(attr => attr.value).filter(Boolean)];
     characters += texts.reduce((sum, text) => sum + text.length, 0);
     if (characters > 1048576) return reject('text_budget');
-    rows.push({index, parent: nodes.indexOf(node.parentElement), id:prepared.nodeIds.get(node),
+    rows.push({index, parent: nodes.indexOf(composedParent(node)), id:prepared.nodeIds.get(node),
       forced: opaque || inert || contentMasked || prepared.masks.has(node), contentMasked,
       texts});
   }
@@ -407,7 +509,14 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     if (row.forced || node.matches('style,script,template,noscript')) continue;
     if (node.matches('input,textarea,select')) { visible.push(node.value || ''); continue; }
     if (node.childNodes.length + visited > 20000) return reject('tree_budget');
-    stack.push(...[...node.childNodes].reverse());
+    let children = node.childNodes;
+    if (node.localName === 'slot') {
+      const assigned = node.assignedNodes({flatten:true});
+      if (assigned.length) children = assigned;
+    } else if (node.shadowRoot && ownedHosts.has(node)) {
+      children = node.shadowRoot.childNodes;
+    }
+    stack.push(...[...children].reverse());
   }
   const rendered = visible.join('');
   if (characters + rendered.length > 1048576) return reject('text_budget');
@@ -416,7 +525,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
 }'''
 
 
-async def _closed_author_shadow(session):
+async def _closed_author_shadow(session, owned_shadow_selector=None):
     """Audit direct closed roots without serializing masked iframe descendants."""
     document = await session.send('DOM.getDocument', {'depth': 0, 'pierce': False})
     nodes = await session.send('DOM.querySelectorAll', {
@@ -424,12 +533,27 @@ async def _closed_author_shadow(session):
     identifiers = nodes['nodeIds']
     if type(identifiers) is not list or len(identifiers) > 10000:
         raise ValueError('Shadow audit node budget unavailable')
+    admitted = set()
+    if owned_shadow_selector:
+        selected = await session.send('DOM.querySelectorAll', {
+            'nodeId': document['root']['nodeId'], 'selector': owned_shadow_selector})
+        if len(selected['nodeIds']) > 1:
+            raise ValueError('Owned shadow host unavailable')
+        admitted = set(selected['nodeIds'])
     for identifier in identifiers:
         described = await session.send('DOM.describeNode', {
-            'nodeId': identifier, 'depth': 0, 'pierce': True})
-        if any(root.get('shadowRootType') == 'closed'
-               for root in described['node'].get('shadowRoots', ())):
-            return True
+            'nodeId': identifier, 'depth': -1 if identifier in admitted else 0, 'pierce': True})
+        stack = [described['node']]
+        visited = 0
+        while stack:
+            node = stack.pop()
+            visited += 1
+            if visited > 50000:
+                raise ValueError('Shadow audit node budget unavailable')
+            if node.get('shadowRootType') == 'closed':
+                return True
+            stack.extend(node.get('children', ()))
+            stack.extend(node.get('shadowRoots', ()))
     return False
 
 
@@ -536,7 +660,7 @@ async def _renderer_literals(session, records, boundary):
 
 
 async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_frames=False,
-                                  owned_frames=None, content_mask_selector=None,
+                                  owned_frames=None, owned_shadow_selector=None, owned_chrome=None, content_mask_selector=None,
                                   content_mask_anchor=None,
                                   content_mask_requirements=(),
                                   unavailable=None, stage=None):
@@ -577,6 +701,13 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
                 any(type(selector) is not str or not selector or len(selector) > 256
                     for selector in pair) for pair in content_mask_requirements)):
         return reject('policy')
+    if owned_chrome is not None:
+        if not _valid_owned_chrome(owned_chrome) or owned_shadow_selector is not None:
+            return reject('shadow_contract')
+        owned_shadow_selector = owned_chrome.selector
+    if owned_shadow_selector is not None and (type(owned_shadow_selector) is not str or
+            not owned_shadow_selector or len(owned_shadow_selector) > 256):
+        return reject('shadow_contract')
     if owned_frames is not None and (
             type(owned_frames) is not OwnedFrameContract or not owned_frames.selector
             or not owned_frames.path.startswith('/') or not owned_frames.sandbox):
@@ -613,7 +744,7 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
             except Exception:
                 return reject('frame_inspection')
         try:
-            if await _closed_author_shadow(cdp):
+            if await _closed_author_shadow(cdp, owned_shadow_selector):
                 return reject('closed_shadow')
             mark('parent_audit')
         except Exception:
@@ -621,6 +752,12 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         prepared = await page.evaluate_handle(_PREPARE, {
             'trustedIcons': _TRUSTED_ICONS,
             'ownedFrameSelector': owned_frames.selector if owned_frames else None,
+            'ownedShadowSelector': owned_shadow_selector,
+            'chromeOwned': owned_chrome is not None,
+            'chromeConfig': {'shadowSelectors': owned_chrome.shadow_selectors,
+                'svgSelector': owned_chrome.svg_selector, 'imageSelector': owned_chrome.image_selector,
+                'imageSources': owned_chrome.image_sources,
+                'imageSourceProperties': owned_chrome.image_source_properties} if owned_chrome is not None else None,
             'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None})
         reason = await prepared.evaluate('state => state.reason')
         mark('prepared')
@@ -629,6 +766,12 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         rows = await page.evaluate(_INSPECT, {'marker': marker, 'token': token,
             'trustedIcons': _TRUSTED_ICONS, 'allowFrames': allow_frames,
             'ownedFrameSelector': owned_frames.selector if owned_frames else None,
+            'ownedShadowSelector': owned_shadow_selector,
+            'chromeOwned': owned_chrome is not None,
+            'chromeConfig': {'shadowSelectors': owned_chrome.shadow_selectors,
+                'svgSelector': owned_chrome.svg_selector, 'imageSelector': owned_chrome.image_selector,
+                'imageSources': owned_chrome.image_sources,
+                'imageSourceProperties': owned_chrome.image_source_properties} if owned_chrome is not None else None,
             'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None,
             'contentMaskAnchor': content_mask_anchor if boundary.policy.allow_content is not True else None,
             'contentMaskRequirements': content_mask_requirements if boundary.policy.allow_content is not True else (),
@@ -661,13 +804,19 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         after = await page.evaluate(_INSPECT, {'marker': marker, 'token': token,
             'verify': True, 'trustedIcons': _TRUSTED_ICONS, 'allowFrames': allow_frames,
             'ownedFrameSelector': owned_frames.selector if owned_frames else None,
+            'ownedShadowSelector': owned_shadow_selector,
+            'chromeOwned': owned_chrome is not None,
+            'chromeConfig': {'shadowSelectors': owned_chrome.shadow_selectors,
+                'svgSelector': owned_chrome.svg_selector, 'imageSelector': owned_chrome.image_selector,
+                'imageSources': owned_chrome.image_sources,
+                'imageSourceProperties': owned_chrome.image_source_properties} if owned_chrome is not None else None,
             'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None,
             'contentMaskAnchor': content_mask_anchor if boundary.policy.allow_content is not True else None,
             'contentMaskRequirements': content_mask_requirements if boundary.policy.allow_content is not True else (),
             'diagnose': unavailable is not None, 'prepared': prepared})
         mark('verified')
         try:
-            closed_shadow = await _closed_author_shadow(cdp)
+            closed_shadow = await _closed_author_shadow(cdp, owned_shadow_selector)
         except Exception:
             return reject('shadow_audit')
         if closed_shadow:
