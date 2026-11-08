@@ -69,8 +69,10 @@ def test_observer_failure_never_replaces_source_result_or_error(selected, failed
                for row in statuses)
 
 
+@pytest.mark.parametrize('log_content', [False, True])
+@pytest.mark.parametrize('trace_content', [False, True])
 def test_failed_asgi_child_task_keeps_known_receipts_and_partial_recorded_hierarchy(
-        selected, tmp_path, monkeypatch):
+        selected, tmp_path, monkeypatch, log_content, trace_content):
     import json
     from uuid import uuid4
 
@@ -89,6 +91,7 @@ def test_failed_asgi_child_task_keeps_known_receipts_and_partial_recorded_hierar
     owner, _, _, _, _ = selected
     owner.on_terminal_receipt = local_accounting.publish_terminal_receipt
     context, identity, config = fixture(tmp_path)
+    config.update(LOG_CONTENT=log_content, TRACELOOP_TRACE_CONTENT=trace_content)
     events = tmp_path / 'events.jsonl'
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(events))
     monkeypatch.setenv('PYTEST_CURRENT_TEST', identity.node_id + ' (call)')
@@ -97,10 +100,15 @@ def test_failed_asgi_child_task_keeps_known_receipts_and_partial_recorded_hierar
     journals = []
 
     async def application(scope, receive, send):
-        with delegated_test_node(identity.node_id), conversation(cid), turn(tid):
-            journal = WorkflowJournal(definition(), turn_id=tid, test_id=identity.node_id)
+        with delegated_test_node(identity.node_id), conversation(cid), turn(tid), \
+                local_accounting.owned_source_payloads(enabled=log_content):
+            from api_agent.workflows.observations import WorkflowObservationFactory
+            from test_workflow_observations import config as resolved_config
+            journal = WorkflowObservationFactory(resolved_config(log=log_content, trace=trace_content),
+                boundary=owner.emissions).create(
+                definition(), turn_id=tid, test_id=identity.node_id)
             journal.admit_execution_context({'kind': 'conversation', 'conversation_id': cid})
-            journal.subscribe(lambda event: local_accounting.publish_root_invocation(journal, event))
+            journal.journal.subscribe(lambda event: local_accounting.publish_root_invocation(journal, event))
             journal.observe(dict(event='scope_start', scope_id=graph_id, parent_id=None,
                                  kind='graph', owner='GRAPH', started_ms=1))
             journal.observe(dict(event='scope_start', scope_id=visit_id, parent_id=graph_id,
@@ -115,7 +123,7 @@ def test_failed_asgi_child_task_keeps_known_receipts_and_partial_recorded_hierar
                                      kind='node', owner='Make', started_ms=1, stopped_ms=2, outcome='failed'))
                 journal.observe(dict(event='scope_end', scope_id=graph_id, parent_id=None,
                                      kind='graph', owner='GRAPH', started_ms=1, stopped_ms=3, outcome='failed'))
-                journal.record_evidence_loss()
+                journal.journal.record_evidence_loss()
                 packet = journal.finalize()
                 journals.append(packet)
                 local_accounting.publish_final_inventory(packet)
@@ -138,6 +146,13 @@ def test_failed_asgi_child_task_keeps_known_receipts_and_partial_recorded_hierar
     assert journals[0]['completeness'] == 'partial'
     published = [json.loads(line) for line in events.read_text().splitlines()]
     assert len([row for row in published if row['kind'] == 'inference_usage']) == 13
+    wires = [row for row in published if row['kind'] == 'inference_content']
+    assert len(wires) == (26 if log_content else 0)
+    if log_content:
+        assert any('values' in row and row.get('cause_id') for row in journals[0]['events'])
+        assert {row['data']['phase'] for row in wires} == {'request', 'response'}
+        assert all(row['data']['capture_source'] == 'fallback' for row in wires)
+        assert len({(row['data']['call_id'], row['data']['transport_attempt_id']) for row in wires}) == 13
 
     def runner(context, tests, **hooks):
         hooks['before_run']()

@@ -1,8 +1,10 @@
 """Explicit test-owned observations of borrowed ordinary application runtimes.
 
-Manual runtimes remain inert. These callbacks emit content-free worker events;
-existing central publishers retain their own accounting and journal ownership.
+Manual runtimes remain inert. Receipt callbacks emit content-free worker events;
+the separate source scope opts into permitted, scrubbed wire publication.
+Existing central publishers retain their own accounting and journal ownership.
 """
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
@@ -109,3 +111,23 @@ def publish_quota_boundary(boundary, *, allocation_id=None):
             datetime.fromtimestamp(row['captured_at'], timezone.utc), allocation_id=allocation_id)
         publish(phase, validate_snapshot(snapshot), node=node)
     return True
+
+
+@contextmanager
+def owned_source_payloads(*, enabled):
+    """Opt an already-owned test into source-authoritative, bounded wire events."""
+    from api_agent.workflows.inference_capture import observe_source_captures
+    from api_agent.workflows.run_context import test_evidence_allowed
+    from .inference_usage import capture_delegated_owner
+    from .inference_content import publish_content
+    def publish(rows, call_id):
+        if not test_evidence_allowed():
+            return
+        owner = capture_delegated_owner()
+        if owner is None or owner.node is None:
+            return
+        fields = ('phase', 'content', 'reason', 'transport_attempt_id', 'capture_source', 'diagnostics')
+        clean = [{key: row[key] for key in fields if key in row} for row in rows]
+        publish_content(clean, call_id, node=owner.node)
+    with observe_source_captures(publish if enabled is True else None):
+        yield

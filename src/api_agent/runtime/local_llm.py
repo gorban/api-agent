@@ -360,6 +360,38 @@ class LocalLLM(_Owner):
                 return result
         return await self._run(describe, context)
 
+    def _observe_owned(self, observer, observer_context, *values):
+        try:
+            returned = observer_context.run(observer, *deepcopy(values))
+            if inspect.iscoroutine(returned):
+                returned.close()
+                self._status('accounting', 'unavailable')
+                return False
+            elif inspect.isawaitable(returned):
+                task = asyncio.ensure_future(returned)
+                if task.get_loop() is not asyncio.get_running_loop():
+                    # A foreign task cannot be awaited or drained on this loop.
+                    # Keep disposal ownership until its own loop confirms stop.
+                    self._foreign_receipt_tasks.add(task)
+                    if task.get_loop().is_running():
+                        task.get_loop().call_soon_threadsafe(task.cancel)
+                    else:
+                        task.cancel()
+                else:
+                    self._receipt_tasks.add(task)
+                    task.add_done_callback(_consume)
+                    task.add_done_callback(self._receipt_tasks.discard)
+                    task.add_done_callback(self._cancel_requested.discard)
+                    if task not in self._cancel_requested:
+                        self._cancel_requested.add(task)
+                        task.cancel()
+                self._status('accounting', 'unavailable')
+                return False
+        except BaseException:
+            self._status('accounting', 'unavailable')
+            return False
+        return True
+
     async def complete(self, request, *, context=None):
         from api_agent.telemetry.outcomes import failure_call
         with failure_call():
@@ -369,6 +401,8 @@ class LocalLLM(_Owner):
         accounted_failure_id = None
         observer = self.on_terminal_receipt
         observer_context = copy_context()
+        from api_agent.workflows.inference_capture import current_source_capture_observer
+        source_observer = current_source_capture_observer()
         async def complete():
             nonlocal request, accounted_failure_id
             request = configured_request(request, self.config.get('LLM_CACHE_POLICY'),
@@ -421,7 +455,13 @@ class LocalLLM(_Owner):
                         pass
                     from api_agent.workflows.attribution import current_workflow_visit
                     owner = current_workflow_visit()
-                    publish_deferred_captures(captures, receipts or [row])
+                    def source_capture(rows, identifier):
+                        if not self._observe_owned(source_observer, observer_context, rows, identifier):
+                            from api_agent.workflows.inference_capture import _report_capture_loss
+                            for phase in rows:
+                                _report_capture_loss(identifier, 'input' if phase['phase'] == 'request' else 'output')
+                    publish_deferred_captures(captures, receipts or [row],
+                        observer=source_capture if source_observer is not None and not receipts else None)
                     if owner is not None and not receipts:
                         journal, visit_id, attempt_id = owner
                         journal.record_call(call_id=row['call_id'], elapsed=time.monotonic() - started, visit_id=visit_id,
@@ -445,32 +485,7 @@ class LocalLLM(_Owner):
                     if observer is not None and not receipts:
                         observed = {**row, 'started_at': started_at,
                                     'finished_at': datetime.now(timezone.utc).isoformat()}
-                        try:
-                            returned = observer_context.run(observer, deepcopy(observed))
-                            if inspect.iscoroutine(returned):
-                                returned.close()
-                                self._status('accounting', 'unavailable')
-                            elif inspect.isawaitable(returned):
-                                task = asyncio.ensure_future(returned)
-                                if task.get_loop() is not asyncio.get_running_loop():
-                                    # A foreign task cannot be awaited or drained on this loop.
-                                    # Keep disposal ownership until its own loop confirms stop.
-                                    self._foreign_receipt_tasks.add(task)
-                                    if task.get_loop().is_running():
-                                        task.get_loop().call_soon_threadsafe(task.cancel)
-                                    else:
-                                        task.cancel()
-                                else:
-                                    self._receipt_tasks.add(task)
-                                    task.add_done_callback(_consume)
-                                    task.add_done_callback(self._receipt_tasks.discard)
-                                    task.add_done_callback(self._cancel_requested.discard)
-                                    if task not in self._cancel_requested:
-                                        self._cancel_requested.add(task)
-                                        task.cancel()
-                                self._status('accounting', 'unavailable')
-                        except BaseException:
-                            self._status('accounting', 'unavailable')
+                        self._observe_owned(observer, observer_context, observed)
         try:
             return await self._run(complete, context)
         except BaseException as error:

@@ -222,9 +222,13 @@ def test_real_worker_reports_bounded_evidence_overflow_without_leaking_credentia
         assert SECRET not in json.dumps(row)
         assert all(SECRET.encode() not in blob for blob in files + [event_bytes])
         assert b'request-part-' not in event_bytes and b'response-start-' not in event_bytes
-    marker, budgets, parts, sidecars, events = observed[0]
-    assert len(observed) == 1 and marker[1] == identity.node_id
-    assert marker[2]['reason'] == 'truncated' and marker[2]['content'] == {}
+    assert len(observed) == 2
+    markers = [snapshot[0] for snapshot in observed]
+    assert {marker[1] for marker in markers} == {identity.node_id}
+    assert {marker[2]['phase'] for marker in markers} == {'request', 'response'}
+    assert len({marker[2]['call_id'] for marker in markers}) == 1
+    assert all(marker[2]['reason'] == 'truncated' and marker[2]['content'] == {} for marker in markers)
+    marker, budgets, parts, sidecars, events = observed[-1]
     assert len(budgets) == 1 and budgets[0][0] == identity.node_id
     assert 0 < budgets[0][1] <= 4 * 1024 * 1024 and budgets[0][3] == 1
     grouped = {}
@@ -247,4 +251,12 @@ def test_real_worker_reports_bounded_evidence_overflow_without_leaking_credentia
     assert SECRET not in ''.join(path.read_text(errors='replace') for path in result.directory.iterdir() if path.is_file())
     index = json.loads((result.directory / 'payload-index-0.json').read_text())
     assert sum(entry.get('length', 0) for entry in index['entries']) <= 4 * 1024 * 1024
-    assert len(index['entries']) < 20
+    assert len(index['entries']) == 20
+    calls = {}
+    for entry in index['entries']:
+        calls.setdefault(entry['occurrence']['call_id'], set()).add(entry['occurrence']['phase'])
+    assert len(calls) == 10 and all(phases == {'request', 'response'} for phases in calls.values())
+    omitted = [entry for entry in index['entries'] if entry['kind'] == 'omitted']
+    assert len(omitted) == 2
+    assert all(entry['reason'] == 'truncated'
+               and entry['occurrence']['call_id'] == marker[2]['call_id'] for entry in omitted)

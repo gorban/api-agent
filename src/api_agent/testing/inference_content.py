@@ -31,12 +31,14 @@ def export_content(boundary, request, result=None):
     return tuple({'phase': phase, 'content': boundary.export(content)} for phase, content in rows)
 
 
-def publish_content(rows, call_id):
+def publish_content(rows, call_id, *, node=None):
     from api_agent.workflows.run_context import test_evidence_allowed
     if not test_evidence_allowed():
         return None
     path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
-    node = os.environ.get('PYTEST_CURRENT_TEST')
+    if node is None:
+        current = os.environ.get('PYTEST_CURRENT_TEST')
+        node = current.rsplit(' ', 1)[0] if current else None
     if not path or not node or call_id is None:
         return
     sidecar = os.environ.get('API_AGENT_INFERENCE_EVIDENCE_DB')
@@ -44,15 +46,15 @@ def publish_content(rows, call_id):
         if sidecar:
             marker = None
             try:
-                marker = _start_marker(sidecar, node.rsplit(' ', 1)[0])
-                _publish_sidecar(sidecar, node.rsplit(' ', 1)[0], row, call_id)
+                marker = _start_marker(sidecar, node)
+                _publish_sidecar(sidecar, node, row, call_id)
                 os.unlink(marker)
             except (OSError, ValueError, TypeError, sqlite3.Error):
-                _signal_failure(sidecar, node.rsplit(' ', 1)[0])
-                notify_failure(node.rsplit(' ', 1)[0])
+                _signal_failure(sidecar, node)
+                notify_failure(node)
             continue
         with open(path, 'a', encoding='utf-8') as stream:
-            stream.write(json.dumps({'kind': 'inference_content', 'node': node.rsplit(' ', 1)[0],
+            stream.write(json.dumps({'kind': 'inference_content', 'node': node,
                                     'data': dict(call_id=call_id, **row)}, allow_nan=False) + '\n')
 
 
@@ -118,16 +120,26 @@ def _publish_sidecar(path, node, row, call_id):
     with closing(sqlite3.connect(path, timeout=2)) as db, db:
         db.execute('BEGIN IMMEDIATE')
         budget = db.execute('SELECT bytes, rows, stopped FROM budget WHERE node=?', (node,)).fetchone()
-        if budget is None or budget[2]:
+        if budget is None:
             return
-        size, count, _ = budget
-        truncated = (size + content_size > MAX_TEST_BYTES or len(raw) - content_size > MAX_ROW_ENVELOPE
+        size, count, stopped = budget
+        from .payloads import MAX_ENTRIES
+        if count >= MAX_ENTRIES:
+            raise ValueError('Inference occurrence limit exceeded')
+        truncated = (stopped or size + content_size > MAX_TEST_BYTES or len(raw) - content_size > MAX_ROW_ENVELOPE
                      or count >= MAX_TEST_ROWS - 1)
         if truncated:
+            # Once bodies stop, retain only exact omission identities up to the
+            # existing payload-store occurrence cap; never retain later bodies.
             marker = {'call_id': call_id, 'phase': row['phase'], 'content': {}, 'reason': 'truncated'}
             if 'transport_attempt_id' in row:
-                marker['transport_attempt_id'] = row['transport_attempt_id']
+                attempt = row['transport_attempt_id']
+                if type(attempt) is not str or str(UUID(attempt)) != attempt:
+                    raise ValueError('Invalid transport attempt identity')
+                marker['transport_attempt_id'] = attempt
             if 'capture_source' in row:
+                if row['capture_source'] not in ('fallback', 'provider'):
+                    raise ValueError('Invalid provider capture source')
                 marker['capture_source'] = row['capture_source']
             raw = json.dumps(marker, separators=(',', ':')).encode()
             content_size = 0

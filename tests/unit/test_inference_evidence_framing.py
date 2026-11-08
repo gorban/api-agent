@@ -44,16 +44,18 @@ def test_parallel_writers_share_one_bounded_budget(tmp_path, monkeypatch):
     monkeypatch.setenv('API_AGENT_INFERENCE_EVIDENCE_DB', path)
     monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test (call)')
     monkeypatch.setattr(framing, 'MAX_TEST_BYTES', 700_000)
-    def publish(_):
-        framing.publish_content(({'phase': 'request', 'content': {'text': 'a' * 180_000}},), str(uuid4()))
+    call_ids = [str(uuid4()) for _ in range(12)]
+    def publish(index):
+        framing.publish_content(({'phase': 'request', 'content': {'text': 'a' * 180_000}},), call_ids[index])
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         list(pool.map(publish, range(12)))
     rows = []
     while batch := framing.read_evidence(path, rows[-1][0] if rows else 0):
         rows.extend(batch)
-    assert len(rows) == 4
-    assert rows[-1][2]['reason'] == 'truncated'
-    assert all(row[2]['content']['text'] == 'a' * 180_000 for row in rows[:-1])
+    assert len(rows) == 12
+    assert {row[2]['call_id'] for row in rows} == set(call_ids)
+    assert all(row[2]['content']['text'] == 'a' * 180_000 for row in rows[:3])
+    assert all(row[2]['content'] == {} and row[2]['reason'] == 'truncated' for row in rows[3:])
     with closing(sqlite3.connect(path)) as db, db:
         assert db.execute('SELECT max(length(data)) FROM part').fetchone()[0] <= framing.CHUNK_BYTES
         assert db.execute('SELECT sum(length(data)) FROM part').fetchone()[0] < 700_500
