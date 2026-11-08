@@ -586,7 +586,20 @@ class WorkflowJournal:
             value = row.get(key)
             if value is not None and (type(value) is not str or len(value) > 64):
                 raise ValueError('Invalid workflow observation identity')
-        clean = self._boundary.content_export({key: row[key] for key in allowed if key in row})
+        # Admit at the same depth as the immutable artifact. Serialized carriers
+        # may pass alone yet exceed the credential scanner's safe nesting bound
+        # once enclosed by journal.events; keep that strict boundary unchanged.
+        envelope = self._boundary.content_export({'events': [
+            {key: row[key] for key in allowed if key in row}]})
+        entries = envelope.get('events', ())
+        clean = entries[0] if entries else None
+        if type(clean) is not dict:
+            self.record_evidence_loss()
+            return
+        if clean.get('event') == 'capture' and clean.get('values') != row.get('values'):
+            # A context-dependent privacy change cannot remain a complete capture.
+            clean.pop('values', None)
+            clean['reason'] = 'withheld'
         if 'response' in clean and clean['response'] != row['response']:
             # A redacted enum or schema digest no longer satisfies the evidence
             # contract. Omit only that optional metadata, never the call itself.

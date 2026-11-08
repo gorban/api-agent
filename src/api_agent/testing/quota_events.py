@@ -16,13 +16,16 @@ def validate_snapshot(snapshot):
     return snapshot
 
 
-def publish(phase, snapshot):
-    path, node = os.environ.get('API_AGENT_INTEGRATION_EVENTS'), os.environ.get('PYTEST_CURRENT_TEST')
+def publish(phase, snapshot, *, node=None):
+    path = os.environ.get('API_AGENT_INTEGRATION_EVENTS')
+    if node is None:
+        current = os.environ.get('PYTEST_CURRENT_TEST')
+        node = current.rsplit(' ', 1)[0] if current else None
     if not path or not node:
         return
     data = {'phase': phase, 'error': snapshot.to_json()} if isinstance(snapshot, QuotaReadError) else {'phase': phase, 'snapshot': _snapshot_json(snapshot)}
     with open(path, 'a', encoding='utf-8') as stream:
-        stream.write(json.dumps({'kind':'quota_snapshot', 'node':node.rsplit(' ',1)[0],
+        stream.write(json.dumps({'kind':'quota_snapshot', 'node':node,
                                 'data':data}, allow_nan=False)+'\n')
 
 

@@ -12,6 +12,18 @@ from types import MappingProxyType
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 from .journal import WorkflowJournal, _plain_values, CaptureUnavailable
 
+def _call_panel_capture(span, direction, capture):
+    span.native_io(direction, capture['values'])
+    if capture['reason'] != 'captured':
+        marker = {'api_agent.capture.reason': capture['reason'],
+                  'api_agent.capture.phase': 'request' if direction == 'input' else 'response',
+                  'api_agent.capture.source': capture['source']}
+        # Successful later phases must not erase an earlier missing input. An
+        # event retains both phases if their loss states differ on the same call.
+        span.structural(marker)
+        span.event({}, structural=marker)
+
+
 
 def _freeze(value):
     if type(value) is dict:
@@ -410,8 +422,8 @@ class WorkflowObservations:
                                           'error' if item['outcome'] == 'failed' else 'ok'})
                     for (cause, attempt), phases in self._call_payloads.items():
                         if attempt == item['id']:
-                            for direction, values in phases.items():
-                                child.native_io(direction, values)
+                            for direction, capture in phases.items():
+                                _call_panel_capture(child, direction, capture)
                     if item['stopped_ms'] is None:
                         self.trace_losses.record()
                         child.capture_loss(1)
@@ -421,8 +433,8 @@ class WorkflowObservations:
                 if cause == row['call_id'] or ledger is not None and attempt in
                    {item['id'] for item in ledger['attempts']}]
             for key in payload_keys:
-                for direction, values in self._call_payloads.pop(key).items():
-                    span.native_io(direction, values)
+                for direction, capture in self._call_payloads.pop(key).items():
+                    _call_panel_capture(span, direction, capture)
             span.attributes({'duration_seconds': row.get('elapsed'),
                              'status': 'error' if row.get('outcome') in ('failed', 'failure', 'partial') else
                                        'cancelled' if row.get('outcome') == 'cancelled' else 'ok'})
@@ -458,7 +470,7 @@ class WorkflowObservations:
             # Replace only this invocation's registered subscriber. Other
             # producers and subscribers still emit synchronously at admission.
             live = dict(row)
-            if log_values is not None:
+            if log_values is not None and row.get('reason') != 'withheld':
                 live.update(values=log_values, reason='captured')
                 live.pop('truncated_fields', None)
             elif not self.log_policy.allow_content:
@@ -492,12 +504,24 @@ class WorkflowObservations:
                                           _provider_content=provider_content)
         def admitted_capture(row):
             live = dict(row)
-            if log_values is not None:
+            if log_values is not None and row.get('reason') != 'withheld':
                 live.update(values=log_values, reason=classify_capture(log_values, report, capture_reason))
             else:
                 live.pop('values', None)
                 live['reason'] = 'unavailable' if capture_reason == 'unavailable' else 'withheld'
             self._emit(live)
+            if (self._trace_active() and visit_id in self._spans
+                    and cause_id is not None and tool_invocation_id is None):
+                reason = (classify_capture(trace_values, trace_report, capture_reason)
+                          if trace_values is not None else
+                          'unavailable' if capture_reason == 'unavailable' else 'withheld')
+                key = (cause_id, transport_attempt_id)
+                if key in self._call_payloads or len(self._call_payloads) < 256:
+                    self._call_payloads.setdefault(key, {})[direction] = {
+                        'values': trace_values if trace_values is not None else {},
+                        'reason': reason, 'source': capture_source}
+                else:
+                    self.trace_losses.record()
             if trace_values is not None:
                 span = self._spans.get(visit_id)
                 if span is not None:
@@ -521,15 +545,7 @@ class WorkflowObservations:
                             native = self._tool_spans.get(tool_invocation_id)
                             if native is not None:
                                 native.native_io(direction, trace_values)
-                        elif cause_id is not None:
-                            # Trace-only bounded projection, rechecked against the
-                            # live credential authority again at SDK publication.
-                            key = (cause_id, transport_attempt_id)
-                            if key in self._call_payloads or len(self._call_payloads) < 256:
-                                self._call_payloads.setdefault(key, {})[direction] = trace_values
-                            else:
-                                self.trace_losses.record()
-                        else:
+                        elif cause_id is None:
                             span.native_io(direction, trace_values)
                     except (Exception, asyncio.CancelledError):
                         self.trace_losses.record()
