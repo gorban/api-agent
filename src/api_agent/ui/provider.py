@@ -123,8 +123,12 @@ class DemoUIProvider:
             return None
         from .evidence import capture_studio_viewport
         return await capture_studio_viewport(page, boundary, self._evidence_origin,
-            content_mask_selector='#conversation, #prompt, #reply-context, #prompt-error, #status, #failure',
-            content_mask_anchor='#chat-stage')
+            content_mask_selector=('.message-body, .reasoning-preview, .reasoning-summary, .error-note, '
+                '.response-question > *, #prompt, #reply-context, #prompt-error, #status, #failure-message'),
+            content_mask_anchor='#chat-stage',
+            content_mask_requirements=(('#chat-stage', '#conversation'),
+                                       ('#chat-stage textarea', '#prompt'),
+                                       ('.message', '.message-body'),))
 
     async def aclose(self):
         self.closed = True
