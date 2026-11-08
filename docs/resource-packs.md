@@ -203,3 +203,37 @@ provider declarations. Dotenv, environment, CLI and interactive choices remain
 higher priority. Ordinary provider declarations still take precedence over
 ordinary pack fields. The original declaration bytes participate in configuration
 source tracking and ordered pack admission.
+
+### Catalog-only workflow libraries
+
+A tool catalog can resolve its `base` resources from a declared library without
+selecting or relocating the application workflow:
+
+```toml
+[tooling]
+version = 1
+catalog = "workflow-catalog.toml"
+
+[tooling.library]
+source = "../shared-workflows"
+distribution = "shared-workflows"
+resource = "workflows"
+```
+
+The library uses the existing `workflow.library` ownership checks: an explicit
+sibling source directory or one installed distribution with a checked file
+inventory. Catalog graph loading uses this library; application loading keeps
+its original workflow root and entry. Ordered packs retain the library with the
+catalog's owner. Its static `pyproject.toml` dependencies and selected PEP 735
+or optional dependency groups participate in ordinary dependency preparation.
+Installed libraries require distribution ownership of that project declaration;
+source libraries retain local-version and extra validation. No library code is
+imported to discover requirements. A separate `workflow.library` can still own
+the application.
+
+Delegated workflow journals need a trusted exact-case graph association in the
+catalog's `test_cases` table for frozen accounting to attach token facts to their
+call leaves. The host derives admission from the selected graph definition and
+that case's configuration before workers execute. A journal without matching
+admission remains unverified and its accounting leaves remain unknown; journal
+contents never establish their own admission.

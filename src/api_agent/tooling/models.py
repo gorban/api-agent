@@ -67,10 +67,13 @@ class ToolCatalog:
     selected_profiles: tuple[str, ...] = ()
     case_graphs: object = field(default_factory=dict)
     case_profiles: object = field(default_factory=dict)
+    library_files: frozenset[str] | None = None
 
     def __post_init__(self):
         for name in ('roots', 'definitions', 'diagnostics', 'assets', 'profiles', 'case_graphs', 'case_profiles'):
             object.__setattr__(self, name, freeze(getattr(self, name)))
+        if self.library_files is not None:
+            object.__setattr__(self, 'library_files', frozenset(self.library_files))
         object.__setattr__(self, 'selected_graphs', tuple(self.selected_graphs))
         object.__setattr__(self, 'selected_profiles', tuple(self.selected_profiles))
 

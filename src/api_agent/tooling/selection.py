@@ -22,9 +22,19 @@ def discover(context, selection=None, *, definition_loader=None):
     """Capture available declarations separately from the selected graph closure."""
     operation = operation_selection(selection)
     load = definition_loader or load_selected_definition
-    roots = {'base': getattr(context, 'workflow_base_root', None) or context.base_root,
-             'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
-    capture = Capture(roots, library_files=getattr(context, 'workflow_library_files', None))
+    application_roots = {'base': getattr(context, 'workflow_base_root', None) or context.base_root,
+                         'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
+    tooling_base = getattr(context, 'tooling_base_root', None)
+    catalog_roots = dict(application_roots, base=tooling_base or application_roots['base'],
+        pack=getattr(context, 'tooling_pack_root', None) or application_roots['pack'])
+    catalog_files = (getattr(context, 'tooling_library_files', None) if tooling_base is not None
+                     else getattr(context, 'workflow_library_files', None))
+    roots = dict(application_roots) if operation.mode == 'application' else catalog_roots
+    if operation.mode == 'application' and catalog_roots['pack'] != roots['pack']:
+        # Keep the inert catalog declaration owned without relocating app resources.
+        roots['catalog-pack'] = catalog_roots['pack']
+    capture = Capture(roots, library_files=(getattr(context, 'workflow_library_files', None)
+        if operation.mode == 'application' else catalog_files))
     definitions, diagnostics, selected, profiles, selected_profiles = {}, {}, (), {}, ()
     path = getattr(context, 'tool_catalog_path', None)
     declaration = None
@@ -53,7 +63,7 @@ def discover(context, selection=None, *, definition_loader=None):
             except ValueError:
                 diagnostics['@application'] = 'Cannot admit selected application graph'
     if path is not None:
-        declaration = parse_catalog(capture.toml(Path(path)), roots)
+        declaration = parse_catalog(capture.toml(Path(path)), catalog_roots)
         profiles = dict(declaration.profiles)
         selected, selected_profiles = selected_graphs(declaration, operation)
         case_graphs = {identity: (() if operation.mode == 'unit' else tuple(declaration.test_cases.get(identity, {'graphs': ()})['graphs']))
@@ -67,19 +77,19 @@ def discover(context, selection=None, *, definition_loader=None):
         for name in ordered_names:
             spec = specifications[name]
             try:
-                resource_root = roots[spec['root']] / spec['resource_root'] if 'resource_root' in spec else None
-                library_files = getattr(context, 'workflow_library_files', None)
+                resource_root = catalog_roots[spec['root']] / spec['resource_root'] if 'resource_root' in spec else None
+                library_files = catalog_files
                 if resource_root is not None and library_files is not None:
-                    if resource_root.is_relative_to(roots['base']):
-                        prefix = resource_root.relative_to(roots['base']).as_posix() + '/'
+                    if resource_root.is_relative_to(catalog_roots['base']):
+                        prefix = resource_root.relative_to(catalog_roots['base']).as_posix() + '/'
                         library_files = frozenset(name.removeprefix(prefix) for name in library_files if name.startswith(prefix))
                     else:
                         library_files = None
                 graph_context = replace(context, workflow_root=spec['root'],
-                    workflow_entry=(resource_root or roots[spec['root']]) / spec['entry'],
-                    workflow_base_root=resource_root or getattr(context, 'workflow_base_root', None),
-                    pack_root=resource_root or roots['pack'],
-                    workflow_pack_root=resource_root or roots['pack'],
+                    workflow_entry=(resource_root or catalog_roots[spec['root']]) / spec['entry'],
+                    workflow_base_root=resource_root or catalog_roots['base'],
+                    pack_root=resource_root or catalog_roots['pack'],
+                    workflow_pack_root=resource_root or catalog_roots['pack'],
                     workflow_library_files=library_files,
                     workflow_replacements=tuple((row['target_id'], Path(row['entry']), row['root_id'])
                         for row in spec.get('replacements', ())))
@@ -111,7 +121,8 @@ def discover(context, selection=None, *, definition_loader=None):
             if isinstance(file, Path):
                 capture.add(file, body)
     return ToolCatalog(roots, definitions, selected, operation, diagnostics,
-                       capture.bodies, profiles, selected_profiles, case_graphs, case_profiles)
+                       capture.bodies, profiles, selected_profiles, case_graphs, case_profiles,
+                       library_files=capture.library_files)
 
 
 def _predicate_fields(predicate):
@@ -240,7 +251,7 @@ def _option_inventory(catalog, base_schema, argv, environ, dotenv, overrides):
             if selector:
                 fields.setdefault(selector, FieldDeclaration(selector, 'str', default=data['implementation']))
     parsed = parse_options(ConfigSchema(fields), argv)
-    inventory = Capture(catalog.roots)
+    inventory = Capture(catalog.roots, library_files=catalog.library_files)
     for path, data in instances.items():
         target = data['implementation']
         selector = data.get('selector')
@@ -281,7 +292,7 @@ def _binding_contract(declaration):
 def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None, dotenv=None, overrides=None, operation_intents=(), definition_loader=None):
     """Compose declarative tool inputs before final explicit-input validation."""
     catalog = discover(context, selection, definition_loader=definition_loader)
-    capture = Capture(catalog.roots, library_files=getattr(context, 'workflow_library_files', None))
+    capture = Capture(catalog.roots, library_files=catalog.library_files)
     for path, body in catalog.assets.items():
         capture.add(path, body)
     definitions = tuple(catalog.definitions[name] for name in catalog.selected_graphs)

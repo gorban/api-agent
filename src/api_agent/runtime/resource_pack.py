@@ -51,6 +51,9 @@ class LaunchContext:
     workflow_pack_root: Path | None = None
     identity_pack_root: Path | None = None
     infrastructure_sources: tuple = ()
+    tooling_pack_root: Path | None = None
+    tooling_base_root: Path | None = None
+    tooling_library_files: frozenset[str] | None = None
 
     @property
     def dotenv_path(self) -> Path:
@@ -185,8 +188,10 @@ def load_launch_context(
                                   tuple(inventory_root / path for path in declarations)))
     tooling = data.get('tooling')
     tool_catalog_path = None
+    tooling_base_root = None
+    tooling_library_files = None
     if tooling is not None:
-        if (type(tooling) is not dict or set(tooling) != {'version', 'catalog'}
+        if (type(tooling) is not dict or set(tooling) - {'library'} != {'version', 'catalog'}
                 or type(tooling['version']) is not int or tooling['version'] != 1
                 or type(tooling['catalog']) is not str or not tooling['catalog']
                 or Path(tooling['catalog']).is_absolute() or '..' in Path(tooling['catalog']).parts
@@ -198,6 +203,8 @@ def load_launch_context(
             _capture(pack, tooling['catalog'], 8 * 1024 * 1024)
         except ValueError:
             raise ResourcePackError('Tool catalog must be a regular file inside its pack') from None
+        if 'library' in tooling:
+            tooling_base_root, tooling_library_files = _workflow_library(pack, tooling['library'])
     workflow = data.get('workflow')
     workflow_root = 'base'
     workflow_entry = None
@@ -327,6 +334,9 @@ def load_launch_context(
         workflow_library_files=workflow_library_files,
         infrastructure_paths=tuple(infrastructure_paths),
         tool_catalog_path=tool_catalog_path,
+        tooling_pack_root=pack if tooling is not None else None,
+        tooling_base_root=tooling_base_root,
+        tooling_library_files=tooling_library_files,
         inventory_sources=tuple(inventory_sources),
         composition_replacements=composition_replacements,
     )
