@@ -49,9 +49,62 @@ def _admit_operation(function):
         try:
             # Confirmation waves and repository workers belong to one operation.
             # Their individual snapshot directories have shorter lifetimes.
-            with tempfile.TemporaryDirectory(prefix='api-agent-suite-') as directory:
-                return function(*args, **dict(kwargs, suite_directory=directory))
+            from .native_recovery import NativeRecoveryOwner
+            temporary = tempfile.TemporaryDirectory(prefix='api-agent-suite-')
+            recovery = NativeRecoveryOwner(temporary.name)
+            recovery.prepare()
+            _RUNNER_OPERATION.recovery = recovery
+            result = None
+            recovered = False
+            try:
+                result = function(*args, **dict(kwargs, suite_directory=temporary.name))
+                return result
+            finally:
+                primary = sys.exception()
+                inspections = getattr(result if result is not None else primary, 'inspections', ())
+                retained = tuple(item for item in inspections
+                    if callable(getattr(item, '_when_closed', None)) and not item.closed)
+                def close():
+                    nonlocal recovered
+                    from .processes import disposal_complete
+                    with recovery._lock:
+                        if recovery.closed:
+                            recovery._acknowledge_closed()
+                            return
+                        if not recovered:
+                            if any(recovery.directory.iterdir()):
+                                for worker in recovery.workers:
+                                    if not disposal_complete(worker):
+                                        finalize(worker)
+                            recovery.recover()
+                            recovered = True
+                        temporary.cleanup()
+                        recovery.closed = True
+                        recovery._acknowledge_closed()
+                try:
+                    if retained:
+                        from .suite_lock import retain_suite_cleanup
+                        retain_suite_cleanup(recovery)
+                        def after_inspection():
+                            if all(item.closed for item in retained):
+                                close()
+                        for item in retained:
+                            item._when_closed(after_inspection)
+                    else:
+                        close()
+                except BaseException as error:
+                    from api_agent.providers.control import CleanupPendingError
+                    from api_agent.runtime.tasks import offload
+                    async def retry():
+                        await offload(close)
+                    pending = CleanupPendingError((recovery, temporary), retry)
+                    temporary._finalizer.detach()
+                    if primary is None:
+                        raise pending from error
+                    pending.cleanup_pending = getattr(primary, 'cleanup_pending', None)
+                    primary.cleanup_pending = pending
         finally:
+            _RUNNER_OPERATION.recovery = None
             _RUNNER_OPERATION.active = False
     return guarded
 
@@ -466,6 +519,8 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                                    stderr=subprocess.STDOUT, text=True,
                                                    start_new_session=os.name == 'posix',
                                                    **({'pass_fds': (liveness_read,)} if liveness_read is not None else {}))
+                        if getattr(_RUNNER_OPERATION, 'recovery', None) is not None:
+                            _RUNNER_OPERATION.recovery.workers.append(process)
                     except OSError as error:
                         if liveness_write is not None:
                             os.close(liveness_write)
