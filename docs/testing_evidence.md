@@ -1,5 +1,7 @@
 # Custom test evidence
 
+For investigating a recorded run, start with [progressive diagnostics](testing_diagnostics.md).
+
 Tests can publish bounded JSON attachments without invoking a tool or LLM. Import `publish` from `api_agent.testing.evidence` and pass the owning
 configuration and credential boundary. `content_boundary(config)` from
 `api_agent.testing.inference_content` registers configured credentials and uses

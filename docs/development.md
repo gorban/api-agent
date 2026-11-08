@@ -107,6 +107,10 @@ The default CSV, its lock and legacy backups are Git-ignored.
 
 ## Failure diagnostics
 
+For integration/E2E investigations, follow [progressive diagnostics](testing_diagnostics.md)
+to identify the exact attempt, separate retry layers and inspect scoped retained
+evidence before broad source search or another paid run.
+
 Integration failures use short pytest tracebacks by default: exception causes and
 source locations remain visible without dumping each transport frame's source.
 Use `DEBUG=True` for expanded source tracebacks and existing inspection behavior.
@@ -172,6 +176,9 @@ responses and trusted Studio icons are visible with `LOG_CONTENT=True`;
 authentication fields and registered credentials remain protected.
 
 ## Testing
+
+[Progressive diagnostics](testing_diagnostics.md) covers passing tests with
+internal recovery, failed attempts, E2E confirmations and optional tracing.
 
 Select `unit`, `integration` or `e2e` through `--tui-mode`. File/node selectors
 can be repository-qualified; `tag:NAME` selects a marked group. Multiple

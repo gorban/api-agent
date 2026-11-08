@@ -183,11 +183,12 @@ selectors override the default selection. Running from base selects all base
 units. Integration/E2E retain their existing selection and coverage behavior.
 Adjust selection in the TUI. Append `--no-std-in` for terminal automation, or export
 `NO_STD_IN=True` for multiple commands. Obtain explicit human approval before
-using `--start=True` or `--debug` for integration, or `--start=E2E` for E2E. The first executor requires
-`--e2e-reruns 0`; confirmation attempts remain pending. The bundled selection is:
+using `--start=True` or `--debug` for integration, or `--start=E2E` for E2E.
+E2E accepts an initial pass immediately; after an initial failure, every configured
+confirmation must pass (default `E2E_RERUNS=2`). The bundled selection is:
 
 ```bash
-./launch.sh --tui-mode e2e --e2e-reruns 0 --no-std-in --start=E2E api-agent::tests/e2e/test_studio_graph.py::test_studio_graph
+./launch.sh --tui-mode e2e --no-std-in --start=E2E api-agent::tests/e2e/test_studio_graph.py::test_studio_graph
 ```
 
 This selects the launch-admitted `simple_chat` test graph. External packs run their own declared
@@ -197,6 +198,8 @@ With `DEBUG=True` and more than one distinct integration or E2E test selected,
 execution asks for literal `y` before opening browsers, including with `--no-std-in`.
 Set `DEBUG=False` and omit `--debug` to avoid the prompt.
 See [test controls and automation](docs/development.md#testing).
+Use [progressive diagnostics](docs/testing_diagnostics.md) to investigate exact
+attempts, internal retries and captured evidence before another live run.
 
 View recorded history without menus with `./launch.sh --tui-mode allure --no-std-in`.
 The launcher prints the history URL and browser CDP endpoint. Ctrl+C closes its
