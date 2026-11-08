@@ -17,3 +17,5 @@
 7. Wrap every component’s timed execution body in the shared timeout/progress interface so nested deadlines and elapsed-time reporting stay consistent.
 
 8. Write readable tests using idiomatic pytest and Arrange–Act–Assert. Each test should express one behavior with clear prerequisites, actions and expected outcomes. Prefer straight-line bodies, parameterized cases for variations, and named fixtures or assertion helpers that clarify intent. Review whether the assertions detect a plausible regression; passing execution alone is insufficient. Good: a cache test obtains its calibrated expectations from a fixture, repeats the same request, and verifies the answer and cached-token threshold. Bad: one test branches between unrelated authentication scenarios, changes its assertions by mode, or hides those branches in vaguely named helpers.
+
+9. Use [progressive diagnostics](docs/testing_diagnostics.md) before expanding integration/E2E evidence or rerunning.
