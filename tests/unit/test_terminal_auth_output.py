@@ -218,3 +218,20 @@ def test_spool_is_closed_even_when_release_separator_delivery_fails(failure, que
     with pytest.raises(error):
         presentation.release()
     assert (spool is None or spool.closed) and presentation.pending is None
+
+
+def test_pending_prompt_survives_delayed_guidance_until_reply_consumed(terminal):
+    interaction, _, _, writer = terminal
+    channel = interaction.open('Synthetic')
+    try:
+        os.write(writer, b'first-reply\nsecond-reply\n')
+        channel.write('Password: ')
+        channel.write('Touch your security key.\n')
+        assert channel.read(0).value == 'first-reply'
+        channel.write('Waiting for authentication.\n')
+        assert channel.read(0) is None
+        channel.write('Verification code: ')
+        assert channel.read(0).value == 'second-reply'
+        assert channel.read(0) is None
+    finally:
+        channel.close()
