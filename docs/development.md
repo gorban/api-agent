@@ -256,10 +256,13 @@ socket limit. Managed Chromium similarly uses a private short process-temporary
 directory when needed for its singleton socket; its Playwright profile and bulk
 scratch stay under the selected base.
 
-Integration/E2E results go to configured Allure destinations. Optional local
+With reporting enabled, integration/E2E results go to configured Allure destinations. Optional local
 results/secondary directories can be disabled with explicit blank values.
 Publication failure is an operation failure even if individual tests passed.
 A run with skipped tests has not verified those scenarios.
+`SKIP_ALLURE_REPORTING=True` explicitly selects an unrecorded run with no Allure
+recorder, manifest, attachments or publication. Preserve terminal/result evidence
+and any independent receipts; see [durable capture](testing_diagnostics.md#durable-terminal-capture).
 
 ### Configuration coverage
 
