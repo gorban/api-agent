@@ -11,6 +11,7 @@ from hashlib import sha256
 from importlib.abc import Loader, MetaPathFinder
 from importlib.util import spec_from_loader
 import inspect
+import logging
 import os
 from pathlib import Path
 import re
@@ -38,6 +39,20 @@ from .layout import Layout, LayoutError, Step, _ID
 _LINK = re.compile(r'\[[^\]\n]+\]\(([^()\n]+)\)\Z')
 _PY_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
 _LOADED_DEPENDENCIES = {}
+
+
+def _project_capture(journal, projection, direction, visit_id, *args):
+    """An optional observation projection cannot fail application execution."""
+    try:
+        values = projection(direction, *args)
+        if type(values) is not dict:
+            raise TypeError('I/O projection must return a dictionary')
+        return values
+    except Exception:
+        logging.getLogger(__name__).warning('Workflow I/O capture unavailable: projection failed')
+        journal.observe(dict(event='capture', visit_id=visit_id, direction=direction,
+                             reason='unavailable'))
+        return None
 _RESERVED_DEPENDENCIES = {}
 _ADMITTED_LOADERS = {}
 _DEPENDENCY_LOCK = RLock()
@@ -653,6 +668,23 @@ class StatefulWorkflow:
         if observer is not None:
             observer(dict(event=event, **metadata))
 
+    def _scope_outcome(self, kind, owner, state, scope_id):
+        """Apply an optional trusted business outcome without controlling execution."""
+        callback = self._services.get().get('scope_outcome')
+        if callback is None:
+            return 'passed'
+        from api_agent.telemetry.outcomes import ExecutionOutcome
+        final = callback(kind, owner, state)
+        if final is None:
+            return 'passed'
+        if type(final) is not ExecutionOutcome:
+            raise ValueError('Invalid explicit scope outcome')
+        journal = self._journal.get()
+        if journal is not None and hasattr(journal, 'report_outcome'):
+            journal.report_outcome(scope_id, final)
+        return {'success': 'passed', 'failure': 'failed', 'cancelled': 'cancelled',
+                'partial': 'partial', 'unknown': 'unknown'}[final.state.value]
+
     def _node(self, row, function):
         async def invoke(state):
             parent = self._parents[row['ID']]
@@ -685,14 +717,21 @@ class StatefulWorkflow:
             captures = (self._services.get().get('plain_io_contracts') or {}).get(row['ID'], {})
             async def capture(direction, values):
                 from .capture_authority import capture_node
+                if journal is None:
+                    return
+                projection = (self._services.get().get('node_io_projections') or {}).get(row['ID'])
+                if projection is not None:
+                    values = _project_capture(journal, projection, direction, visit_id, values)
+                    if values is None:
+                        return
                 contract = captures.get(direction)
-                if journal is not None and contract is not None:
+                if contract is not None:
                     await capture_node(journal, self._capture_services.get(), visit_id=visit_id,
                         direction=direction, values=values, schema=contract['schema'],
                         plain_fields=contract['plain_fields'])
-                elif journal is not None:
+                else:
                     await capture_node(journal, self._capture_services.get(), visit_id=visit_id,
-                        direction=direction, values=values, schema=self.capture_schema)
+                        direction=direction, values=values, schema={'type': 'object'} if projection is not None else self.capture_schema)
             await capture('input', state)
             with bind_workflow_visit(journal, budget.id, capture_services=self._capture_services.get()):
                 try:
@@ -706,9 +745,9 @@ class StatefulWorkflow:
             if type(result) is not dict or any(key not in self.schema.__annotations__ for key in result):
                 raise ValueError('node must return a partial state update')
             await capture('output', result)
-            outcome = 'passed'
+            outcome = self._scope_outcome('node', row['ID'], {**state, **result}, budget.id)
             self._event('node', scope_id=budget.id, node=row['ID'], visit_id=visit_id,
-                        elapsed=time.monotonic() - started, kind=row['Kind'])
+                        elapsed=time.monotonic() - started, kind=row['Kind'], outcome=outcome)
             return result
         except BaseException as error:
             from api_agent.telemetry.outcomes import report_failure, OutcomeState
@@ -750,8 +789,9 @@ class StatefulWorkflow:
                             ready.set_result(budget)
                             outcome = 'failed'
                             try:
-                                await finish
-                                outcome = 'passed'
+                                outcome = await finish
+                                self._event('disposition', scope_id=budget.id, owner=parent,
+                                            kind='component', outcome=outcome)
                             except BaseException as error:
                                 from api_agent.telemetry.outcomes import report_failure, OutcomeState
                                 failed = report_failure(error, observations=self._journal.get(), scope_ids=(budget.id,),
@@ -782,7 +822,7 @@ class StatefulWorkflow:
             raise
         turn['open_components'][parent] = dict(budget=budget, task=task, finish=finish)
 
-    async def _complete_component(self, parent, outcome='passed'):
+    async def _complete_component(self, parent, outcome='passed', *, state=None):
         if parent is None:
             return
         turn = self._turn_state.get()
@@ -790,7 +830,8 @@ class StatefulWorkflow:
             return
         owned = turn['open_components'][parent]
         if outcome == 'passed' and not owned['finish'].done():
-            owned['finish'].set_result(None)
+            status = self._scope_outcome('component', parent, state, owned['budget'].id)
+            owned['finish'].set_result(status)
         elif not owned['task'].done():
             owned['task'].cancel()
         try:
@@ -801,12 +842,12 @@ class StatefulWorkflow:
             turn['visits'][parent] = owned['budget'].id
 
     def _static_route(self, source, target, parent):
-        async def route(_state):
+        async def route(state):
             visit_id = self._turn_state.get()['visits'].get(source)
             self._event('edge', owner=parent or 'GRAPH', source=source, target=target,
                         visit_id=visit_id, implicit=False)
             if target == 'END':
-                await self._complete_component(parent)
+                await self._complete_component(parent, state=state)
             return target
         return route
 
@@ -821,7 +862,7 @@ class StatefulWorkflow:
             self._event('edge', owner=parent or 'GRAPH', source=source, target=target,
                         visit_id=visit_id, condition=edges[0]['Router'], implicit=False)
             if target == 'END':
-                await self._complete_component(parent)
+                await self._complete_component(parent, state=state)
             return target
         return route
 
@@ -927,8 +968,20 @@ class StatefulWorkflow:
             self._event('edge', owner='GRAPH', source='START', target=self.definition.layout.steps[0].id,
                         implicit=True)
             outcome = 'failed'
+            async def capture_graph(direction):
+                projection = self._services.get().get('graph_io_projection')
+                journal = self._journal.get()
+                if projection is not None and journal is not None:
+                    values = _project_capture(journal, projection, direction, budget.id)
+                    if values is None:
+                        return
+                    from .capture_authority import capture_node
+                    await capture_node(journal, self._capture_services.get(), visit_id=budget.id,
+                        direction=direction, values=values, schema={'type': 'object'})
             try:
+                await capture_graph('input')
                 yield
+                await capture_graph('output')
                 outcome = 'passed'
                 terminal = self._services.get().get('execution_outcome')
                 if terminal is not None:

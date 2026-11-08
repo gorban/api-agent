@@ -197,7 +197,7 @@ def _routes_complete(projection_data, events):
     for row in projection_data['edges']:
         declared.setdefault((row['owner'], row['source'], row['target'], row['implicit']), set()).add(row['condition'])
     scopes, open_scopes, routes, pending = {}, [], {}, {}
-    passes, node_outcomes = {}, set()
+    passes, node_outcomes, component_outcomes = {}, {}, {}
     graph_roots = 0
     call_ids = set()
     calls_by_id = {}
@@ -277,7 +277,15 @@ def _routes_complete(projection_data, events):
                 sid = event.get('visit_id')
                 scope = scopes.get(sid)
                 if (scope is None or scope['end'] is None
-                        or scope['end'].get('outcome') != 'passed' or scope['owner'] != source
+                        or (scope['end'].get('outcome') != 'passed'
+                            and not (scope['kind'] == 'node'
+                                    and node_outcomes.get(sid) == scope['end'].get('outcome')
+                                or scope['kind'] == 'component'
+                                    and component_outcomes.get(sid) == scope['end'].get('outcome')
+                                    and routes.get((source, attempt)) == 'END'))
+                        or (sid in node_outcomes and node_outcomes[sid] != scope['end'].get('outcome'))
+                        or (sid in component_outcomes and component_outcomes[sid] != scope['end'].get('outcome'))
+                        or scope['owner'] != source
                         or scope.get('attempt_id') != attempt
                         or scope['end']['sequence'] != event['sequence'] - 1):
                     return False
@@ -329,9 +337,20 @@ def _routes_complete(projection_data, events):
             if (sid not in scopes or scopes[sid]['kind'] != 'node'
                     or scopes[sid]['end'] is not None or sid not in open_scopes
                     or event.get('node') != scopes[sid]['owner']
-                    or sid in node_outcomes):
+                    or sid in node_outcomes
+                    or event.get('outcome', 'passed') not in ('passed', 'failed', 'partial', 'cancelled', 'unknown')):
                 return False
-            node_outcomes.add(sid)
+            node_outcomes[sid] = event.get('outcome', 'passed')
+        elif kind == 'disposition':
+            sid = event.get('scope_id')
+            scope = scopes.get(sid)
+            if (scope is None or scope['kind'] != 'component'
+                    or not open_scopes or open_scopes[-1] != sid
+                    or scope['end'] is not None or sid in component_outcomes
+                    or event.get('owner') != scope['owner']
+                    or event.get('outcome') not in ('passed', 'failed', 'partial', 'cancelled', 'unknown')):
+                return False
+            component_outcomes[sid] = event['outcome']
         elif kind == 'call':
             sid, call_id = event.get('visit_id'), event.get('call_id')
             scope = scopes.get(sid)
@@ -343,7 +362,7 @@ def _routes_complete(projection_data, events):
             call_ids.add(call_id)
         elif kind == 'capture':
             scope = scopes.get(event.get('visit_id'))
-            if scope is None or scope['kind'] != 'node' or scope['end'] is not None:
+            if scope is None or scope['kind'] not in ('node', 'graph') or scope['end'] is not None:
                 return False
         else:
             return False

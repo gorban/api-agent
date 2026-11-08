@@ -1595,7 +1595,7 @@ def test_stateful_scope_end_survives_component_cleanup_failure(fixture_graph):
     original = workflow._complete_component
     calls = 0
 
-    async def fail_scope_cleanup(parent, outcome='passed'):
+    async def fail_scope_cleanup(parent, outcome='passed', *, state=None):
         nonlocal calls
         if parent is None:
             return
@@ -2509,3 +2509,158 @@ def test_stateful_parent_lends_provider_without_checkpoint_or_history_to_child_g
     for initial, retry in ((requests[0], requests[1]), (requests[2], requests[3])):
         assert retry.payload.messages[:len(initial.payload.messages)] == initial.payload.messages
         assert retry.payload.messages[len(initial.payload.messages)].role == 'assistant'
+
+
+@pytest.mark.parametrize('log', [False, True])
+def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, log):
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    root, entry = fixture_graph
+    source = root / 'native.py'
+    source.write_text(source.read_text().replace('    visits: int', '    visits: int\n    records: list'))
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    boundary = EmissionBoundary(ContentPolicy(log), secrets=['registered-credential'])
+    journal = WorkflowJournal(definition, log_content=log, content_policy=ContentPolicy(log), boundary=boundary)
+    def project(direction, values=None):
+        return {'prompt': 'question registered-credential'} if direction == 'input' else {'html': 'x' * 4801}
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        reducers={'messages': add_messages}, journal=journal,
+        services={'emissions': boundary, 'node_io_projections': {'intake': project, 'finish': project},
+                  'graph_io_projection': project})
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0,
+        'records': ['private-record' * 10000]}, thread_id='projected'))
+    assert result['records'] == ['private-record' * 10000]
+    packet = journal.finalize()
+    assert packet['completeness'] == 'complete'
+    from api_agent.workflows.journal import validate_journal
+    validate_journal(packet)
+    captures = [row for row in packet['events'] if row['event'] == 'capture']
+    assert len(captures) == 6
+    assert 'private-record' not in str(captures)
+    assert 'registered-credential' not in str(captures)
+    if log:
+        assert all(row['reason'] == 'captured' for row in captures)
+        assert [row['values']['html'] for row in captures if row['direction'] == 'output'] == ['x' * 4801] * 3
+    else:
+        assert all('values' not in row for row in captures)
+
+
+@pytest.mark.parametrize('scope', ['node', 'graph'])
+@pytest.mark.parametrize('invalid', ['return', 'raise'])
+def test_io_projection_failure_warns_without_failing_workflow(fixture_graph, scope, invalid, caplog):
+    root, entry = fixture_graph
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    journal = WorkflowJournal(definition)
+    def projection(*args):
+        if invalid == 'raise':
+            raise RuntimeError('private arbitrary callback detail')
+        return []
+    services = ({'node_io_projections': {'intake': projection}} if scope == 'node'
+                else {'graph_io_projection': projection})
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        reducers={'messages': add_messages}, journal=journal, services=services)
+
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='invalid-projection'))
+
+    assert result['visits'] == 1
+    captures = [row for row in journal.finalize()['events'] if row['event'] == 'capture']
+    assert any(row['reason'] == 'unavailable' for row in captures)
+    assert 'Workflow I/O capture unavailable: projection failed' in caplog.text
+    assert 'private arbitrary callback detail' not in caplog.text
+
+
+@pytest.mark.parametrize('recorded', [False, True])
+@pytest.mark.parametrize('state_name', ['failure', 'partial', 'success', 'cancelled', 'unknown', None, 'invalid'])
+@pytest.mark.parametrize('routed', [False, True])
+def test_explicit_scope_outcomes_use_returned_state_without_interrupting(fixture_graph, state_name, routed, recorded):
+    from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeCause, OutcomeState
+    root, entry = fixture_graph
+    _write(root, 'group.md.html', '''# Component v3: group
+
+## Flow
+
+1.  [node intake](intake.md.html)
+2.  [node finish](finish.md.html)
+''')
+    text = entry.read_text().replace(
+        '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
+        '1.  [component group](group.md.html)').replace(
+        '| finish | END | - | - |', '| finish | END | - | - |\n| group | END | - | - |')
+    if not routed:
+        text = text.replace('| intake | finish | choose | [Python](native.py) |\n| intake | END | choose | [Python](native.py) |', '| intake | finish | - | - |')
+    entry.write_text(text)
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    seen, events = [], []
+    journal = WorkflowJournal(definition) if recorded else None
+    def outcome(kind, owner, state):
+        seen.append((kind, owner, state['pending'], state['visits']))
+        if state_name == 'invalid':
+            return 'failure'
+        if state_name is None:
+            return None
+        status = OutcomeState(state_name)
+        return ExecutionOutcome(status, OutcomeCause.EXECUTION if status in {OutcomeState.FAILURE, OutcomeState.PARTIAL} else None)
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition), reducers={'messages': add_messages}, services={'scope_outcome': outcome, 'observe': events.append}, journal=journal)
+    if state_name == 'invalid':
+        with pytest.raises(ValueError, match='Invalid explicit scope outcome'):
+            asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='invalid-scope'))
+        return
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='scope'))
+    assert result['pending'] and result['visits'] == 1
+    if recorded:
+        payload = journal.finalize()
+        assert payload['completeness'] == 'complete'
+        validate_journal(payload)
+        if state_name == 'failure':
+            from api_agent.workflows.journal import _routes_complete
+            for event_kind, field, value in (
+                ('node', 'outcome', 'invalid'),
+                ('disposition', 'scope_id', 'missing'),
+                ('disposition', 'owner', 'different'),
+                ('disposition', 'outcome', 'invalid'),
+            ):
+                altered = [dict(row) for row in payload['events']]
+                evidence = next(row for row in altered if row['event'] == event_kind)
+                evidence[field] = value
+                assert not _routes_complete(payload['projection'], altered)
+            for owner in ('intake', 'group'):
+                altered = [dict(row) for row in payload['events']]
+                end = next(row for row in altered if row['event'] == 'scope_end' and row['owner'] == owner)
+                end['outcome'] = 'passed'
+                assert not _routes_complete(payload['projection'], altered)
+            for remove in [
+                lambda row: row['event'] == 'node' and row.get('node') == 'intake',
+                lambda row: row['event'] == 'disposition' and row.get('owner') == 'group',
+                lambda row: row['event'] == 'edge' and row.get('owner') == 'group' and row.get('target') == 'END',
+            ]:
+                altered = [dict(row) for row in payload['events'] if not remove(row)]
+                for index, row in enumerate(altered, 1):
+                    row['sequence'] = index
+                assert not _routes_complete(payload['projection'], altered)
+    assert seen == [('node', 'intake', False, 1), ('node', 'finish', True, 1), ('component', 'group', True, 1)]
+    expected = {'success': 'passed', 'failure': 'failed', 'partial': 'partial', 'cancelled': 'cancelled', 'unknown': 'unknown', None: 'passed'}[state_name]
+    assert [(row['owner'], row['outcome']) for row in events if row['event'] == 'scope_end' and row['kind'] in {'node', 'component'}] == [('intake', expected), ('finish', expected), ('group', expected)]
+
+
+def test_returned_child_failure_does_not_poison_terminal_request(fixture_graph):
+    from api_agent.telemetry.outcomes import (ExecutionOutcome, OperationOutcome,
+        OutcomeCause, OutcomeState, bind_operation, report_outcome)
+    root, entry = fixture_graph
+    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition), reducers={'messages': add_messages})
+    runtime = object()
+    owner = OperationOutcome(runtime, None)
+    receipts = []
+    observation = SimpleNamespace(trace=runtime, report_outcome=lambda sid, outcome: receipts.append((sid, outcome)))
+    failure = ExecutionOutcome(OutcomeState.FAILURE, OutcomeCause.EXECUTION)
+    services_token = workflow._services.set({'scope_outcome': lambda kind, name, state: failure})
+    journal_token = workflow._journal.set(observation)
+    try:
+        with bind_operation(owner):
+            assert workflow._scope_outcome('node', 'intake', {}, 'child-scope') == 'failed'
+            assert receipts == [('child-scope', failure)]
+            assert owner.final.state == OutcomeState.UNKNOWN
+            report_outcome(ExecutionOutcome(OutcomeState.SUCCESS), runtime=runtime)
+            assert owner.final.state == OutcomeState.SUCCESS
+    finally:
+        workflow._services.reset(services_token)
+        workflow._journal.reset(journal_token)

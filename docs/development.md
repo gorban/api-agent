@@ -406,6 +406,22 @@ browsers retain their separate evidence/lifecycle tasks. The one-prompt Studio
 request test now uses the shared prepared session and screenshot path. These checks do not implement Run local or application
 E2E, and no inference is needed for this review.
 
+Owned viewport capture preserves queued timers and animation-frame callbacks;
+animations on unmasked application controls retain their completion callbacks.
+Application-frame capture, and masked capture with focus inside a private
+content region, briefly suspend JavaScript. Focused private regions use opacity
+and clipping without removing the focused control from layout; live captures
+retain stronger subtree isolation against transient top-layer popups.
+The native animation timeline is frozen while original paint is audited.
+The prior timeline rate is restored before return. One serialized CDP session
+belongs to each Python Page and closes with it; detaching after every capture
+would reset the browser's native animation rate. Masking adds no application
+DOM nodes: clipped black rectangles are applied to transient PNG bytes outside
+the authored document. Unsupported paint, changed frame identity or registered
+credentials leave pixels unavailable. The normal page budget is ten seconds,
+including audits and restoration; callers may explicitly choose one through
+twenty seconds. Capture failure remains secondary to the test's own outcome.
+
 A host command prefix can be configured as `ALLURE_CLI="distrobox-host-exec /absolute/host/path/to/allure"`. Check the same command with `--version` first. A noninteractive host PATH may differ from an interactive shell’s PATH, so a bare host command can exit 127 despite working in a terminal. An explicit host executable path avoids depending on shell startup files. Quotes group arguments containing spaces; shell variables, pipelines and substitutions are not expanded.
 
 Completed integration/E2E tests open timing, token and cost details with Enter, including passed tests without LLM calls. Within details, **c Close** restores the results row/scroll without ending inspection; **a View in Allure** opens that same attempt.

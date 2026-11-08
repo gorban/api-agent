@@ -1,6 +1,7 @@
 """Trusted Studio masking policy with synthetic browser content."""
 import asyncio
 import base64
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -19,7 +20,7 @@ async def _painted_baseline(page):
       await document.fonts.ready;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     }""")
-    return await page.screenshot()
+    return await page.screenshot(caret='initial')
 
 
 async def _region_pixels(page, png, box):
@@ -44,7 +45,15 @@ async def _region_pixels(page, png, box):
 
 
 def _mock_cdp():
-    async def send(method, params):
+    async def send(method, params=None):
+        if method == 'Animation.getPlaybackRate':
+            return {'playbackRate': 0}
+        if method == 'Page.getFrameTree':
+            return {'frameTree':{'frame':{'id':'top','loaderId':'loader','url':'http://localhost:9000/'}}}
+        if method == 'Page.createIsolatedWorld':
+            return {'executionContextId':7}
+        if method == 'Runtime.evaluate':
+            return {'result':{'value':False}}
         if method == 'DOM.getDocument':
             return {'root': {'nodeId': 1}}
         if method == 'DOM.querySelectorAll':
@@ -192,8 +201,8 @@ async def test_unsupported_ancestor_clip_withholds_pixels_and_restores_styles():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mutation', ['proxy_move', 'content_resize', 'proxy_remove', 'capture_failure'])
-async def test_content_mask_proxies_reject_changed_geometry_and_always_cleanup(mutation):
+@pytest.mark.parametrize('mutation', ['content_move', 'content_resize', 'content_replace', 'capture_failure'])
+async def test_content_mask_original_nodes_reject_changed_geometry_and_always_cleanup(mutation):
     from playwright.async_api import async_playwright
     origin = 'http://localhost:9000'
     async with async_playwright() as playwright:
@@ -207,11 +216,11 @@ async def test_content_mask_proxies_reject_changed_geometry_and_always_cleanup(m
             await page.goto(origin + '/')
             async def screenshot(**kwargs):
                 image = await page.screenshot(**kwargs)
-                if mutation == 'proxy_move':
-                    await page.locator('html > div').evaluate(
-                        "node => node.style.setProperty('left', '400px', 'important')")
-                elif mutation == 'proxy_remove':
-                    await page.locator('html > div').evaluate('node => node.remove()')
+                if mutation == 'content_move':
+                    await page.locator('#private').evaluate(
+                        "node => node.style.setProperty('transform', 'translateX(400px)', 'important')")
+                elif mutation == 'content_replace':
+                    await page.locator('#private').evaluate('node => node.replaceWith(node.cloneNode(true))')
                 elif mutation == 'content_resize':
                     await page.locator('#scroll').evaluate("node => node.style.height = '40px'")
                 else:
@@ -232,7 +241,8 @@ async def test_content_mask_proxies_reject_changed_geometry_and_always_cleanup(m
                     unavailable=reasons.append) is None
                 assert reasons == ['content_mask_geometry']
             assert await page.locator('html > div').count() == 0
-            assert await page.locator('#private').get_attribute('style') == 'height:400px'
+            if mutation != 'content_replace':
+                assert await page.locator('#private').evaluate("node => [node.style.height,node.style.opacity,node.style.contentVisibility]") == ['400px','','']
             assert await page.evaluate("[...document.querySelectorAll('*')].every(node => [...node.attributes].every(attr => !attr.name.startsWith('data-evidence-')))")
         finally:
             await browser.close()
@@ -504,7 +514,8 @@ async def test_tall_masked_transcript_preserves_controls_outside_scroll_clip(cli
                   <div id="panel" style="position:absolute;left:100px;top:20px;width:300px;background:white">
                     <div id="toolbar" style="height:30px;background:red">Static toolbar</div>
                     <div style="height:100px;CLIPPING">
-                      <section id="conversation" style="height:600px;background:blue">Private transcript</section>
+                      <section id="conversation" style="height:600px;background:blue">Private transcript
+                        <input type="password" style="display:block;height:500px;width:200px"></section>
                     </div>
                     <div id="model" style="height:30px;background:red">Static model picker</div>
                     <div id="composer" style="height:30px;background:red">Static composer</div>
@@ -791,7 +802,7 @@ def test_policy_checks_document_identity_and_cleans_markers(rows, verified, expe
     assert page.evaluate.await_count == (2 if rows is None else 3)
     assert handle.evaluate.await_count == 2
     handle.dispose.assert_awaited_once()
-    session.detach.assert_awaited_once()
+    session.detach.assert_not_awaited()
 
 
 def test_policy_rejects_oversized_document_and_cleans_markers():
@@ -805,7 +816,7 @@ def test_policy_rejects_oversized_document_and_cleans_markers():
     assert page.evaluate.await_count == 2
     page.screenshot.assert_not_called()
     handle.dispose.assert_awaited_once()
-    session.detach.assert_awaited_once()
+    session.detach.assert_not_awaited()
 
 
 def test_shadow_audit_unavailable_before_capture_fails_closed():
@@ -829,8 +840,10 @@ def test_shadow_audit_unavailable_before_capture_fails_closed():
 def test_shadow_audit_before_and_after_pixels(audits, reason, screenshot_count):
     sequence = iter(audits)
     current = None
-    async def send(method, params):
+    async def send(method, params=None):
         nonlocal current
+        if method == 'Animation.getPlaybackRate':
+            return {'playbackRate': 0}
         if method == 'DOM.getDocument':
             current = next(sequence)
             if isinstance(current, Exception):
@@ -853,7 +866,7 @@ def test_shadow_audit_before_and_after_pixels(audits, reason, screenshot_count):
         'http://localhost:9000', unavailable=reasons.append)) is None
     assert reasons == [reason]
     assert page.screenshot.await_count == screenshot_count
-    session.detach.assert_awaited_once()
+    session.detach.assert_not_awaited()
 
 
 def test_browser_inspection_rejection_still_restores_prepared_page():
@@ -869,7 +882,7 @@ def test_browser_inspection_rejection_still_restores_prepared_page():
     assert reasons == ['isolation']
     page.screenshot.assert_not_awaited()
     handle.dispose.assert_awaited_once()
-    session.detach.assert_awaited_once()
+    session.detach.assert_not_awaited()
 
 
 def test_controlled_chromium_masks_original_pixels():
@@ -931,7 +944,7 @@ def test_new_registration_during_capture_invalidates_pixels(registration_phase):
         context=context, evaluate_handle=AsyncMock(return_value=handle), screenshot=screenshot, locator=Mock())
     assert asyncio.run(capture_studio_viewport(page,boundary,'http://localhost:9000')) is None
     handle.dispose.assert_awaited_once()
-    session.detach.assert_awaited_once()
+    session.detach.assert_not_awaited()
 
 
 @pytest.mark.parametrize('body',['<div></div>'*10001,'<div>'+'x'*1048577+'</div>'], ids=['node-limit', 'text-limit'])
@@ -1763,14 +1776,17 @@ def test_owned_application_frame_navigation_during_capture_invalidates_pixels():
                 await page.goto(origin + '/da2/Home')
                 await page.frame_locator(_OWNED_FRAME.selector).locator('body').wait_for()
 
-                async def screenshot(**kwargs):
-                    image = await page.screenshot(**kwargs)
-                    await page.frames[1].goto(origin + '/unexpected')
-                    return image
-
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                async def intercepted_send(method, params=None):
+                    result = await send(method, params or {})
+                    if method == 'Page.captureScreenshot':
+                        await send('Debugger.disable')
+                        await page.frames[1].goto(origin + '/unexpected')
+                    return result
+                session.send = intercepted_send
                 proxy = SimpleNamespace(url=page.url, frames=page.frames,
-                    evaluate=page.evaluate, evaluate_handle=page.evaluate_handle,
-                    screenshot=screenshot, locator=page.locator, context=_proxied_context(page))
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
                 reasons = []
                 assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(True)),
                     origin, path='/da2/Home', allow_frames=True, owned_frames=_OWNED_FRAME,
@@ -1811,7 +1827,7 @@ def test_owned_application_frame_cdp_failure_withholds_pixels(failure_call):
                     evaluate=page.evaluate, evaluate_handle=page.evaluate_handle,
                     screenshot=page.screenshot, locator=page.locator,
                     context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=
-                        SimpleNamespace(send=send, detach=session.detach))))
+                        SimpleNamespace(send=send, detach=session.detach, once=session.once, remove_listener=session.remove_listener))))
                 reasons = []
                 assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(True)),
                     origin, path='/da2/Home', allow_frames=True, owned_frames=_OWNED_FRAME,
@@ -1839,13 +1855,15 @@ def test_owned_application_frame_new_secret_during_capture_invalidates_pixels():
                 await page.goto(origin + '/da2/Home')
                 await page.frame_locator(_OWNED_FRAME.selector).locator('body').wait_for()
                 boundary = EmissionBoundary(ContentPolicy(True))
-                async def evaluate(expression, argument=None):
-                    if isinstance(expression, str) and 'removeAttribute(marker)' in expression:
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                async def intercepted_send(method, params=None):
+                    if method == 'Runtime.evaluate' and 'removeAttribute(marker)' in params['expression']:
                         boundary.register_secret('frame-token-123')
-                    return await page.evaluate(expression, argument)
+                    return await send(method, params or {})
+                session.send = intercepted_send
                 proxy = SimpleNamespace(url=page.url, frames=page.frames,
-                    evaluate=evaluate, evaluate_handle=page.evaluate_handle,
-                    screenshot=page.screenshot, locator=page.locator, context=_proxied_context(page))
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
                 reasons = []
                 assert await capture_studio_viewport(proxy, boundary, origin, path='/da2/Home',
                     allow_frames=True, owned_frames=_OWNED_FRAME, unavailable=reasons.append) is None
@@ -1927,3 +1945,1307 @@ def test_owned_application_frame_rejects_untrusted_loaded_content(attack):
             finally:
                 await browser.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('allow_content', [True, False])
+def test_owned_capture_preserves_queued_timer_and_recursive_animation(allow_content):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<header>Navigation</header><main id="conversation">
+                    <iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe></main><input id="composer">'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='''<p>Answer</p><script>
+                    window.counts={raf:0,timer:0};
+                    function frame(){counts.raf++;requestAnimationFrame(frame)}
+                    requestAnimationFrame(frame);
+                    </script>'''))
+                await page.goto(origin + '/da2/Home')
+                frame = page.frames[1]
+                await frame.wait_for_function('window.counts && counts.raf > 0')
+                await frame.evaluate('setTimeout(()=>counts.timer++,50)')
+                before = await frame.evaluate('counts')
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                async def slow_capture(method, params=None):
+                    if method == 'Page.captureScreenshot':
+                        await asyncio.sleep(.15)
+                    return await send(method, params or {})
+                session.send = slow_capture
+                proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+                image = await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(allow_content)),
+                    origin, path='/da2/Home', allow_frames=True, owned_frames=_OWNED_FRAME,
+                    content_mask_selector='#conversation', content_mask_anchor='#composer')
+                assert image is not None
+                await page.wait_for_timeout(180)
+                after = await frame.evaluate('counts')
+                assert after['timer'] == 1
+                assert after['raf'] > before['raf']
+                await page.locator('#composer').fill('Next turn')
+                await frame.evaluate('document.querySelector("p").textContent="Next answer"')
+                await page.wait_for_timeout(50)
+                assert (await frame.evaluate('counts.raf')) > after['raf']
+                assert await page.locator('#composer').input_value() == 'Next turn'
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('cancel_method', ['Debugger.enable', 'Page.getFrameTree', 'Page.captureScreenshot', 'pause_delivery', 'prepare_delivery', 'Animation.setPlaybackRate', 'cleanup_read_delivery', 'cleanup_read_delivery_twice', 'prepare_delivery_twice', 'pause_delivery_twice'])
+def test_owned_capture_cancellation_restores_application_and_resumes_scheduling(cancel_method):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<style>input,iframe{display:block}</style><input type="password" value="private">
+                    <iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>
+                    <script>window.ticks=0;setInterval(()=>ticks++,10)</script>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await page.frames[1].locator('p').wait_for()
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                if cancel_method.startswith('cleanup_read_delivery'):
+                    await send('Animation.setPlaybackRate', {'playbackRate':.5})
+                rate_reads = 0
+                owner = asyncio.current_task()
+                async def cancel_send(method, params=None):
+                    nonlocal rate_reads
+                    result = await send(method, params or {})
+                    if method == 'Animation.getPlaybackRate':
+                        rate_reads += 1
+                        if cancel_method.startswith('cleanup_read_delivery') and rate_reads == 2:
+                            for _ in range(2 if cancel_method.endswith('_twice') else 1):
+                                owner.cancel()
+                                await asyncio.sleep(0)
+                    if method == cancel_method and (method != 'Animation.setPlaybackRate' or params['playbackRate'] == 0):
+                        raise asyncio.CancelledError()
+                    if cancel_method.startswith('prepare_delivery') and method == 'Runtime.evaluate' and 'const saved = new Map()' in params['expression']:
+                        for _ in range(2 if cancel_method.endswith('_twice') else 1):
+                            owner.cancel()
+                            await asyncio.sleep(0)
+                    return result
+                if cancel_method.startswith('pause_delivery'):
+                    # Exercise a queued browser event racing waiter cancellation.
+                    # The late event must neither resurrect capture nor strand JS.
+                    owner = asyncio.current_task()
+                    once = session.once
+                    def delayed_once(event, callback):
+                        if event != 'Debugger.paused':
+                            return once(event, callback)
+                        def deliver(payload):
+                            owner.cancel()
+                            if cancel_method.endswith('_twice'):
+                                asyncio.get_running_loop().call_soon(owner.cancel)
+                            asyncio.get_running_loop().call_soon(callback, payload)
+                        once(event, deliver)
+                    session.once = delayed_once
+                session.send = cancel_send
+                proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+                with pytest.raises(asyncio.CancelledError):
+                    await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(True)),
+                        origin, path='/da2/Home', allow_frames=True, owned_frames=_OWNED_FRAME)
+                if cancel_method.startswith('cleanup_read_delivery'):
+                    assert (await send('Animation.getPlaybackRate'))['playbackRate'] == .5
+                assert await page.locator('input').get_attribute('style') is None
+                assert await page.locator('[popover]').count() == 0
+                assert await page.evaluate('document.documentElement.outerHTML.includes("data-evidence-")') is False
+                ticks = await page.evaluate('ticks')
+                await page.wait_for_timeout(50)
+                assert await page.evaluate('ticks') > ticks
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('allow_content', [True, False])
+def test_owned_capture_masks_shadow_credentials_and_keeps_navigation_geometry(allow_content):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={'width': 600, 'height': 350})
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<body style="margin:0;background:white">
+                    <header style="height:40px;background:blue">Navigation</header>
+                    <div id="owned" style="height:40px"></div>
+                    <main id="conversation" style="border:4px solid blue;width:350px;height:140px">
+                    <iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"
+                    style="width:300px;height:100px;border:0"></iframe></main>
+                    <input id="composer"><script>
+                    document.querySelector('#owned').attachShadow({mode:'open'}).innerHTML=
+                    '<input type="password" value="credential" style="margin:0;width:180px;height:30px">';
+                    </script>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<body style="margin:0;background:red"><p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await page.frames[1].locator('p').wait_for()
+                before = await page.locator('#conversation').bounding_box()
+                credential = await page.locator('#owned input').bounding_box()
+                image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(allow_content)),
+                    origin, path='/da2/Home', allow_frames=True, owned_frames=_OWNED_FRAME,
+                    owned_shadow_selector='#owned', content_mask_selector='#conversation',
+                    content_mask_anchor='#composer')
+                assert image is not None
+                assert await page.locator('#conversation').bounding_box() == before
+                assert (await _region_pixels(page, image, credential))['black']
+                assert (await _region_pixels(page, image,
+                    {'x': 500, 'y': 5, 'width': 50, 'height': 25}))['blue']
+                frame_pixels = await _region_pixels(page, image,
+                    {'x': 15, 'y': 110, 'width': 100, 'height': 20})
+                assert frame_pixels['red'] is allow_content
+                assert frame_pixels['black'] is not allow_content
+                assert await page.locator('#owned input').get_attribute('style') == 'margin:0;width:180px;height:30px'
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+def test_owned_capture_does_not_resume_an_existing_debugger_pause():
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Application</p>'))
+                await page.goto(origin + '/da2/Home')
+                foreign = await page.context.new_cdp_session(page)
+                await foreign.send('Debugger.enable')
+                paused = asyncio.get_running_loop().create_future()
+                foreign.once('Debugger.paused', lambda event: paused.set_result(event))
+                trigger = asyncio.create_task(foreign.send('Runtime.evaluate', {'expression': 'debugger;'}))
+                await paused
+                reasons = []
+                assert await asyncio.wait_for(capture_studio_viewport(page,
+                    EmissionBoundary(ContentPolicy(True)), origin, path='/da2/Home',
+                    allow_frames=True, owned_frames=_OWNED_FRAME, unavailable=reasons.append), 3) is None
+                assert reasons == ['frame_inspection']
+                assert not trigger.done()
+                await foreign.send('Debugger.disable')
+                await trigger
+                assert await page.locator('p').text_content() == 'Application'
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('result', [
+    {'exceptionDetails': {'text': 'unavailable'}, 'result': {}},
+    {'result': {'type': 'undefined'}},
+])
+async def test_paused_preparation_rejects_missing_remote_objects(result):
+    from api_agent.ui.evidence import _PausedPage
+    session = SimpleNamespace(send=AsyncMock(return_value=result))
+    page = _PausedPage(SimpleNamespace(url='http://localhost'), session)
+    with pytest.raises(ValueError, match='Paused evidence'):
+        await page.evaluate_handle('() => undefined', {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('result', [
+    {'exceptionDetails': {'text': 'unavailable'}, 'result': {}},
+    {'result': {'type': 'undefined'}},
+])
+async def test_paused_masks_reject_missing_remote_objects(result):
+    from api_agent.ui.evidence import _PausedHandle, _PausedPage
+    session = SimpleNamespace(send=AsyncMock(return_value=result))
+    page = _PausedPage(SimpleNamespace(url='http://localhost'), session)
+    page.prepared = _PausedHandle(session, 'prepared-id')
+    with pytest.raises(ValueError, match='Paused evidence'):
+        await page.screenshot(mask=[])
+
+
+def test_paused_evaluation_rejects_remote_script_exceptions():
+    from api_agent.ui.evidence import _runtime_value
+    with pytest.raises(ValueError, match='Paused evidence evaluation failed'):
+        _runtime_value({'exceptionDetails': {'text': 'unavailable'}})
+
+
+@pytest.mark.parametrize('stylesheet', [
+    'canvas[popover]::backdrop{background:red}',
+    'canvas[popover]::backdrop{background-image:linear-gradient(red,red)}',
+    'canvas[popover]::backdrop{box-shadow:0 0 0 100vw red}',
+    'canvas[popover]::backdrop{animation:mask-paint 1s infinite}',
+    'html:has(canvas[popover]) header{visibility:hidden}',
+])
+def test_owned_capture_is_not_affected_by_authored_mask_selectors(stylesheet):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<style>input,iframe{display:block}''' + stylesheet + '''
+                    @keyframes mask-paint{from{background:transparent}to{background:red}}</style>
+                    <header style="background:blue;height:40px">Navigation</header><input type="password"><iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await page.frames[1].locator('p').wait_for()
+                image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)),
+                    origin, path='/da2/Home', allow_frames=True, owned_frames=_OWNED_FRAME)
+                assert image is not None
+                assert not (await _region_pixels(page, image,
+                    {'x':800,'y':500,'width':20,'height':20}))['ink']
+                assert (await _region_pixels(page, image,
+                    {'x':800,'y':20,'width':20,'height':20}))['blue']
+                assert await page.locator('[popover]').count() == 0
+                assert await page.locator('input').get_attribute('style') is None
+                assert await page.locator('input').is_visible()
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('device_scale', [1, 2])
+@pytest.mark.parametrize('scroll', [0, 137])
+def test_raster_masks_cover_fractional_negative_rectangles_at_device_scale(device_scale, scroll):
+    async def run():
+        from playwright.async_api import async_playwright
+        from api_agent.ui.evidence import _PausedPage
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={'width':200,'height':120},
+                    device_scale_factor=device_scale)
+                await page.set_content('<body style="margin:0;background:blue;height:2000px">')
+                await page.evaluate('scrollTo(0,' + str(scroll) + ')')
+                source = await page.screenshot()
+                await page.evaluate('''() => {
+                  window.OffscreenCanvas = class {constructor(){throw 'authored canvas'}};
+                  window.createImageBitmap = () => {throw 'authored bitmap'};
+                  window.atob = () => {throw 'authored base64'};
+                }''')
+                session = await page.context.new_cdp_session(page)
+                paused = _PausedPage(page, session)
+                paused.mask_plan = {'width':200,'height':120,
+                    'boxes':[[-2.25,3.25,12.5,7.5],[35.25,20.25,10.5,8.5],[60,60,0,20]]}
+                image = await paused.mask_png(source)
+                import math
+                left, top = 0, math.floor(3.25 * device_scale)
+                right, bottom = math.ceil(10.25 * device_scale), math.ceil(10.75 * device_scale)
+                assert (await _region_pixels(page, image,
+                    {'x':left,'y':top,'width':right-left,'height':bottom-top}))['black']
+                assert (await _region_pixels(page, image,
+                    {'x':right,'y':top,'width':device_scale,'height':device_scale}))['blue']
+                assert (await _region_pixels(page, image,
+                    {'x':60*device_scale,'y':60*device_scale,'width':device_scale,'height':device_scale}))['blue']
+                await session.detach()
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', ['trigger_transport', 'trigger_no_pause', 'resume_admission', 'resume_transport', 'listener_removal', 'trigger_response_pending', 'mask_exception', 'mask_undefined', 'mask_navigation', 'cleanup_reload'])
+def test_owned_capture_rejects_debugger_or_raster_failure_without_raw_fallback(failure):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<style>input,iframe{display:block}</style><input type="password" value="private">
+                    <iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await page.frames[1].locator('p').wait_for()
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                raster_finished = False
+                disabled = False
+                trigger_waiter_cancelled = False
+                failed_removal = False
+                remove = session.remove_listener
+                def remove_listener(event, callback):
+                    nonlocal failed_removal
+                    if failure == 'listener_removal' and event == 'Debugger.resumed' and not failed_removal:
+                        failed_removal = True
+                        raise RuntimeError('synthetic listener removal failure')
+                    return remove(event, callback)
+                session.remove_listener = remove_listener
+                async def fail_send(method, params=None):
+                    nonlocal raster_finished, disabled, trigger_waiter_cancelled
+                    if method == 'Runtime.evaluate' and params['expression'].startswith('debugger;\n//# sourceURL=api-agent-evidence-pause-'):
+                        if failure == 'trigger_transport':
+                            raise RuntimeError('synthetic debugger transport error')
+                        if failure == 'trigger_no_pause':
+                            return {'result': {'type':'undefined'}}
+                    if method == 'Runtime.evaluate' and 'OffscreenCanvas' in params['expression']:
+                        if failure == 'mask_exception':
+                            return {'exceptionDetails': {'text':'mask unavailable'}}
+                        if failure == 'mask_undefined':
+                            return {'result': {'type':'undefined'}}
+                        raster_finished = True
+                    result = await send(method, params or {})
+                    if method == 'Runtime.evaluate' and params['expression'].startswith('debugger;\n//# sourceURL=api-agent-evidence-pause-') and failure == 'trigger_response_pending':
+                        try:
+                            await asyncio.Event().wait()
+                        finally:
+                            trigger_waiter_cancelled = True
+                    if method == 'Debugger.resume' and failure == 'resume_transport':
+                        raise RuntimeError('synthetic resume acknowledgement failure')
+                    if method == 'Debugger.disable':
+                        disabled = True
+                    if method == 'Debugger.getScriptSource' and failure == 'resume_admission':
+                        await send('Debugger.resume')
+                        await asyncio.sleep(0)
+                    if method == 'Debugger.disable' and failure == 'cleanup_reload':
+                        await page.reload()
+                    if method == 'Page.getFrameTree' and raster_finished and failure == 'mask_navigation':
+                        result['frameTree']['frame']['loaderId'] = 'replacement-loader'
+                    return result
+                session.send = fail_send
+                proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+                reasons = []
+                capture = capture_studio_viewport(proxy,
+                    EmissionBoundary(ContentPolicy(True)), origin, path='/da2/Home',
+                    allow_frames=True, owned_frames=_OWNED_FRAME, unavailable=reasons.append)
+                if failure in ('resume_transport','listener_removal'):
+                    message = 'resume acknowledgement' if failure == 'resume_transport' else 'listener removal'
+                    with pytest.raises(RuntimeError, match=message):
+                        await asyncio.wait_for(capture, 3)
+                    assert disabled
+                    assert (await send('Animation.getPlaybackRate'))['playbackRate'] == 1
+                    assert await page.evaluate('1+1') == 2
+                else:
+                    image = await asyncio.wait_for(capture, 3)
+                    if failure == 'trigger_response_pending':
+                        assert image is not None and not reasons
+                        assert trigger_waiter_cancelled
+                    else:
+                        assert image is None
+                        assert reasons == [('frame_inspection' if failure.startswith('trigger') else
+                            'pause_lost' if failure == 'resume_admission' else 'mask')]
+                assert await page.locator('input').get_attribute('style') is None
+                assert await page.locator('input').is_visible()
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('stage', ['enabled','before_owned_trigger','before_raster'])
+def test_owned_capture_bounds_raster_when_a_foreign_debugger_races(monkeypatch, stage):
+    import api_agent.ui.evidence as evidence
+    from api_agent.providers.progress import component_timeout
+    budgets = []
+    def short_budget(name, timeout):
+        budgets.append((name, timeout))
+        return component_timeout(name, .05 if stage == 'before_raster' else 5)
+    monkeypatch.setattr(evidence, 'component_timeout', short_budget, raising=False)
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<style>input,iframe{display:block}</style><input type="password"><script>
+                    window.ticks=0;setInterval(()=>ticks++,10)</script>
+                    <iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await page.frames[1].locator('p').wait_for()
+                foreign = await page.context.new_cdp_session(page)
+                foreign_resumed = asyncio.get_running_loop().create_future()
+                foreign.once('Debugger.resumed', lambda event: foreign_resumed.set_result(event))
+                if stage in ('enabled','before_owned_trigger'):
+                    await foreign.send('Debugger.enable')
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                foreign_trigger = None
+                rate_calls = 0
+                async def race_send(method, params=None):
+                    nonlocal foreign_trigger, rate_calls
+                    if method == 'Animation.getPlaybackRate':
+                        rate_calls += 1
+                    # Pause after our intentional debugger release, immediately
+                    # before raster: the valid image must still fail bounded.
+                    foreign_before_trigger = (stage == 'before_owned_trigger' and method == 'Runtime.evaluate' and
+                        params['expression'].startswith('debugger;\n//# sourceURL=api-agent-evidence-pause-'))
+                    if foreign_before_trigger or (method == 'Animation.getPlaybackRate' and rate_calls == 2 and stage == 'before_raster'):
+                        await foreign.send('Debugger.enable')
+                        paused = asyncio.get_running_loop().create_future()
+                        foreign.once('Debugger.paused', lambda event: paused.set_result(event))
+                        foreign_trigger = asyncio.create_task(foreign.send('Runtime.evaluate',
+                            {'expression':'debugger;'}))
+                        await paused
+                    return await send(method, params or {})
+                session.send = race_send
+                proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+                reasons = []
+                try:
+                    image = await asyncio.wait_for(capture_studio_viewport(proxy,
+                        EmissionBoundary(ContentPolicy(True)), origin, path='/da2/Home',
+                        allow_frames=True, owned_frames=_OWNED_FRAME, unavailable=reasons.append), 1)
+                    if stage == 'enabled':
+                        assert image is not None and not reasons
+                        assert foreign_resumed.done()
+                        ticks = await page.evaluate('ticks')
+                        await page.wait_for_timeout(50)
+                        assert await page.evaluate('ticks') > ticks
+                    else:
+                        assert image is None
+                        assert reasons == ['frame_inspection' if stage == 'before_owned_trigger' else 'mask']
+                        assert not foreign_resumed.done()
+                    if foreign_trigger is not None:
+                        assert not foreign_trigger.done()
+                finally:
+                    await foreign.send('Debugger.disable')
+                    if foreign_trigger is not None:
+                        await foreign_trigger
+                    await foreign.detach()
+                assert await page.locator('input').get_attribute('style') is None
+                ticks = await page.evaluate('ticks')
+                await page.wait_for_timeout(50)
+                assert await page.evaluate('ticks') > ticks
+            finally:
+                await browser.close()
+    asyncio.run(run())
+    assert budgets == ([] if stage == 'before_owned_trigger' else [('Viewport image masking', 5)])
+
+
+@pytest.mark.parametrize('allow_content', [True, False])
+@pytest.mark.parametrize('owned', [False, True])
+def test_content_masks_do_not_insert_proxy_nodes_that_change_navigation(allow_content, owned):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={'width':600,'height':300})
+                frame = ('''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>''' if owned else '<p>Private answer</p>')
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<style>
+                    html:has(> div) header{visibility:hidden}
+                    </style><body style="margin:0;background:white">
+                    <header style="height:40px;background:blue">Navigation</header>
+                    <section id="conversation" style="display:flow-root;height:120px;background:red">''' + frame + '''</section>
+                    <input id="composer"></body>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Private answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await _painted_baseline(page)
+                reasons = []
+                image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(allow_content)),
+                    origin, path='/da2/Home', allow_frames=owned,
+                    owned_frames=_OWNED_FRAME if owned else None,
+                    content_mask_selector='#conversation', content_mask_anchor='#composer', unavailable=reasons.append)
+                assert image is not None, reasons
+                assert (await _region_pixels(page, image,
+                    {'x':500,'y':5,'width':30,'height':20}))['blue']
+                assert (await page.locator('html > div').count()) == 0
+                pixels = await _region_pixels(page, image,
+                    {'x':500,'y':70,'width':30,'height':20})
+                assert pixels['red'] is allow_content
+                assert pixels['black'] is not allow_content
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('owned', [False, True])
+@pytest.mark.parametrize('allow_content', [False, True])
+@pytest.mark.parametrize('reaction', ['visibility:hidden', 'background-image:url(data:image/svg+xml;base64,PHN2Zy8+)!important'])
+def test_preparation_rejects_auth_style_reactions_that_change_navigation(owned, allow_content, reaction):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                frame = ('''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>''' if owned else '<p>Answer</p>')
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<style>
+                    html:has(input[type=password][style]) header{''' + reaction + '''}
+                    </style><input type="password"><header style="height:40px;background:blue">Navigation</header>
+                    <section id="conversation" style="display:flow-root;height:120px">'''
+                    + frame + '</section><input id="composer">'))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await _painted_baseline(page)
+                reasons = []
+                image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(allow_content)),
+                    origin, path='/da2/Home', allow_frames=owned,
+                    owned_frames=_OWNED_FRAME if owned else None,
+                    content_mask_selector='#conversation', content_mask_anchor='#composer',
+                    unavailable=reasons.append)
+                assert image is None
+                assert reasons == ['paint_changed']
+                assert await page.locator('header').is_visible()
+                assert await page.locator('input[type=password]').get_attribute('style') is None
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('font_length,node_count', [(20000,1),(2000,1000)])
+def test_paint_snapshot_budgets_fail_before_any_dom_override(font_length, node_count):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                family = 'x' * font_length
+                body = '<input type="password">' + (
+                    '<div style="font-family:' + family + '">Visible content</div>') * node_count
+                await page.route(origin + '/', lambda route: route.fulfill(
+                    content_type='text/html', body=body))
+                await page.goto(origin + '/')
+                screenshot = AsyncMock()
+                proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                    evaluate=page.evaluate, evaluate_handle=page.evaluate_handle,
+                    screenshot=screenshot, context=_proxied_context(page))
+                reasons = []
+                assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(True)),
+                    origin, unavailable=reasons.append) is None
+                assert reasons == ['paint_budget']
+                screenshot.assert_not_awaited()
+                assert await page.locator('input').get_attribute('style') is None
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('owned', [False, True])
+def test_preparation_rejects_filter_removal_that_moves_fixed_navigation(owned):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                frame = ('''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>''' if owned else '<p>Answer</p>')
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<div id="container" style="margin-left:100px;filter:blur(0)">
+                    <header style="position:fixed;left:0;top:0;right:0;bottom:0;width:900px;height:60px;
+                    background:blue">Navigation</header>''' + frame + '</div>'))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                before = await page.locator('header').bounding_box()
+                reasons = []
+                image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)),
+                    origin, path='/da2/Home', allow_frames=owned,
+                    owned_frames=_OWNED_FRAME if owned else None, unavailable=reasons.append)
+                assert image is None
+                assert reasons == ['content_layout']
+                assert await page.locator('header').bounding_box() == before
+                assert await page.locator('#container').get_attribute('style') == 'margin-left:100px;filter:blur(0)'
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('owned', [False, True])
+def test_capture_rejects_delayed_paint_reactions_before_export(owned):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                frame = ('''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>''' if owned else '<p>Answer</p>')
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<style>input,iframe{display:block}
+                    header{transition:opacity .05s linear}
+                    html:has(input[type=password][style]) header{opacity:0}</style>
+                    <header style="height:40px;background:blue">Navigation</header>
+                    <input type="password"><section id="conversation" style="display:flow-root;height:120px">'''
+                    + frame + '</section><input id="composer">'))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await _painted_baseline(page)
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                async def slow_send(method, params=None):
+                    if method == 'Page.captureScreenshot':
+                        await asyncio.sleep(.1)
+                    return await send(method, params or {})
+                session.send = slow_send
+                async def slow_screenshot(**kwargs):
+                    await asyncio.sleep(.1)
+                    return await page.screenshot(**kwargs)
+                proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                    evaluate=page.evaluate, evaluate_handle=page.evaluate_handle,
+                    screenshot=slow_screenshot,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+                reasons = []
+                image = await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
+                    origin, path='/da2/Home', allow_frames=owned,
+                    owned_frames=_OWNED_FRAME if owned else None,
+                    content_mask_selector='#conversation', content_mask_anchor='#composer',
+                    unavailable=reasons.append)
+                assert image is None
+                assert reasons == ['paint_changed']
+                assert await page.locator('input[type=password]').get_attribute('style') is None
+                await page.wait_for_timeout(100)
+                assert await page.locator('header').evaluate('node => getComputedStyle(node).opacity') == '1'
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('owned', [False, True])
+def test_capture_rechecks_original_paint_after_cssom_change_during_screenshot(owned):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                frame = ('''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>''' if owned else '<p>Answer</p>')
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<style id="paint">input,iframe{display:block}</style>
+                    <header style="height:40px;background:blue">Navigation</header>
+                    <input type="password"><section id="conversation" style="display:flow-root;height:120px">'''
+                    + frame + '</section><input id="composer">'))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await _painted_baseline(page)
+                change = '''document.querySelector('#paint').sheet.insertRule(
+                    'header{background:red!important}')'''
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                async def changed_send(method, params=None):
+                    if method == 'Page.captureScreenshot':
+                        await send('Runtime.evaluate', {'expression':change})
+                    return await send(method, params or {})
+                session.send = changed_send
+                async def changed_screenshot(**kwargs):
+                    await page.evaluate(change)
+                    return await page.screenshot(**kwargs)
+                proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                    evaluate=page.evaluate, evaluate_handle=page.evaluate_handle,
+                    screenshot=changed_screenshot,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+                reasons = []
+                image = await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
+                    origin, path='/da2/Home', allow_frames=owned,
+                    owned_frames=_OWNED_FRAME if owned else None,
+                    content_mask_selector='#conversation', content_mask_anchor='#composer',
+                    unavailable=reasons.append)
+                assert image is None
+                assert reasons == ['paint_changed']
+                assert await page.locator('input[type=password]').get_attribute('style') is None
+                assert await page.locator('header').evaluate(
+                    'node => getComputedStyle(node).backgroundColor') == 'rgb(255, 0, 0)'
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('owned', [False, True])
+@pytest.mark.parametrize('kind,property_name,middle,reason', [
+    ('secret','content','"capture-secret-123"','registered_secret'),
+    ('image','background-image','url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22%3E%3C/svg%3E")','css_effect'),
+    ('filter','filter','blur(2px)','css_effect'),
+])
+def test_capture_admits_all_keyframe_literals_before_any_animation_phase(owned, kind, property_name, middle, reason):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                frame = ('''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>''' if owned else '<p>Answer</p>')
+                safe = '"safe"' if kind == 'secret' else 'none'
+                stylesheet = ('header::before{content:"safe";animation:reveal 1s linear both paused}'
+                    '@keyframes reveal{0%,40%,100%{' + property_name + ':' + safe + '}50%{'
+                    + property_name + ':' + middle + '}}')
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='<style>' + stylesheet + '</style><header>Navigation</header>' + frame))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await _painted_baseline(page)
+                assert await page.locator('header').evaluate("node => node.getAnimations({subtree:true}).length") == 1
+                assert await page.locator('header').evaluate("(node, property) => getComputedStyle(node, '::before').getPropertyValue(property)", property_name) == safe
+                phase = lambda value: "document.querySelector('header').getAnimations({subtree:true}).forEach(animation=>animation.currentTime=" + str(value) + ')'
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                async def phase_send(method, params=None):
+                    if method == 'Page.captureScreenshot':
+                        await send('Runtime.evaluate', {'expression':phase(500)})
+                    result = await send(method, params or {})
+                    if method == 'Page.captureScreenshot':
+                        await send('Runtime.evaluate', {'expression':phase(0)})
+                    return result
+                session.send = phase_send
+                async def phase_screenshot(**kwargs):
+                    await page.evaluate(phase(500))
+                    image = await page.screenshot(**kwargs)
+                    await page.evaluate(phase(0))
+                    return image
+                proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                    evaluate=page.evaluate, evaluate_handle=page.evaluate_handle,
+                    screenshot=phase_screenshot,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+                boundary = EmissionBoundary(ContentPolicy(True))
+                boundary.register_secret('capture-secret-123')
+                reasons = []
+                image = await capture_studio_viewport(proxy, boundary, origin,
+                    path='/da2/Home', allow_frames=owned,
+                    owned_frames=_OWNED_FRAME if owned else None, unavailable=reasons.append)
+                assert image is None
+                assert reasons == [reason]
+                assert await page.locator('header').get_attribute('style') is None
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+
+def test_owned_frame_literal_admission_includes_cssom_animation_keyframes():
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(
+                    content_type='text/html', body='<style id="paint"></style><header>Answer</header>'))
+                await page.goto(origin + '/da2/Home')
+                frame = page.frames[1]
+                await frame.locator('header').wait_for()
+                await frame.evaluate('''() => {
+                  const sheet = document.querySelector('#paint').sheet;
+                  sheet.insertRule('@keyframes reveal{0%,40%,100%{content:"safe"}50%{content:"capture-secret-123"}}');
+                  sheet.insertRule('header::before{content:"safe";animation:reveal 1s linear both paused}');
+                }''')
+                await frame.evaluate('''async () => {
+                  await new Promise(resolve=>requestAnimationFrame(resolve));
+                }''')
+                boundary = EmissionBoundary(ContentPolicy(True))
+                boundary.register_secret('capture-secret-123')
+                reasons = []
+                image = await capture_studio_viewport(page, boundary, origin,
+                    path='/da2/Home', allow_frames=True, owned_frames=_OWNED_FRAME,
+                    unavailable=reasons.append)
+                assert image is None
+                assert reasons == ['frame_content']
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+@pytest.mark.parametrize('owned', [False, True])
+@pytest.mark.parametrize('allow_content', [False, True])
+def test_native_timeline_lease_defers_completion_without_losing_callbacks(owned, allow_content):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route(origin + '/da2/Home', lambda route: route.fulfill(
+                    content_type='text/html', body='''<header>Navigation</header><main id="conversation" style="display:flow-root"><iframe data-testid="chat-message-html" sandbox="allow-scripts" src="/assets/agent-html-runtime/renderer.html"></iframe></main>
+                    <input id="composer"><script>
+                    window.counts={raf:0,timer:0,finished:0};
+                    function tick(){counts.raf++;requestAnimationFrame(tick)}
+                    requestAnimationFrame(tick);
+                    </script>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/da2/Home')
+                await page.frames[1].locator('p').wait_for()
+                session = await page.context.new_cdp_session(page)
+                await session.send('Animation.setPlaybackRate', {'playbackRate': .5})
+                await page.evaluate('''() => {
+                  window.animation=document.querySelector('header').animate(
+                    [{opacity:1},{opacity:.5}], {duration:1000,fill:'forwards'});
+                  animation.finished.then(()=>counts.finished++);
+                  setTimeout(()=>counts.timer++,20);
+                }''')
+                before = await page.evaluate('counts')
+                send = session.send
+                phases = []
+                rates = []
+                async def slow_send(method, params=None):
+                    if method == 'Animation.setPlaybackRate':
+                        rates.append(params['playbackRate'])
+                    if method == 'Page.captureScreenshot':
+                        expression = 'JSON.stringify([animation.currentTime,counts.finished])'
+                        first = await send('Runtime.evaluate', {'expression':expression,'returnByValue':True})
+                        await asyncio.sleep(.6)
+                        second = await send('Runtime.evaluate', {'expression':expression,'returnByValue':True})
+                        phases.extend([json.loads(first['result']['value']), json.loads(second['result']['value'])])
+                    return await send(method, params or {})
+                session.send = slow_send
+                screenshot = page.screenshot
+                async def slow_screenshot(**kwargs):
+                    phases.append(await page.evaluate('[animation.currentTime,counts.finished]'))
+                    await asyncio.sleep(.6)
+                    phases.append(await page.evaluate('[animation.currentTime,counts.finished]'))
+                    return await screenshot(**kwargs)
+                page.screenshot = slow_screenshot
+                context = SimpleNamespace(new_cdp_session=AsyncMock(return_value=session))
+                proxy = SimpleNamespace(url=page.url, frames=page.frames, context=context)
+                if not owned:
+                    proxy.evaluate = page.evaluate
+                    proxy.evaluate_handle = page.evaluate_handle
+                    proxy.screenshot = page.screenshot
+                reasons = []
+                image = await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(allow_content)),
+                    origin, path='/da2/Home', allow_frames=True,
+                    owned_frames=_OWNED_FRAME if owned else None,
+                    content_mask_selector='#conversation', content_mask_anchor='#composer', unavailable=reasons.append)
+                assert image is not None, reasons
+                assert phases[0] == phases[1] and phases[0][1] == 0
+                assert rates == [0, .5]
+                phase = await page.evaluate('[animation.currentTime,performance.now()]')
+                await page.wait_for_timeout(100)
+                following = await page.evaluate('[animation.currentTime,performance.now()]')
+                speed = (following[0] - phase[0]) / (following[1] - phase[1])
+                assert .3 < speed < .7, speed
+                await page.wait_for_function('counts.finished === 1')
+                after = await page.evaluate('counts')
+                assert after['timer'] == 1 and after['raf'] > before['raf']
+                await page.locator('#composer').fill('Next turn')
+                await page.wait_for_timeout(50)
+                assert (await page.evaluate('counts.raf')) > after['raf']
+                assert await page.evaluate('counts.finished') == 1
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+@pytest.mark.parametrize('rate', ['invalid', float('inf'), None, RuntimeError('native domain unavailable')])
+def test_capture_rejects_unverifiable_native_timeline(rate):
+    session = SimpleNamespace(send=AsyncMock(return_value={'playbackRate':rate},
+        side_effect=rate if isinstance(rate, Exception) else None), detach=AsyncMock())
+    page = SimpleNamespace(url='http://localhost:9000/', frames=[1],
+        context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+    reasons = []
+    assert asyncio.run(capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)),
+        'http://localhost:9000', unavailable=reasons.append)) is None
+    assert reasons == ['animation_timeline']
+    session.detach.assert_not_awaited()
+    session.send.assert_awaited_once_with('Animation.getPlaybackRate')
+
+@pytest.mark.asyncio
+async def test_capture_session_is_single_serialized_and_owned_by_page_close():
+    context, session = _mock_cdp()
+    close = Mock()
+    active = 0
+    maximum = 0
+    async def screenshot(**_):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(.01)
+        active -= 1
+        return b'png'
+    handle = SimpleNamespace(evaluate=AsyncMock(return_value=None), dispose=AsyncMock())
+    page = SimpleNamespace(url='http://localhost:9000/', frames=[1], context=context,
+        evaluate_handle=AsyncMock(return_value=handle), evaluate=AsyncMock(return_value=[]),
+        screenshot=screenshot, once=close)
+    boundary = EmissionBoundary(ContentPolicy(True))
+    assert await asyncio.gather(*(capture_studio_viewport(page, boundary, 'http://localhost:9000')
+        for _ in range(2))) == [b'png', b'png']
+    context.new_cdp_session.assert_awaited_once_with(page)
+    assert maximum == 1
+    session.detach.assert_not_awaited()
+    assert close.call_args.args[0] == 'close'
+    await close.call_args.args[1]()
+    session.detach.assert_awaited_once()
+    assert page._api_agent_evidence_session.cdp is None
+    await close.call_args.args[1]()
+    session.detach.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_cancelled_queued_capture_does_not_interrupt_session_owner():
+    context, session = _mock_cdp()
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def screenshot(**_):
+        entered.set()
+        await release.wait()
+        return b'png'
+    handle = SimpleNamespace(evaluate=AsyncMock(return_value=None), dispose=AsyncMock())
+    page = SimpleNamespace(url='http://localhost:9000/', frames=[1], context=context,
+        evaluate_handle=AsyncMock(return_value=handle), evaluate=AsyncMock(return_value=[]),
+        screenshot=AsyncMock(side_effect=screenshot))
+    boundary = EmissionBoundary(ContentPolicy(True))
+    owner = asyncio.create_task(capture_studio_viewport(page, boundary, 'http://localhost:9000'))
+    await entered.wait()
+    queued = asyncio.create_task(capture_studio_viewport(page, boundary, 'http://localhost:9000'))
+    await asyncio.sleep(0)
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    release.set()
+    assert await owner == b'png'
+    context.new_cdp_session.assert_awaited_once()
+    page.screenshot.assert_awaited_once()
+    session.detach.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prior,newer,expected,writes', [(0,None,0,[]),(.5,None,.5,[0,.5]),(1,.25,.25,[0])])
+async def test_timeline_lease_preserves_prior_zero_and_newer_owner(prior, newer, expected, writes):
+    current = prior
+    changes = []
+    context, session = _mock_cdp()
+    audit_send = session.send
+    async def send(method, params=None):
+        nonlocal current
+        if method == 'Animation.getPlaybackRate':
+            return {'playbackRate':current}
+        if method == 'Animation.setPlaybackRate':
+            current = params['playbackRate']
+            changes.append(current)
+            return {}
+        return await audit_send(method, params)
+    session.send = send
+    async def screenshot(**_):
+        nonlocal current
+        if newer is not None:
+            current = newer
+        return b'png'
+    handle = SimpleNamespace(evaluate=AsyncMock(return_value=None), dispose=AsyncMock())
+    page = SimpleNamespace(url='http://localhost:9000/', frames=[1], context=context,
+        evaluate_handle=AsyncMock(return_value=handle), evaluate=AsyncMock(return_value=[]), screenshot=screenshot)
+    assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)), 'http://localhost:9000') == b'png'
+    assert current == expected and changes == writes
+    session.detach.assert_not_awaited()
+
+@pytest.mark.parametrize('prior,newer', [(0,None),(.5,.25)])
+def test_retained_capture_session_preserves_actual_native_zero_and_newer_rate(prior, newer):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.route('**/*', lambda route: route.fulfill(content_type='text/html',
+                    body='<header>Navigation</header>'))
+                await page.goto(origin + '/')
+                foreign = await page.context.new_cdp_session(page)
+                await foreign.send('Animation.setPlaybackRate', {'playbackRate':prior})
+                await page.evaluate('''window.nativeAnimation=document.querySelector('header').animate(
+                    [{opacity:1},{opacity:1}],{duration:10000,fill:'forwards'})''')
+                screenshot = page.screenshot
+                async def capture(**kwargs):
+                    if newer is not None:
+                        await foreign.send('Animation.setPlaybackRate', {'playbackRate':newer})
+                    return await screenshot(**kwargs)
+                factory = AsyncMock(side_effect=lambda _: page.context.new_cdp_session(page))
+                # AsyncMock does not recursively await an async return value.
+                async def create(_):
+                    return await page.context.new_cdp_session(page)
+                factory.side_effect = create
+                proxy = SimpleNamespace(url=page.url, frames=page.frames, once=page.once,
+                    context=SimpleNamespace(new_cdp_session=factory), evaluate=page.evaluate,
+                    evaluate_handle=page.evaluate_handle, screenshot=capture)
+                for _ in range(2):
+                    assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(True)), origin) is not None
+                    expected = prior if newer is None else newer
+                    assert (await foreign.send('Animation.getPlaybackRate'))['playbackRate'] == expected
+                    before = await page.evaluate('[nativeAnimation.currentTime,performance.now()]')
+                    await page.wait_for_timeout(120)
+                    after = await page.evaluate('[nativeAnimation.currentTime,performance.now()]')
+                    speed = (after[0] - before[0]) / (after[1] - before[1])
+                    assert abs(speed - expected) < .15, speed
+                factory.assert_awaited_once()
+                await page.close()
+                await asyncio.sleep(0)
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancellations', [1,2])
+async def test_session_creation_delivery_cancellation_retains_terminal_cleanup_ownership(cancellations):
+    context, session = _mock_cdp()
+    owner = asyncio.current_task()
+    async def create(_):
+        for _ in range(cancellations):
+            owner.cancel()
+            await asyncio.sleep(0)
+        return session
+    context.new_cdp_session.side_effect = create
+    page = SimpleNamespace(url='http://localhost:9000/', frames=[1], context=context)
+    with pytest.raises(asyncio.CancelledError):
+        await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)), 'http://localhost:9000')
+    assert page._api_agent_evidence_session.cdp is session
+    session.detach.assert_not_awaited()
+    session.detach.side_effect = RuntimeError('already closed by browser')
+    await page._api_agent_evidence_session.close()
+    assert page._api_agent_evidence_session.cdp is None
+    session.detach.assert_awaited_once()
+
+@pytest.mark.parametrize('owned', [False, True])
+def test_content_mask_preserves_focused_composer_and_live_private_subtree(owned):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={'width':600,'height':400})
+                frame = ('''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>''' if owned else '')
+                await page.route(origin + '/', lambda route: route.fulfill(content_type='text/html', body='''
+                  <style>#card{box-shadow:none}#card:focus-within{box-shadow:0 0 4px blue}</style>
+                  <header style="height:40px;background:blue">Navigation</header>
+                  <section id="card" style="padding:8px;border:4px solid blue">
+                  <div id="private" style="height:180px"><textarea id="composer">Private prompt</textarea>
+                  <p>Private answer</p><div style="position:fixed;left:500px;top:330px;width:40px;height:30px;background:red">Overflow secret</div>''' + frame + '''</div>
+                  <button style="width:100px;height:30px;background:blue">Send</button></section>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/')
+                if owned:
+                    await page.frames[1].locator('p').wait_for()
+                await page.locator('#composer').focus()
+                await page.locator('#composer').evaluate('node=>node.setSelectionRange(1,4)')
+                await page.add_style_tag(content='#card{transition:box-shadow 2s linear}')
+                await _painted_baseline(page)
+                box = await page.locator('#private').bounding_box()
+                button = await page.locator('button').bounding_box()
+                expression = '''(() => {document.querySelector('#private p').textContent='Next private answer';
+                    const node=document.querySelector('#composer');
+                    return [document.activeElement.id,node.selectionStart,node.selectionEnd]})()'''
+                observed = []
+                raw_images = []
+                await page.evaluate("window.focusEvents=0;composer.addEventListener('blur',()=>focusEvents++);composer.addEventListener('focus',()=>focusEvents++)")
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                async def intercepted(method, params=None):
+                    if method == 'Page.captureScreenshot':
+                        result = await send('Runtime.evaluate', {'expression':expression,'returnByValue':True})
+                        observed.append(result['result']['value'])
+                    result = await send(method, params or {})
+                    if method == 'Page.captureScreenshot':
+                        raw_images.append(base64.b64decode(result['data']))
+                    return result
+                session.send = intercepted
+                screenshot = page.screenshot
+                async def capture(**kwargs):
+                    observed.append(await page.evaluate(expression))
+                    result = await screenshot(**kwargs)
+                    raw_images.append(result)
+                    return result
+                proxy = SimpleNamespace(url=page.url, frames=page.frames, once=page.once,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)),
+                    evaluate=page.evaluate, evaluate_handle=page.evaluate_handle, screenshot=capture)
+                reasons = []
+                image = await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)), origin,
+                    allow_frames=owned, owned_frames=_OWNED_FRAME if owned else None,
+                    content_mask_selector='#private', content_mask_anchor='#card', unavailable=reasons.append)
+                assert image is not None, reasons
+                assert observed == [['composer',1,4]]
+                assert await page.evaluate('focusEvents') == 0
+                assert not (await _region_pixels(page, raw_images[0], box))['ink']
+                assert not (await _region_pixels(page, raw_images[0], {'x':500,'y':330,'width':40,'height':30}))['red']
+                assert await page.evaluate('[document.activeElement.id,composer.selectionStart,composer.selectionEnd]') == ['composer',1,4]
+                assert await page.locator('#private p').text_content() == 'Next private answer'
+                assert await page.locator('#private').bounding_box() == box
+                assert await page.locator('button').bounding_box() == button
+                assert (await _region_pixels(page, image, box))['black']
+                assert (await _region_pixels(page, image, button))['blue']
+                assert await page.locator('#private').get_attribute('style') == 'height:180px'
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+@pytest.mark.parametrize('owned', [False, True])
+@pytest.mark.parametrize('early_resume', [False, True])
+def test_focused_content_capture_defers_transient_popup_callback_until_cleanup(owned, early_resume):
+    async def run():
+        from playwright.async_api import async_playwright
+        origin = 'http://localhost:9000'
+        async with async_playwright() as driver:
+            browser = await driver.chromium.launch()
+            try:
+                page = await browser.new_page(viewport={'width':600,'height':400})
+                frame = ('''<iframe data-testid="chat-message-html" sandbox="allow-scripts"
+                    src="/assets/agent-html-runtime/renderer.html"></iframe>''' if owned else '')
+                await page.route(origin + '/', lambda route: route.fulfill(content_type='text/html', body='''
+                    <header>Navigation</header><main id="private" style="height:200px">
+                    <textarea id="composer">Private prompt</textarea>
+                    <div id="popup" popover style="position:fixed;inset:auto;left:400px;top:300px;
+                    width:100px;height:40px;background:red">capture-secret-123</div>''' + frame + '''</main>
+                    <script>window.counts={raf:0,timer:0};
+                    function frame(){counts.raf++;requestAnimationFrame(frame)}requestAnimationFrame(frame)</script>'''))
+                await page.route(origin + _OWNED_FRAME.path, lambda route: route.fulfill(content_type='text/html', body='<p>Answer</p>'))
+                await page.goto(origin + '/')
+                if owned:
+                    await page.frames[1].locator('p').wait_for()
+                await page.locator('#composer').focus()
+                await page.wait_for_function('counts.raf > 0')
+                session = await page.context.new_cdp_session(page)
+                send = session.send
+                foreign = await page.context.new_cdp_session(page)
+                if early_resume:
+                    await foreign.send('Debugger.enable')
+                phases = []
+                async def intercepted(method, params=None):
+                    if method == 'Runtime.evaluate' and params.get('expression', '').startswith('debugger;\n//# sourceURL=api-agent-evidence-pause-') and not early_resume:
+                        await send('Runtime.evaluate', {'expression':'''setTimeout(()=>{counts.timer++;popup.showPopover();
+                            setTimeout(()=>popup.hidePopover(),0)},20)'''})
+                    if method == 'Page.captureScreenshot' and early_resume:
+                        await foreign.send('Debugger.resume')
+                        await send('Runtime.evaluate', {'expression':'popup.showPopover()'})
+                    if method == 'Page.captureScreenshot' and not early_resume:
+                        expression = '[counts.timer,counts.raf,popup.matches(":popover-open")]'
+                        first = await send('Runtime.evaluate', {'expression':expression,'returnByValue':True})
+                        await asyncio.sleep(.15)
+                        second = await send('Runtime.evaluate', {'expression':expression,'returnByValue':True})
+                        phases.extend([first['result']['value'],second['result']['value']])
+                    result = await send(method, params or {})
+                    if method == 'Page.captureScreenshot' and early_resume:
+                        await send('Runtime.evaluate', {'expression':'popup.hidePopover()'})
+                    return result
+                session.send = intercepted
+                proxy = SimpleNamespace(url=page.url, frames=page.frames, once=page.once,
+                    context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)),
+                    evaluate=page.evaluate, evaluate_handle=page.evaluate_handle, screenshot=page.screenshot)
+                reasons = []
+                boundary = EmissionBoundary(ContentPolicy(False))
+                boundary.register_secret('capture-secret-123')
+                image = await capture_studio_viewport(proxy, boundary, origin,
+                    allow_frames=owned, owned_frames=_OWNED_FRAME if owned else None,
+                    content_mask_selector='#private', content_mask_anchor='#composer', unavailable=reasons.append)
+                if early_resume:
+                    assert image is None
+                    assert reasons == ['pause_lost']
+                    return
+                assert image is not None, reasons
+                assert phases[0] == phases[1] and phases[0][0] == 0 and phases[0][2] is False
+                assert not (await _region_pixels(page, image, {'x':400,'y':300,'width':100,'height':40}))['red']
+                await page.wait_for_function('counts.timer === 1 && !popup.matches(":popover-open")')
+                assert (await page.evaluate('counts.raf')) > phases[1][1]
+                assert await page.evaluate('document.activeElement.id') == 'composer'
+            finally:
+                await browser.close()
+    asyncio.run(run())
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('focus_result', [None, RuntimeError('focus world unavailable')])
+async def test_content_focus_detection_is_native_and_fails_closed(focus_result):
+    context, session = _mock_cdp()
+    original = session.send
+    async def send(method, params=None):
+        if method == 'Runtime.evaluate':
+            assert params['contextId'] == 7 and params['returnByValue'] is True
+            assert 'awaitPromise' not in params
+            if isinstance(focus_result, Exception):
+                raise focus_result
+            return {'result':{'value':focus_result}}
+        return await original(method, params)
+    session.send = send
+    page = SimpleNamespace(url='http://localhost:9000/', frames=[1], context=context,
+        evaluate=AsyncMock(), evaluate_handle=AsyncMock(), screenshot=AsyncMock())
+    reasons = []
+    assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)), 'http://localhost:9000',
+        content_mask_selector='#private', content_mask_anchor='#composer', unavailable=reasons.append) is None
+    assert reasons == ['focus_inspection']
+    page.evaluate.assert_not_awaited()
+    page.evaluate_handle.assert_not_awaited()
+    page.screenshot.assert_not_awaited()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage,newer', [('style_restore',None),('rate_read',None),('rate_read',.25),('rate_write',None)])
+@pytest.mark.parametrize('cancellations', [1,2])
+async def test_actual_owner_cancellation_settles_critical_cleanup(stage, newer, cancellations):
+    owner = asyncio.current_task()
+    current, reads = .5, 0
+    restored = False
+    cleanup_read_completed = False
+    context, session = _mock_cdp()
+    audit = session.send
+    async def cancel_owner():
+        for _ in range(cancellations):
+            owner.cancel()
+            await asyncio.sleep(0)
+    async def send(method, params=None):
+        nonlocal current, reads, cleanup_read_completed
+        if method == 'Animation.getPlaybackRate':
+            reads += 1
+            if reads == 2 and stage == 'rate_read':
+                await cancel_owner()
+            if reads == 2:
+                cleanup_read_completed = True
+            return {'playbackRate':current}
+        if method == 'Animation.setPlaybackRate':
+            if params['playbackRate'] == .5 and stage == 'rate_write':
+                await cancel_owner()
+            current = params['playbackRate']
+            return {}
+        return await audit(method, params)
+    session.send = send
+    handle_calls = 0
+    async def evaluate(_):
+        nonlocal handle_calls, restored
+        handle_calls += 1
+        if handle_calls == 2 and stage == 'style_restore':
+            await cancel_owner()
+        if handle_calls == 2:
+            restored = True
+        return None
+    handle = SimpleNamespace(evaluate=AsyncMock(side_effect=evaluate), dispose=AsyncMock())
+    async def screenshot(**_):
+        nonlocal current
+        if newer is not None:
+            current = newer
+        return b'png'
+    page = SimpleNamespace(url='http://localhost:9000/', frames=[1], context=context,
+        evaluate_handle=AsyncMock(return_value=handle), evaluate=AsyncMock(return_value=[]), screenshot=screenshot)
+    with pytest.raises(asyncio.CancelledError):
+        await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)), 'http://localhost:9000')
+    assert current == (.5 if newer is None else newer)
+    assert restored and cleanup_read_completed
+    handle.dispose.assert_awaited_once()
+    assert page.evaluate.await_count == 3
+    session.detach.assert_not_awaited()

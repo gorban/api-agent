@@ -82,3 +82,30 @@ def test_generic_outcome_does_not_invent_native_finish_reason(outcome):
     assert fields['api_agent.llm.outcome']==outcome
     assert 'gen_ai.response.finish_reasons' not in fields
     assert 'gen_ai.request.max_tokens' not in fields
+
+
+@pytest.mark.parametrize('direction,value,expected', [
+ ('input', {'messages': [[{'type': 'system', 'content': 'Brief'}, {'type': 'human', 'content': 'Question'}]]},
+  [{'role': 'system', 'parts': [{'type': 'text', 'content': 'Brief'}]}, {'role': 'user', 'parts': [{'type': 'text', 'content': 'Question'}]}]),
+ ('output', {'type': 'ai', 'content': '', 'tool_calls': [{'id': 'one', 'name': 'lookup', 'args': {'key': 'value'}}]},
+  [{'role': 'assistant', 'parts': [{'type': 'text', 'content': ''}, {'type': 'tool_call', 'id': 'one', 'name': 'lookup', 'arguments': {'key': 'value'}}]}]),
+ ('input', {'messages': [[{'type': 'tool', 'tool_call_id': 'one', 'content': 'found'}]]},
+  [{'role': 'tool', 'parts': [{'type': 'tool_call_response', 'id': 'one', 'response': 'found'}]}]),
+])
+def test_langchain_event_message_shapes(direction, value, expected):
+    assert genai_messages(direction, value) == expected
+
+
+def test_nested_message_batch_cannot_exceed_total_admission_budget():
+    assert genai_messages('input', {'messages': [[{'type': 'human', 'content': 'x'}] * 257]}) is None
+
+
+@pytest.mark.parametrize('kind', [{}, [], None, 1])
+@pytest.mark.parametrize('role', ['user', None])
+def test_malformed_langchain_type_cannot_fail_normalization(kind, role):
+    row = {'type': kind, 'content': 'visible'}
+    if role is not None:
+        row['role'] = role
+    expected = ([{'role': 'user', 'parts': [{'type': 'text', 'content': 'visible'}]}]
+                if role == 'user' else None)
+    assert genai_messages('input', {'messages': [row]}) == expected
