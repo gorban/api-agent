@@ -15,6 +15,16 @@ and outer test attempt. Use the run's resolved
 settings, including per-test overrides; today's `.env` may differ. Read the
 terminal summary and that attempt's short failure details before opening bodies.
 
+If an attempt's evidence directory is already known, read its smallest relevant
+structured receipt before opening a viewer. Allure is the recorded-attempt index
+when available, not a prerequisite for reading local diagnostics. With
+`SKIP_ALLURE_REPORTING=True`, the supported unrecorded path creates no Allure
+recorder, manifest, attachments or publication: start with terminal/result
+evidence and any independently retained test receipts. If reporting was enabled
+but publication or viewing failed, use retained local artifacts and the complete
+run log; report that failure separately. Do not assume those artifacts survived
+unless their availability is verified.
+
 | Observation | Interpretation and next evidence |
 | --- | --- |
 | First-chance test pass, internal node/provider retry | The outer test passed. Inspect the recovered scope only if investigating recovery, latency, spend or a reported defect. |
@@ -29,10 +39,25 @@ Confirm recovery using matching owner/ancestry and later accepted outcomes, not
 names, colors or adjacent timestamps alone. A genuine partial result may remain
 partial. An initial E2E pass needs no confirmations; after initial failure,
 the configured additional confirmations must all pass. Unit tests never retry.
+Workflow `attempt`/`max_passes` values describe that workflow scope; they are not
+the outer test attempt number or `E2E_RERUNS` confirmation allowance.
 
-## 2. Use Allure as the common starting point
+## 2. Select the exact attempt, then expand scoped evidence
 
-Open the exact test attempt. Follow Conversation → User turn → graph →
+For finalized recorded E2E runs, logical outcomes live in
+`manifest.metadata.e2e_outcomes[]`. Match the result's `historyId` to the ledger's
+`history_id` and inspect
+`first_status`, `attempt_statuses`, `final_status`, `complete` and `result_files`;
+`manifest.metadata.e2e_reruns` records the outer confirmation allowance.
+The latest native Allure result deliberately projects a recovered final pass as
+`broken` (yellow), with a recovery explanation. Its color/status is not the
+logical final result. The launcher summary and validated outcome ledger retain
+the distinction; individual result files identify physical attempts. Preserve
+the initial failure and all required confirmation results. Without a finalized
+ledger, use the controller's terminal/result evidence and state uncertainty
+rather than deriving a logical outcome from one Allure case's status.
+
+When useful and available, open that exact Allure attempt. Follow Conversation → User turn → graph →
 component/node/tool/call where that hierarchy is recorded. Inspect status,
 attempt/max-passes, failure classification and timing. Open the rendered-turn
 image for browser, layout or rendered-data symptoms, and LLM diagnostics for
@@ -84,7 +109,9 @@ all payloads, an entire browser DOM or an unbounded traceback into context.
 
 | Existing evidence | Next step |
 | --- | --- |
-| Tracing disabled | Continue with Allure, its journal/payload index, durable test log and scoped application/browser diagnostics. No trace backend is required. |
+| Allure explicitly disabled | Start with the terminal/result summary, durable log and independent test receipts. No Allure manifest or attachments are produced by the unrecorded path. |
+| Allure publication/viewing failed | Read verified retained local receipts/journals and the durable log. Keep functional and publication outcomes separate; do not claim missing artifacts exist. |
+| Tracing disabled | Use the identified attempt's local receipts, journal/payload index, durable log and Allure when available. No trace backend is required. |
 | Tracing enabled and correlated spans available | Locate the exact run/turn/call using recorded IDs. Inspect the affected ancestry, retry and terminal spans; compare provider errors with the application outcome. |
 | Tracing enabled but missing/incomplete | Check resolved trace mode/export destination, collector lifetime/readiness and exporter warnings first. Check sampling, span/capture budgets and explicit omission reasons. Missing spans do not establish that no call occurred. |
 | Content absent | Check capture state and destination policy before treating it as an empty request/response. `withheld`, `truncated`, `unavailable`, `not_observed` and `ambiguous` have different meanings. |
@@ -96,8 +123,60 @@ permits raw encrypted reasoning or arbitrary private state. A masked screenshot
 can still establish layout and controls without exposing the response.
 
 Tracing/export failure must produce a clear warning and preserve the test's
-application outcome. Diagnose an Allure publication failure separately; report
+application outcome. If reporting was enabled, diagnose an Allure publication failure separately; report
 the actual publication status and do not claim unavailable evidence was retained.
+
+## Durable terminal capture
+
+For an already authorized run, execute from the owning repository. These Bash/zsh
+examples retain complete stdout/stderr in an explicit repository-local file and
+preserve a nonzero runner exit through `pipefail`. Replace the selector with the
+actual repository-qualified test; do not execute the placeholder literally.
+Run only the applicable command, not both as a diagnostic ritual.
+
+```bash
+(
+  umask 077
+  mkdir -p .git/review-logs || exit 1
+  chmod 700 .git/review-logs || exit 1
+  log=$(mktemp ".git/review-logs/integration.XXXXXXXX") || exit 1
+  printf 'Log: %s\n' "$log"
+  set -o pipefail
+  ./launch.sh --tui-mode integration --no-std-in --start \
+    'OWNER::PATH/TO/TEST.py::TEST_NAME' \
+    2>&1 | tee "$log"
+)
+```
+
+```bash
+(
+  umask 077
+  mkdir -p .git/review-logs || exit 1
+  chmod 700 .git/review-logs || exit 1
+  log=$(mktemp ".git/review-logs/e2e.XXXXXXXX") || exit 1
+  printf 'Log: %s\n' "$log"
+  set -o pipefail
+  ./launch.sh --tui-mode e2e --no-std-in --start=E2E \
+    'OWNER::PATH/TO/TEST.py::TEST_NAME' \
+    2>&1 | tee "$log"
+)
+```
+
+The printed path is the durable log location; record it in the evidence packet.
+`mktemp` creates a fresh mode-0600 file exclusively on every invocation, even
+for runs started rapidly in one shell. The directory is private (0700), and the
+umask change stays inside the subshell. These commands do not change Allure or
+tracing settings. They also work
+with an explicitly unrecorded run when that run's resolved configuration sets
+`SKIP_ALLURE_REPORTING=True`; no new report path should be invented for it.
+For recorded runs, use resolved `ALLURE_RESULTS_DIR`, the optional
+`ALLURE_SECONDARY_DIR` copy and reported storage/run identity to locate retained
+manifests. With the default local setting, the manifest is under
+`<owner>/artifacts/allure/<repo>/<run_id>/manifest.json`; an enabled secondary
+copy uses `<ALLURE_SECONDARY_DIR>/<repo>/<run_id>/manifest.json`. Local result
+directories can be disabled. Never infer a local Allure
+path solely from the log location. Search the complete log by exact IDs/error
+codes and read bounded context rather than printing it all.
 
 ## 4. Inspect source or reproduce only to close a concrete gap
 
