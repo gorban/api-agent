@@ -12,6 +12,7 @@ _CALL_REQUESTS = ContextVar('provider_payload_requests', default=None)
 _DIRECT_ROWS = ContextVar('provider_payload_direct_rows', default=None)
 _DISPATCH = ContextVar('provider_response_dispatch', default=None)
 _WITHHELD = ContextVar('provider_inference_content_withheld', default=False)
+_DEFERRED = ContextVar('provider_admitted_capture_rows', default=None)
 
 
 @contextmanager
@@ -22,6 +23,12 @@ def withholding_inference_content(withhold=True):
         yield
     finally:
         _WITHHELD.reset(token)
+
+
+def current_inference_call():
+    """Reuse the canonical enclosing call for local fallback observations."""
+    collector = _COLLECTOR.get()
+    return collector['call_id'] if collector is not None else _CALL_ID.get()
 
 
 @contextmanager
@@ -38,7 +45,7 @@ def bind_inference_call(call_id):
             selected = select_capture_rows(rows)
             for row in selected:
                 row.setdefault('capture_source', 'provider')
-            capture_rows(selected, call_id)
+            _publish_admitted_rows(selected, call_id)
         _DIRECT_ROWS.reset(rows_token)
         _CALL_REQUESTS.reset(requests_token)
         _CALL_ID.reset(token)
@@ -285,8 +292,82 @@ def _report_capture_loss(call_id=None, direction=None):
     notify_failure(node.rsplit(' ', 1)[0], scope)
 
 
+@contextmanager
+def defer_inference_captures():
+    """Hold only source-admitted phases until terminal ownership is known."""
+    state = {'rows': [], 'remaining': 4 * 1024 * 1024, 'lost': False, 'published': set()}
+    token = _DEFERRED.set(state)
+    try:
+        yield state
+    finally:
+        _DEFERRED.reset(token)
+
+
+def publish_deferred_captures(state, receipts):
+    """Join physical phases only to a uniquely evidenced terminal call."""
+    grouped = {}
+    lost = state['lost']
+    for identifier, row in state['rows']:
+        physical = row.get('transport_attempt_id')
+        exact = [receipt for receipt in receipts if receipt['call_id'] == identifier]
+        candidates = [receipt for receipt in (exact or receipts) if
+            (receipt['call_id'] == identifier or physical is not None)
+            and (physical is None or physical in {
+                attempt['id'] for attempt in receipt.get('transport_attempts', {}).get('attempts', [])})]
+        if len(candidates) != 1:
+            lost = True
+            continue
+        key = candidates[0]['call_id']
+        if (key, physical, row['phase']) in state['published']:
+            continue
+        clean = dict(row)
+        source = clean.pop('capture_source', None)
+        if source == 'fallback':
+            clean['_source'] = 'fallback'
+        grouped.setdefault(key, []).append(clean)
+    for identifier, rows in grouped.items():
+        capture_rows(select_capture_rows(rows), identifier)
+    if lost:
+        import logging
+        logging.getLogger(__name__).warning('Workflow inference capture physical owner unavailable')
+        owner = current_workflow_visit()
+        if owner is not None:
+            journal = getattr(owner[0], 'journal', owner[0])
+            journal.record_evidence_loss()
+
+
+def _publish_admitted_rows(rows, call_id):
+    """Only auth-scoped capture_inference constructors enter this queue."""
+    deferred = _DEFERRED.get()
+    if deferred is None:
+        return capture_rows(rows, call_id)
+    try:
+        import json
+        if type(rows) not in (list, tuple) or len(rows) > 128:
+            raise ValueError('Invalid admitted capture rows')
+        if not _valid_attempt_id(call_id):
+            raise ValueError('Invalid admitted capture identity')
+        for row in rows:
+            if (type(row) is not dict or row.get('phase') not in ('request', 'response')
+                    or type(row.get('content')) is not dict
+                    or set(row) - {'phase', 'content', 'reason', 'capture_source', 'transport_attempt_id', 'diagnostics', '_rejected'}):
+                raise ValueError('Invalid admitted capture phase')
+            # JSON round-trip copies primitives without retaining producer
+            # objects or running custom deepcopy hooks after source admission.
+            encoded = json.dumps(row, ensure_ascii=False, allow_nan=False)
+            size = len(encoded.encode('utf-8'))
+            if len(deferred['rows']) < 128 and size <= deferred['remaining']:
+                deferred['rows'].append((call_id, json.loads(encoded)))
+                deferred['remaining'] -= size
+            else:
+                deferred['lost'] = True
+    except (Exception, asyncio.CancelledError):
+        deferred['lost'] = True
+
+
 def capture_rows(rows, call_id):
     """Rebind already scrubbed remote provider phases to the worker visit."""
+    deferred = _DEFERRED.get()
     owner = current_workflow_visit()
     if owner is None:
         return
@@ -309,6 +390,16 @@ def capture_rows(rows, call_id):
         else:
             if getattr(getattr(journal, 'journal', journal), '_gap', None) is not None:
                 _report_capture_loss(call_id, direction)
+            elif deferred is not None:
+                # Central phases retain existing publication/admission timing.
+                # Keep only bounded protocol identities after that admission.
+                physical = row.get('transport_attempt_id')
+                if (_valid_attempt_id(call_id) and
+                        (physical is None or _valid_attempt_id(physical)) and
+                        len(deferred['published']) < 128):
+                    deferred['published'].add((call_id, physical, row['phase']))
+                else:
+                    deferred['lost'] = True
 
 
 async def prepare_capture_auth(auth):
@@ -649,7 +740,7 @@ def capture_inference(direction, wire, cause_id, *, auth=None, fallback=False, p
             state = _DIRECT_ROWS.get()
             if state is None:
                 row['capture_source'] = 'fallback' if fallback else 'provider'
-                capture_rows((row,), identifier)
+                _publish_admitted_rows((row,), identifier)
             else:
                 if fallback:
                     row['_source'] = 'fallback'
