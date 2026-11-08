@@ -718,3 +718,20 @@ def test_log_title_and_loader_capture_generation_before_same_label_selection_cha
     assert logs.title_text == title
     assert targets[1].key[:12] not in logs.title_text
     assert all(target.environment['DOCKER_HOST'] not in logs.title_text for target in targets)
+
+
+@pytest.mark.parametrize('remaining', [0, -1, 3, 30])
+def test_bound_runtime_discovery_honors_acquisition_deadline(bound_manager, monkeypatch, remaining):
+    from unittest.mock import Mock
+    from api_agent.runtime.prerequisites import PrerequisiteError
+    manager, engine, target, _, _ = bound_manager
+    next(iter(manager.specs.values()))['runtime'] = 'runsc'
+    query = Mock(return_value={})
+    monkeypatch.setattr('api_agent.runtime.engine_targets.runtime_inventory', query)
+    with pytest.raises(PrerequisiteError, match='deadline expired' if remaining <= 0 else 'runtime is unavailable'):
+        manager.acquire(_deadline=manager.now() + remaining)
+    if remaining <= 0:
+        query.assert_not_called()
+    else:
+        query.assert_called_once_with(target, cancelled=manager.cancelled, timeout_seconds=min(10, remaining))
+    assert engine.commands == []

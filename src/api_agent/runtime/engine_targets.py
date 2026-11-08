@@ -109,6 +109,41 @@ class EngineTarget:
                                       directory=directory, deadline=deadline, cancelled=cancelled)
 
 
+def runtime_inventory(target, *, cancelled=lambda: False, timeout_seconds=10):
+    """Read Docker-compatible runtime metadata on the already pinned transport."""
+    from .reporting_engine import UnixConnection
+    from api_agent.providers.progress import report_timeout_sync
+    import time
+
+    transport = target.environment.get('DOCKER_HOST', '')
+    if not transport.startswith('unix:///'):
+        raise ValueError('Runtime qualification requires a verified Unix transport')
+    with report_timeout_sync('Container runtime qualification', timeout_seconds) as budget:
+        target.verify(cancelled=cancelled)
+        client = UnixConnection(transport[7:])
+        client.deadline = time.monotonic() + budget.remaining
+        client.cancelled = cancelled
+        response = None
+        try:
+            client.request('GET', '/info')
+            response = client.getresponse()
+            body = response.read(1048576 + 1)
+            if response.status != 200 or len(body) > 1048576:
+                raise ValueError('Invalid container runtime metadata')
+            document = json.loads(body)
+            if type(document) is not dict or type(document.get('Runtimes')) is not dict:
+                raise ValueError('Invalid container runtime metadata')
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                client.close()
+        # Refuse a replaced daemon/socket generation within the same budget.
+        target.verify(cancelled=cancelled)
+        return document['Runtimes']
+
+
 class EngineTargetRegistry:
     """Only targets actually used by this owner; no host-context discovery."""
     def __init__(self, directory):

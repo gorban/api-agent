@@ -134,8 +134,17 @@ def _check(deadline, cancelled, now):
 
 
 def run_command(command, *, environment, directory, deadline, cancelled,
-                now=time.monotonic, combine_output=False, output_scrubber=None, output_limit=None):
+                now=time.monotonic, combine_output=False, output_scrubber=None, output_limit=None,
+                inherited_fds=(), on_disposed=None):
     """Bound combined output while running; always reap the owned process group."""
+    if (type(inherited_fds) is not tuple
+            or any(type(fd) is not int or fd < 0 for fd in inherited_fds)
+            or len(set(inherited_fds)) != len(inherited_fds)):
+        raise ValueError('Invalid inherited prerequisite descriptors')
+    for descriptor in inherited_fds:
+        os.fstat(descriptor)
+    if on_disposed is not None and not callable(on_disposed):
+        raise ValueError('Invalid prerequisite disposal observer')
     if output_limit is not None and (type(output_limit) is not int or output_limit < 256):
         raise ValueError('Invalid combined output byte limit')
     captured = {'stdout': bytearray(), 'stderr': bytearray()}
@@ -176,7 +185,8 @@ def run_command(command, *, environment, directory, deadline, cancelled,
         raise
     try:
         process = subprocess.Popen(command, cwd=directory, env=dict(environment),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            **({'pass_fds': inherited_fds} if inherited_fds else {}))
     except OSError as error:
         raise PrerequisiteError('Prerequisite command unavailable.', local_details=evidence()) from error
     selector = selectors.DefaultSelector()
@@ -330,6 +340,8 @@ def run_command(command, *, environment, directory, deadline, cancelled,
                 details = evidence()
                 for error in failures.values():
                     error.local_details = details
+            if on_disposed is not None and disposal_complete(process):
+                on_disposed()
 
 
 @contextmanager
@@ -1149,7 +1161,15 @@ class PrerequisiteManager:
         runtimes = {spec['runtime'] for spec in self.specs.values() if 'runtime' in spec}
         if runtimes:
             try:
-                available = json.loads(self._command((self.plan.command[0], 'info', '--format', '{{json .Runtimes}}'), deadline))
+                if self.engine_target is None:
+                    available = json.loads(self._command((self.plan.command[0], 'info', '--format', '{{json .Runtimes}}'), deadline))
+                else:
+                    from .engine_targets import runtime_inventory
+                    remaining = deadline - self.now()
+                    if remaining <= 0:
+                        raise PrerequisiteError('Prerequisite runtime discovery deadline expired.')
+                    available = runtime_inventory(self.engine_target, cancelled=self.cancelled,
+                                                  timeout_seconds=min(10, remaining))
             except ValueError as error:
                 raise PrerequisiteError('Required isolated runtime inventory is invalid.') from error
             if not isinstance(available, dict) or not runtimes <= set(available):
