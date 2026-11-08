@@ -27,6 +27,35 @@ class TraceDeliveryError(TraceError):
 TRACE_DELIVERY_WARNING = 'Trace delivery failed; tracing resources were closed. Some traces may be missing.'
 
 
+def _bounded_native_json(value):
+    """Retain JSON structure while keeping indexed string attributes below budget."""
+    def encode(item):
+        return json.dumps(item, ensure_ascii=True, allow_nan=False)
+
+    def fits(encoded):
+        return len(json.dumps(encoded, ensure_ascii=True).encode('utf-8')) <= 16_384
+
+    encoded = encode(value)
+    if fits(encoded):
+        return encoded, False
+
+    def clip(item, limit):
+        if type(item) is str:
+            return item if len(item) <= limit else item[:limit] + '[truncated]'
+        if type(item) is list:
+            return [clip(part, limit) for part in item]
+        if type(item) is dict:
+            return {key: clip(part, limit) for key, part in item.items()}
+        return item
+
+    for limit in (1024, 256, 64):
+        bounded = encode(clip(value, limit))
+        if fits(bounded):
+            return bounded, True
+    # An exceptionally wide container cannot fit even after its leaves shrink.
+    return encode({'capture_reason': 'truncated', 'preview': encoded[:1024]}), True
+
+
 def _native_array(value):
     if type(value) is not list:
         return False
@@ -460,13 +489,19 @@ class TraceSpan:
         # a serialized attribute and content opt-in never grants secret access.
         clean = self._boundary.export({'values': values})
         if 'values' in clean and self._span is not None:
-            self._losses.run(lambda: self._span.set_attribute(self._mapping.io_attribute(direction),
-                json.dumps(clean['values'], ensure_ascii=False, allow_nan=False)))
+            # Badger indexes span tags as keys and may escape JSON again. Keep
+            # each value well below its 65 KB key limit, including that overhead.
+            encoded, truncated = _bounded_native_json(clean['values'])
+            self._losses.run(lambda: self._span.set_attribute(self._mapping.io_attribute(direction), encoded))
             from .trace_mapping import genai_messages
             messages = genai_messages(direction, clean['values']) if self._operation == 'chat' else None
             if messages is not None:
+                message_json, message_truncated = _bounded_native_json(messages)
+                truncated = truncated or message_truncated
                 self._losses.run(lambda: self._span.set_attribute('gen_ai.' + direction + '.messages',
-                    json.dumps(messages, ensure_ascii=False, allow_nan=False)))
+                    message_json))
+            if truncated:
+                self.structural({'api_agent.capture.reason': 'truncated'})
 
     def event(self, payload, *, structural=None, timestamp=None):
         clean = _attributes(self._boundary, payload, model_identity=self._model_identity)
