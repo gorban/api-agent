@@ -31,6 +31,26 @@ class BorrowedBrowserPage:
         pass
 
 
+class DeferredBrowserPage:
+    """Borrow one page after provider readiness without transferring ownership."""
+    def __init__(self, owner):
+        self.owner, self.session = owner, None
+        self.original_page = None
+
+    async def start(self):
+        if self.session is None:
+            await self.owner._start_browser()
+            session = self.owner.session
+            page = await session.context.new_page()
+            self.original_page = page
+            self.session = BrowserSession(session.browser, session.context, page,
+                                          session.inspection_endpoint)
+        return self.session
+
+    async def aclose(self):
+        pass
+
+
 class LocalBrowserOwner:
     def __init__(self, context, config, home_url, *, prepare_ui=None,
                  browser_factory=managed_browser, prepare_view=_prepare_view,
@@ -65,33 +85,18 @@ class LocalBrowserOwner:
                 raise RuntimeError('Local startup closed during preparation')
             if not (self.config.get('RUN_UI', False) or self.config.get('DEBUG', False)):
                 return self
-            async with component_timeout('Local startup browser preparation', 120):
-                self.browser = self.browser_factory(inspection=self.inspection, headless=False)
-                self.session = await self.browser.start()
-                response = await self.session.page.goto(self.home_url, wait_until='load')
-                if response is None or response.status != 200:
-                    raise RuntimeError('Agent home did not load')
-                self._tab_prefix = [self.session.page]
-                if self.tracing is not None and self.tracing.viewer_url:
-                    tracing_page = await self.session.context.new_page()
-                    await self.tracing.login(tracing_page)
-                    self._tab_prefix.append(tracing_page)
-                flow_page = await self.session.context.new_page()
-                response = await flow_page.goto(self.flow_url, wait_until='load')
-                if response is None or response.status != 200:
-                    raise RuntimeError('Selected workflow view did not load')
-                self._tab_prefix.append(flow_page)
-                if self.closed:
-                    raise RuntimeError('Local startup closed during preparation')
+            async with component_timeout('Local startup browser preparation', self.config.get('UI_PREPARATION_TIMEOUT_SECONDS', 120)):
                 if self.config.get('RUN_UI', False):
                     if self.prepare_ui is None:
                         raise RuntimeError('Enabled local UI requires preparation')
-                    page = await self.session.context.new_page()
-                    borrowed = BorrowedBrowserPage(BrowserSession(self.session.browser, self.session.context,
-                                                                 page, self.session.inspection_endpoint))
+                    borrowed = DeferredBrowserPage(self)
                     self.ui = await self.prepare_ui(browser_owner=borrowed)
-                    await self._verify_ui(borrowed, page, flow_page)
+                    if borrowed.session is None:
+                        raise RuntimeError('UI preparation replaced the original session')
+                    await self._verify_ui(borrowed, borrowed.original_page, None)
                     await self.ui.session.page.bring_to_front()
+                else:
+                    await self._start_browser()
                 self._verify_browser()
             if self.closed:
                 raise RuntimeError('Local startup closed during preparation')
@@ -107,6 +112,26 @@ class LocalBrowserOwner:
             raise
         finally:
             self._starting = None
+
+    async def _start_browser(self):
+        """Allocate only when the selected UI provider has completed readiness."""
+        self.browser = self.browser_factory(inspection=self.inspection, headless=False)
+        self.session = await self.browser.start()
+        response = await self.session.page.goto(self.home_url, wait_until='load')
+        if response is None or response.status != 200:
+            raise RuntimeError('Agent home did not load')
+        self._tab_prefix = [self.session.page]
+        if self.tracing is not None and self.tracing.viewer_url:
+            tracing_page = await self.session.context.new_page()
+            await self.tracing.login(tracing_page)
+            self._tab_prefix.append(tracing_page)
+        flow_page = await self.session.context.new_page()
+        response = await flow_page.goto(self.flow_url, wait_until='load')
+        if response is None or response.status != 200:
+            raise RuntimeError('Selected workflow view did not load')
+        self._tab_prefix.append(flow_page)
+        if self.closed:
+            raise RuntimeError('Local startup closed during preparation')
 
     async def _verify_ui(self, borrowed, original, flow_page):
         session = borrowed.session

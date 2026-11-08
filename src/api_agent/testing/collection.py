@@ -282,6 +282,11 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
     collected = {}
     for root, paths in suites.items():
         repo = labels[root]
+        unit_exclusions = set()
+        if mode == 'unit':
+            for layer in getattr(context, 'pack_layers', ()) or (context,):
+                if Path(layer.owner_root).resolve() == root:
+                    unit_exclusions.update(getattr(layer, 'unit_exclude_markers', ()))
         with tempfile.TemporaryDirectory(prefix="api-agent-collect-") as temporary:
             output = Path(temporary) / "collection.json"
             args = [sys.executable, "-c", _PLUGIN, str(output), "--collect-only", "-q", "-o", "addopts=", "--rootdir", str(root)]
@@ -297,6 +302,8 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
                 if not rows and root == base and mode == "unit":
                     raise CollectionError(f"No tests collected in base unit suite: {base / 'tests/unit'}")
                 for row in rows:
+                    if unit_exclusions.intersection(row['tags']):
+                        continue
                     node = row["node_id"]
                     identity = TestIdentity(f"{repo}::{node}", repo, node.split("::", 1)[0], node, frozenset(row["tags"]), root if root not in {base, owner} else None, features=row.get("features", []), platforms=row.get("platforms", []))
                     file, _, suffix = node.partition('::')

@@ -24,7 +24,7 @@ def local(tmp_path):
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
     definition = SimpleNamespace(definition_id='selected-definition')
     prepared = (definition, object(), False, object(), {})
-    application_factory = Mock(return_value=Mock(timeouts={}))
+    application_factory = Mock(return_value=SimpleNamespace(timeouts={}))
     runtime = SimpleNamespace(emissions=EmissionBoundary(ContentPolicy()), services={}, tracing=None)
     session = SimpleNamespace(callback=SimpleNamespace(origin='https://localhost:8443'), runtime=runtime,
                               infrastructure=None, listener=None)
@@ -68,6 +68,28 @@ def test_start_freezes_selected_definition_and_stop_releases_reverse(local):
         assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
         assert local.owner.snapshot.phase == 'stopped'
         assert any(event.kind == 'log' and 'ready' in event.text for event in local.events)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('startup_failure', [False, True])
+def test_application_resources_close_after_operation_or_failed_startup(local, startup_failure):
+    local.application_factory.return_value.aclose = AsyncMock(
+        side_effect=lambda: local.calls.append('application-stop'))
+    if startup_failure:
+        local.owner.plan_factory.side_effect = ValueError('planning failed')
+
+    async def run():
+        if startup_failure:
+            with pytest.raises(ValueError, match='planning failed'):
+                await local.owner.start()
+            assert local.calls == ['application-stop']
+        else:
+            await local.owner.start()
+            await local.owner.aclose()
+            assert local.calls[-2:] == ['operation-stop', 'application-stop']
+        await local.owner.aclose()
+        local.application_factory.return_value.aclose.assert_awaited_once()
+
     asyncio.run(run())
 
 
@@ -1648,3 +1670,25 @@ def test_direct_operation_resolves_relative_tracing_provider_under_owner_root(tm
     assert plan.profiles==('otel',)
     assert plan.services==('jaeger',)
     forbidden.assert_not_called()
+
+
+def test_ui_preparation_gets_full_budget_after_earlier_startup(local, monkeypatch):
+    from api_agent.providers import progress
+    clock = [1000.0]
+    monkeypatch.setattr(progress, '_clock', lambda: clock[0])
+    local.config.values['UI_PREPARATION_TIMEOUT_SECONDS'] = 600
+    earlier = local.owner.plan_factory
+    def slow_plan(*args, **kwargs):
+        clock[0] += 120
+        return earlier(*args, **kwargs)
+    local.owner.plan_factory = slow_plan
+    observed = []
+    async def start_ui():
+        async with progress.component_timeout('Controlled UI preparation', 600) as budget:
+            observed.append(budget.timeout)
+    local.browser.start = start_ui
+    async def run():
+        await local.owner.start()
+        await local.owner.aclose()
+    asyncio.run(run())
+    assert observed == [600]

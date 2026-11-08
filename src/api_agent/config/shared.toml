@@ -83,6 +83,15 @@ default = "../api-agent"
 pack_only = true
 help = "Base runtime location, resolved relative to the pack root."
 
+[fields.E2E_COVERAGE]
+type = "bool"
+default = false
+acknowledge_default = false
+help = "Collect diagnostic application statement/branch coverage, including Python server children. Requires process-local --e2e-reruns 0 and eight parallel workers; reports are separate from the unchanged unit coverage gate."
+[fields.E2E_COVERAGE.applies_when]
+TUI_MODE = "e2e"
+COLLECT_ONLY = false
+
 [fields.E2E_RERUNS]
 help = "E2E confirmations after an initial failure: every configured confirmation must pass; stop at the first unsuccessful confirmation. Initial passes never repeat. Empty or 0 disables confirmations. Unit and integration tests never repeat. E2E execution requires explicit acceptance."
 type = "int"

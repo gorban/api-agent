@@ -54,6 +54,7 @@ class LaunchContext:
     tooling_pack_root: Path | None = None
     tooling_base_root: Path | None = None
     tooling_library_files: frozenset[str] | None = None
+    unit_exclude_markers: tuple[str, ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -271,8 +272,14 @@ def load_launch_context(
     declared_tests = data.get("tests", {})
     if not isinstance(defaults, dict) or not isinstance(declared_tests, dict):
         raise ResourcePackError("Resource-pack defaults and tests must be TOML tables")
-    if set(declared_tests) - {"unit", "integration", "e2e"}:
+    if set(declared_tests) - {"unit", "integration", "e2e", "unit_exclude_markers"}:
         raise ResourcePackError("Resource-pack tests contains an unknown test mode")
+    unit_exclude_markers = declared_tests.get('unit_exclude_markers', [])
+    if (type(unit_exclude_markers) is not list or len(unit_exclude_markers) > 64
+            or any(type(marker) is not str or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', marker)
+                   for marker in unit_exclude_markers)
+            or len(set(unit_exclude_markers)) != len(unit_exclude_markers)):
+        raise ResourcePackError('tests.unit_exclude_markers requires unique marker identifiers')
     production = data.get("production", [])
     if not isinstance(production, list):
         raise ResourcePackError('Resource-pack production must list relative source directories')
@@ -313,6 +320,8 @@ def load_launch_context(
             raise ResourcePackError("authentication.identity.path must be included in production coverage directories")
     tests: dict[str, tuple[Path, ...]] = {}
     for mode, paths in declared_tests.items():
+        if mode == 'unit_exclude_markers':
+            continue
         if not isinstance(paths, list):
             raise ResourcePackError(f"tests.{mode} must be an array of relative paths")
         tests[mode] = tuple(_relative_path(path, owner, f"tests.{mode}") for path in paths)
@@ -337,6 +346,7 @@ def load_launch_context(
         tooling_pack_root=pack if tooling is not None else None,
         tooling_base_root=tooling_base_root,
         tooling_library_files=tooling_library_files,
+        unit_exclude_markers=tuple(unit_exclude_markers),
         inventory_sources=tuple(inventory_sources),
         composition_replacements=composition_replacements,
     )

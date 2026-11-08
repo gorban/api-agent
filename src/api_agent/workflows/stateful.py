@@ -118,6 +118,7 @@ class StatefulDefinition:
     selected_declarations: object = None
     declaration_fragments: object = None
     tool_usages: tuple[ToolUsage, ...] = ()
+    application_binding: tuple[str, Path] | None = None
 
     def verify_sources(self):
         for path, admitted in self.contents.items():
@@ -156,7 +157,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
         raise LayoutError(f'{entry}:1: expected Workflow v3 heading')
     _, sections = _sections(entry, contents[entry])
     required = {'Graph ID', 'State', 'Flow', 'Edges'}
-    if not required <= set(sections) or set(sections) - required - {'Native Sources', 'Native Dependencies', 'Resources', 'Timeouts', 'Tools'}:
+    if not required <= set(sections) or set(sections) - required - {'Native Sources', 'Native Dependencies', 'Native Dependency Manifests', 'Resources', 'Timeouts', 'Tools', 'Application'}:
         raise LayoutError(f'{entry}:1: missing required section')
     identity = _shared_table(entry, sections['Graph ID'], ('ID',))
     state = _shared_table(entry, sections['State'], ('Registry', 'Source'))
@@ -214,6 +215,12 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
             tool_usages.append(ToolUsage(scope, port, target, scope_kind, owner, row['line'], _tool_operations(owner, row, scope_kind)))
     capture_tools(entry, 'graph', identity[0]['ID'], sections)
     state_source = source(state[0])
+    application_binding = None
+    if 'Application' in sections:
+        application = _shared_table(entry, sections['Application'], ('Registry', 'Source'))
+        if len(application) != 1 or not _PY_ID.fullmatch(application[0]['Registry']):
+            raise LayoutError(f'{entry}:1: invalid application binding')
+        application_binding = (application[0]['Registry'], source(application[0]))
     declared_resources = {}
     if 'Resources' in sections:
         for row in _shared_table(entry, sections['Resources'], ('ID', 'Kind', 'Source')):
@@ -240,19 +247,37 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
         if len(helpers) != len(set(helpers)):
             raise LayoutError(f'{entry}:1: duplicate native helper source')
     dependencies = {}
+    def dependency(module, row):
+        if (not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*', module)
+                or module in dependencies):
+            raise LayoutError(f'{entry}:{row["line"]}: invalid native dependency module')
+        path = source(row)
+        if not any(path == (base / Path(*module.split('.'))).with_suffix('.py')
+                   or path == base / Path(*module.split('.')) / '__init__.py'
+                   for root in roots.values() for base in (root, root / 'src')):
+            raise LayoutError(f'{entry}:{row["line"]}: dependency source does not match module')
+        kinds[path] = 'native_dependency'
+        dependencies[module] = path
     if 'Native Dependencies' in sections:
         for row in _shared_table(entry, sections['Native Dependencies'], ('Module', 'Source')):
-            module = row['Module']
-            if (not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*', module)
-                    or module in dependencies):
-                raise LayoutError(f'{entry}:{row["line"]}: invalid native dependency module')
-            path = source(row)
-            if not any(path == (base / Path(*module.split('.'))).with_suffix('.py')
-                       or path == base / Path(*module.split('.')) / '__init__.py'
-                       for root in roots.values() for base in (root, root / 'src')):
-                raise LayoutError(f'{entry}:{row["line"]}: dependency source does not match module')
-            kinds[path] = 'native_dependency'
-            dependencies[module] = path
+            dependency(row['Module'], row)
+    for row in _shared_table(entry, sections.get('Native Dependency Manifests', []), ('Source',)):
+        manifest = linked(row)
+        if manifest.suffix != '.toml' or manifest in kinds:
+            raise LayoutError(f'{entry}:{row["line"]}: invalid native dependency manifest')
+        contents[manifest] = read(manifest)
+        kinds[manifest] = 'configuration'
+        try:
+            declaration = tomllib.loads(contents[manifest].decode('utf-8'))
+        except (ValueError, UnicodeError) as error:
+            raise LayoutError(f'{manifest}:1: invalid native dependency manifest') from error
+        if (set(declaration) != {'version', 'modules'}
+                or type(declaration['version']) is not int or declaration['version'] != 1
+                or type(declaration['modules']) is not dict
+                or any(type(value) is not str for value in declaration['modules'].values())):
+            raise LayoutError(f'{manifest}:1: invalid native dependency manifest')
+        for module, location in declaration['modules'].items():
+            dependency(module, {'Source': f'[Python]({location})', '_owner': manifest, 'line': 1})
     nodes = []
     steps = []
     selected_declarations = {}
@@ -412,7 +437,7 @@ def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), en
                                     state[0]['Registry'], state_source,
                                     tuple(_freeze(row) for row in nodes), tuple(_freeze(row) for row in edges),
                                     MappingProxyType(contents), definition_id, layout,
-                                    MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages))
+                                    MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages), application_binding)
     _validated_timeouts(definition)
     return definition
 
@@ -462,6 +487,8 @@ def load_stateful_catalog(definition, *, packaged_proof=None, config=None):
     result = {}
     sources = {definition.schema_source, *(row['Source'] for row in definition.nodes),
                *(row['Source'] for row in definition.edges if row['Source'] is not None)}
+    if definition.application_binding is not None:
+        sources.add(definition.application_binding[1])
     def local_module_path(module):
         parts = Path(*module.split('.'))
         for root in definition.roots.values():

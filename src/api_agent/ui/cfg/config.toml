@@ -17,3 +17,10 @@ anchor = "owner_root"
 required = false
 acknowledge_default = false
 help = "The included Studio uses its packaged frontend resources without an external UI source directory. Other UI providers may declare a required source location."
+
+[fields.UI_PREPARATION_TIMEOUT_SECONDS]
+type = "int"
+default = 60
+validation = "positive"
+acknowledge_default = false
+help = "Total selected UI preparation timeout in seconds."

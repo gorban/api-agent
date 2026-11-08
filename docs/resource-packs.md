@@ -113,6 +113,11 @@ Paths and symlinked content must remain inside the provider root. Keep
 selection-dependent tests outside shared/pack suite roots, which are always
 collected. Discovery deduplicates physical file/function/parameter identities.
 
+A pack with mixed unit and integration modules can declare
+`tests.unit_exclude_markers = ["network"]` in its manifest. These explicit marker
+identifiers affect only that owner's unit collection, including when composed;
+they do not change other owners, integration/E2E selection or coverage targets.
+
 Put generic integrations in api-agent, provider-specific assertions with their
 provider, and application-specific assertions with the pack. Test parameters
 should have readable IDs. See [configuration coverage](development.md#configuration-coverage)
@@ -237,3 +242,63 @@ call leaves. The host derives admission from the selected graph definition and
 that case's configuration before workers execute. A journal without matching
 admission remains unverified and its accounting leaves remain unknown; journal
 contents never establish their own admission.
+
+## Stateful application adapters
+
+A v3 workflow can explicitly admit its application adapter alongside the state
+schema and node bindings. Ordinary Run local requires this binding for a
+stateful graph; workflow-only admission does not invent an HTTP adapter.
+
+```markdown
+## Application
+
+| Registry | Source |
+| --- | --- |
+| create_application | [Python](application.py) |
+```
+
+The synchronous factory receives the admitted `definition` and resolved
+`config`. Its object retains that same definition, provides asynchronous
+`complete(request, *, llm, context)`, a `timeouts` mapping and a boolean
+`requires_api`. The runtime supplies observation ownership and the selected
+identity-bound LLM. Adapters can read the existing task-local execution and turn
+context; they must not invent conversation identities from prompt text.
+An optional asynchronous `aclose()` releases application-owned resources. Run
+local retains it immediately after construction and closes it after the serving
+operation drains, including when later startup fails. Unfinished disposal keeps
+the ordinary cleanup receipt available for retry.
+
+An optional `project_result(base_result)` callback enriches JSON display fields
+at the HTTP boundary. It may replace `response_text`, but must preserve all
+other standard result fields, including session identity and usage. Projection
+receives an independent copy, must return valid JSON within the 1 MiB result
+budget, and fails closed on invalid output. The framework calls the explicitly
+selected callback; it does not interpret arbitrary model text as an application
+envelope. The callback is also available to the selected UI composition through
+the `workflow_application` service.
+
+An owner-specific native closure can be declared through captured TOML rather
+than dynamic imports:
+
+```markdown
+## Native Dependency Manifests
+
+| Source |
+| --- |
+| [TOML](<resource_pack>/application/dependencies.toml) |
+```
+
+Each manifest has `version = 1` and a `[modules]` mapping from Python module names
+to source paths relative to that manifest. For example:
+
+```toml
+version = 1
+[modules]
+"example_adapter" = "../example_adapter.py"
+```
+
+Manifest bytes and all dependency source bytes participate in immutable
+admission, snapshot size limits and provenance. Sources must remain inside the
+declared roots and match their module paths; conflicting modules, malformed
+manifests and changed admitted bytes fail before factory execution. This is an
+explicit packaging closure, not permission to import unlisted local modules.
