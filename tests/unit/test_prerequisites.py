@@ -47,6 +47,7 @@ class Engine:
         self.fail_hook = False
         self.image_inspections = {}
         self.volume_labels = None
+        self.networks = set()
 
     def add(self, name, *, fingerprint=None, image=None, image_id=None, running=True, foreign=False, profile=None):
         self.counter += 1
@@ -78,6 +79,17 @@ class Engine:
 
     def run(self, command, **kwargs):
         self.commands.append((command, kwargs))
+        if command[1:3] == ('network', 'prune'): return ''
+        if command[1:3] == ('network', 'ls'):
+            name = self.owner.scope.project + '_default'
+            return name if name in self.networks else ''
+        if command[1:3] == ('network', 'create'):
+            self.networks.add(command[-1])
+            return 'a' * 64
+        if command[1:3] == ('network', 'inspect'):
+            return json.dumps([{'Name': command[3], 'Labels': {
+                'com.docker.compose.project': self.owner.scope.project,
+                'com.docker.compose.network': 'default'}}])
         if command[1] == 'ps': return '\n'.join(self.records)
         if command[1] == 'inspect': return json.dumps([self.records[item] for item in command[2:]])
         if command[1:3] == ('image', 'inspect'):
@@ -921,7 +933,9 @@ state_path=Path(STATE_PATH)
 metadata_path=Path(METADATA_PATH)
 records=json.loads(state_path.read_text())
 args=sys.argv[1:]
-if args[0]=='ps':
+if args[0]=='network':
+ pass
+elif args[0]=='ps':
  print('\\n'.join(records))
 elif args[0]=='inspect':
  print(json.dumps([records[item] for item in args[1:]]))
@@ -1546,7 +1560,8 @@ def test_concurrent_manager_rollback_retries_recheck_state_under_lock(setup, mon
     barrier = threading.Barrier(2)
     @contextmanager
     def synchronized(*args, **kwargs):
-        barrier.wait(timeout=5)
+        if args[0] == manager.directory:
+            barrier.wait(timeout=5)
         with locked(*args, **kwargs):
             yield
     monkeypatch.setattr(p, '_locked', synchronized)

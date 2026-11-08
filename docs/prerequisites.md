@@ -88,6 +88,32 @@ provider or inaccessible engine needs fixing before selecting container features
 Shared local report infrastructure additionally requires a local Unix socket,
 not an arbitrary remote engine endpoint.
 
+## Managed network cleanup
+
+The launcher creates missing managed default networks with an explicit cleanup
+ownership marker and Compose project/network labels before starting Compose.
+It verifies existing networks' Compose ownership and leaves their labels and
+configuration unchanged; this avoids a network migration on upgrade.
+While holding the stack lease lock, ordinary release and
+failed-start rollback prune only unused networks carrying that marker and the
+current scope encoded in a single cleanup label. Retained containers, including stopped containers, keep
+their networks. Named volumes and container definitions are preserved.
+
+Before acquiring a managed stack, the launcher also prunes unused networks with
+the cleanup marker that were created more than 24 hours ago. This reclaims
+orphaned networks from abandoned or relocated checkouts while allowing concurrent
+Compose startups time to attach their containers. Network creation and cleanup
+also share a per-user lock across checkouts and engine aliases, preventing cleanup from racing a
+managed startup that is reattaching an older empty network. Cleanup uses the selected
+engine/context and its native network-prune operation; it never runs system or
+volume pruning. Unrelated networks and older networks without the explicit
+cleanup marker are left alone, regardless of their names.
+
+If older unlabelled networks exhaust the engine's address pools, inspect them
+with `docker network ls`. A one-time `docker network prune` removes all networks
+unused by any container, including manually created unused networks; review its
+confirmation before accepting. The launcher does not perform that broad cleanup.
+
 ## Other conditional requirements
 
 Other downloadable tools are prepared at their existing operation boundaries,

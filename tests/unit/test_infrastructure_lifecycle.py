@@ -35,10 +35,22 @@ class Engine:
         self.fail_stop = False
         self.readiness = True
         self.seed_readiness = True
+        self.networks = set()
 
     def run(self, command, **kwargs):
         self.calls.append((command, kwargs))
         manager = self.manager
+        if command[1:3] == ('network', 'prune'): return ''
+        if command[1:3] == ('network', 'ls'):
+            name = manager.scope.project + '_default'
+            return name if name in self.networks else ''
+        if command[1:3] == ('network', 'create'):
+            self.networks.add(command[-1])
+            return 'a' * 64
+        if command[1:3] == ('network', 'inspect'):
+            return json.dumps([{'Name': command[3], 'Labels': {
+                'com.docker.compose.project': manager.scope.project,
+                'com.docker.compose.network': 'default'}}])
         if command[1] == 'ps': return '\n'.join(self.records)
         if command[1] == 'inspect': return json.dumps([self.records[key] for key in command[2:]])
         if command[1:3] == ('image', 'inspect'):

@@ -680,9 +680,68 @@ class PrerequisiteManager:
                 raise PrerequisiteError("Selected engine unavailable or identity changed.") from None
 
     def _command(self, args, deadline, *, cleanup=False):
-        self._verify_engine(cleanup=cleanup)
-        return self.runner(tuple(args), environment=self.environment, directory=self.plan.directory,
-            deadline=deadline, cancelled=(lambda: False) if cleanup else self.cancelled, now=self.now)
+        # Serialize network creation and pruning across checkouts/scopes on this
+        # user. Different PATH/context aliases can reach the same engine, so a
+        # per-user lock is deliberately more conservative than engine_id here.
+        # Age is creation time, not last use: even an old empty network
+        # may be in the middle of being reattached by another Compose invocation.
+        changes_networks = (args[1:3] == ('network', 'prune')
+                            or (args[1] == 'compose' and 'up' in args))
+        lock = (_locked(Path.home() / '.cache/api-agent/network-locks',
+                    SimpleNamespace(id='managed-networks'),
+                    deadline=time.monotonic() + max(0, deadline - self.now()),
+                    cancelled=(lambda: False) if cleanup else self.cancelled,
+                    now=time.monotonic, sleep=time.sleep) if changes_networks else nullcontext())
+        with lock:
+            self._verify_engine(cleanup=cleanup)
+            if args[1] == 'compose' and 'up' in args:
+                self._prepare_network(deadline)
+            return self.runner(tuple(args), environment=self.environment, directory=self.plan.directory,
+                deadline=deadline, cancelled=(lambda: False) if cleanup else self.cancelled, now=self.now)
+
+    def _prepare_network(self, deadline):
+        # Keep the Compose declaration unchanged: adding labels there changes its
+        # network hash and may recreate an existing network on upgrade. Explicit
+        # creation marks only NEW networks, with Compose's normal ownership labels
+        # but no config hash. Compose can adopt those without a migration.
+        name = self.scope.project + '_default'
+        found = self._command((self.plan.command[0], 'network', 'ls', '--filter',
+            'name=^' + name + '$', '--format', '{{.Name}}'), deadline).split()
+        if found:
+            if found != [name]:
+                raise PrerequisiteError('Unexpected prerequisite network inventory; no network was changed.')
+            try:
+                record, = json.loads(self._command(
+                    (self.plan.command[0], 'network', 'inspect', name), deadline))
+                labels = record.get('Labels', record.get('labels'))
+                if (record.get('Name', record.get('name')) != name
+                        or not isinstance(labels, dict)
+                        or labels.get('com.docker.compose.project') != self.scope.project
+                        or labels.get('com.docker.compose.network') != 'default'):
+                    raise ValueError()
+            except (ValueError, TypeError, AttributeError) as error:
+                raise PrerequisiteError('Existing prerequisite network ownership could not be verified; no network was changed.') from error
+            return
+        self._command((self.plan.command[0], 'network', 'create',
+            '--label', 'api-agent.network-cleanup-v1=' + self.scope.id,
+            '--label', 'api-agent.managed=true',
+            '--label', 'api-agent.scope=' + self.scope.id,
+            '--label', 'com.docker.compose.project=' + self.scope.project,
+            '--label', 'com.docker.compose.network=default', name), deadline)
+
+    def _prune_networks(self, deadline, *, aged=False):
+        if not self.plan.enabled:
+            return
+        # Engine pruning atomically excludes networks referenced by containers,
+        # including stopped ones. Never use name prefixes as ownership evidence.
+        # Across scopes, leave a full day for in-progress Compose creation. The
+        # immediate current-scope cleanup runs under its acquisition/release lock.
+        # Docker ORs repeated label filters; encode scope and opt-in in ONE label.
+        label = 'label=api-agent.network-cleanup-v1'
+        command = (self.plan.command[0], 'network', 'prune', '--force', '--filter',
+                   label if aged else label + '=' + self.scope.id)
+        self._command(command + (('--filter', 'until=24h') if aged else ()),
+                      deadline, cleanup=not aged)
 
     def _inventory(self, deadline, *, cleanup=False):
         executable = self.plan.command[0]
@@ -1071,6 +1130,7 @@ class PrerequisiteManager:
         journal = dict(journal)
         journal.pop(invocation, None)
         stopped = self._stop_new(newly, journal, deadline)
+        self._prune_networks(deadline)
         _write_journal(self.directory, self.scope, journal)
         if snapshot is not None and not newly:
             shutil.rmtree(snapshot)
@@ -1133,6 +1193,7 @@ class PrerequisiteManager:
                 identifiers = tuple(sorted(identifier for identifier, _ in missing_captures))
                 raise MissingCapturedAssetsError(missing_captured_assets_message(identifiers,
                     executable=self.plan.command[0], project=self.scope.project)) from missing_captures[0][1].__cause__
+            self._prune_networks(deadline, aged=True)
             existing = {name: item for name, item in compatible.items() if item.running}
             restarted = {item.id for item in compatible.values() if not item.running}
             protected = _leased_ids(journal)
@@ -1282,6 +1343,8 @@ class PrerequisiteManager:
                 stopped = eligible
             else:
                 stopped = () if retain else self._stop_new(tuple(sorted(set(self.lease.owned_ids) | cleanup_ids)), journal, deadline)
+            if not retain:
+                self._prune_networks(deadline)
             _write_journal(self.directory, self.scope, journal)
             # Both running and stopped container definitions keep their original
             # bind source. Removal/asset garbage collection requires an explicit
