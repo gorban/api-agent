@@ -80,7 +80,13 @@ def _text_parts(value):
 
 
 def _message(row):
-    if type(row) is not dict or row.get('role') not in ('system', 'user', 'assistant', 'tool', 'developer'):
+    if type(row) is not dict:
+        return None
+    role = row.get('role')
+    if role is None:
+        kind = row.get('type')
+        role = {'human': 'user', 'ai': 'assistant'}.get(kind, kind) if type(kind) is str else None
+    if role not in ('system', 'user', 'assistant', 'tool', 'developer'):
         return None
     parts = _text_parts(row.get('text', row.get('content')))
     for call in row.get('tool_calls', row.get('calls', [])) if type(row.get('tool_calls', row.get('calls', []))) is list else []:
@@ -90,15 +96,15 @@ def _message(row):
         if type(function) is dict and type(function.get('name')) is str:
             parts.append({'type':'tool_call', 'name':function['name'],
                 **({'id':call['id']} if type(call.get('id')) is str else {}),
-                **({'arguments':function['arguments']} if 'arguments' in function else {})})
+                **({'arguments':function.get('arguments', function.get('args'))} if 'arguments' in function or 'args' in function else {})})
     for result in row.get('results', []) if type(row.get('results')) is list else []:
         if type(result) is dict and type(result.get('id')) is str:
             parts.append({'type':'tool_call_response','id':result['id'],
                           'response':result.get('content', [])})
-    if row['role']=='tool' and type(row.get('tool_call_id')) is str:
+    if role=='tool' and type(row.get('tool_call_id')) is str:
         parts=[{'type':'tool_call_response','id':row['tool_call_id'],
                 'response':row.get('content','')}]
-    return {'role':row['role'], 'parts':parts} if parts else None
+    return {'role':role, 'parts':parts} if parts else None
 
 
 def genai_messages(direction, value):
@@ -116,6 +122,8 @@ def genai_messages(direction, value):
     value = value.get('provider_payload' if direction=='input' else 'provider_response', value)
     if type(value) is not dict:
         return None
+    if direction=='output' and _message(value) is not None:
+        return [_message(value)]
     if direction=='output' and type(value.get('text')) is str:
         return [{'role':'assistant','parts':[{'type':'text','content':value['text']}]}]
     rows = value.get('messages')
@@ -133,6 +141,11 @@ def genai_messages(direction, value):
         if type(rows) is str:
             rows=[{'role':'user','content':rows}]
     if type(rows) is not list or len(rows)>256:
+        return None
+    # LangChain batches one conversation inside messages; flatten only that
+    # documented container and keep the same total message admission bound.
+    rows = [message for row in rows for message in (row if type(row) is list else [row])]
+    if len(rows) > 256:
         return None
     result=[]
     if direction=='input':

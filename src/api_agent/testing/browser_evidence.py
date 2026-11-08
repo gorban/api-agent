@@ -19,7 +19,7 @@ PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 
 
 async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None,
-                              phase='failure', exclude_pages=(), capture_timeout_seconds=5,
+                              phase='failure', exclude_pages=(), capture_timeout_seconds=10,
                               allow_masked_content=False):
     """Submit immutable attachments before caller-owned browser teardown.
 
@@ -30,6 +30,8 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
     preparation belongs to the caller, before this function.
     ``allow_masked_content`` opts in an owned provider policy to produce bounded
     masked pixels while content logging is off; the default remains no capture.
+    The default ten-second page budget includes original-pixel safety audits
+    and restoration. Callers may explicitly select one through twenty seconds.
 
     ``submit((title, bytes, MIME))`` is synchronous, bounded and nonblocking;
     the caller binds it to the current test/attempt's immutable recording path.

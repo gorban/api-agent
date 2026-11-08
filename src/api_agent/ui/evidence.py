@@ -6,10 +6,18 @@ contract. This opt-in captures original application pixels; literal credential
 checks do not certify arbitrary pixels painted by application scripts. Provider
 authentication pages and unknown frames remain outside the capture contract.
 """
+import asyncio
+import base64
+import json
+import math
 from dataclasses import dataclass
+from functools import wraps
 from time import monotonic
 from urllib.parse import unquote, urljoin, urlsplit
 from uuid import uuid4
+
+from api_agent.providers.control import finish_cleanup
+from api_agent.providers.progress import component_timeout
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +68,7 @@ def _valid_owned_chrome(chrome):
 _TRUSTED_ICONS = ['<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>', '<svg viewBox="0 0 24 24" width="23" height="23" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9.5 3-.7 2.2-2 .9-2.1-.5-2.5 4.3 1.5 1.7v2.3l-1.5 1.7 2.5 4.3 2.1-.5 2 .9.7 2.2h5l.7-2.2 2-.9 2.1.5 2.5-4.3-1.5-1.7v-2.3l1.5-1.7-2.5-4.3-2.1.5-2-.9-.7-2.2z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3.3"/></svg>']
 
 
-_PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOwned, chromeConfig, contentMaskSelector}) => {
+_PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOwned, chromeConfig, contentMaskSelector, preserveContentFocus=false}) => {
   const saved = new Map(), masks = new Map();
   const ownedHosts = new Set(ownedShadowSelector ? document.querySelectorAll(ownedShadowSelector) : []);
   const chromeRoots = chromeOwned ? [...ownedHosts] : [];
@@ -164,9 +172,6 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
   }
   if (nodes.length > 10000) return {saved, reason:'node_budget'};
   const contentRoots = nodes.filter(node => contentMaskSelector && node.matches(contentMaskSelector));
-  const layout = contentRoots.length ? nodes.filter(node =>
-    !contentRoots.some(root => root !== node && composedContains(root, node)))
-    .map(node => [node, node.getBoundingClientRect().toJSON()]) : [];
   const pseudos = ['::before','::after','::marker','::backdrop','::file-selector-button',
     '::first-letter','::first-line','::placeholder'];
   const urlProperties = [...new Set([
@@ -183,6 +188,71 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
     /url\s*\(/i.test(computed.getPropertyValue(property)));
   let restoreFocus = () => {};
   try {
+  // Read every admission decision before writing styles: reactive selectors
+  // must never turn an originally ordinary surface into an excluded subtree.
+  const plans = new Map();
+  for (const node of nodes) {
+    const computed = getComputedStyle(node);
+    const contentMasked = !!contentMaskSelector && node.matches(contentMaskSelector);
+    const pseudoStyles = pseudos.map(pseudo => getComputedStyle(node, pseudo));
+    const cssUrl = [computed, ...pseudoStyles].some(hasUrl);
+    const effects = ['filter','backdrop-filter','-webkit-box-reflect'].filter(property => {
+      const value = computed.getPropertyValue(property);
+      return value && value !== 'none';
+    });
+    const opaque = cssUrl || (!!node.shadowRoot && !ownedHosts.has(node)) ||
+      authentication(node) || (node.matches('iframe,frame') ?
+        !(ownedFrameSelector && node.matches(ownedFrameSelector)) :
+        (node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript') && !staticImage(node))) ||
+      (node.localName === 'svg' && !(insideChrome(node) && chromeConfig.svgSelector &&
+        node.matches(chromeConfig.svgSelector) && !node.querySelector('foreignObject,image,filter,script')) && !icons.includes(node.outerHTML) && !buttonIcon(node));
+    const size = (axis, edges) => Math.max(0, (parseFloat(computed[axis]) || 0) -
+      (computed.boxSizing === 'border-box' ? edges.reduce((sum, edge) =>
+        sum + (parseFloat(computed[edge]) || 0), 0) : 0));
+    plans.set(node, {contentMasked, effects, opaque, display:computed.display,
+      intrinsic:size('width', ['paddingLeft','paddingRight','borderLeftWidth','borderRightWidth']) + 'px ' +
+        size('height', ['paddingTop','paddingBottom','borderTopWidth','borderBottomWidth']) + 'px'});
+  }
+  const isolatedRoots = nodes.filter(node => plans.get(node).opaque || plans.get(node).contentMasked);
+  const paintProtected = new Set(nodes.filter(node => isolatedRoots.some(root => composedContains(root, node))));
+  const geometryProtected = new Set(nodes.filter(node => isolatedRoots.some(root => root !== node && composedContains(root, node))));
+  const layout = nodes.filter(node => !geometryProtected.has(node))
+    .map(node => [node, node.getBoundingClientRect().toJSON()]);
+  // Snapshot original paint before any inline override or capture-induced blur.
+  // Shared property names keep the bounded value snapshots compact. Pseudos
+  // matter too: authored selectors can react without changing box geometry.
+  const paintProperties = [...getComputedStyle(document.documentElement)]
+    .filter(property => !property.startsWith('--'));
+  if (paintProperties.length > 1024) return {saved, urlProperties, reason:'paint_budget'};
+  const paintScopes = [null, ...pseudos], paint = [];
+  const ownAnimations = node => node.getAnimations({subtree:true})
+    .filter(animation => animation.effect?.target === node);
+  const effectSignature = animation => JSON.stringify({
+    keyframes:animation.effect?.getKeyframes(), timing:animation.effect?.getTiming()});
+  let paintBytes = 0;
+  for (const node of nodes) {
+    if (paintProtected.has(node)) continue;
+    let nodeBytes = 0;
+    const values = paintScopes.map(pseudo => {
+      const computed = getComputedStyle(node, pseudo);
+      return paintProperties.map(property => {
+        const value = computed.getPropertyValue(property);
+        nodeBytes += value.length * 2;
+        return value;
+      });
+    });
+    const animations = ownAnimations(node);
+    if (animations.length > 1024) return {saved, urlProperties, reason:'paint_budget'};
+    const effects = animations.map(animation => {
+      const signature = effectSignature(animation);
+      nodeBytes += signature.length * 2;
+      return [animation, animation.effect, signature];
+    });
+    paintBytes += nodeBytes;
+    if (nodeBytes > 131072 || paintBytes > 67108864)
+      return {saved, urlProperties, reason:'paint_budget'};
+    paint.push([node, values, effects]);
+  }
   for (const node of nodes) {
     const backdrop = getComputedStyle(node, '::backdrop');
     if (hasUrl(backdrop) || (backdrop.content && !['none','normal'].includes(backdrop.content)))
@@ -210,37 +280,19 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
     focused.focus({preventScroll:true});
   };
   for (const node of nodes) {
-    const computed = getComputedStyle(node);
-    const contentMasked = !!contentMaskSelector && node.matches(contentMaskSelector);
-    const pseudoStyles = pseudos.map(pseudo => getComputedStyle(node, pseudo));
-    const cssUrl = [computed, ...pseudoStyles].some(hasUrl);
-    const effects = ['filter','backdrop-filter','-webkit-box-reflect'].filter(property => {
-      const value = computed.getPropertyValue(property);
-      return value && value !== 'none';
-    });
-    const opaque = cssUrl || (!!node.shadowRoot && !ownedHosts.has(node)) ||
-      authentication(node) || (node.matches('iframe,frame') ?
-        !(ownedFrameSelector && node.matches(ownedFrameSelector)) :
-        (node.matches('img,picture,canvas,object,embed,video,audio,script,style,template,noscript') && !staticImage(node))) ||
-      (node.localName === 'svg' && !(insideChrome(node) && chromeConfig.svgSelector &&
-        node.matches(chromeConfig.svgSelector) && !node.querySelector('foreignObject,image,filter,script')) && !icons.includes(node.outerHTML) && !buttonIcon(node));
-    if (opaque || contentMasked) focusHidden ||= containsFocus(node);
-    if ((opaque || contentMasked) && computed.display === 'contents') throw 'display_contents';
+    const {contentMasked, effects, opaque, display, intrinsic} = plans.get(node);
+    if (opaque || (contentMasked && !preserveContentFocus)) focusHidden ||= containsFocus(node);
+    if ((opaque || contentMasked) && display === 'contents') throw 'display_contents';
     if (!opaque && !effects.length && !contentMasked) continue;
     const properties = [...new Set([...(opaque ? ['opacity','content-visibility','contain-intrinsic-size','animation','transition'] : []),
-      ...(contentMasked ? ['opacity','clip-path','content-visibility','contain-intrinsic-size'] : []), ...effects])];
+      ...(contentMasked ? ['opacity','clip-path', ...(preserveContentFocus ? [] : ['content-visibility','contain-intrinsic-size'])] : []), ...effects])];
     const originalStyle = node.getAttribute('style');
     const previous = properties.map(property => [property,
       node.style.getPropertyValue(property), node.style.getPropertyPriority(property)]);
     const record = {opaque, previous, originalStyle, preparedStyle:null, overrides:[]};
     saved.set(node, record);
-    if (opaque || contentMasked) {
-      const size = (axis, edges) => Math.max(0, (parseFloat(computed[axis]) || 0) -
-        (computed.boxSizing === 'border-box' ? edges.reduce((sum, edge) =>
-          sum + (parseFloat(computed[edge]) || 0), 0) : 0));
-      node.style.setProperty('contain-intrinsic-size',
-        size('width', ['paddingLeft','paddingRight','borderLeftWidth','borderRightWidth']) + 'px ' +
-        size('height', ['paddingTop','paddingBottom','borderTopWidth','borderBottomWidth']) + 'px', 'important');
+    if (opaque || (contentMasked && !preserveContentFocus)) {
+      node.style.setProperty('contain-intrinsic-size', intrinsic, 'important');
     }
     if (opaque) {
       node.style.setProperty('opacity', '0', 'important');
@@ -249,7 +301,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
       node.style.setProperty('transition', 'none', 'important');
     }
     if (contentMasked) {
-      node.style.setProperty('content-visibility', 'hidden', 'important');
+      if (!preserveContentFocus) node.style.setProperty('content-visibility', 'hidden', 'important');
       node.style.setProperty('opacity', '0', 'important');
       node.style.setProperty('clip-path', 'inset(0)', 'important');
     }
@@ -259,40 +311,83 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
     record.preparedStyle = node.getAttribute('style');
     record.overrides = overrides;
   }
-  // Size containment must not move cards or controls (for example through
-  // collapsed margins). Unsupported authored layouts fail closed.
-  for (const [node, before] of layout) {
-    const after = node.getBoundingClientRect();
-    if (['x','y','width','height'].some(key => Math.abs(after[key] - before[key]) > .02))
-      throw 'content_layout';
+  // Admit every native keyframe, not only the phase painted during inspection.
+  // Native keyframes resolve CSS variables; their bounded literal signatures
+  // join the ordinary credential boundary below. Unsupported future surfaces
+  // remain unavailable even when their current phase is harmless.
+  const effectTexts = new Map();
+  for (const [node, , effects] of paint) {
+    if (paintProtected.has(node)) continue;
+    const literals = effects.map(([, , signature]) => signature);
+    for (const literal of literals) {
+      if (/url\s*\(/i.test(literal)) throw 'css_effect';
+      for (const frame of JSON.parse(literal).keyframes || []) {
+        for (const [name, value] of Object.entries(frame)) {
+          const property = name.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
+          if (['filter','backdrop-filter','webkit-box-reflect','-webkit-box-reflect'].includes(property) &&
+              value && value !== 'none') throw 'css_effect';
+        }
+      }
+    }
+    if (literals.length) effectTexts.set(node, literals);
   }
-  // Playwright masks ignore overflow clipping. Use bounded, invisible proxies
-  // for the visible intersection so tall transcripts cannot cover the composer.
-  for (const node of contentRoots) {
-    const box = maskBox(node), proxy = document.createElement('div');
-    masks.set(proxy, {node, box});
-    for (const [property, value] of Object.entries({position:'fixed', left:box[0]+'px',
-      top:box[1]+'px', width:box[2]+'px', height:box[3]+'px', opacity:'0',
-      margin:'0', padding:'0', border:'0', transform:'none', 'pointer-events':'none'}))
-      proxy.style.setProperty(property, value, 'important');
-    document.documentElement.append(proxy);
-  }
-  return {saved, masks, ownedHosts, chromeRoots, chromeConfig, restoreFocus, urlProperties, reason:null, nodeIds:new WeakMap(), nextNodeId:0, marked:new Set()};
+  const verifyOriginal = () => {
+    // Size containment must not move cards or controls (for example through
+    // collapsed margins). Unsupported authored layouts fail closed.
+    for (const [node, before] of layout) {
+      if (geometryProtected.has(node)) continue;
+      if (!node.isConnected) return 'document_changed';
+      const after = node.getBoundingClientRect();
+      if (['x','y','width','height'].some(key => Math.abs(after[key] - before[key]) > .02))
+        return 'content_layout';
+    }
+    for (const [node, beforeScopes, beforeEffects] of paint) {
+      if (paintProtected.has(node)) continue;
+      const animations = ownAnimations(node);
+      if (animations.length !== beforeEffects.length || animations.some(animation =>
+          !beforeEffects.some(([original, effect, signature]) => original === animation &&
+            effect === animation.effect && signature === effectSignature(animation))))
+        return 'paint_changed';
+      const allowed = new Set(), record = saved.get(node);
+      if (record) {
+        // Let the browser expand only our planned overrides into their canonical
+        // longhands. The detached declaration never enters the authored tree.
+        const declaration = document.createElement('div').style;
+        for (const [property, value, priority] of record.overrides) {
+          declaration.setProperty(property, value, priority); allowed.add(property);
+        }
+        for (const property of declaration) allowed.add(property);
+      }
+      for (const [scopeIndex, pseudo] of paintScopes.entries()) {
+        const computed = getComputedStyle(node, pseudo);
+        for (const [index, property] of paintProperties.entries()) {
+          if (scopeIndex === 0 && allowed.has(property)) continue;
+          if (computed.getPropertyValue(property) !== beforeScopes[scopeIndex][index])
+            return 'paint_changed';
+        }
+      }
+    }
+    return null;
+  };
+  const originalReason = verifyOriginal();
+  if (originalReason) throw originalReason;
+  // Keep clipped intersections keyed by original nodes. Capture planning must
+  // never add DOM whose presence could activate authored selectors.
+  for (const node of contentRoots) masks.set(node, maskBox(node));
+  return {saved, masks, ownedHosts, chromeRoots, chromeConfig, restoreFocus, urlProperties, verifyOriginal, effectTexts, preserveContentFocus, reason:null, nodeIds:new WeakMap(), nextNodeId:0, marked:new Set()};
   } catch (error) {
-    for (const proxy of masks.keys()) proxy.remove();
     for (const [node, record] of saved) {
       if (record.originalStyle === null) node.removeAttribute('style');
       else node.setAttribute('style', record.originalStyle);
     }
     restoreFocus();
     return {saved:new Map(), urlProperties,
-      reason:['display_contents','content_layout','content_clip'].includes(error) ? error : 'prepare_error'};
+      reason:['display_contents','content_layout','content_clip','paint_changed','document_changed','css_effect'].includes(error) ? error : 'prepare_error'};
   }
 }'''
 
 
 _RESTORE = r'''prepared => {
-  for (const proxy of prepared.masks?.keys() || []) proxy.remove();
   for (const [node, record] of prepared.saved) {
     if (node.getAttribute('style') === record.preparedStyle) {
       if (record.originalStyle === null) node.removeAttribute('style');
@@ -435,13 +530,12 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     for (const parent of found.filter(node => node.matches(parentSelector)))
       if (!children.some(child => composedContains(parent, child))) return reject('content_mask_missing');
   }
-  for (const [proxy, {node, box}] of prepared.masks) {
-    const actual = proxy.getBoundingClientRect();
-    if (!node.isConnected || !proxy.isConnected ||
-        JSON.stringify(maskBox(node)) !== JSON.stringify(box) ||
-        [actual.x, actual.y, actual.width, actual.height].some((value, index) =>
-          Math.abs(value - box[index]) > .02)) return reject('content_mask_geometry');
+  for (const [node, box] of prepared.masks) {
+    if (!node.isConnected || JSON.stringify(maskBox(node)) !== JSON.stringify(box))
+      return reject('content_mask_geometry');
   }
+  const originalReason = prepared.verifyOriginal?.();
+  if (originalReason) return reject(originalReason);
   const nodes = [...found], rows = [];
   let characters = 0;
   for (const [index, node] of nodes.entries()) {
@@ -476,7 +570,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     if (opaque && (!isolated?.opaque || style.opacity !== '0' ||
         style.contentVisibility !== 'hidden' || style.display === 'contents')) return reject('isolation_verify');
     if (isolated && !node.isConnected) return reject('document_changed');
-    if (contentMasked && (style.opacity !== '0' || style.contentVisibility !== 'hidden' ||
+    if (contentMasked && (style.opacity !== '0' || (!prepared.preserveContentFocus && style.contentVisibility !== 'hidden') ||
         style.clipPath !== 'inset(0px)' ||
         style.display === 'contents')) return reject('isolation_verify');
     // Each text node belongs to one element. Ancestor textContent/innerText
@@ -488,6 +582,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
       .map(child => child.nodeValue || '').join('');
     const leafText = inert || directText || node.childElementCount ? '' : (node.innerText || '');
     const texts = [directText, leafText, ...renderedPseudos.map(computed => computed.content || ''),
+                   ...(prepared.effectTexts?.get(node) || []),
                    ...(typeof node.value === 'string' ? [node.value] : []),
                    ...[...node.attributes].filter(attr => attr.name !== 'srcdoc' &&
                      attr.name !== marker + '-node')
@@ -557,7 +652,7 @@ async def _closed_author_shadow(session, owned_shadow_selector=None):
     return False
 
 
-async def _owned_application_frames(session, origin, contract):
+async def _owned_application_frames(session, origin, contract, *, include_top=False):
     """Bind each selected application iframe to its exact Chromium loader."""
     document = await session.send('DOM.getDocument', {'depth': 0, 'pierce': False})
     found = await session.send('DOM.querySelectorAll', {
@@ -606,7 +701,11 @@ async def _owned_application_frames(session, origin, contract):
                 return None
             stack.extend(item.get('children', ()))
         records.append((node['backendNodeId'], frame['id'], frame['loaderId'], frame['url']))
-    return tuple(records)
+    records = tuple(records)
+    if include_top:
+        frame = top['frame']
+        return records, (frame['id'], frame['loaderId'], frame['url'])
+    return records
 
 
 _FRAME_TEXT = r'''(() => {
@@ -615,6 +714,16 @@ _FRAME_TEXT = r'''(() => {
   if (nodes.length > 50000) return null;
   const values = [document.documentElement.textContent || ''];
   let size = values[0].length;
+  // Author shadow roots are excluded by frame admission. One native document
+  // pass includes all element and pseudo effects, including CSSOM-only rules.
+  const animations = document.getAnimations();
+  if (animations.length > 1024) return null;
+  for (const animation of animations) {
+    const literal = JSON.stringify({keyframes:animation.effect?.getKeyframes(),
+      timing:animation.effect?.getTiming()});
+    values.push(literal); size += literal.length;
+    if (size > 8388608) return null;
+  }
   for (const node of nodes) {
     if (node.matches('input,textarea,select,[contenteditable]')) {
       const hint = [node.type, node.id, node.name, node.autocomplete,
@@ -659,6 +768,205 @@ async def _renderer_literals(session, records, boundary):
     return tuple(snapshots)
 
 
+class _PausedHandle:
+    """Synchronous DevTools evaluation: promise continuations cannot run paused."""
+
+    def __init__(self, session, object_id):
+        self.session, self.object_id = session, object_id
+
+    async def evaluate(self, expression):
+        result = await self.session.send('Runtime.callFunctionOn', {
+            'objectId': self.object_id,
+            'functionDeclaration': 'function(){return (' + expression + ')(this)}',
+            'returnByValue': True})
+        return _runtime_value(result)
+
+    async def dispose(self):
+        await self.session.send('Runtime.releaseObject', {'objectId': self.object_id})
+
+
+def _runtime_value(result):
+    if result.get('exceptionDetails'):
+        raise ValueError('Paused evidence evaluation failed')
+    return result['result'].get('value')
+
+
+class _PausedPage:
+    """Original DOM/compositor access while application task queues are paused.
+
+    Debugger suspension preserves queued one-shot timers and recursive RAF,
+    unlike script execution disabling, which drops their callbacks. All
+    evaluations here are synchronous and retain the original document objects.
+    """
+
+    def __init__(self, page, session):
+        self.page, self.session = page, session
+        self.prepared = None
+        self.capture_top_frame = None
+        self.mask_plan = None
+
+    @property
+    def url(self):
+        return self.page.url
+
+    async def evaluate(self, expression, arguments=None):
+        arguments = dict(arguments) if isinstance(arguments, dict) else arguments
+        prepared = arguments.pop('prepared', None) if isinstance(arguments, dict) else None
+        if prepared is not None:
+            result = await self.session.send('Runtime.callFunctionOn', {
+                'objectId': prepared.object_id,
+                'functionDeclaration': 'function(){return (' + expression + ')(Object.assign(' +
+                    json.dumps(arguments) + ',{prepared:this}))}', 'returnByValue': True})
+        else:
+            result = await self.session.send('Runtime.evaluate', {
+                'expression': '(' + expression + ')(' + json.dumps(arguments) + ')',
+                'returnByValue': True})
+        return _runtime_value(result)
+
+    async def evaluate_handle(self, expression, arguments):
+        result = await self.session.send('Runtime.evaluate', {
+            'expression': '(' + expression + ')(' + json.dumps(arguments) + ')'})
+        if result.get('exceptionDetails') or not result['result'].get('objectId'):
+            raise ValueError('Paused evidence preparation failed')
+        handle = _PausedHandle(self.session, result['result']['objectId'])
+        self.prepared = handle
+        return handle
+
+    async def plan_masks(self, prepared, selectors):
+        expression = 'prepared => (' + _MASK_PLAN + ')(prepared,' + json.dumps(selectors) + ')'
+        self.mask_plan = await prepared.evaluate(expression)
+        if type(self.mask_plan) is not dict:
+            raise ValueError('Paused evidence mask preparation failed')
+
+    async def screenshot(self, *, mask, **_):
+        await self.plan_masks(self.prepared, mask)
+        result = await self.session.send('Page.captureScreenshot', {
+            'format': 'png', 'fromSurface': True, 'captureBeyondViewport': False})
+        return base64.b64decode(result['data'], validate=True)
+
+    async def mask_png(self, image):
+        """Apply black rectangles off-DOM, using pristine isolated-world APIs.
+
+        PNG bytes stay in memory. The application never receives the source PNG
+        or a canvas node, and arbitrary authored styles cannot affect the mask.
+        """
+        top = (await self.session.send('Page.getFrameTree'))['frameTree']['frame']
+        capture_top_frame = (top['id'], top['loaderId'], top['url'])
+        if self.capture_top_frame is not None and capture_top_frame != self.capture_top_frame:
+            raise ValueError('Viewport document changed')
+        frame_id = top['id']
+        world = await self.session.send('Page.createIsolatedWorld', {
+            'frameId': frame_id, 'worldName': 'api-agent-evidence-raster'})
+        arguments = {'png': base64.b64encode(image).decode('ascii'), 'plan': self.mask_plan}
+        result = await self.session.send('Runtime.evaluate', {
+            'contextId': world['executionContextId'], 'awaitPromise': True,
+            'returnByValue': True,
+            'expression': '(' + _MASK_PNG + ')(' + json.dumps(arguments) + ')'})
+        masked = _runtime_value(result)
+        if type(masked) is not str:
+            raise ValueError('Viewport mask unavailable')
+        top = (await self.session.send('Page.getFrameTree'))['frameTree']['frame']
+        if (top['id'], top['loaderId'], top['url']) != capture_top_frame:
+            raise ValueError('Viewport document changed')
+        return base64.b64decode(masked, validate=True)
+
+
+_MASK_PLAN = r'''(prepared, selectors) => {
+  if (visualViewport && (visualViewport.scale !== 1 ||
+      visualViewport.offsetLeft || visualViewport.offsetTop)) throw 'viewport';
+  return {width:innerWidth,height:innerHeight,
+    boxes:selectors.flatMap(selector => [...prepared.marked].filter(node =>
+      node.matches(selector)).map(node => {
+        if (prepared.masks.has(node)) return prepared.masks.get(node);
+        const box = node.getBoundingClientRect();
+        return [box.x,box.y,box.width,box.height];
+      }))};
+}'''
+
+
+_MASK_PNG = r'''async ({png,plan}) => {
+  const bytes = Uint8Array.from(atob(png), character => character.charCodeAt(0));
+  const bitmap = await createImageBitmap(new Blob([bytes], {type:'image/png'}));
+  try {
+    const scaleX = bitmap.width / plan.width, scaleY = bitmap.height / plan.height;
+    if (!(scaleX > 0) || !(scaleY > 0) || Math.abs(scaleX - scaleY) > .02)
+      throw 'viewport_scale';
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext('2d');
+    context.drawImage(bitmap, 0, 0); context.fillStyle = '#000000';
+    for (const [x,y,width,height] of plan.boxes) {
+      if (![x,y,width,height].every(Number.isFinite) || width < 0 || height < 0)
+        throw 'mask_geometry';
+      if (!width || !height) continue;
+      const left = Math.floor(x * scaleX), top = Math.floor(y * scaleY);
+      const right = Math.ceil((x + width) * scaleX), bottom = Math.ceil((y + height) * scaleY);
+      context.fillRect(left, top, right-left, bottom-top);
+    }
+    const blob = await canvas.convertToBlob({type:'image/png'});
+    const output = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    for (let index=0; index<output.length; index+=32768)
+      binary += String.fromCharCode(...output.subarray(index, index+32768));
+    return btoa(binary);
+  } finally { bitmap.close(); }
+}'''
+
+
+_FOCUSED_CONTENT = r'''selector => {
+  let focused = document.activeElement;
+  while (focused?.shadowRoot?.activeElement) focused = focused.shadowRoot.activeElement;
+  const scopes = [document];
+  let count = 0, found = false;
+  while (scopes.length) {
+    for (const node of scopes.pop().querySelectorAll('*')) {
+      if (++count > 10000) throw 'node_budget';
+      if (node.shadowRoot) scopes.push(node.shadowRoot);
+      if (!node.matches(selector)) continue;
+      for (let candidate = focused; candidate;
+          candidate = candidate.assignedSlot || candidate.parentElement || candidate.getRootNode().host || null) {
+        if (candidate === node) found = true;
+      }
+    }
+  }
+  return found;
+}'''
+
+
+class _CaptureSession:
+    """One serialized native capture session, owned by the Python Page lifetime."""
+
+    def __init__(self):
+        self.lock = asyncio.Lock()
+        self.cdp = None
+
+    async def close(self, *_):
+        if self.cdp is not None:
+            cdp, self.cdp = self.cdp, None
+            try:
+                await cdp.detach()
+            except Exception:
+                pass  # Page/context teardown may already have closed the session.
+
+
+def _serialized_capture(function):
+    @wraps(function)
+    async def capture(page, *args, **kwargs):
+        state = getattr(page, '_api_agent_evidence_session', None)
+        if state is None:
+            state = _CaptureSession()
+            try:
+                setattr(page, '_api_agent_evidence_session', state)
+            except (AttributeError, TypeError):
+                # Policy/contract validation accepts browser-free sentinels.
+                return await function(page, *args, **kwargs)
+            if callable(getattr(page, 'once', None)):
+                page.once('close', state.close)
+        async with state.lock:
+            return await function(page, *args, **kwargs)
+    return capture
+
+
+@_serialized_capture
 async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_frames=False,
                                   owned_frames=None, owned_shadow_selector=None, owned_chrome=None, content_mask_selector=None,
                                   content_mask_anchor=None,
@@ -666,14 +974,19 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
                                   unavailable=None, stage=None):
     """Return masked original PNG, or None when owned safety is unavailable.
 
-    Authentication controls and unsupported rendering surfaces are hidden and
-    masked before capture. When content is withheld, the selected provider supplies
+    Authentication controls and unsupported rendering surfaces are hidden before
+    compositor capture. Captures apply black rectangle masks to the
+    transient PNG in an isolated, off-DOM raster before returning any image. When content is withheld, the selected provider supplies
     owned conversation selectors and an anchor; their painted regions are clipped
     and masked while surrounding controls remain visible. Top-layer descendants
     are rejected because they can paint outside the clipped region. With content enabled,
     ordinary form values and exact authored navigation SVGs remain visible.
     An explicit ``owned_frames`` contract admits original
     application frame pixels after frame identity and literal credential checks.
+    A focused control inside a declared content root also uses debugger-paused
+    capture: opacity and clipping preserve focus while application callbacks wait.
+    Unpaused content roots retain strong subtree suppression, including transient
+    top-layer painting. Native animation time is leased without losing callbacks.
     Browser strings remain transient and are never attachment metadata. The
     caller owns exception isolation.
     """
@@ -719,24 +1032,100 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         return reject('url')
     if not allow_frames and len(page.frames) != 1:
         return reject('frame')
+    state = page._api_agent_evidence_session
     try:
-        cdp = await page.context.new_cdp_session(page)
+        if state.cdp is None:
+            async def create_session():
+                state.cdp = await page.context.new_cdp_session(page)
+            await finish_cleanup(create_session())
+        cdp = state.cdp
     except Exception:
         return reject('shadow_audit')
+    raster = _PausedPage(page, cdp)
     marker, token = 'data-evidence-' + uuid4().hex, uuid4().hex
     prepared = None
+    result = None
     renderer_records = None
     renderer_literals = None
-    scripts_disabled = False
+    debugger_enabled = False
+    pause_trigger = None
+    pause_listener = None
+    resume_listener = None
+    pause_lost = False
+    paused_capture = False
+    own_pause = False
+    pause_expression = 'debugger;\n//# sourceURL=api-agent-evidence-pause-' + uuid4().hex
+    timeline_rate = None
+    timeline_owned = False
     try:
+        try:
+            timeline_rate = (await cdp.send('Animation.getPlaybackRate'))['playbackRate']
+            if type(timeline_rate) not in (int, float) or not math.isfinite(timeline_rate):
+                return reject('animation_timeline')
+            if timeline_rate != 0:
+                timeline_owned = True
+                await cdp.send('Animation.setPlaybackRate', {'playbackRate': 0})
+        except Exception:
+            return reject('animation_timeline')
+        needs_pause = owned_frames is not None
+        if boundary.policy.allow_content is not True and owned_frames is None:
+            try:
+                top = (await cdp.send('Page.getFrameTree'))['frameTree']['frame']
+                world = await cdp.send('Page.createIsolatedWorld', {
+                    'frameId':top['id'], 'worldName':'api-agent-evidence-focus'})
+                focused_content = _runtime_value(await cdp.send('Runtime.evaluate', {
+                    'expression':'(' + _FOCUSED_CONTENT + ')(' + json.dumps(content_mask_selector) + ')',
+                    'contextId':world['executionContextId'], 'returnByValue':True}))
+                if type(focused_content) is not bool:
+                    return reject('focus_inspection')
+                needs_pause = focused_content
+            except Exception:
+                return reject('focus_inspection')
+        if needs_pause:
+            async def acquire_pause():
+                nonlocal debugger_enabled, pause_listener, resume_listener, pause_trigger, own_pause
+                debugger_enabled = True
+                paused = asyncio.get_running_loop().create_future()
+                def pause_listener(event):
+                    paused.set_result(event)
+                cdp.once('Debugger.paused', pause_listener)
+                await cdp.send('Debugger.enable')
+                if paused.done():
+                    return False
+                def resume_listener(_):
+                    nonlocal pause_lost
+                    pause_lost = True
+                cdp.once('Debugger.resumed', resume_listener)
+                pause_trigger = asyncio.create_task(cdp.send('Runtime.evaluate', {
+                    'expression': pause_expression}))
+                completed, _ = await asyncio.wait(
+                    (paused, pause_trigger), return_when=asyncio.FIRST_COMPLETED)
+                if pause_trigger in completed:
+                    await pause_trigger
+                    return False
+                packet = paused.result()
+                source = await cdp.send('Debugger.getScriptSource', {
+                    'scriptId':packet['callFrames'][0]['location']['scriptId']})
+                own_pause = source['scriptSource'] == pause_expression
+                return own_pause
+            try:
+                acquired = await finish_cleanup(acquire_pause())
+                if not acquired:
+                    return reject('frame_inspection')
+                if pause_lost or pause_trigger.done():
+                    return reject('pause_lost')
+                page = raster
+                paused_capture = True
+            except Exception:
+                return reject('frame_inspection')
         if owned_frames is not None:
             try:
-                await cdp.send('Emulation.setScriptExecutionDisabled', {'value': True})
-                scripts_disabled = True
-                renderer_records = await _owned_application_frames(cdp, origin, owned_frames)
+                admission = await _owned_application_frames(
+                    cdp, origin, owned_frames, include_top=True)
                 mark('frame_admitted')
-                if renderer_records is None:
+                if admission is None:
                     return reject('frame')
+                renderer_records, page.capture_top_frame = admission
                 renderer_literals = await _renderer_literals(cdp, renderer_records, boundary)
                 mark('frame_literals')
                 if renderer_literals is None:
@@ -749,8 +1138,11 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
             mark('parent_audit')
         except Exception:
             return reject('shadow_audit')
-        prepared = await page.evaluate_handle(_PREPARE, {
+        async def prepare_capture():
+            nonlocal prepared
+            prepared = await page.evaluate_handle(_PREPARE, {
             'trustedIcons': _TRUSTED_ICONS,
+            'preserveContentFocus': paused_capture,
             'ownedFrameSelector': owned_frames.selector if owned_frames else None,
             'ownedShadowSelector': owned_shadow_selector,
             'chromeOwned': owned_chrome is not None,
@@ -759,6 +1151,7 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
                 'imageSources': owned_chrome.image_sources,
                 'imageSourceProperties': owned_chrome.image_source_properties} if owned_chrome is not None else None,
             'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None})
+        await finish_cleanup(prepare_capture())
         reason = await prepared.evaluate('state => state.reason')
         mark('prepared')
         if reason:
@@ -795,11 +1188,18 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
                     return True
                 index = rows[index]['parent']
             return False
-        masked = {row['index'] for row in rows if row['forced'] and not inside_content_mask(row)}
-        locators = [page.locator(f'[{marker}-node="{index}"]') for index in sorted(masked)]
-        image = await page.screenshot(type='png', full_page=False, mask=locators,
+        masked = {row['index'] for row in rows if row.get('contentMasked', False) or
+                  (row['forced'] and not inside_content_mask(row))}
+        selectors = [f'[{marker}-node="{index}"]' for index in sorted(masked)]
+        if not paused_capture and selectors:
+            await raster.plan_masks(prepared, selectors)
+        if owned_frames is None and selectors:
+            top = (await cdp.send('Page.getFrameTree'))['frameTree']['frame']
+            raster.capture_top_frame = (top['id'], top['loaderId'], top['url'])
+        image = await page.screenshot(type='png', full_page=False,
+                                      mask=selectors if paused_capture else [],
                                       mask_color='#000000',
-                                      animations='allow' if owned_frames else 'disabled')
+                                      animations='allow', caret='initial')
         mark('screenshot')
         after = await page.evaluate(_INSPECT, {'marker': marker, 'token': token,
             'verify': True, 'trustedIcons': _TRUSTED_ICONS, 'allowFrames': allow_frames,
@@ -838,25 +1238,64 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
             reject(after.get('unavailable', 'document_changed') if isinstance(after, dict)
                    else 'document_changed')
     finally:
-        try:
-            if prepared is not None:
-                await prepared.evaluate(_RESTORE)
-        finally:
+        async def restore_capture():
+            nonlocal result, resume_listener
             try:
                 if prepared is not None:
-                    await prepared.dispose()
-                    await page.evaluate('''marker => {
-                      for (const node of document.querySelectorAll('[' + marker + '-node]'))
-                        node.removeAttribute(marker + '-node');
-                      document.documentElement.removeAttribute(marker);
-                    }''', marker)
+                    await prepared.evaluate(_RESTORE)
             finally:
                 try:
-                    if scripts_disabled:
-                        await cdp.send('Emulation.setScriptExecutionDisabled', {'value': False})
+                    if prepared is not None:
+                        await prepared.dispose()
+                        await page.evaluate('''marker => {
+                          for (const node of document.querySelectorAll('[' + marker + '-node]'))
+                            node.removeAttribute(marker + '-node');
+                          document.documentElement.removeAttribute(marker);
+                        }''', marker)
                 finally:
-                    await cdp.detach()
-                    mark('cleanup')
+                    try:
+                        try:
+                            try:
+                                if debugger_enabled:
+                                    try:
+                                        if result is not None and paused_capture and (pause_lost or pause_trigger.done()):
+                                            result = reject('pause_lost')
+                                        if resume_listener is not None:
+                                            cdp.remove_listener('Debugger.resumed', resume_listener)
+                                            resume_listener = None
+                                        # Only our exact private-script pause may
+                                        # be resumed; preserve replacement pauses.
+                                        if own_pause and not pause_lost and not pause_trigger.done():
+                                            await cdp.send('Debugger.resume')
+                                    finally:
+                                        await cdp.send('Debugger.disable')
+                            finally:
+                                if pause_trigger is not None:
+                                    # Cancel only our protocol-response waiter.
+                                    if not pause_trigger.done():
+                                        pause_trigger.cancel()
+                                    await asyncio.gather(pause_trigger, return_exceptions=True)
+                        finally:
+                            if timeline_owned:
+                                current_rate = (await cdp.send('Animation.getPlaybackRate'))['playbackRate']
+                                if current_rate == 0:
+                                    await cdp.send('Animation.setPlaybackRate', {'playbackRate': timeline_rate})
+                    finally:
+                        if pause_listener is not None:
+                            cdp.remove_listener('Debugger.paused', pause_listener)
+                        if resume_listener is not None:
+                            cdp.remove_listener('Debugger.resumed', resume_listener)
+                        # Animation domain teardown resets the native global timeline
+                        # to 1, even after a getter-only session. Retain this single
+                        # Page-owned session so prior/newer rates survive capture.
+                        mark('cleanup')
+        await finish_cleanup(restore_capture())
+        if result is not None and raster.mask_plan is not None:
+            try:
+                async with component_timeout('Viewport image masking', 5):
+                    result = await raster.mask_png(result)
+            except Exception:
+                result = reject('mask')
 
     # Marker cleanup above awaits the browser. A newly registered credential
     # must still invalidate already captured pixels before they leave this call.

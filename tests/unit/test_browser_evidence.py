@@ -46,6 +46,21 @@ def test_selected_owned_capture_uses_bounded_timeout(monkeypatch):
                 capture_timeout_seconds=invalid)
 
 
+def test_default_capture_budget_allows_full_original_pixel_audit(monkeypatch):
+    durations = []
+    @asynccontextmanager
+    async def timed(name, seconds):
+        durations.append((name, seconds))
+        yield
+    monkeypatch.setattr(evidence, 'component_timeout', timed)
+
+    attachments = capture([SimpleNamespace(pages=[object()])],
+        capture_policy=AsyncMock(return_value=PNG))
+
+    assert attachments[0][2] == 'image/png'
+    assert durations == [('UI browser evidence', 10)]
+
+
 def test_selected_timeout_allows_a_slow_owned_page_without_changing_default():
     async def slow_page(*args):
         await asyncio.sleep(1.2)

@@ -1,6 +1,7 @@
 """Masking preserves the live browser's focus without overriding newer intent."""
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from playwright.async_api import async_playwright
@@ -17,6 +18,22 @@ async def _state(page):
     }''')
 
 
+async def _at_raw_capture(page, action):
+    session = await page.context.new_cdp_session(page)
+    send = session.send
+    async def evaluate(expression):
+        result = await send('Runtime.evaluate', {'expression':expression, 'returnByValue':True})
+        assert 'exceptionDetails' not in result
+        return result['result'].get('value')
+    async def intercepted(method, params=None):
+        if method == 'Page.captureScreenshot':
+            await action(evaluate)
+        return await send(method, params or {})
+    session.send = intercepted
+    return SimpleNamespace(url=page.url, frames=page.frames, once=page.once,
+        context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('outcome', ['success', 'failure', 'cancellation', 'preparation_failure'])
 async def test_masked_capture_restores_focused_textarea_and_selection(outcome):
@@ -24,27 +41,24 @@ async def test_masked_capture_restores_focused_textarea_and_selection(outcome):
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page()
-            margin = '20px 0' if outcome == 'preparation_failure' else '0'
+            display = 'display:contents' if outcome == 'preparation_failure' else ''
             await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body=f'''
-              <body style="margin:0"><main id="panel"><section id="private">
-                <p style="margin:{margin}">Response</p>
+              <body style="margin:0"><main id="panel"><section id="private" style="{display}">
+                <p style="margin:0">Response</p>
                 <textarea id="input" style="display:block;height:40px">Confidential draft</textarea>
-              </section><button id="other">Other control</button></main></body>'''))
+              </section><button id="other" style="outline:none">Other control</button></main></body>'''))
             await page.goto('http://localhost:9000/')
             await page.locator('#input').focus()
             await page.locator('#input').evaluate("node => node.setSelectionRange(2, 5, 'backward')")
             before = await _state(page)
             started = asyncio.Event()
-            async def screenshot(**kwargs):
+            async def screenshot(_):
                 started.set()
                 if outcome == 'cancellation':
                     await asyncio.Event().wait()
                 if outcome == 'failure':
                     raise RuntimeError('capture failed')
-                return await page.screenshot(**kwargs)
-            proxy = SimpleNamespace(url=page.url, frames=page.frames, screenshot=screenshot,
-                evaluate=page.evaluate, evaluate_handle=page.evaluate_handle, locator=page.locator,
-                context=SimpleNamespace(new_cdp_session=lambda _: page.context.new_cdp_session(page)))
+            proxy = await _at_raw_capture(page, screenshot)
             capture = capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
                 'http://localhost:9000', content_mask_selector='#private', content_mask_anchor='#panel')
             if outcome == 'cancellation':
@@ -75,32 +89,24 @@ async def test_masked_capture_preserves_newer_application_focus_or_selection(cha
         try:
             page = await browser.new_page()
             await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
-              <body><main id="panel"><section id="private">
+              <body><main id="panel"><section id="private" style="height:40px">
                 <textarea id="input" style="display:block;height:40px">Confidential draft</textarea>
-              </section><button id="other">Other control</button></main></body>'''))
+              </section><button id="other" style="outline:none">Other control</button></main></body>'''))
             await page.goto('http://localhost:9000/')
             await page.locator('#input').focus()
             await page.locator('#input').evaluate("node => node.setSelectionRange(2, 5, 'backward')")
-            async def screenshot(**kwargs):
-                if change == 'selection':
-                    await page.locator('#input').evaluate("node => node.setSelectionRange(6, 9, 'forward')")
-                elif change == 'focus_handler':
-                    await page.locator('#input').evaluate('''node => node.addEventListener('focus',
-                      () => node.setSelectionRange(10, 12, 'forward'))''')
-                elif change == 'pointer':
-                    await page.mouse.click(650, 300)
-                elif change == 'keyboard':
-                    await page.keyboard.press('Escape')
-                elif change == 'removed':
-                    await page.locator('#input').evaluate('node => node.remove()')
-                else:
-                    await page.locator('#other').focus()
-                    if change == 'other_focus_then_blur':
-                        await page.locator('#other').evaluate('node => node.blur()')
-                return await page.screenshot(**kwargs)
-            proxy = SimpleNamespace(url=page.url, frames=page.frames, screenshot=screenshot,
-                evaluate=page.evaluate, evaluate_handle=page.evaluate_handle, locator=page.locator,
-                context=SimpleNamespace(new_cdp_session=lambda _: page.context.new_cdp_session(page)))
+            async def screenshot(evaluate):
+                expressions = {
+                    'selection': "input.setSelectionRange(6,9,'forward')",
+                    'focus_handler': "input.addEventListener('focus',()=>input.setSelectionRange(10,12,'forward'))",
+                    'pointer': "document.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));input.blur()",
+                    'keyboard': "document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))",
+                    'removed': "input.remove()",
+                    'other_focus': "document.querySelector('#other').focus()",
+                    'other_focus_then_blur': "document.querySelector('#other').focus();document.querySelector('#other').blur()",
+                }
+                await evaluate("const input=document.querySelector('#input');" + expressions[change])
+            proxy = await _at_raw_capture(page, screenshot)
             assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
                 'http://localhost:9000', content_mask_selector='#private', content_mask_anchor='#panel') is not None
             if change == 'removed':
@@ -108,11 +114,16 @@ async def test_masked_capture_preserves_newer_application_focus_or_selection(cha
                 assert await page.locator('#input').count() == 0
                 return
             expected = {'other_focus': 'other', 'other_focus_then_blur': '', 'selection': 'input',
-                'pointer': '', 'keyboard': '', 'focus_handler': 'input'}[change]
+                'pointer': '', 'keyboard': 'input', 'focus_handler': 'input'}[change]
             state = await _state(page)
             assert state['active'] == expected
             assert (state['start'], state['end'], state['direction']) == (
-                {'selection': (6, 9, 'forward'), 'focus_handler': (10, 12, 'forward')}.get(
+                {'selection': (6, 9, 'forward')}.get(
                     change, (2, 5, 'backward')))
+            if change == 'focus_handler':
+                await page.locator('#input').evaluate('node=>node.blur()')
+                await page.locator('#input').focus()
+                assert (await _state(page))['start'] == 10
+                assert (await _state(page))['end'] == 12
         finally:
             await browser.close()

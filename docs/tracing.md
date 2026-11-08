@@ -225,3 +225,38 @@ routes use only the method, with `HTTP` for unknown methods. Structural method,
 route and delivered response status remain credential-scrubbed regardless of
 payload settings. Paths, queries, mount prefixes and dynamic result identifiers
 are never request names. HTTP status does not determine application outcome.
+
+Stateful native boundaries can supply `node_io_projections`, a services mapping
+from node ID to a synchronous `projection(direction, state)` callable, and
+`graph_io_projection`, a synchronous `projection(direction)` callable. Each
+returns a JSON dictionary containing only the boundary's admitted input or
+terminal summary. Projection runs before capture admission so large internal
+records do not consume the summary's budget. Returned dictionaries still pass
+through the normal credential authority, independent log/trace permissions,
+schema projection and capture limits. These hooks do not change workflow state
+or authorize content export. Keep projection callbacks bounded and free of I/O.
+A projection exception or invalid return emits a content-safe warning and an
+unavailable capture receipt; it does not fail application execution.
+
+### Explicit returned outcomes in stateful workflows
+
+A trusted stateful-workflow owner may provide the synchronous service callback
+`scope_outcome(kind, owner, state)`. `kind` is `node` or `component`; `owner` is
+the declared identifier. A node receives its prior state merged with its actual
+returned update, and a component receives the state at its declared END exit.
+Return an `ExecutionOutcome` to report success, failure, cancellation, partial or
+unknown status for that scope, or `None` to keep the normal passed disposition.
+Any other return value is a configuration error. The generic runtime does not
+inspect product response fields or infer outcomes from their content.
+
+This callback reports an outcome independently of routing: returning a failure
+outcome does not throw an exception, cancel component ownership or prevent a
+normal subsequent edge. Raised exceptions, deadline expiry and task cancellation
+retain their existing propagation and draining behavior. Root
+`execution_outcome()` remains the separate final graph contract. Journal route
+validation accepts a non-passed semantic scope only when its scope end matches
+a node's recorded return disposition, or a component's normal-finish
+disposition and completed internal END route. Legacy return events without a
+disposition imply success. A changed or aborted scope cannot manufacture a
+successful continuation. Outcome reporting does not
+change trace, log, capture or independent privacy preferences.
