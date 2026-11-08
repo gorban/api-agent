@@ -240,6 +240,92 @@ async def test_tall_masked_transcript_preserves_controls_outside_scroll_clip():
             await browser.close()
 
 
+@pytest.mark.asyncio
+async def test_masked_capture_keeps_static_controls_with_live_transcript():
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 600, 'height': 300})
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+                <body style="background:white"><div id="panel">
+                  <div id="toolbar" style="height:30px;background:red">Static controls</div>
+                  <div id="conversation" style="height:50px;background:blue"><span id="live">0</span></div>
+                </div><script>
+                  let count = 0;
+                  setInterval(() => {
+                    document.querySelector('#live').textContent = String(++count);
+                    if (count % 5 === 0) document.querySelector('#conversation')
+                      .appendChild(document.createElement('span')).textContent = ' extra';
+                  }, 1);
+                </script></body>'''))
+            await page.goto(origin + '/')
+
+            async def slow_screenshot(**kwargs):
+                image = await page.screenshot(**kwargs)
+                await asyncio.sleep(.1)
+                return image
+
+            proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                screenshot=slow_screenshot, evaluate=page.evaluate,
+                evaluate_handle=page.evaluate_handle, locator=page.locator,
+                context=_proxied_context(page))
+            image = await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='#conversation', content_mask_anchor='#panel')
+            assert image is not None
+            assert (await _region_pixels(page, image,
+                await page.locator('#toolbar').bounding_box()))['red'] is True
+            assert (await _region_pixels(page, image,
+                await page.locator('#conversation').bounding_box()))['blue'] is False
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mutation', ['outside_text', 'outside_clone', 'portal', 'root_style'])
+async def test_masked_capture_rejects_changes_outside_hidden_transcript(mutation):
+    from playwright.async_api import async_playwright
+    origin = 'http://localhost:9000'
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+                <body><div id="panel"><div id="toolbar">Static controls</div>
+                <div id="conversation"><span id="private">Private response</span></div>
+                </div></body>'''))
+            await page.goto(origin + '/')
+
+            async def changing_screenshot(**kwargs):
+                image = await page.screenshot(**kwargs)
+                if mutation == 'outside_text':
+                    await page.locator('#toolbar').evaluate(
+                        "node => node.textContent = 'Changed controls'")
+                elif mutation == 'outside_clone':
+                    await page.locator('#toolbar').evaluate(
+                        'node => node.replaceWith(node.cloneNode(true))')
+                elif mutation == 'portal':
+                    await page.locator('#private').evaluate(
+                        'node => document.body.appendChild(node)')
+                else:
+                    await page.locator('#conversation').evaluate(
+                        "node => node.style.setProperty('opacity', '1', 'important')")
+                return image
+
+            proxy = SimpleNamespace(url=page.url, frames=page.frames,
+                screenshot=changing_screenshot, evaluate=page.evaluate,
+                evaluate_handle=page.evaluate_handle, locator=page.locator,
+                context=_proxied_context(page))
+            reasons = []
+            assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
+                origin, content_mask_selector='#conversation', content_mask_anchor='#panel',
+                unavailable=reasons.append) is None
+            assert reasons == ['document_changed' if mutation != 'root_style' else 'isolation_verify']
+        finally:
+            await browser.close()
+
+
 _OWNED_FRAME = OwnedFrameContract('iframe[data-testid="chat-message-html"]',
     '/assets/agent-html-runtime/renderer.html', 'allow-scripts')
 

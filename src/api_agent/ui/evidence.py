@@ -110,7 +110,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, contentMaskSelector}) => {
     record.preparedStyle = node.getAttribute('style');
     record.overrides = overrides;
   }
-  return {saved, urlProperties, reason:null};
+  return {saved, urlProperties, reason:null, nodeIds:new WeakMap(), nextNodeId:0};
   } catch (error) {
     for (const [node, record] of saved) {
       if (record.originalStyle === null) node.removeAttribute('style');
@@ -193,6 +193,7 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
   let characters = 0;
   for (const [index, node] of nodes.entries()) {
     node.setAttribute(marker + '-node', String(index));
+    if (!prepared.nodeIds.has(node)) prepared.nodeIds.set(node, prepared.nextNodeId++);
     const style = getComputedStyle(node);
     const beforeStyle = getComputedStyle(node, '::before');
     const afterStyle = getComputedStyle(node, '::after');
@@ -232,11 +233,12 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     const leafText = inert || directText || node.childElementCount ? '' : (node.innerText || '');
     const texts = [directText, leafText, ...renderedPseudos.map(computed => computed.content || ''),
                    ...(typeof node.value === 'string' ? [node.value] : []),
-                   ...[...node.attributes].filter(attr => attr.name !== 'srcdoc')
+                   ...[...node.attributes].filter(attr => attr.name !== 'srcdoc' &&
+                     attr.name !== marker + '-node')
                      .map(attr => attr.value).filter(Boolean)];
     characters += texts.reduce((sum, text) => sum + text.length, 0);
     if (characters > 1048576) return reject('text_budget');
-    rows.push({index, parent: nodes.indexOf(node.parentElement),
+    rows.push({index, parent: nodes.indexOf(node.parentElement), id:prepared.nodeIds.get(node),
       forced: opaque || inert || contentMasked, contentMasked,
       texts});
   }
@@ -525,7 +527,10 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
                 mark('frame_rechecked')
             except Exception:
                 return reject('frame_inspection')
-        result = image if after == rows and page.url == origin.rstrip('/') + path else None
+        stable = after == rows
+        if boundary.policy.allow_content is not True and isinstance(after, list):
+            stable = _outside_mask_snapshot(after) == _outside_mask_snapshot(rows)
+        result = image if stable and page.url == origin.rstrip('/') + path else None
         if result is None:
             reject(after.get('unavailable', 'document_changed') if isinstance(after, dict)
                    else 'document_changed')
@@ -559,6 +564,23 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         return reject('registered_secret')
     return result if not _sensitive(rows, boundary,
         exclude_masked_subtrees=boundary.policy.allow_content is not True) else reject('registered_secret')
+
+
+def _outside_mask_snapshot(rows):
+    """Retain exact identity and content outside isolated conversation subtrees."""
+    snapshot = []
+    for row in rows:
+        parent = row['parent']
+        hidden = False
+        while parent >= 0:
+            if rows[parent]['contentMasked']:
+                hidden = True
+                break
+            parent = rows[parent]['parent']
+        if not hidden:
+            snapshot.append((row['id'], rows[row['parent']]['id'] if row['parent'] >= 0 else -1,
+                             row['forced'], row['contentMasked'], row['texts']))
+    return snapshot
 
 
 def _sensitive(rows, boundary, *, exclude_masked_subtrees=False):
