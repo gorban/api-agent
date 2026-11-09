@@ -180,17 +180,19 @@ from test_workflow_stateful import fixture_graph
 
 @pytest.mark.parametrize('terminal', [OutcomeState.SUCCESS, OutcomeState.FAILURE])
 def test_stateful_real_parsed_graph_joins_request_and_explicit_outcome(fixture_graph, terminal):
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_definition, load_stateful_catalog
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.definition import (load_definition)
+    from api_agent.workflows.native import (load_native_bindings)
     from langgraph.graph.message import add_messages
     root_path, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root_path, pack_root=root_path)
+    definition = load_definition(entry, base_root=root_path, pack_root=root_path)
     outcome = ExecutionOutcome(terminal, OutcomeCause.TOOL if terminal == OutcomeState.FAILURE else None)
     with collector() as (endpoint, received):
         settings = config(False, True, TRACE_EXPORT_ENDPOINT=endpoint)
         boundary = EmissionBoundary()
         runtime = TraceRuntime(settings, boundary=boundary)
         factory = WorkflowObservationFactory(settings, boundary=boundary, trace=runtime)
-        workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        workflow = Workflow(definition, catalog=load_native_bindings(definition),
             reducers={'messages':add_messages}, services={'observation_factory':factory,
                 'execution_outcome':lambda:outcome})
         async def handler(scope, receive, send):
@@ -377,7 +379,9 @@ def test_django_terminal_send_cannot_hide_request_cancellation(ending):
 @pytest.mark.parametrize('kind',['demo','chat','stateful'])
 def test_real_parsed_foreign_runtime_cannot_report_to_request_owner(fixture_graph, kind):
     from test_application_capture_bundle import selected_application
-    from api_agent.workflows.stateful import StatefulWorkflow,load_stateful_definition,load_stateful_catalog
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.definition import (load_definition)
+    from api_agent.workflows.native import (load_native_bindings)
     from langgraph.graph.message import add_messages
     with collector() as (endpoint, received):
         settings=config(False,False,TRACE_EXPORT_ENDPOINT=endpoint)
@@ -386,8 +390,8 @@ def test_real_parsed_foreign_runtime_cannot_report_to_request_owner(fixture_grap
         factory=WorkflowObservationFactory(settings,boundary=EmissionBoundary(),trace=second)
         if kind == 'stateful':
             root_path,entry=fixture_graph
-            definition=load_stateful_definition(entry,base_root=root_path,pack_root=root_path)
-            workflow=StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),
+            definition=load_definition(entry,base_root=root_path,pack_root=root_path)
+            workflow=Workflow(definition,catalog=load_native_bindings(definition),
                 reducers={'messages':add_messages},services={'observation_factory':factory,
                     'execution_outcome':lambda:ExecutionOutcome(OutcomeState.FAILURE,OutcomeCause.TOOL)})
             async def invoke():

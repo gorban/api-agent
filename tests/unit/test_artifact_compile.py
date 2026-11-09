@@ -17,13 +17,13 @@ from api_agent.workflows.artifact import canonical_json, plan_digest
 from api_agent.workflows.artifact_compile import (ArtifactCompileError, compile_definition, compile_plan,
                                                   load_source_definition, read_wheel)
 from api_agent.workflows.model import Replacement, Resource
-from api_agent.workflows.stateful import load_stateful_definition
+from api_agent.workflows.definition import (load_definition)
 
 NATIVE = (QUALIFICATION / 'src/aq_bindings/native.py').read_bytes()
 
 
 def parsed_v3(root=QUALIFICATION):
-    return load_stateful_definition(root / 'flow.md.html', base_root=root, pack_root=root)
+    return load_definition(root / 'flow.md.html', base_root=root, pack_root=root)
 
 
 def wheel_files(**extra):
@@ -175,12 +175,12 @@ def test_identity_free_mappings_compile_in_canonical_order(tmp_path):
 
 def test_source_definition_loader_selects_the_engine_family_by_heading():
     from api_agent.workflows.definition import WorkflowDefinition
-    from api_agent.workflows.stateful import StatefulDefinition
+    from api_agent.workflows.native import (TypedDefinition)
 
     v3 = load_source_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION, pack_root=QUALIFICATION)
     v2 = load_source_definition(ROOT / 'demo/contrived/flow.md.html', base_root=ROOT, pack_root=ROOT / 'demo')
 
-    assert isinstance(v3, StatefulDefinition) and isinstance(v2, WorkflowDefinition)
+    assert isinstance(v3, TypedDefinition) and isinstance(v2, WorkflowDefinition)
 
 
 def test_replacements_are_compiled_with_their_resolved_selection(tmp_path):
@@ -194,7 +194,7 @@ def test_replacements_are_compiled_with_their_resolved_selection(tmp_path):
     plan = compile_plan(root / 'flow.md.html', base_root=root, pack_root=root, wheels=[wheel],
                         replacements=selected)
 
-    parsed = load_stateful_definition(root / 'flow.md.html', base_root=root, pack_root=root, replacements=selected)
+    parsed = load_definition(root / 'flow.md.html', base_root=root, pack_root=root, replacements=selected)
     assert json.loads(plan)['replacements'] == [['intake', 'base', 'alt.md.html']]
     assert json.loads(plan)['definition_id'] == parsed.definition_id
     assert plan != compile_plan(root / 'flow.md.html', base_root=root, pack_root=root, wheels=[wheel])

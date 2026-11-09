@@ -126,7 +126,8 @@ def compile_definition(definition, wheels):
             bindings.append({'source': item.logical_path, 'distribution': wheel.name,
                              'module': module_for_file(file), 'file': file, 'sha256': item.sha256})
     plan = {'format': PLAN_FORMAT, 'plan_version': PLAN_VERSION, 'runtime_abi': RUNTIME_ABI,
-            'workflow_version': definition.version, 'graph_id': definition.graph_id,
+            'workflow_version': 1, 'state': None,
+            'imports': encode(definition.imports), 'declaration_entry': encode(definition.declaration_entry), 'graph_id': definition.graph_id,
             'definition_id': definition.definition_id, 'entry_root': definition.entry_root,
             'entry': logical(definition.entry),
             'replacements': [[item.target_id, item.root_id, Path(item.entry).as_posix()]
@@ -145,8 +146,9 @@ def compile_definition(definition, wheels):
                                'top_levels': list(wheel.top_levels),
                                'files': sorted([path, digest] for path, digest in wheel.files.items())}
                               for _, wheel in sorted(used.items())]}
-    if definition.version == 3:
-        plan['state'] = {'helper_sources': [], 'native_dependencies': encode(definition.native_dependencies),
+    if getattr(definition, 'schema_source', None) is not None:
+        plan['state'] = {'application_binding': encode(definition.application_binding),
+                         'helper_sources': [], 'native_dependencies': encode(definition.native_dependencies),
                          'timeouts': encode(definition.timeouts), 'schema_name': definition.schema_name,
                          'schema_source': encode(definition.schema_source), 'nodes': encode(definition.nodes),
                          'edges': encode(definition.edges),
@@ -157,14 +159,10 @@ def compile_definition(definition, wheels):
 
 
 def load_source_definition(entry, *, base_root, pack_root, replacements=(), entry_root=None):
-    """Parse the selected declaration with the engine family its heading names."""
+    """Parse the selected declaration using the one workflow contract."""
     from .definition import load_definition
-    from .document_format import canonical_executable_bytes
-    from .stateful import load_stateful_definition
-    heading = canonical_executable_bytes(Path(entry).read_bytes(), path=Path(entry)).split(b'\n', 1)[0]
-    loader = load_stateful_definition if heading == b'# Workflow v3' else load_definition
-    return loader(entry, base_root=base_root, pack_root=pack_root, replacements=replacements,
-                  entry_root=entry_root)
+    return load_definition(entry, base_root=base_root, pack_root=pack_root, replacements=replacements,
+                           entry_root=entry_root)
 
 
 def compile_plan(entry, *, base_root, pack_root, wheels, entry_root=None, replacements=()):

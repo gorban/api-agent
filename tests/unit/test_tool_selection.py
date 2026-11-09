@@ -21,7 +21,7 @@ def write(root, name, body):
 
 def graph(root, name, instances):
     ports = ''.join(f'| {port} | [instance]({path}) |\n' for port, path in instances)
-    return write(root, name + '.md.html', '# Workflow v3\n\n## Graph ID\n\n| ID |\n| --- |\n| '
+    return write(root, name + '.md.html', '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| '
         + name + ' |\n\n## State\n\n| Registry | Source |\n| --- | --- |\n| State | [native](native.py) |\n'
         '\n## Flow\n\n1.  [node inspect](node.md.html)\n\n## Edges\n\n'
         '| From | To | Router | Source |\n| --- | --- | --- | --- |\n| inspect | END | - | - |\n'
@@ -32,7 +32,7 @@ def graph(root, name, instances):
 def selection_fixture(tmp_path):
     root = tmp_path
     write(root, 'native.py', 'raise AssertionError("workflow native imported during discovery")\n')
-    write(root, 'node.md.html', '# Node v3: inspect\n\n## Native\n\n| Registry | Kind | Source |\n'
+    write(root, 'node.md.html', '# Node: inspect\n\n## Native\n\n| Registry | Kind | Source |\n'
         '| --- | --- | --- |\n| inspect | deterministic | [native](native.py) |\n')
     write(root, 'package/factory.py', 'raise AssertionError("tool imported during discovery")\ndef create_tool(config, services): pass\n')
     write(root, 'graphql.toml', 'version=1\ninterface="verified-read@1"\nfactory="package/factory.py:create_tool"\n'
@@ -1065,7 +1065,7 @@ def test_dormant_unbound_implementation_input_does_not_create_a_global_alias(sel
 
 def test_component_tool_port_is_inherited_by_child_node(selection_fixture):
     context, _ = selection_fixture
-    write(context.base_root, 'group.md.html', '# Component v3: group\n\n## Flow\n\n'
+    write(context.base_root, 'group.md.html', '# Component: group\n\n## Flow\n\n'
         '1.  [node inspect](node.md.html)\n')
     path = context.base_root / 'primary_graph.md.html'
     path.write_text(path.read_text().replace('[node inspect](node.md.html)', '[component group](group.md.html)')
@@ -1093,14 +1093,14 @@ def test_inline_prompt_stays_in_definition_without_becoming_a_filesystem_asset(s
     from api_agent.workflows.definition import InlinePromptRef
     context, base = selection_fixture
     write(context.base_root, 'schema.json', '{"type":"object"}')
-    write(context.base_root, 'node.md.html', '# Node v2: inspect\n\n## Native\n\n'
+    write(context.base_root, 'node.md.html', '# Node: inspect\n\n## Native\n\n'
         '| Registry | Kind | Source |\n| --- | --- | --- |\n'
         '| inspect | deterministic | [source](native.py) |\n\n'
         '## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
         '| inspect | inspect | [input](schema.json) | [output](schema.json) |\n\n'
         '## Prompt: greeting\n\n```text\nHello.\n```\n\n'
         '## Prompts\n\n| Node | File | When |\n| --- | --- | --- |\n| inspect | @greeting | always |\n')
-    entry = write(context.base_root, 'inline.md.html', '# Workflow v2\n\n## Graph ID\n\n'
+    entry = write(context.base_root, 'inline.md.html', '# Workflow\n\n## Graph ID\n\n'
         '| ID |\n| --- |\n| inline_graph |\n\n## Flow\n\n1.  [node inspect](node.md.html)\n')
     context = replace(context, workflow_entry=entry, tool_catalog_path=None)
 
@@ -1477,3 +1477,51 @@ def test_deferred_shared_requirement_snapshot_is_immutable(selection_fixture):
         selected.schema.deferred_requirements['API_2_HEADERS'] = None
     with pytest.raises(TypeError):
         selected.schema.deferred_requirements['API_2_HEADERS'].required_when['SHARED'] = 'other'
+
+
+@pytest.mark.parametrize('graph_name,explicit,expected', [
+    ('primary', False, True), ('dual', False, False), ('primary', True, False),
+])
+def test_catalog_reuses_selected_application_replacements_only_for_same_root(selection_fixture, graph_name, explicit, expected):
+    from api_agent.runtime.resource_pack import load_selected_definition
+    context, _ = selection_fixture
+    inherited = (('resource', Path('replacement.json'), 'pack'),)
+    context = replace(context, workflow_replacements=inherited)
+    if explicit:
+        catalog = context.tool_catalog_path
+        catalog.write_text(catalog.read_text().replace('[graphs.primary]', '[graphs.primary]\nreplacements=[]'))
+    observed = []
+    def load(selected):
+        observed.append(selected)
+        return load_selected_definition(replace(selected, workflow_replacements=()))
+
+    discover(context, OperationSelection('e2e', (f'base::tests/test_flow.py::test_{graph_name}',)), definition_loader=load)
+
+    selected = next(item for item in observed if item.workflow_entry.stem == graph_name + '_graph.md')
+    assert selected.workflow_replacements == (inherited if expected else ())
+
+
+def test_same_physical_file_with_a_different_logical_root_does_not_inherit(selection_fixture):
+    from api_agent.runtime.resource_pack import load_selected_definition
+    context, _ = selection_fixture
+    import shutil
+    nested = context.base_root / 'nested'
+    nested.mkdir()
+    for source in tuple(context.base_root.iterdir()):
+        if source.is_file() and source.name != 'catalog.toml':
+            shutil.copy2(source, nested / source.name)
+    shutil.copytree(context.base_root / 'package', nested / 'package')
+    catalog_path = context.tool_catalog_path
+    catalog_path.write_text(catalog_path.read_text().replace('entry="primary_graph.md.html"', 'entry="nested/primary_graph.md.html"'))
+    context = replace(context, pack_root=nested, workflow_entry=nested / 'primary_graph.md.html', workflow_root='pack',
+                      workflow_replacements=(('resource', Path('replacement.json'), 'pack'),))
+    observed = []
+    def load(selected):
+        observed.append(selected)
+        return load_selected_definition(replace(selected, workflow_replacements=()))
+
+    discover(context, OperationSelection('e2e', ('base::tests/test_flow.py::test_primary',)), definition_loader=load)
+
+    catalog = next(item for item in observed if item.workflow_entry == context.workflow_entry)
+    assert catalog.workflow_root == 'base'
+    assert catalog.workflow_replacements == ()

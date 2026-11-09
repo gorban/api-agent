@@ -2,15 +2,21 @@
 
 A compiled workflow plan is canonical, versioned JSON generated from a selected
 `.md.html` workflow declaration and its replacements. It lets production load
-the real v2 or v3 engine graph without importing the declaration parser,
+the application graph without importing the declaration parser,
 executing workflow source, or dynamically evaluating workflow source text.
+
+There is one workflow engine and one declaration syntax: `# Workflow`, with
+`# Component: id` and `# Node: id` below it. Declared state, bindings and
+checkpoint continuation are features of that engine. Historical prototype
+formats are rejected. Execution requires an admitted source definition or a
+compiled plan; a layout projection alone is for inspection.
 
 ## Guarantee and boundary
 
 The guarantee is static: CI and the indexed pre-commit check recompile every
 selected checked-in plan and require byte-for-byte equality with its sources.
 The loader rejects incompatible plan schema versions, runtime ABI versions, and
-workflow engine versions. It also validates canonical JSON and the
+workflow contracts. It also validates canonical JSON and the
 `compiled_plan_identity` over the encoded graph.
 
 Plans record the plan digest, source hashes, and bound-module hashes for

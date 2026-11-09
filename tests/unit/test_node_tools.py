@@ -96,13 +96,13 @@ def test_optional_tools_column_retains_legacy_syntax():
 @pytest.mark.asyncio
 async def test_retained_node_context_never_rebinds_to_new_invocation():
     from api_agent.workflows.execution import NodeContext
-    from api_agent.workflows.stateful import StateNodeContext
+    from api_agent.workflows.execution import (NodeContext)
     selected = definition()
     owner = Owner('synthetic')
     resolver = OwnerTools(selected, owner)
     async with invocation_tools(selected, {'tools': resolver}):
         previous = NodeContext('plan', (), (), {})
-        previous_state = StateNodeContext('plan', {}, None, {})
+        previous_state = NodeContext('plan', {}, None, {})
     async with invocation_tools(selected, {'tools': resolver}):
         for context in (previous, previous_state):
             with pytest.raises(ContractError, match='closed'):
@@ -331,11 +331,11 @@ async def test_equal_captured_definition_ids_admit_distinct_snapshot_objects():
 
 
 def test_node_tools_rejects_access_without_invocation():
-    from api_agent.workflows.stateful import StateNodeContext
+    from api_agent.workflows.execution import (NodeContext)
     with pytest.raises(ContractError, match='active workflow invocation'):
         node_tools('plan')
     with pytest.raises(ValueError, match='active workflow invocation'):
-        _ = StateNodeContext('plan', {}, None, {}).tools
+        _ = NodeContext('plan', {}, None, {}).tools
 
 
 @pytest.mark.asyncio

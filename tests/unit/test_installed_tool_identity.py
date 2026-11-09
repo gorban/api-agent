@@ -17,7 +17,7 @@ def installed(tmp_path, monkeypatch):
     source.parent.mkdir(parents=True)
     source.write_text('# Installed source.\n')
     flow = package / 'flow.md.html'
-    flow.write_text('# Workflow v2\n')
+    flow.write_text('# Workflow\n')
     metadata = site / 'api_agent-0.1.0.dist-info'
     metadata.mkdir()
     (metadata / 'METADATA').write_text('Metadata-Version: 2.1\nName: api-agent\nVersion: 0.1.0\n')
@@ -48,7 +48,7 @@ def test_unverified_install_never_gains_canonical_identity(installed, change):
     if change == 'source-hash':
         installed.source.write_text('# Modified_ source.\n')
     elif change == 'flow-hash':
-        (installed.package / 'flow.md.html').write_text('# Workflow v3\n')
+        (installed.package / 'flow.md.html').write_text('# Modified workflow\n')
     elif change == 'missing-record':
         record.unlink()
     elif change == 'unhashed':

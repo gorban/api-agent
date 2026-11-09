@@ -33,7 +33,7 @@ def definition():
     layout = SimpleNamespace(steps=[node], tables={'Edges': [],
         'Functions': [{'ID': 'Make', 'Kind': 'deterministic'}]})
     resource = SimpleNamespace(kind='declaration', logical_path='flows/main.md.html',
-        sha256='a' * 64, content_bytes=b'# Workflow v2')
+        sha256='a' * 64, content_bytes=b'# Workflow')
     return SimpleNamespace(graph_id='Example', definition_id='b' * 64,
         entry_root='base', layout=layout, resources=[resource], replacements=[])
 

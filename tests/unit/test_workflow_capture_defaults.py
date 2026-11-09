@@ -242,11 +242,13 @@ def test_stateful_engine_missing_authority_is_unavailable_without_losing_state(f
     from langgraph.graph.message import add_messages
     from api_agent.telemetry.privacy import ContentPolicy
     from api_agent.workflows.journal import WorkflowJournal
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
+    from api_agent.workflows.definition import (load_definition)
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition, log_content=log, content_policy=ContentPolicy(log))
-    graph = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    graph = Workflow(definition, catalog=load_native_bindings(definition),
         reducers={'messages': add_messages}, journal=journal, config={'LOG_CONTENT': log})
 
     result = asyncio.run(graph.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='missing-authority'))

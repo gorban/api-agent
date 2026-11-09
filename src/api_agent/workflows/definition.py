@@ -1,6 +1,6 @@
 """Versioned workflow declarations with an immutable resource snapshot."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import os
@@ -20,7 +20,7 @@ from .document_format import extract_document, validate_presentation_location
 
 @dataclass(frozen=True)
 class WorkflowDefinition:
-    version: ClassVar[int] = 2
+    version: ClassVar[int] = 1
     origin: ClassVar[str] = 'source'
     graph_id: str
     entry: Path
@@ -34,6 +34,8 @@ class WorkflowDefinition:
     selected_declarations: object = None
     declaration_fragments: object = None
     tool_usages: tuple[ToolUsage, ...] = ()
+    imports: tuple = ()
+    declaration_entry: Path | None = None
 
     def verify_native_sources(self):
         """Reject a source change before importing its admitted native binding."""
@@ -178,7 +180,7 @@ def _declaration_parts(path, data):
     if not headings or headings[0][0] != 0 or headings[0][1] != 'h1':
         raise LayoutError(f'{path}:{line_map[0]}: expected version heading')
     title = lines[0]
-    component = re.fullmatch(r'# Component(?: v[23])?: [a-z][a-z0-9_]{0,63}', title)
+    component = re.fullmatch(r'# Component: [a-z][a-z0-9_]{0,63}', title)
     sections, nodes = {}, {}
     current = None
     if any(line.strip() for line in lines[1:headings[1][0] if len(headings) > 1 else len(lines)]):
@@ -215,7 +217,7 @@ def _sections(path, data):
 def _prompt_body(path, data, identifier, *, scope=None):
     """Find one physical prompt scope; duplicate virtual identities are unsafe."""
     title, sections, nodes = _declaration_parts(path, data)
-    outer = re.fullmatch(r'# (?:Component|Node)(?: v[23])?: ([a-z][a-z0-9_]{0,63})', title)
+    outer = re.fullmatch(r'# (?:Component|Node): ([a-z][a-z0-9_]{0,63})', title)
     scopes = ((outer.group(1) if outer else None, sections), *nodes.items())
     matches = [body['Prompt: ' + identifier] for owner_id, body in scopes
                if (scope is None or owner_id == scope) and 'Prompt: ' + identifier in body]
@@ -275,17 +277,94 @@ def _table(path, body, columns):
 
 
 def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=None):
+    """Admit the workflow contract, including optional declared typed state."""
+    return _admit_definition(entry, base_root=base_root, pack_root=pack_root,
+                             replacements=replacements, entry_root=entry_root)
+
+
+def _admit_definition(entry, *, base_root, pack_root, replacements=(), entry_root=None, importing=()):
+    from api_agent.config.source_reads import resolve_path
+    entry = resolve_path(entry)
+    roots = tuple(map(resolve_path, (base_root, pack_root)))
+    owners = [root for root in roots if entry.is_relative_to(root)]
+    if not owners:
+        raise LayoutError(f'{entry}:1: declaration outside declared roots')
+    owner = max(owners, key=lambda root: len(root.parts))
+    entry_root = entry_root or ('pack' if roots[1] != roots[0] and entry.is_relative_to(roots[1]) else 'base')
+    named_roots = dict(zip(('base', 'pack'), roots))
+    if entry_root not in named_roots or not entry.is_relative_to(named_roots[entry_root]):
+        raise LayoutError(f'{entry}:1: invalid declared entry root')
+    data = _read_bounded(entry, owner)
+    title, sections = _sections(entry, data)
+    if title != '# Workflow':
+        raise LayoutError(f'{entry}:1: expected Workflow heading')
+    if 'Import' in sections:
+        return _import_definition(entry, title, sections, base_root=base_root, pack_root=pack_root,
+                                  replacements=replacements, entry_root=entry_root, importing=importing, admitted=data)
+    if 'State' in sections:
+        from .native import _load_state_definition
+        return _load_state_definition(entry, base_root=base_root, pack_root=pack_root,
+                                      replacements=replacements, entry_root=entry_root, _root_data=data)
+    return _load_binding_definition(entry, base_root=base_root, pack_root=pack_root,
+                                    replacements=replacements, entry_root=entry_root, _root_data=data)
+
+
+def _import_definition(entry, title, sections, *, base_root, pack_root, replacements, entry_root, importing, admitted):
+    """Expand an explicit root import without retargeting the imported resources."""
+    from api_agent.config.source_reads import resolve_path
+    roots = {'base': resolve_path(base_root), 'pack': resolve_path(pack_root)}
+    if entry in importing or len(importing) >= 64:
+        raise LayoutError(f'{entry}:1: workflow import cycle or nesting limit')
+    if not {'Graph ID', 'Import'} <= set(sections) or set(sections) - {'Graph ID', 'Import', 'Notes'}:
+        raise LayoutError(f'{entry}:1: workflow import cannot overlay graph sections')
+    identity = _table(entry, sections['Graph ID'], ('ID',))
+    selection = _table(entry, sections['Import'], ('Root', 'Path'))
+    if (len(identity) != 1 or not _ID.fullmatch(identity[0]['ID']) or len(selection) != 1
+            or selection[0]['Root'] not in roots):
+        raise LayoutError(f'{entry}:1: invalid workflow import identity or root')
+    row = selection[0]
+    uri = urlsplit(row['Path'])
+    name = unquote(uri.path)
+    target = None
+    if (not uri.scheme and not uri.netloc and not uri.query and not uri.fragment
+            and name and not Path(name).is_absolute() and '..' not in Path(name).parts
+            and '\\' not in name and name.endswith('.md.html')
+            and not re.search(r'%(?:2f|5c)', row['Path'], re.I)
+            and not any(ord(char) < 32 or ord(char) == 127 for char in name)):
+        target = resolve_path(roots[row['Root']] / name)
+    if target is None or not target.is_relative_to(roots[row['Root']]):
+        raise LayoutError(f'{entry}:1: invalid workflow import source')
+    selected = _admit_definition(target, base_root=base_root, pack_root=pack_root,
+        replacements=replacements, entry_root=row['Root'], importing=(*importing, entry))
+    data = _read_bounded(entry, roots[entry_root])
+    if data != admitted:
+        raise LayoutError(f'{entry}:1: workflow import changed during admission')
+    validate_presentation_location(data, path=entry, root=roots[entry_root])
+    contents = {**selected.contents, entry: data}
+    if sum(len(value) for value in contents.values()) > _MAX_SNAPSHOT_BYTES:
+        raise LayoutError(f'{entry}:1: workflow import snapshot exceeds 64 MiB')
+    logical = entry_root + '/' + entry.relative_to(roots[entry_root]).as_posix()
+    resources = tuple(sorted((*selected.resources, Resource('declaration', logical, data, sha256(data).hexdigest())),
+                             key=lambda item: item.logical_path))
+    graph_id = identity[0]['ID']
+    import json
+    identity = {'version': 1, 'graph_id': graph_id,
+        'resources': [(r.kind, r.logical_path, r.sha256) for r in resources],
+        'replacements': [(r.target_id, r.root_id, Path(r.entry).as_posix()) for r in selected.replacements]}
+    definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return replace(selected, graph_id=graph_id, entry=entry, entry_root=entry_root,
+        roots=MappingProxyType(roots), resources=resources, contents=MappingProxyType(contents),
+        definition_id=definition_id, layout=replace(selected.layout, path=entry, files=tuple(sorted(contents, key=str))),
+        tool_usages=tuple(replace(use, scope=graph_id) if use.scope_kind == 'graph' else use for use in selected.tool_usages),
+        imports=((target, selected.graph_id), *selected.imports),
+        declaration_entry=selected.declaration_entry or target)
+
+
+def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry_root, _root_data):
     """Load exactly one graph and all its resources before any native import or call."""
     from api_agent.config.source_reads import resolve_path
     entry = resolve_path(entry)
     roots = {'base': resolve_path(base_root), 'pack': resolve_path(pack_root)}
-    if not any(entry.is_relative_to(root) for root in roots.values()):
-        raise LayoutError(f'{entry}:1: entry outside declared roots')
-    if entry_root is None:
-        entry_root = ('pack' if entry.is_relative_to(roots['pack']) and
-                      entry.parent != roots['base'] and roots['pack'] != roots['base'] else 'base')
-    if entry_root not in roots or not entry.is_relative_to(roots[entry_root]):
-        raise LayoutError(f'{entry}:1: invalid declared entry root')
     root_map = MappingProxyType(roots)
     captured = {}
     origins = {}
@@ -299,7 +378,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
                 and kind != captured[path][0]):
             raise LayoutError(f'{path}:1: tool instance has conflicting resource kind')
         if path not in captured:
-            data = _read_bounded(path, roots[root_id])
+            data = _root_data if path == entry else _read_bounded(path, roots[root_id])
             if kind == 'declaration':
                 validate_presentation_location(data, path=path, root=roots[root_id])
             if sum(len(item[1]) for item in captured.values()) + len(data) > _MAX_SNAPSHOT_BYTES:
@@ -334,9 +413,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             return path
         return capture(path, kind, root_id)
     capture(entry, 'declaration', entry_root)
-    title, root_sections = _sections(entry, captured[entry][1])
-    if title not in ('# Workflow v2', '# LangGraph flow'):
-        raise LayoutError(f'{entry}:1: expected Workflow v2 heading')
+    _, root_sections = _sections(entry, captured[entry][1])
     allowed = {'Graph ID', 'Flow', 'Tools', *_COLUMNS, 'Notes'}
     if set(root_sections) - allowed or 'Graph ID' not in root_sections or 'Flow' not in root_sections:
         raise LayoutError(f'{entry}:1: unknown or missing root section')
@@ -402,7 +479,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
                 declaration_fragments[identifier] = 'node-' + identifier
             else:
                 title, child_sections = _sections(declaration, captured[declaration][1])
-            if title not in (f'# {kind.title()} v2: {identifier}', f'# {kind.title()}: {identifier}'):
+            if title != f'# {kind.title()}: {identifier}':
                 raise LayoutError(f'{declaration}:1: declaration identity mismatch')
             declarations[identifier] = child_sections
             if kind == 'component':
@@ -550,7 +627,7 @@ def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=
             raise LayoutError(f'{path}:1: resource changed during definition admission') from error
         if current != admitted:
             raise LayoutError(f'{path}:1: resource changed during definition admission')
-    identity = {'version': 2, 'graph_id': graph_id, 'resources': [(item.kind, item.logical_path, item.sha256) for item in resources],
+    identity = {'version': 1, 'graph_id': graph_id, 'resources': [(item.kind, item.logical_path, item.sha256) for item in resources],
                 'replacements': [(item.target_id, item.root_id, Path(item.entry).as_posix()) for item in replacements]}
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,

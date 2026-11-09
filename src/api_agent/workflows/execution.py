@@ -9,9 +9,19 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import inspect
 import json
+import logging
 import os
 import time
-from typing import TypedDict
+from typing import Annotated, TypedDict, get_args, get_origin, get_type_hints
+from typing_extensions import is_typeddict
+from types import MappingProxyType
+from threading import Lock
+from langgraph.checkpoint.memory import InMemorySaver
+from .model import LayoutError
+from .model import NativeCatalog
+from .configuration import resolve_timeouts, resolve_component_passes, resolve_state_timeouts
+from api_agent.runtime.tasks import settle
+from api_agent.providers.progress import bind_timeout_budget
 from uuid import uuid4
 
 from jsonschema import Draft202012Validator
@@ -19,7 +29,6 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
-from .model import declares_source
 from .predicates import component_controller, component_decision, native_condition_id, parse_predicate, predicate_fields
 
 
@@ -156,7 +165,6 @@ async def _repair_owner(frame):
 
 
 _CURRENT_JOURNAL = ContextVar('workflow_journal', default=None)
-_CURRENT_SERVICES = ContextVar('workflow_invocation_services', default=None)
 
 
 @dataclass(frozen=True)
@@ -196,6 +204,8 @@ class NodeContext:
     guard_attempt: int = 1
     _repair_limit: tuple | None = None
     _effects: list = field(default_factory=list, repr=False, compare=False)
+    request: object = None
+    resources: object = None
     _tools: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -278,56 +288,69 @@ class _State(TypedDict):
     attempt_id: str | None
 
 
-def resolve_timeouts(layout, config, definition=None):
-    """Resolve only declared scope budgets from captured configuration defaults."""
-    from api_agent.config.declarations import schema_from_dict, UNSET
-    import tomllib
-
-    values, keys = {}, {}
-    for row in layout.tables['Timeouts']:
-        try:
-            source_bytes = (definition.contents[row['Source']] if definition is not None
-                            else row['Source'].read_bytes())
-            schema = schema_from_dict(tomllib.loads(source_bytes.decode('utf-8')))
-        except (OSError, UnicodeError, ValueError) as error:
-            layout.error(str(error), row['line'])
-        field = schema.fields.get(row['Key'])
-        if field is None or field.type not in ('int', 'float'):
-            layout.error('timeout must reference a numeric configuration declaration', row['line'])
-        value = config.get(row['Key'], None if field.default is UNSET else field.default)
-        if value is not None and (type(value) not in (int, float) or not 0 < value < float('inf')):
-            layout.error('timeout must be finite positive seconds or omitted', row['line'])
-        values[row['Owner']] = value
-        keys[row['Owner']] = row['Key']
-    return values, keys
 
 
-def resolve_component_passes(layout, config):
-    """Resolve captured component limits against explicit effective configuration."""
-    from .model import MAX_COMPONENT_PASSES
 
-    passes, constants = {}, {}
-    for row in layout.tables.get('Components', ()):
-        key = row.get('max_passes_key')
-        default = row.get('max_passes_default')
-        if default is None:
-            default = int(row['Max passes'])
-        value = config.get(key, default) if key is not None else default
-        if type(value) is not int or not 1 <= value <= MAX_COMPONENT_PASSES:
-            layout.error(f'Max passes must be an integer from 1 to {MAX_COMPONENT_PASSES}', row.get('line'))
-        if row['Guard'] == '-' and value != 1:
-            layout.error('unguarded component requires one pass', row.get('line'))
-        passes[row['ID']] = value
-        if key is not None:
-            constants[key] = value
-    return passes, constants
+
+def _source_manifest(definition, packaged_proof=None):
+    """Produce source or compiled-plan provenance before native effects."""
+    if getattr(definition, 'origin', 'source') == 'compiled':
+        from .artifact import compiled_provenance
+        return compiled_provenance(definition)
+    from .provenance import verified_documents
+    return verified_documents(definition, packaged_proof=packaged_proof)
+
+
+async def _project_capture(journal, projection, direction, visit_id, *args):
+    """An optional observation projection cannot fail application execution."""
+    try:
+        values = projection(direction, *args)
+        if inspect.isawaitable(values):
+            values = await values
+        if type(values) is not dict:
+            raise TypeError('I/O projection must return a dictionary')
+        return values
+    except Exception:
+        logging.getLogger(__name__).warning('Workflow I/O capture unavailable: projection failed')
+        journal.observe(dict(event='capture', visit_id=visit_id, direction=direction,
+                             reason='unavailable'))
+        return None
 
 
 class Workflow:
-    def __init__(self, layout, registry, conditions=None, *, config=None, services=None):
-        self.definition = layout if hasattr(layout, 'definition_id') else None
-        if self.definition is not None:
-            layout = self.definition.layout
+    """The admitted LangGraph engine for bindings and typed continuation state."""
+
+    def __init__(self, layout, registry=None, conditions=None, *, catalog=None, reducers=None,
+                 config=None, services=None, journal=None, checkpointer=None):
+        if not hasattr(layout, 'definition_id'):
+            raise LayoutError('Execution requires an admitted workflow definition')
+        self.typed_state = getattr(layout, 'schema_source', None) is not None
+        if self.typed_state:
+            if conditions is not None:
+                raise LayoutError('Typed state uses declared routers, not external conditions')
+            self._init_state(layout, catalog=catalog, reducers=reducers or {}, services=services,
+                             journal=journal, checkpointer=checkpointer, config=config)
+            self.layout = layout.layout
+            self.component_passes = {}
+        else:
+            if catalog is not None or reducers or checkpointer is not None:
+                raise LayoutError('Checkpoint state requires a declared State contract')
+            self._init_bindings(layout, registry or {}, conditions, config=config, services=services)
+        self._request = ContextVar('workflow_request', default=None)
+        self._services = ContextVar('workflow_services', default=self.services)
+        self._capture_services_context = ContextVar('workflow_capture_services', default=self.services)
+        self._journal = ContextVar('workflow_journal', default=journal)
+        self._turn_state = ContextVar('workflow_turn', default=None)
+        self.journal = journal
+        self._active_threads = set()
+        self._thread_guard = Lock()
+        self._parents = {step.id: step.parent for step in self.layout.steps}
+        saver = (checkpointer if checkpointer is not None else InMemorySaver()) if self.typed_state else False
+        self.graph = self._compile(None, checkpointer=saver)
+
+    def _init_bindings(self, layout, registry, conditions=None, *, config=None, services=None):
+        self.definition = layout
+        layout = self.definition.layout
         self.layout, self.registry = layout, registry
         self.conditions = conditions or {}
         self.config, self.services = config or {}, services or {}
@@ -337,22 +360,18 @@ class Workflow:
         self.timeouts, self.timeout_keys = resolve_timeouts(layout, self.config, self.definition)
         self.component_passes, self.pass_constants = resolve_component_passes(layout, self.config)
         steps = {step.id: step for step in layout.steps}
-        if self.definition is not None:
-            self.definition.verify_sources()
+        self.definition.verify_sources()
         for row in self.functions.values():
             function = registry.get(row['Registry'])
             if (not isinstance(function, NodeFunction) or function.kind not in ('llm', 'deterministic')
                     or not callable(function.invoke)
-                    or (self.definition is not None and function.kind != row['Kind'])):
+                    or function.kind != row['Kind']):
                 layout.error('unknown or invalid registered node function', row['line'])
             if 'Output mode' in row and ((function.kind == 'deterministic') != (row['Output mode'] == '-')):
                 layout.error('response declaration must match registered node kind', row['line'])
-            if self.definition is not None:
-                rejected = self.definition.native_rejection(function.invoke, steps[row['ID']])
-                if rejected is not None:
-                    layout.error(rejected, row['line'])
-            elif not declares_source(function.invoke, steps[row['ID']].source):
-                layout.error('registered function does not match its declared source link', row['line'])
+            rejected = self.definition.native_rejection(function.invoke, steps[row['ID']])
+            if rejected is not None:
+                layout.error(rejected, row['line'])
         for row in (*layout.tables['Edges'], *layout.tables['Prompts']):
             when = row['When']
             if when == 'always' or (when == 'otherwise' and row in layout.tables['Edges']):
@@ -365,18 +384,48 @@ class Workflow:
                 self._predicates[row['From'], when] = parse_predicate(when, predicate_fields(layout, row['From']))
             except ValueError as error:
                 layout.error(str(error), row['line'])
-        self.graph = self._compile(None)
+        self.schema = _State
 
+
+    def _init_state(self, definition, *, catalog, reducers, services=None, journal=None, checkpointer=None,
+                 config=None):
+        definition.verify_sources()
+        if not isinstance(catalog, NativeCatalog) or catalog.definition_id != definition.definition_id:
+            raise LayoutError('catalog does not match admitted definition')
+        self.definition = definition
+        self.services = MappingProxyType(dict(services or {}))
+        self.config = MappingProxyType(dict(config or {}))
+        requested_timeouts, requested_keys = resolve_state_timeouts(definition, self.config)
+        if requested_timeouts != catalog.timeout_values or requested_keys != catalog.timeout_keys:
+            raise LayoutError('catalog timeout configuration does not match selected values')
+        self.timeouts = catalog.timeout_values
+        self.timeout_keys = catalog.timeout_keys
+        self.journal = journal
+        self.catalog = catalog
+        self.reducers = reducers
+        schema = self._binding(definition.schema_source, definition.schema_name)
+        if not is_typeddict(schema):
+            raise LayoutError('state registry must name a TypedDict')
+        hints = get_type_hints(schema, include_extras=True)
+        for key, hint in hints.items():
+            if get_origin(hint) is Annotated:
+                metadata = get_args(hint)[1:]
+                if len(metadata) != 1 or reducers.get(key) is not metadata[0]:
+                    raise LayoutError(f'unregistered state reducer: {key}')
+        if any(key not in hints for key in reducers):
+            raise LayoutError('reducer references undeclared state field')
+        from .capture import annotation_schema
+        self.capture_schema = {'type': 'object', 'properties': {
+            key: annotation_schema(hint) for key, hint in hints.items()}}
+        self.schema = schema
     def _run_services(self):
-        current = _CURRENT_SERVICES.get()
-        return current[1] if current is not None and current[0] is self else self.services
+        return self._services.get()
 
     def _capture_services(self):
-        current = _CURRENT_SERVICES.get()
-        return current[2] if current is not None and current[0] is self else self.services
+        return self._capture_services_context.get()
 
     def _event(self, event, **values):
-        journal = _CURRENT_JOURNAL.get() or self._run_services().get('journal')
+        journal = self._journal.get() or self._run_services().get('journal')
         if journal is not None:
             row = dict(event=event, **values)
             if event in ('scope_start', 'scope_end') and row.get('owner') == 'GRAPH' and row.get('kind') == 'graph':
@@ -386,71 +435,50 @@ class Workflow:
         if observer is not None:
             observer(dict(event=event, **values))
 
-    @asynccontextmanager
-    async def _scope(self, owner, *, _terminal_outcome=None, **metadata):
-        declared = self.timeouts.get(owner)
-        async with component_timeout('Workflow ' + owner, declared) as budget:
-            started = time.time() * 1000
-            parent_id = current_structural_scope() if owner == 'GRAPH' and metadata.get('kind') == 'graph' else budget.parent_id
-            common = dict(scope_id=budget.id, parent_id=parent_id, owner=owner,
-                          started_ms=started, declared_timeout=declared,
-                          effective_timeout=budget.timeout, timeout_key=self.timeout_keys.get(owner), **metadata)
-            with structural_scope(budget.id):
-                outcome = 'failed'
-                try:
-                    self._event('scope_start', **common)
-                    yield budget
-                    self._check_deadline(budget)
-                    outcome = 'passed'
-                    if _terminal_outcome:
-                        outcome = {'success': 'passed', 'failure': 'failed',
-                                   'cancelled': 'cancelled', 'partial': 'partial',
-                                   'unknown': 'unknown'}[_terminal_outcome[0].state.value]
-                except BaseException as error:
-                    from api_agent.telemetry.outcomes import report_failure, OutcomeState
-                    failed = report_failure(error,
-                        observations=_CURRENT_JOURNAL.get() or self._run_services().get('journal'),
-                        scope_ids=(budget.id,), terminal=owner == 'GRAPH' and metadata.get('kind') == 'graph' and parent_id is None,
-                        deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
-                    outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
-                    raise
-                finally:
-                    try:
-                        self._event('scope_end', **common, stopped_ms=time.time() * 1000,
-                                    elapsed=time.monotonic() - budget.started, outcome=outcome)
-                    except Exception:
-                        if outcome == 'passed':
-                            raise
 
-    @staticmethod
-    def _check_deadline(budget):
-        if budget.remaining == 0:
-            raise TimeoutError('Workflow component deadline expired')
-
-    def _condition(self, identifier, values, *, source=None, ancestry=()):
-        if (source, identifier) in self._predicates:
-            predicate = self._predicates[source, identifier]
-            attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
-            result = predicate.evaluate(values, attempt=attempt, max_passes=maximum,
-                                        constants=self.pass_constants)
-        else:
-            result = self.conditions[identifier](deepcopy(values))
-        if type(result) is not bool:
-            raise WorkflowError(f'Condition {identifier} must return a boolean')
-        return result
-
-    def _compile(self, parent):
+    def _compile(self, parent, *, checkpointer=None):
         children = [item for item in self.layout.steps if item.parent == parent]
-        graph = StateGraph(_State)
+        graph = StateGraph(self.schema)
         for step in children:
-            graph.add_node(step.id, self._component(step) if step.kind == 'component' else self._node(step))
+            if step.kind == 'component':
+                node = self._compile(step.id) if self.typed_state else self._component(step)
+            elif self.typed_state:
+                row = next(row for row in self.definition.nodes if row['ID'] == step.id)
+                function = self._binding(row['Source'], row['Registry'])
+                if not callable(function):
+                    raise LayoutError('node registry must be callable')
+                node = self._state_node(row, function)
+            else:
+                node = self._node(step)
+            graph.add_node(step.id, node)
+        if self.typed_state and parent is not None:
+            async def start_component(_state):
+                await self._start_component(parent)
+                self._event('edge', owner=parent, source='START', target=children[0].id, implicit=True)
+                return {}
+            graph.add_node('__entry', start_component)
+            graph.add_edge(START, '__entry')
+            graph.add_edge('__entry', children[0].id)
         def enter(state):
             self._event('edge', source='START', target=children[0].id,
                         owner=parent or 'GRAPH', implicit=True,
-                        attempt_id=state.get('attempt_id'))
+                        attempt_id=None if self.typed_state else state.get('attempt_id'))
             return children[0].id
-        graph.add_conditional_edges(START, enter, {children[0].id: children[0].id})
+        if not (self.typed_state and parent is not None):
+            graph.add_conditional_edges(START, enter, {children[0].id: children[0].id})
         for index, step in enumerate(children):
+            if self.typed_state:
+                routes = [edge for edge in self.definition.edges if edge['From'] == step.id]
+                if routes[0]['Router'] == '-':
+                    route = self._static_route(step.id, routes[0]['To'], parent)
+                else:
+                    router = self._binding(routes[0]['Source'], routes[0]['Router'])
+                    if not callable(router):
+                        raise LayoutError('router registry must be callable')
+                    route = self._route(step.id, router, routes, parent)
+                graph.add_conditional_edges(step.id, route,
+                    {edge['To']: END if edge['To'] == 'END' else edge['To'] for edge in routes})
+                continue
             edges = [row for row in self.layout.tables['Edges'] if row['From'] == step.id]
             if not edges:
                 target = children[index + 1].id if index + 1 < len(children) else 'END'
@@ -474,9 +502,59 @@ class Workflow:
                                 visit_id=state.get('visit_id'), attempt_id=state.get('attempt_id'))
                     return chosen['To']
                 graph.add_conditional_edges(step.id, route, {row['To']: END if row['To'] == 'END' else row['To'] for row in edges})
-        # This executor owns invocation-local state, never a checkpoint store.
-        # Do not inherit a stateful caller's saver for an independently run graph.
-        return graph.compile(checkpointer=False)
+        return graph.compile(checkpointer=checkpointer if self.typed_state else False)
+
+    @asynccontextmanager
+    async def _scope(self, owner, **metadata):
+        declared = self.timeouts.get(owner)
+        async with component_timeout('Workflow ' + owner, declared) as budget:
+            started = time.time() * 1000
+            parent_id = current_structural_scope() if owner == 'GRAPH' and metadata.get('kind') == 'graph' else budget.parent_id
+            common = dict(scope_id=budget.id, parent_id=parent_id, owner=owner,
+                          started_ms=started, declared_timeout=declared,
+                          effective_timeout=budget.timeout, timeout_key=self.timeout_keys.get(owner), **metadata)
+            with structural_scope(budget.id):
+                outcome = 'failed'
+                try:
+                    self._event('scope_start', **common)
+                    yield budget
+                    self._check_deadline(budget)
+                    outcome = 'passed'
+                except BaseException as error:
+                    from api_agent.telemetry.outcomes import report_failure, OutcomeState
+                    failed = report_failure(error,
+                        observations=self._journal.get() or self._run_services().get('journal'),
+                        scope_ids=(budget.id,), terminal=owner == 'GRAPH' and metadata.get('kind') == 'graph' and parent_id is None,
+                        deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
+                    outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
+                    raise
+                finally:
+                    try:
+                        self._event('scope_end', **common, stopped_ms=time.time() * 1000,
+                                    elapsed=time.monotonic() - budget.started, outcome=outcome)
+                    except Exception:
+                        if outcome == 'passed':
+                            raise
+
+
+    @staticmethod
+    def _check_deadline(budget):
+        if budget.remaining == 0:
+            raise TimeoutError('Workflow component deadline expired')
+
+
+    def _condition(self, identifier, values, *, source=None, ancestry=()):
+        if (source, identifier) in self._predicates:
+            predicate = self._predicates[source, identifier]
+            attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
+            result = predicate.evaluate(values, attempt=attempt, max_passes=maximum,
+                                        constants=self.pass_constants)
+        else:
+            result = self.conditions[identifier](deepcopy(values))
+        if type(result) is not bool:
+            raise WorkflowError(f'Condition {identifier} must return a boolean')
+        return result
+
 
     def _component(self, step):
         graph = self._compile(step.id)
@@ -528,13 +606,16 @@ class Workflow:
             raise WorkflowError(f'Component {step.id} exhausted {maximum} passes')
         return execute
 
+
     def _repair_ancestry(self, ancestry):
         frames = {frame.component: frame for frame in _REPAIRS.get() if frame.workflow is self}
         return tuple((owner, frames[owner].attempt, maximum) if owner in frames else (owner, attempt, maximum)
                      for owner, attempt, maximum in ancestry)
 
+
     async def _safe_feedback(self, feedback):
         return await project_correction(feedback, services=self._capture_services())
+
 
     def _owned_by(self, step, owner):
         parents = {item.id: item.parent for item in self.layout.steps}
@@ -545,6 +626,7 @@ class Workflow:
             parent = parents[parent]
         return False
 
+
     def _node(self, step):
         row = self.functions[step.id]
         function = self.registry[row['Registry']]
@@ -553,8 +635,7 @@ class Workflow:
         async def execute(state, budget):
             inputs = {}
             values = state['values']
-            invocation = _CURRENT_SERVICES.get()
-            services = invocation[3].services(self._run_services(), step.id)
+            services = self._turn_state.get()['llm_history'].services(self._run_services(), step.id)
             if row.get('Display summary', '-') != '-':
                 from .node_summary import SummaryServices
                 services = SummaryServices(services, row['Display summary'])
@@ -583,7 +664,7 @@ class Workflow:
                 else:
                     raise WorkflowError(f'Missing required binding for {step.id}.{binding["Input"]}')
             self._validate(row['Input schema'], inputs, step.id, 'input')
-            journal = _CURRENT_JOURNAL.get() or self._run_services().get('journal')
+            journal = self._journal.get() or self._run_services().get('journal')
             plain_fields = (self._run_services().get('plain_io_fields') or {}).get(step.id, {})
             from .capture_authority import capture_node
             await capture_node(journal, self._capture_services(), visit_id=budget.id,
@@ -658,7 +739,7 @@ class Workflow:
                     if frame.attempt >= frame.maximum:
                         from api_agent.telemetry.outcomes import inherit_failure
                         raise inherit_failure(WorkflowError(f'Component {frame.component} exhausted {frame.maximum} passes'), error) from None
-                    history = _CURRENT_SERVICES.get()[3]
+                    history = self._turn_state.get()['llm_history']
                     history.correct(step.id, feedback)
                     self._check_deadline(frame.budget)
                     frame.attempt += 1
@@ -671,6 +752,7 @@ class Workflow:
                     self._event('attempt', scope_id=frame.budget.id, component=frame.component,
                                 attempt=frame.attempt, attempt_id=current['attempt_id'], max_passes=frame.maximum)
         return timed
+
 
     @staticmethod
     def _validate(schema, value, node, direction):
@@ -685,127 +767,456 @@ class Workflow:
         except (ValueError, TypeError):
             raise WorkflowError(f'Node {node} returned non-JSON {direction}') from None
 
-    async def arun(self, inputs, *, turn_id=None, turn_kind='initial'):
-        from .capture_authority import resolve_capture_services
-        from .run_context import canonical_uuid
-        if turn_id is not None:
-            canonical_uuid(turn_id)
-        selected = resolve_capture_services(self.services)
-        from .inference_history import InferenceHistory
-        history = InferenceHistory()
-        token = _CURRENT_SERVICES.set((self, dict(selected), selected, history))
-        try:
-            from api_agent.tooling.runtime import invocation_tools
-            async with invocation_tools(self.definition, selected):
-                return await self._arun(inputs, turn_id=turn_id, turn_kind=turn_kind)
-        finally:
-            history.close()
-            _CURRENT_SERVICES.reset(token)
 
-    async def _arun(self, inputs, *, turn_id=None, turn_kind='initial'):
-        from .capture_authority import requested_log_content
+    def diagram(self):
+        return diagram_layout(self.layout, component_passes=self.component_passes)
+
+
+    def _binding(self, path, name):
+        namespace = self.catalog.namespaces.get(path)
+        value = self.catalog.bindings.get((path, name))
+        proof = self.catalog.binding_proofs.get((path, name))
+        if (value is None or namespace is None or namespace.get(name) is not value
+                or callable(value) and getattr(value, '__module__', None) not in self.catalog.admitted_modules
+                or proof is not None and (value is not proof[0]
+                                          or getattr(value, '__code__', proof[1]) is not proof[1]
+                                          or getattr(value, '__globals__', proof[2].__dict__) is not proof[2].__dict__)):
+            raise LayoutError(f'{path}:1: missing admitted native binding {name}')
+        return value
+
+
+    def _scope_outcome(self, kind, owner, state, scope_id):
+        """Apply an optional trusted business outcome without controlling execution."""
+        callback = self._services.get().get('scope_outcome')
+        if callback is None:
+            return 'passed'
+        from api_agent.telemetry.outcomes import ExecutionOutcome
+        final = callback(kind, owner, state)
+        if final is None:
+            return 'passed'
+        if type(final) is not ExecutionOutcome:
+            raise ValueError('Invalid explicit scope outcome')
+        journal = self._journal.get()
+        if journal is not None and hasattr(journal, 'report_outcome'):
+            journal.report_outcome(scope_id, final)
+        return {'success': 'passed', 'failure': 'failed', 'cancelled': 'cancelled',
+                'partial': 'partial', 'unknown': 'unknown'}[final.state.value]
+
+
+    def _state_node(self, row, function):
+        async def invoke(state):
+            parent = self._parents[row['ID']]
+            turn = self._turn_state.get()
+            parent_scope = (bind_timeout_budget(turn['open_components'][parent]['budget'])
+                            if parent is not None else nullcontext())
+            with parent_scope, (structural_scope(turn['open_components'][parent]['budget'].id)
+                                if parent is not None else nullcontext()):
+                async with component_timeout('Workflow ' + row['ID'], self.timeouts.get(row['ID'])) as budget:
+                    with structural_scope(budget.id):
+                        return await self._run_node(row, function, state, budget)
+        return invoke
+
+
+    async def _run_node(self, row, function, state, budget):
+        visit_id = budget.id
+        started = time.monotonic()
+        wall_started = time.time() * 1000
+        self._event('scope_start', scope_id=budget.id, parent_id=budget.parent_id, owner=row['ID'],
+                    kind='node', node=row['ID'], visit_id=visit_id, attempt=1, max_passes=1,
+                    started_ms=wall_started,
+                    declared_timeout=self.timeouts.get(row['ID']), effective_timeout=budget.timeout,
+                    timeout_key=self.timeout_keys.get(row['ID']))
+        outcome = 'failed'
+        try:
+            services = self._turn_state.get()['llm_history'].services(self._services.get(), row['ID'])
+            context = NodeContext(row['ID'], (), (), services, request=self._request.get(),
+                                  resources=self.definition.declared_resources, visit_id=budget.id)
+            from .attribution import bind_workflow_visit
+            journal = self._journal.get()
+            captures = (self._services.get().get('plain_io_contracts') or {}).get(row['ID'], {})
+            async def capture(direction, values):
+                from .capture_authority import capture_node
+                if journal is None:
+                    return
+                projection = (self._services.get().get('node_io_projections') or {}).get(row['ID'])
+                if projection is not None:
+                    values = await _project_capture(journal, projection, direction, visit_id, values)
+                    if values is None:
+                        return
+                contract = captures.get(direction)
+                if contract is not None:
+                    await capture_node(journal, self._capture_services(), visit_id=visit_id,
+                        direction=direction, values=values, schema=contract['schema'],
+                        plain_fields=contract['plain_fields'])
+                else:
+                    await capture_node(journal, self._capture_services(), visit_id=visit_id,
+                        direction=direction, values=values, schema={'type': 'object'} if projection is not None else self.capture_schema)
+            await capture('input', state)
+            with _node_effect_owner(context), bind_workflow_visit(journal, budget.id, capture_services=self._capture_services()):
+                try:
+                    result = (await function(state, context) if inspect.iscoroutinefunction(function)
+                              else await offload(function, state, context))
+                    if inspect.isawaitable(result):
+                        result = await result
+                finally:
+                    from .evidence_finalization import finalize
+                    await finalize()
+            if type(result) is not dict or any(key not in self.schema.__annotations__ for key in result):
+                raise ValueError('node must return a partial state update')
+            await capture('output', result)
+            outcome = self._scope_outcome('node', row['ID'], {**state, **result}, budget.id)
+            self._event('node', scope_id=budget.id, node=row['ID'], visit_id=visit_id,
+                        elapsed=time.monotonic() - started, kind=row['Kind'], outcome=outcome)
+            return result
+        except BaseException as error:
+            from api_agent.telemetry.outcomes import report_failure, OutcomeState
+            failed = report_failure(error, observations=self._journal.get(), scope_ids=(budget.id,),
+                deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
+            outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
+            raise
+        finally:
+            self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
+                        owner=row['ID'], kind='node', node=row['ID'], visit_id=visit_id,
+                        elapsed=time.monotonic() - started, outcome=outcome,
+                        started_ms=wall_started, stopped_ms=time.time() * 1000,
+                        declared_timeout=self.timeouts.get(row['ID']), effective_timeout=budget.timeout,
+                        timeout_key=self.timeout_keys.get(row['ID']))
+            self._turn_state.get()['visits'][row['ID']] = visit_id
+
+
+    async def _start_component(self, parent):
+        turn = self._turn_state.get()
+        owner_parent = self._parents[parent]
+        parent_scope = (bind_timeout_budget(turn['open_components'][owner_parent]['budget'])
+                        if owner_parent is not None else nullcontext())
+        ready = asyncio.get_running_loop().create_future()
+        finish = asyncio.get_running_loop().create_future()
+        async def own():
+            try:
+                with parent_scope, (structural_scope(turn['open_components'][owner_parent]['budget'].id)
+                                    if owner_parent is not None else nullcontext()):
+                    async with component_timeout('Workflow ' + parent, self.timeouts.get(parent)) as budget:
+                        with structural_scope(budget.id):
+                            started = time.monotonic()
+                            wall_started = time.time() * 1000
+                            self._event('scope_start', scope_id=budget.id, parent_id=budget.parent_id,
+                                        owner=parent, kind='component', visit_id=budget.id,
+                                        attempt=1, max_passes=1,
+                                        started_ms=wall_started,
+                                        declared_timeout=self.timeouts.get(parent),
+                                        effective_timeout=budget.timeout,
+                                        timeout_key=self.timeout_keys.get(parent))
+                            ready.set_result(budget)
+                            outcome = 'failed'
+                            try:
+                                outcome = await finish
+                                self._event('disposition', scope_id=budget.id, owner=parent,
+                                            kind='component', outcome=outcome)
+                            except BaseException as error:
+                                from api_agent.telemetry.outcomes import report_failure, OutcomeState
+                                failed = report_failure(error, observations=self._journal.get(), scope_ids=(budget.id,),
+                                    deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
+                                outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
+                                raise
+                            finally:
+                                self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
+                                            owner=parent, kind='component', visit_id=budget.id,
+                                            elapsed=time.monotonic() - started, outcome=outcome,
+                                            started_ms=wall_started, stopped_ms=time.time() * 1000,
+                                            declared_timeout=self.timeouts.get(parent),
+                                            effective_timeout=budget.timeout,
+                                            timeout_key=self.timeout_keys.get(parent))
+            except BaseException as error:
+                if not ready.done():
+                    ready.set_exception(error)
+                raise
+        task = asyncio.create_task(own())
+        try:
+            budget = await ready
+        except BaseException:
+            task.cancel()
+            try:
+                await settle(task)
+            except BaseException:
+                pass
+            raise
+        turn['open_components'][parent] = dict(budget=budget, task=task, finish=finish)
+
+
+    async def _complete_component(self, parent, outcome='passed', *, state=None):
+        if parent is None:
+            return
+        turn = self._turn_state.get()
+        if parent not in turn['open_components']:
+            return
+        owned = turn['open_components'][parent]
+        if outcome == 'passed' and not owned['finish'].done():
+            status = self._scope_outcome('component', parent, state, owned['budget'].id)
+            owned['finish'].set_result(status)
+        elif not owned['task'].done():
+            owned['task'].cancel()
+        try:
+            await settle(owned['task'])
+        finally:
+            # settle only exits after the owned task reaches a terminal state.
+            turn['open_components'].pop(parent)
+            turn['visits'][parent] = owned['budget'].id
+
+
+    def _static_route(self, source, target, parent):
+        async def route(state):
+            visit_id = self._turn_state.get()['visits'].get(source)
+            self._event('edge', owner=parent or 'GRAPH', source=source, target=target,
+                        visit_id=visit_id, implicit=False)
+            if target == 'END':
+                await self._complete_component(parent, state=state)
+            return target
+        return route
+
+
+    def _route(self, source, router, edges, parent):
+        targets = {edge['To'] for edge in edges}
+        async def route(state):
+            target = router(state, NodeContext(source, (), (), self._services.get(), request=self._request.get(),
+                        resources=self.definition.declared_resources))
+            if target not in targets:
+                raise ValueError(f'router for {source} returned an undeclared target')
+            visit_id = self._turn_state.get()['visits'].get(source)
+            self._event('edge', owner=parent or 'GRAPH', source=source, target=target,
+                        visit_id=visit_id, condition=edges[0]['Router'], implicit=False)
+            if target == 'END':
+                await self._complete_component(parent, state=state)
+            return target
+        return route
+
+
+    @asynccontextmanager
+    async def _scope_graph(self, budget):
+        parent_id = current_structural_scope()
+        with structural_scope(budget.id):
+            started = time.monotonic()
+            wall_started = time.time() * 1000
+            outcome = 'failed'
+            async def capture_graph(direction):
+                projection = self._services.get().get('graph_io_projection')
+                journal = self._journal.get()
+                if projection is not None and journal is not None:
+                    values = await _project_capture(journal, projection, direction, budget.id)
+                    if values is None:
+                        return
+                    from .capture_authority import capture_node
+                    await capture_node(journal, self._capture_services(), visit_id=budget.id,
+                        direction=direction, values=values, schema={'type': 'object'})
+            try:
+                self._event('scope_start', scope_id=budget.id, parent_id=parent_id,
+                            owner='GRAPH', kind='graph', attempt=1, max_passes=1,
+                            started_ms=wall_started,
+                            declared_timeout=self.timeouts.get('GRAPH'), effective_timeout=budget.timeout,
+                            timeout_key=self.timeout_keys.get('GRAPH'))
+                await capture_graph('input')
+                yield
+                await capture_graph('output')
+                outcome = 'passed'
+                terminal = self._services.get().get('execution_outcome')
+                if terminal is not None:
+                    from api_agent.telemetry.outcomes import ExecutionOutcome, report_outcome
+                    final = terminal()
+                    if type(final) is not ExecutionOutcome:
+                        error_type = ValueError if self.typed_state else WorkflowError
+                        raise error_type('Invalid explicit execution outcome')
+                    outcome = {'success': 'passed', 'failure': 'failed',
+                               'cancelled': 'cancelled', 'partial': 'partial',
+                               'unknown': 'unknown'}[final.state.value]
+                    report_outcome(final, runtime=getattr(self._journal.get(), 'trace', None))
+                    current = self._journal.get()
+                    if current is not None and hasattr(current, 'report_outcome'):
+                        current.report_outcome(budget.id, final)
+            except BaseException as error:
+                from api_agent.telemetry.outcomes import report_failure, OutcomeState
+                scopes = (budget.id, *(owned['budget'].id for owned in self._turn_state.get()['open_components'].values()))
+                failed = report_failure(error, observations=self._journal.get(), scope_ids=scopes, terminal=parent_id is None,
+                    deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
+                outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
+                raise
+            finally:
+                try:
+                    for component in tuple(self._turn_state.get()['open_components']):
+                        try:
+                            await self._complete_component(component, outcome=outcome)
+                        except BaseException:
+                            if outcome == 'passed':
+                                raise
+                finally:
+                    try:
+                        self._event('scope_end', scope_id=budget.id, parent_id=parent_id,
+                                    owner='GRAPH', kind='graph', attempt=1, max_passes=1, elapsed=time.monotonic() - started,
+                                    started_ms=wall_started, stopped_ms=time.time() * 1000,
+                                    outcome=outcome, declared_timeout=self.timeouts.get('GRAPH'),
+                                    effective_timeout=budget.timeout, timeout_key=self.timeout_keys.get('GRAPH'))
+                    except Exception:
+                        if outcome == 'passed':
+                            raise
+
+
+    async def astream_events(self, update, *, thread_id, request=None, services=None, journal=None,
+                             turn_id=None, turn_kind='initial'):
+        if type(thread_id) is not str or not thread_id or type(update) is not dict:
+            raise ValueError('thread_id and partial state update are required')
+        async with self._turn(thread_id, request, services, journal, turn_id, turn_kind):
+            queue = asyncio.Queue(maxsize=32)
+            async def produce():
+                async for event in self.graph.astream_events(
+                        update, {'configurable': {'thread_id': thread_id}}, version='v2'):
+                    await queue.put(event)
+            producer = asyncio.create_task(produce())
+            try:
+                while True:
+                    if producer.done():
+                        while not queue.empty():
+                            yield queue.get_nowait()
+                        await producer
+                        break
+                    pending = asyncio.create_task(queue.get())
+                    try:
+                        done, _ = await asyncio.wait((pending, producer),
+                                                     return_when=asyncio.FIRST_COMPLETED)
+                        if pending in done:
+                            yield pending.result()
+                    finally:
+                        if not pending.done():
+                            pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
+            finally:
+                if not producer.done():
+                    producer.cancel()
+                try:
+                    await settle(producer)
+                except BaseException:
+                    pass
+
+
+    @asynccontextmanager
+    async def _turn(self, thread_id, request, services, journal, turn_id=None, turn_kind='initial'):
         from .run_context import canonical_uuid, current_execution_context, current_turn_id, execution_context, turn
         if turn_id is not None:
             canonical_uuid(turn_id)
         turn_id = turn_id if turn_id is not None else current_turn_id()
-        journal = self._run_services().get('journal')
+        self.definition.verify_sources()
+        from .capture_authority import resolve_capture_services, requested_log_content
+        selected_services = resolve_capture_services(services or {}, inherited=self.services)
+        selected_journal = (journal if journal is not None else
+                            self.journal if self.journal is not None else
+                            selected_services.get('journal'))
         automatic_observations = None
-        factory = self._run_services().get('observation_factory')
-        if journal is None and factory is not None and self.definition is not None and not recording_enabled():
+        factory = selected_services.get('observation_factory')
+        if selected_journal is None and factory is not None and not recording_enabled():
             from .identity import workflow_identity
-            journal = automatic_observations = factory.create(self.definition, turn_id=turn_id,
-                component_passes=self.component_passes,
-                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
-                    component_passes=self.component_passes))
-        if turn_id is not None and journal is not None and turn_id != journal.turn_id:
+            selected_journal = automatic_observations = factory.create(self.definition, turn_id=turn_id,
+                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts, component_passes=self.component_passes), component_passes=self.component_passes)
+        journal_turn = getattr(selected_journal, 'turn_id', None)
+        if turn_id is not None and journal_turn is not None and turn_id != journal_turn:
             raise ValueError('explicit turn identity disagrees with the active journal')
-        if journal is not None and self.definition is not None:
-            from .identity import workflow_identity
-            identity = workflow_identity(self.definition, timeouts=self.timeouts,
-                                         component_passes=self.component_passes)
-            if (getattr(journal, 'semantic_identity', None) is not None
-                    and journal.semantic_identity != identity):
-                raise WorkflowError("Workflow journal semantic identity differs from effective budgets")
+        from .identity import workflow_identity
+        if selected_journal is not None:
+            identity = workflow_identity(self.definition, timeouts=self.timeouts, component_passes=self.component_passes)
+            if (getattr(selected_journal, 'semantic_identity', None) is not None
+                    and selected_journal.semantic_identity != identity):
+                error_type = ValueError if self.typed_state else WorkflowError
+                raise error_type("Workflow journal semantic identity differs from effective budgets")
+        if selected_journal is not None and not self.typed_state:
             from .journal import projection
-            if journal.projection != projection(self.definition, component_passes=self.component_passes):
+            if selected_journal.projection != projection(self.definition, component_passes=self.component_passes):
                 raise WorkflowError('Workflow journal uses a different effective component pass limit')
         selected_context = current_execution_context()
-        if journal is not None:
-            selected_context = journal.admit_execution_context(selected_context)
-            admit_identity = getattr(journal, 'admit_semantic_identity', None)
-            if self.definition is not None and admit_identity is not None:
+        if selected_journal is not None:
+            selected_context = selected_journal.admit_execution_context(selected_context)
+            admit_identity = getattr(selected_journal, 'admit_semantic_identity', None)
+            if admit_identity is not None:
                 admit_identity(identity)
-        if recording_enabled():
-            if self.definition is None:
-                raise WorkflowError('Reporting requires an admitted workflow definition')
-            proof = self._run_services().get('packaged_proof')
-            if getattr(self.definition, 'origin', 'source') == 'compiled':
-                from .artifact import compiled_provenance
-                source_manifest = compiled_provenance(self.definition)
-            else:
-                from .provenance import verified_documents
-                source_manifest = verified_documents(self.definition, packaged_proof=proof)
+        recorded = recording_enabled()
+        if recorded:
+            proof = selected_services.get('packaged_proof')
+            source_manifest = _source_manifest(self.definition, proof)
             from .journal import WorkflowJournal
-            from .identity import workflow_identity
             journal = WorkflowJournal(self.definition,
                 semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
                                                     component_passes=self.component_passes),
                 component_passes=self.component_passes,
-                log_content=requested_log_content(self.config, self._run_services()),
+                log_content=requested_log_content(self.config, selected_services),
                 source_manifest=source_manifest,
-                boundary=self._run_services().get('emissions'),
-                content_policy=self._run_services().get('content_policy'),
+                boundary=selected_services.get('emissions'),
+                content_policy=selected_services.get('content_policy'),
                 turn_id=turn_id,
                 test_id=os.environ.get('PYTEST_CURRENT_TEST', '').rsplit(' ', 1)[0] or None)
             journal.admit_execution_context(selected_context)
-            factory = self._run_services().get('observation_factory')
+            factory = selected_services.get('observation_factory')
             if factory is not None:
                 journal = factory.create(self.definition, journal=journal)
-        token = _CURRENT_JOURNAL.set(journal)
+        with self._thread_guard:
+            if thread_id in self._active_threads:
+                raise RuntimeError('conversation already has an active turn')
+            self._active_threads.add(thread_id)
+        current_journal_token = _CURRENT_JOURNAL.set(journal if recorded else selected_journal)
+        token = self._request.set(request)
+        services_token = self._services.set(dict(selected_services))
+        capture_token = self._capture_services_context.set(selected_services)
+        journal_token = self._journal.set(journal if recorded else selected_journal)
+        from .inference_history import InferenceHistory
+        history = InferenceHistory()
+        state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history})
         try:
-            active_turn = turn_id if turn_id is not None else (journal.turn_id if journal is not None else None)
+            selected_journal = self._journal.get()
+            active_turn = turn_id if turn_id is not None else (selected_journal.turn_id if selected_journal is not None else None)
+            usage_context = nullcontext()
             if active_turn is not None:
                 try:
                     from api_agent.testing.inference_usage import user_turn
                     usage_context = user_turn(active_turn, kind=turn_kind)
                 except ModuleNotFoundError:
-                    # The stripped runtime intentionally omits test accounting.
-                    usage_context = nullcontext()
-            else:
-                usage_context = nullcontext()
+                    pass
             with execution_context(selected_context), (turn(active_turn) if active_turn is not None else nullcontext()), (
                     usage_context):
-                terminal_outcome = []
-                async with self._scope('GRAPH', kind='graph', attempt=1, max_passes=1,
-                                       _terminal_outcome=terminal_outcome):
-                    self._validate({'type': 'object'}, inputs, 'START', 'input')
-                    prompts = {path: (self.definition.contents[path].decode('utf-8') if self.definition is not None
-                                      else path.read_text(encoding='utf-8'))
-                               for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
-                    result = await self.graph.ainvoke(dict(values={'START': deepcopy(inputs)}, ancestry=(), feedback={}, previous={}, prompts=prompts,
-                                                         visit_id=None, attempt_id=None),
-                                                     {'recursion_limit': len(self.layout.steps) + 1})
-                    terminal = self._run_services().get('execution_outcome')
-                    if terminal is not None:
-                        from api_agent.telemetry.outcomes import ExecutionOutcome, report_outcome
-                        final = terminal()
-                        if type(final) is not ExecutionOutcome:
-                            raise WorkflowError('Invalid explicit execution outcome')
-                        terminal_outcome.append(final)
-                        report_outcome(final, runtime=getattr(journal, 'trace', None))
-                        if journal is not None and hasattr(journal, 'report_outcome'):
-                            journal.report_outcome(current_structural_scope(), final)
-            return result['values']
+                async with component_timeout('Workflow GRAPH', self.timeouts.get('GRAPH')) as budget:
+                    from api_agent.tooling.runtime import invocation_tools
+                    async with invocation_tools(self.definition, selected_services), self._scope_graph(budget):
+                        yield
         finally:
-            _CURRENT_JOURNAL.reset(token)
             if automatic_observations is not None:
                 automatic_observations.close()
-            if recording_enabled() and journal is not None:
+            history.close()
+            _CURRENT_JOURNAL.reset(current_journal_token)
+            self._request.reset(token)
+            self._services.reset(services_token)
+            self._capture_services_context.reset(capture_token)
+            self._journal.reset(journal_token)
+            self._turn_state.reset(state_token)
+            with self._thread_guard:
+                self._active_threads.remove(thread_id)
+            if recorded:
                 from .evidence import publish
                 publish(journal.finalize())
 
-    def diagram(self):
-        return diagram_layout(self.layout, component_passes=self.component_passes)
+
+    async def arun(self, update, *, thread_id=None, request=None, services=None, journal=None,
+                   turn_id=None, turn_kind='initial'):
+        from .run_context import canonical_uuid
+        if turn_id is not None:
+            canonical_uuid(turn_id)
+        if self.typed_state and (type(thread_id) is not str or not thread_id or type(update) is not dict):
+            raise ValueError('thread_id and partial state update are required')
+        if not self.typed_state and thread_id is not None:
+            raise WorkflowError('Conversation checkpoints require a declared State contract')
+        async with self._turn(thread_id or str(uuid4()), request, services, journal, turn_id, turn_kind):
+            if self.typed_state:
+                return await self.graph.ainvoke(update, {'configurable': {'thread_id': thread_id}})
+            self._validate({'type': 'object'}, update, 'START', 'input')
+            prompts = {path: self.definition.contents[path].decode('utf-8')
+                       for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
+            result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
+                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None),
+                {'recursion_limit': len(self.layout.steps) + 1})
+            return result['values']
+
 
 
 def diagram_layout(layout, *, component_passes=None):

@@ -1,3 +1,4 @@
+from binding_contract_support import compiler_fixture
 """Declared dialects are checked at schema positions before graph effects."""
 import asyncio
 import json
@@ -32,12 +33,19 @@ def declaration(root, schema, result):
         '    context.services["functions"].append("produce")\n'
         '    await context.services["infer"]()\n'
         f'    return {result!r}\n')
-    path = root / 'layout.md'
-    path.write_text('''# LangGraph Layout v1
+    path = root / 'flow.md.html'
+    (root / 'node.md.html').write_text('# Node: example\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n| produce | deterministic | [Python](functions.py) |\n')
+    path.write_text('''# Workflow
+
+## Graph ID
+
+| ID |
+| --- |
+| example |
 
 ## Flow
 
-1.  [node example](functions.py)
+1.  [node example](node.md.html)
 
 ## Components
 
@@ -65,7 +73,7 @@ def execute(path, functions, inference):
         inference.append('infer')
     layout = load_layout(path, base_root=path.parent, pack_root=path.parent)
     source = runpy.run_path(str(path.parent / 'functions.py'))['produce']
-    graph = Workflow(layout, {'produce': NodeFunction(source)},
+    graph = compiler_fixture(layout, {'produce': NodeFunction(source)},
                      services={'functions': functions, 'infer': infer})
     return asyncio.run(graph.arun({}))
 
@@ -79,7 +87,7 @@ def test_embedded_resource_dialect_rejects_before_real_function_and_inference(tm
     functions, inference = [], []
     with pytest.raises(LayoutError, match='only JSON Schema draft 2020-12') as observed:
         execute(path, functions, inference)
-    assert 'layout.md' in str(observed.value)
+    assert 'flow.md.html' in str(observed.value)
     assert functions == [] and inference == []
 
 

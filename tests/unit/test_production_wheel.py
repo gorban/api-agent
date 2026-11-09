@@ -6,6 +6,7 @@ import sys
 import zipfile
 
 import pytest
+from test_workflow_stateful import fixture_graph
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,12 +23,15 @@ def test_production_build_target_excludes_development_import_closure(tmp_path):
     forbidden_parts = (
         '.md.html', '.svg', '/viewer/', '/ui/', '/tui/', '/tests/', '/test_',
         'workflows/definition.py', 'workflows/document_format.py', 'workflows/layout.py',
+        'workflows/native.py',
         'runtime/trace_viewer.py', 'runtime/tracing_viewer_config.py',
         'runtime/viewer_host.py', 'runtime/viewer_modal.py',
         'workflows/viewer_projection.py', 'workflows/viewer_repository.py',
     )
     assert not [name for name in names if any(part in '/' + name for part in forbidden_parts)]
     assert 'api_agent/runtime/production.py' in names
+    assert 'api_agent/workflows/configuration.py' in names
+    assert 'api_agent/workflows/model.py' in names
     assert 'api_agent/cfg/config.toml' in names
     assert 'api_agent/telemetry/trace_adapters/otel/cfg/config.toml' in names
     assert 'api_agent/demo/simple/functions.py' in names
@@ -152,3 +156,52 @@ def test_production_wheel_script_exits_with_main_result(monkeypatch, tmp_path):
         runpy.run_path(str(script), run_name='__main__')
 
     assert exit_code.value.code == 0
+
+
+def test_installed_runtime_selects_and_executes_a_compiled_typed_application(tmp_path, fixture_graph):
+    from artifact_acceptance_support import build_wheel
+    from api_agent.workflows.artifact_compile import compile_definition
+    from api_agent.workflows.definition import load_definition
+
+    root, entry = fixture_graph
+    source = root / 'application.py'
+    source.write_text('''from types import SimpleNamespace
+from api_agent.workflows.execution import Workflow
+from langgraph.graph.message import add_messages
+
+def create_application(definition, *, config):
+    workflow = Workflow(definition, catalog=definition.load_catalog(config=config),
+                        reducers={'messages': add_messages}, config=config)
+    async def complete(request, *, llm, context):
+        return await workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='one')
+    return SimpleNamespace(definition=definition, complete=complete, timeouts={}, requires_api=False)
+''')
+    entry.write_text(entry.read_text().replace('## Flow', '## Application\n\n'
+        '| Registry | Source |\n| --- | --- |\n| create_application | [source](application.py) |\n\n## Flow'))
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    bindings = build_wheel(tmp_path, 'application-bindings', {
+        'native.py': (root / 'native.py').read_bytes(), 'application.py': source.read_bytes()})
+    plan = tmp_path / 'plan.json'
+    plan.write_bytes(compile_definition(definition, [bindings]))
+    build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
+    runtime = build(ROOT, tmp_path / 'runtime')
+    site = tmp_path / 'site'
+    for wheel in (runtime, bindings):
+        with zipfile.ZipFile(wheel) as archive:
+            archive.extractall(site)
+
+    completed = subprocess.run((sys.executable, '-I', '-c', '''import asyncio,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from api_agent.workflows.artifact import load_artifact
+from api_agent.runtime.local_tools import selected_application
+definition=load_artifact(Path(sys.argv[2]).read_bytes())
+application=selected_application(definition)
+result=asyncio.run(application.complete(None,llm=None,context=None))
+assert result['visits']==1 and result['pending'] is True
+assert application.definition is definition
+assert 'api_agent.workflows.native' not in sys.modules
+assert 'api_agent.workflows.definition' not in sys.modules
+''', str(site), str(plan)), capture_output=True, text=True)
+
+    assert completed.returncode == 0, completed.stderr

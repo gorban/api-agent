@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from api_agent.workflows.definition import load_definition
-from api_agent.workflows.stateful import load_stateful_definition
+from api_agent.workflows.definition import (load_definition)
 from api_agent.workflows.viewer_projection import ViewerEdge, project_view
 from api_agent.workflows.viewer_render import RenderError, _projection_source
 from api_agent.workflows.viewer_repository import RepositoryIdentity
@@ -236,17 +236,17 @@ def test_guarded_components_keep_only_their_pass_nodes_and_declared_conditions()
 def test_real_v3_router_is_scoped_without_leaking_child_start_end_to_root(tmp_path):
     (tmp_path / 'native.py').write_text('from typing import TypedDict\nclass State(TypedDict):\n    seen: bool\n')
     (tmp_path / 'work.md.html').write_text(
-        '# Node v3: work\n\n## Native\n\n| Registry | Kind | Source |\n'
+        '# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n'
         '| --- | --- | --- |\n| work | deterministic | [Python](native.py) |\n')
-    (tmp_path / 'group.md.html').write_text('# Component v3: group\n\n## Flow\n\n1.  [node work](work.md.html)\n')
+    (tmp_path / 'group.md.html').write_text('# Component: group\n\n## Flow\n\n1.  [node work](work.md.html)\n')
     entry = tmp_path / 'flow.md.html'
     entry.write_text(
-        '# Workflow v3\n\n## Graph ID\n\n| ID |\n| --- |\n| scoped_v3 |\n\n'
+        '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| scoped_v3 |\n\n'
         '## State\n\n| Registry | Source |\n| --- | --- |\n| State | [Python](native.py) |\n\n'
         '## Flow\n\n1.  [component group](group.md.html)\n\n'
         '## Edges\n\n| From | To | Router | Source |\n| --- | --- | --- | --- |\n'
         '| group | END | - | - |\n| work | END | choose | [Python](native.py) |\n')
-    projection = project_view(load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path))
+    projection = project_view(load_definition(entry, base_root=tmp_path, pack_root=tmp_path))
 
     root_source, _ = source_for(projection, 'scoped_v3')
     component_source, _ = source_for(projection, 'group')

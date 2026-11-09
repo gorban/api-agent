@@ -11,7 +11,9 @@ from api_agent.testing.workflow_steps import scope_steps
 from api_agent.workflows.definition import load_definition, load_native_catalog
 from api_agent.workflows.execution import Workflow, NodeFunction
 from api_agent.workflows.journal import WorkflowJournal, validate_journal
-from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+from api_agent.workflows.execution import (Workflow)
+from api_agent.workflows.native import (load_native_bindings)
+from api_agent.workflows.definition import (load_definition)
 from test_workflow_inline_declarations import inline_graph, stateful_graph
 
 
@@ -20,7 +22,7 @@ from test_workflow_inline_declarations import inline_graph, stateful_graph
 def test_parsed_graph_packet_is_complete_under_outer_deadline(inline_graph, tmp_path, monkeypatch, stateful, interrupt):
     monkeypatch.delenv('API_AGENT_ALLURE_REPORTING', raising=False)
     entry, _ = stateful_graph(tmp_path) if stateful else inline_graph
-    loader = load_stateful_definition if stateful else load_definition
+    loader = load_definition if stateful else load_definition
     definition = loader(entry, base_root=entry.parent, pack_root=entry.parent)
     journal = WorkflowJournal(definition)
     budgets = []
@@ -33,7 +35,7 @@ def test_parsed_graph_packet_is_complete_under_outer_deadline(inline_graph, tmp_
                 asyncio.current_task().cancel()
     services = {'journal': journal, 'observe': observe}
     if stateful:
-        workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition, config={}),
+        workflow = Workflow(definition, catalog=load_native_bindings(definition, config={}),
                                     reducers={}, config={}, services=services)
         inputs, options = {'seen': False}, {'thread_id': 'synthetic', 'journal': journal}
     else:
@@ -100,7 +102,7 @@ def test_nested_raw_scopes_and_independent_journals(tmp_path, monkeypatch,
             declaration = 'def' if offloaded else 'async def'
             call = 'context.services["nested_sync"]()' if offloaded else 'await context.services["nested"]()'
             (root / 'native.py').write_text(prefix + declaration + ' inspect(inputs, context):\n    return ' + call + '\n')
-        loader = load_stateful_definition if stateful else load_definition
+        loader = load_definition if stateful else load_definition
         definition = loader(entry, base_root=root, pack_root=root)
         services = {'observe': events.append}
         if nested is not None:
@@ -110,7 +112,7 @@ def test_nested_raw_scopes_and_independent_journals(tmp_path, monkeypatch,
             services['journal'] = journal
             journals.append(journal)
         if stateful:
-            workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition, config={}),
+            workflow = Workflow(definition, catalog=load_native_bindings(definition, config={}),
                                         reducers={}, services=services)
             async def run():
                 return await workflow.arun({'seen': False}, thread_id=name, journal=journal)

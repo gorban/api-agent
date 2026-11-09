@@ -67,20 +67,20 @@ class _Snapshot:
 
     def declaration(self):
         d = self.definition
-        v2 = getattr(d, 'version', None) == 2
-        if not v2 and getattr(d, 'version', None) != 3:
+        bound = getattr(d, 'schema_source', None) is None
+        if getattr(d, 'version', None) != 1:
             raise TypeError('Expected an admitted workflow definition')
         tables = d.layout.tables
-        timeout_rows = tables['Timeouts'] if v2 else d.timeouts
-        components = tables['Components'] if v2 else ()
+        timeout_rows = tables['Timeouts'] if bound else d.timeouts
+        components = tables['Components'] if bound else ()
         selected = {}
         for row in timeout_rows:
             selected.setdefault(self.logical(row['Source']), set()).add(row['Key'])
         for row in components:
             if row.get('max_passes_key') is not None:
                 selected.setdefault(self.logical(row['max_passes_link']), set()).add(row['max_passes_key'])
-        opaque = set() if v2 else {r.logical_path for r in d.declared_resources.values()}
-        if v2:
+        opaque = set() if bound else {r.logical_path for r in d.declared_resources.values()}
+        if bound:
             for row in tables['Functions']:
                 for column in ('Input', 'Output', 'Response schema'):
                     if column in row and row[column] != '-':
@@ -98,7 +98,7 @@ class _Snapshot:
             else:
                 digest = sha256(r.content_bytes).hexdigest() if r.content_bytes is not None else r.sha256
                 resources.append([r.kind, r.logical_path, digest])
-        result = dict(version=2 if v2 else 3, graph_id=d.graph_id,
+        result = dict(version=1, graph_id=d.graph_id,
                       entry_root=d.entry_root, entry=self.logical(d.entry),
                       steps=[dict(id=s.id, kind=s.kind, parent=s.parent,
                                   source=self.logical(s.source)) for s in d.layout.steps],
@@ -109,7 +109,7 @@ class _Snapshot:
                       replacements=[[r.target_id, r.root_id, Path(r.entry).as_posix()] for r in d.replacements],
                       tools=[[t.scope, t.port, self.logical(t.instance), t.scope_kind, list(t.operations)]
                              for t in d.tool_usages])
-        if v2:
+        if bound:
             # Linked pass labels contain presentation syntax; the admitted key
             # and logical source carry the binding instead.
             normalized = {}
@@ -146,9 +146,9 @@ def declaration_identity(definition):
 
 def workflow_identity(definition, *, timeouts, component_passes):
     """Bind the declaration to complete, already resolved declared budgets."""
-    v2 = getattr(definition, 'version', None) == 2
-    timeout_rows = definition.layout.tables['Timeouts'] if v2 else definition.timeouts
-    components = definition.layout.tables['Components'] if v2 else ()
+    bound = getattr(definition, 'schema_source', None) is None
+    timeout_rows = definition.layout.tables['Timeouts'] if bound else definition.timeouts
+    components = definition.layout.tables['Components'] if bound else ()
     if (not isinstance(timeouts, Mapping) or set(timeouts) != {r['Owner'] for r in timeout_rows}
             or not isinstance(component_passes, Mapping)
             or set(component_passes) != {r['ID'] for r in components}):

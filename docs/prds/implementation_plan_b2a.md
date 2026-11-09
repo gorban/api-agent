@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- [x] B2.1 Parse Layout v1 Markdown structurally: nested ordered Flow lists,
+- [x] B2.1 Parse workflow Markdown structurally: linked component Flow lists,
   sequential 1..99 numbering, four-column markers/four-space indentation and
   fixed component/function/binding/edge/prompt/timing tables. Unknown or
   inconsistent declarations fail with source locations before inference.

@@ -14,11 +14,11 @@ from api_agent.workflows.journal import WorkflowJournal, validate_journal
 from api_agent.workflows.observations import WorkflowObservationFactory
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 from test_workflow_inline_declarations import inline_graph, stateful_graph, local_diagram
-from api_agent.workflows.stateful import load_stateful_definition
+from api_agent.workflows.definition import (load_definition)
 
 
 def admit(entry, stateful=False):
-    loader = load_stateful_definition if stateful else load_definition
+    loader = load_definition if stateful else load_definition
     return loader(entry, base_root=entry.parent, pack_root=entry.parent)
 
 
@@ -246,7 +246,8 @@ def test_executors_record_actual_validated_maps_and_reject_mismatch(
     import asyncio
     from api_agent.workflows.definition import load_native_catalog
     from api_agent.workflows.execution import Workflow, NodeFunction, WorkflowError
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
     entry, _ = stateful_graph(tmp_path) if stateful else inline_graph
     add_timeout(entry)
     definition = admit(entry, stateful)
@@ -262,8 +263,8 @@ def test_executors_record_actual_validated_maps_and_reject_mismatch(
     services = {'observation_factory': factory}
     config = {'BUDGET': 7.0}
     if stateful:
-        catalog = load_stateful_catalog(definition, config=config)
-        workflow = StatefulWorkflow(definition, catalog=catalog, reducers={}, config=config, services=services)
+        catalog = load_native_bindings(definition, config=config)
+        workflow = Workflow(definition, catalog=catalog, reducers={}, config=config, services=services)
         inputs = {'seen': False}
         options = {'thread_id': 'synthetic'}
     else:
@@ -291,7 +292,7 @@ def test_executors_record_actual_validated_maps_and_reject_mismatch(
         assert legacy.semantic_identity == expected
         return
     monkeypatch.setattr('api_agent.workflows.provenance.verified_documents', lambda *a, **k: None)
-    monkeypatch.setattr('api_agent.workflows.stateful._source_manifest', lambda *a, **k: None)
+    monkeypatch.setattr('api_agent.workflows.execution._source_manifest', lambda *a, **k: None)
     packets = []
     monkeypatch.setattr('api_agent.workflows.evidence.publish', packets.append)
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
@@ -481,7 +482,8 @@ def test_legacy_journal_protocol_without_optional_identity_method(inline_graph, 
     import asyncio
     from api_agent.workflows.definition import load_native_catalog
     from api_agent.workflows.execution import Workflow, NodeFunction
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
     entry, _ = stateful_graph(tmp_path) if stateful else inline_graph
     definition = admit(entry, stateful)
     journal = WorkflowJournal(definition)
@@ -492,7 +494,7 @@ def test_legacy_journal_protocol_without_optional_identity_method(inline_graph, 
             return getattr(journal, name)
     legacy = LegacyJournal()
     if stateful:
-        workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                     reducers={}, journal=legacy)
         asyncio.run(workflow.arun({'seen': False}, thread_id='legacy'))
     else:

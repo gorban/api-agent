@@ -8,7 +8,7 @@ This child records the supported generic workflow runtime. It does not claim app
 
 - [x] Emit a versioned projection of admitted graph, ordered steps, resolved replacement identities, resource hashes, and every declared or implicit route. Resource paths are logical owner paths; projection and journal contain no absolute checkout paths or declaration text.
 - [x] Record actual START, sequential, conditional and END routing at execution time. Capture nested scope start/end, guard attempts, outcome, shared timeout provenance and monotonic elapsed time. Owner-assigned event sequence and IDs are retained before IPC.
-- [x] Bind supported v2/stateful node visits, component attempts, terminal provider calls, turns and invocations to parent/cause IDs; independently review nested stateful failure/cancellation and process-local next-turn continuation. Unowned/missing calls are partial. Preserve selection and frozen charge/estimate basis.
+- [x] Bind supported binding/typed-state node visits, component attempts, terminal provider calls, turns and invocations to parent/cause IDs; independently review nested stateful failure/cancellation and process-local next-turn continuation. Unowned/missing calls are partial. Preserve selection and frozen charge/estimate basis.
 - [ ] Extend and independently verify transport retry identities and richer suspension/resume semantics when those capabilities are implemented; normal-entry continuation does not establish arbitrary mid-node resumption.
 - [x] Prove event loss, malformed ordering, missing terminal events and overflow prevent an exact complete-route claim, including supported stateful paths and nested failure/cancellation. Reject orphan parents, late calls, omitted visits and false completion.
 

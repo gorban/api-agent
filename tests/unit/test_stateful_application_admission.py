@@ -6,7 +6,7 @@ import pytest
 from api_agent.providers.contracts import ContractError
 from api_agent.runtime.local_tools import selected_application
 from api_agent.workflows.layout import LayoutError
-from api_agent.workflows.stateful import load_stateful_definition
+from api_agent.workflows.definition import (load_definition)
 from test_workflow_stateful import fixture_graph
 
 
@@ -34,7 +34,7 @@ def create_application(definition, *, config):
 
 def test_selected_stateful_application_uses_admitted_factory(application_graph):
     root, entry, source = application_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     config = {'WORKFLOW_GRAPH_TIMEOUT_SECONDS': 19}
 
     application = selected_application(definition, config=config)
@@ -52,7 +52,7 @@ def test_selected_stateful_application_uses_admitted_factory(application_graph):
 def test_factory_is_in_the_workflow_provenance(application_graph):
     from api_agent.workflows.viewer_projection import project_view
     root, entry, source = application_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
 
     projection = project_view(definition)
 
@@ -64,7 +64,7 @@ def test_factory_is_in_the_workflow_provenance(application_graph):
 
 def test_changed_application_source_is_rejected_before_factory_execution(application_graph):
     root, entry, source = application_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     source.write_text("raise RuntimeError('changed source was executed')\n")
 
     with pytest.raises(LayoutError, match='resource changed after admission'):
@@ -73,7 +73,7 @@ def test_changed_application_source_is_rejected_before_factory_execution(applica
 
 def test_stateful_run_local_requires_explicit_application_factory(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
 
     with pytest.raises(ContractError, match='application binding'):
         selected_application(definition)
@@ -89,7 +89,7 @@ def test_invalid_application_binding_is_rejected(application_graph, row):
     entry.write_text(entry.read_text().replace('create_application | [Python](application.py)', row))
 
     with pytest.raises(LayoutError):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_empty_application_binding_is_rejected(application_graph):
@@ -97,7 +97,7 @@ def test_empty_application_binding_is_rejected(application_graph):
     entry.write_text(entry.read_text().replace('| create_application | [Python](application.py) |\n', ''))
 
     with pytest.raises(LayoutError, match='application'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 @pytest.mark.parametrize('replacement', [
@@ -108,7 +108,7 @@ def test_empty_application_binding_is_rejected(application_graph):
 def test_invalid_factory_contract_fails_closed(application_graph, replacement):
     root, entry, source = application_graph
     source.write_text(replacement + '\n')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
 
     with pytest.raises(ContractError, match='application'):
         selected_application(definition)
@@ -135,7 +135,7 @@ def test_application_dependency_manifest_is_captured_before_native_import(applic
     dependency.write_text('value = 7\n')
     source.write_text(source.read_text().replace('from types import SimpleNamespace',
         'from types import SimpleNamespace\nfrom fixture_extension import value'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
 
     application = selected_application(definition)
 
@@ -162,7 +162,7 @@ def test_invalid_dependency_manifest_fails_before_native_execution(application_g
     root, entry, source, manifest = with_dependency_manifest(application_graph, content)
 
     with pytest.raises(LayoutError):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_duplicate_manifest_dependency_is_rejected(application_graph):
@@ -178,7 +178,7 @@ def test_duplicate_manifest_dependency_is_rejected(application_graph):
 ## Flow'''))
 
     with pytest.raises(LayoutError, match='dependency'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 @pytest.mark.parametrize('duplicate', [False, True], ids=['wrong-extension', 'duplicate-manifest'])
@@ -193,4 +193,4 @@ def test_manifest_ownership_is_checked_before_loading_valid_toml(application_gra
         entry.write_text(entry.read_text().replace('dependencies.toml', 'dependencies.txt'))
 
     with pytest.raises(LayoutError, match='invalid native dependency manifest'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)

@@ -96,10 +96,10 @@ def test_pack_owned_resource_generates_temporary_selected_diagram(tmp_path, monk
     (base / 'children').mkdir(parents=True)
     pack.mkdir()
     (base / 'flow.md.html').write_text(
-        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+        '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
         '## Flow\n\n1.  [node work](children/work.md.html)\n')
     (base / 'children/work.md.html').write_text(
-        '# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+        '# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
         '| work | deterministic | [Python](../native.py) |\n\n'
         '## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
         '| work | work | [input](../schema.json) | [output](../schema.json) |\n\n'
@@ -139,10 +139,10 @@ def test_owner_inline_prompt_uses_temporary_diagram_when_saved_one_is_missing(tm
     (base / 'children').mkdir(parents=True)
     pack.mkdir()
     (base / 'flow.md.html').write_text(
-        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+        '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
         '## Flow\n\n1.  [node work](children/work.md.html)\n')
     (base / 'children/work.md.html').write_text(
-        '# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+        '# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
         '| work | deterministic | [Python](../native.py) |\n\n'
         '## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
         '| work | work | [input](../schema.json) | [output](../schema.json) |\n\n'
@@ -193,7 +193,7 @@ def test_sibling_workflow_library_is_temporary_selected_view(tmp_path, monkeypat
 id="synthetic-pack"
 config="config.toml"
 [workflow]
-version=2
+version = 1
 root="base"
 entry="flow.md.html"
 [workflow.library]
@@ -243,7 +243,7 @@ def test_explicit_flow_rejects_outside_paths_and_symlinks(tmp_path):
     from api_agent.runtime.resource_pack import ResourcePackError
     selected = load_launch_context(ROOT)
     outside = tmp_path / 'flow.md.html'
-    outside.write_text('# Workflow v2\n')
+    outside.write_text('# Workflow\n')
     with pytest.raises(ResourcePackError, match='inside the selected'):
         _view_context(selected, outside)
     from dataclasses import replace

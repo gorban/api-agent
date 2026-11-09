@@ -117,6 +117,7 @@ def project_view(definition) -> ViewerProjection:
         return key + '/' + path.relative_to(roots[key]).as_posix()
 
     declarations = [(definition.entry, definition.graph_id, None, 1)]
+    declarations.extend((path, identifier, None, 1) for path, identifier in definition.imports)
     declarations.extend((target, identifier, next((step.parent for step in definition.layout.steps
                                                     if step.id == identifier), None), line)
                         for identifier, (_, line, target) in definition.selected_declarations.items())
@@ -169,12 +170,13 @@ def project_view(definition) -> ViewerProjection:
         references.append(ViewerReference(kind, logical(owner), owner_id, line, target_path,
                                           resource.sha256, tuple(sorted((str(k), str(v)) for k, v in attrs.items()))))
 
+    declaration_entry = definition.declaration_entry or definition.entry
     if hasattr(definition, 'nodes'):
-        add_reference('state_schema', definition.entry, None, 1, definition.schema_source,
+        add_reference('state_schema', declaration_entry, None, 1, definition.schema_source,
                       registry=definition.schema_name)
         if definition.application_binding is not None:
             registry, source = definition.application_binding
-            add_reference('native_source', definition.entry, None, 1, source,
+            add_reference('native_source', declaration_entry, None, 1, source,
                           registry=registry, role='application')
         for row in definition.nodes:
             add_reference('native_source', definition.selected_declarations[row['ID']][2], row['ID'], 1,
@@ -184,19 +186,19 @@ def project_view(definition) -> ViewerProjection:
             if row['Source'] is not None:
                 routed.setdefault((row['From'], row['Router'], row['Source']), []).append(row)
         for (owner_id, router, source), routes in routed.items():
-            add_reference('router_source', definition.entry, owner_id, routes[0]['line'], source,
+            add_reference('router_source', declaration_entry, owner_id, routes[0]['line'], source,
                           router=router, targets=','.join(row['To'] for row in routes))
         for row in definition.timeouts:
-            add_reference('timeout', definition.entry, row['Owner'], row['line'], row['Source'], key=row['Key'])
+            add_reference('timeout', declaration_entry, row['Owner'], row['line'], row['Source'], key=row['Key'])
         for identifier, resource in definition.declared_resources.items():
-            references.append(ViewerReference(resource.kind, logical(definition.entry), identifier, 1,
+            references.append(ViewerReference(resource.kind, logical(declaration_entry), identifier, 1,
                                               resource.logical_path, resource.sha256, ()))
     else:
         owner_by_path = {target: identifier for identifier, (_, _, target) in definition.selected_declarations.items()}
         for name, fields in (('Functions', ('Input', 'Output', 'Response schema')),
                              ('Prompts', ('File',)), ('Timeouts', ('Source',))):
             for row in definition.layout.tables[name]:
-                owner = row.get('_owner', definition.entry)
+                owner = row.get('_owner', declaration_entry)
                 for field in fields:
                     target = row.get(field)
                     if target is None or target == '-':
@@ -212,13 +214,13 @@ def project_view(definition) -> ViewerProjection:
                     add_reference(name.lower(), owner, owner_id, row['line'], target,
                                   field=field, **attrs)
         for row in definition.layout.tables['Bindings']:
-            owner = row.get('_owner', definition.entry)
+            owner = row.get('_owner', declaration_entry)
             references.append(ViewerReference('binding', logical(owner), row.get('_owner_id', owner_by_path.get(owner)), row['line'],
                                               '', '', tuple(sorted((key, str(value)) for key, value in row.items()
                                                                    if key not in ('line', '_owner')))))
         for row in definition.layout.tables['Components']:
             if 'max_passes_link' in row:
-                add_reference('pass_limit', row.get('_owner', definition.entry), row['ID'],
+                add_reference('pass_limit', row.get('_owner', declaration_entry), row['ID'],
                               row['line'], row['max_passes_link'], key=row['max_passes_key'])
     controllers = ()
     if not hasattr(definition, 'nodes'):

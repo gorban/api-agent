@@ -23,7 +23,7 @@ def selected_graph(tmp_path, scope, inline, replacement):
     base.mkdir()
     pack.mkdir()
     entry = base / 'flow.md.html'
-    entry.write_text('# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| sample |\n\n'
+    entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| sample |\n\n'
                      '## Flow\n\n1.  [component group](group.md.html)\n'
                      '## Components\n\n| ID | Max passes | Guard |\n| --- | --- | --- |\n| group | 1 | - |\n'
                      + (FUNCTIONS if scope == 'root' else ''))

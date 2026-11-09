@@ -159,7 +159,7 @@ class LaunchTests(unittest.TestCase):
             (resource_pack / 'config.toml').write_text('version = 1\n')
             (resource_pack / 'pack.toml').write_text(
                 'version = 1\nid = "external_fixture"\nconfig = "config.toml"\n'
-                '[workflow]\nversion = 2\nroot = "pack"\nentry = "missing.md.html"\n')
+                '[workflow]\nversion = 1\nroot = "pack"\nentry = "missing.md.html"\n')
             with patch('sys.stderr', new_callable=StringIO) as error:
                 self.assertEqual(main(['--help', '--resource-pack-dir', str(resource_pack)], base_root=ROOT), 2)
             self.assertIn('workflow.entry must exist inside its declared root', error.getvalue())

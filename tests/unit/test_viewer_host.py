@@ -386,7 +386,7 @@ def test_host_binds_recorded_repository_snapshot_before_listening(tmp_path):
     (root / 'cfg').mkdir(parents=True)
     config = root / 'cfg/workflow-view.toml'
     config.write_bytes(repository_config_bytes(RepositoryIdentity('//github.com/example/workflow')))
-    raw = b'# Workflow v2\n'
+    raw = b'# Workflow\n'
     document = SimpleNamespace(logical_path='base/flow.md.html', raw_bytes=raw,
                                executable_bytes=raw, sha256=sha256(raw).hexdigest(), stable_id='example')
     projection = SimpleNamespace(version=1, graph_id='example', definition_id='definition',

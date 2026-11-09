@@ -12,6 +12,8 @@ from api_agent.workflows.layout import LayoutError, load_layout
 from test_workflow_definition import make_graph
 
 
+from binding_contract_support import compiler_fixture
+
 RESPONSE = {'type': 'object', 'properties': {'answer': {'type': 'boolean'}},
             'required': ['answer'], 'additionalProperties': False}
 HEADER = '| ID | Registry | Input | Output | Response schema | Output mode | Fallback |'
@@ -176,7 +178,7 @@ async def inspect(inputs, context):
     definition = admit(entry)
     catalog = load_native_catalog(definition, tmp_path / 'native.py')
     calls = []
-    graph = Workflow(definition, {'inspect': NodeFunction(catalog['inspect'], 'llm')}, services={'calls': calls})
+    graph = compiler_fixture(definition, {'inspect': NodeFunction(catalog['inspect'], 'llm')}, services={'calls': calls})
     result = asyncio.run(graph.arun({}))
     assert result['inspect'] == {'seen': True, 'usage': {'input_tokens': 2}}
     assert len(calls) == 2
@@ -189,7 +191,7 @@ def test_complete_output_still_rejects_invalid_runtime_value(tmp_path):
     (tmp_path / 'native.py').write_text('def inspect(inputs, context):\n    return {"seen": "invented"}\n')
     definition = admit(entry)
     catalog = load_native_catalog(definition, tmp_path / 'native.py')
-    graph = Workflow(definition, {'inspect': NodeFunction(catalog['inspect'], 'llm')})
+    graph = compiler_fixture(definition, {'inspect': NodeFunction(catalog['inspect'], 'llm')})
     from api_agent.workflows.execution import CandidateCorrection
     with pytest.raises(CandidateCorrection) as caught:
         asyncio.run(graph.arun({}))
@@ -197,7 +199,7 @@ def test_complete_output_still_rejects_invalid_runtime_value(tmp_path):
     assert caught.value.rejected == {'seen': 'invented'}
 
 
-def test_legacy_layout_accepts_extended_columns_and_captures_response_link(tmp_path):
+def test_layout_projection_captures_declared_response_link(tmp_path):
     from test_workflow_embedded_dialects import declaration
     entry = declaration(tmp_path, {'type': 'object'}, {})
     (tmp_path / 'response.json').write_text(json.dumps(RESPONSE))
@@ -205,9 +207,12 @@ def test_legacy_layout_accepts_extended_columns_and_captures_response_link(tmp_p
     source = source.replace('| --- | --- | --- | --- |', '| --- | --- | --- | --- | --- | --- | --- |')
     source = source.replace('[output](output.json) |', '[output](output.json) | [response](response.json) | structured | reject |')
     entry.write_text(source)
+    node = tmp_path / 'node.md.html'
+    node.write_text(node.read_text().replace('| deterministic |', '| llm |'))
     layout = load_layout(entry, base_root=tmp_path, pack_root=tmp_path)
     assert tmp_path / 'response.json' in layout.files
-    assert layout.tables['Functions'][0]['Response schema value'] == RESPONSE
+    from binding_contract_support import mutable_layout
+    assert mutable_layout(layout).tables['Functions'][0]['Response schema value'] == RESPONSE
 
 
 @pytest.mark.parametrize('schema', [{'type': 'object', '$schema': 'https://example.invalid/dialect'},
@@ -270,12 +275,12 @@ def test_existing_chat_applications_reject_new_caller_policy_before_inference(ki
     provider.complete.assert_not_called()
 
 
-def test_legacy_layout_rejects_misplaced_header_columns(tmp_path):
+def test_layout_projection_rejects_misplaced_header_columns(tmp_path):
     from test_workflow_embedded_dialects import declaration
     entry = declaration(tmp_path, {'type': 'object'}, {})
     entry.write_text(entry.read_text().replace('| ID | Registry | Input | Output |',
                                              '| ID | Registry | Output | Input |'))
-    with pytest.raises(LayoutError, match='misplaced columns'):
+    with pytest.raises(LayoutError, match='columns'):
         load_layout(entry, base_root=tmp_path, pack_root=tmp_path)
 
 
@@ -395,6 +400,9 @@ def manual_response_layout(root, *, response, mode, fallback):
     source = source.replace('| --- | --- | --- | --- |', '| --- | --- | --- | --- | --- | --- | --- |')
     entry.write_text(source.replace('[output](output.json) |',
                                    f'[output](output.json) | {response} | {mode} | {fallback} |'))
+    if mode != '-':
+        node = root / 'node.md.html'
+        node.write_text(node.read_text().replace('| deterministic |', '| llm |'))
     return load_layout(entry, base_root=root, pack_root=root)
 
 
@@ -413,7 +421,7 @@ def test_manual_layout_runtime_rejects_registered_kind_policy_mismatch(
     import runpy
     layout = manual_response_layout(tmp_path, response=response, mode=mode, fallback=fallback)
     native = runpy.run_path(str(tmp_path / 'functions.py'))['produce']
-    Workflow(layout, {'produce': NodeFunction(native, expected_kind)})
+    compiler_fixture(layout, {'produce': NodeFunction(native, expected_kind)})
 
     with pytest.raises(LayoutError, match='response declaration must match registered node kind'):
-        Workflow(layout, {'produce': NodeFunction(native, invalid_kind)})
+        compiler_fixture(layout, {'produce': NodeFunction(native, invalid_kind)})

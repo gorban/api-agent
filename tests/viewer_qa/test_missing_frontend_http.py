@@ -25,7 +25,7 @@ def test_unprepared_source_view_has_safe_dependency_guidance(tmp_path, root_docu
     target = tmp_path / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(wrap_document(
-        (b'# Workflow v2\n' if root_document else b'# Node v2: work\n') +
+        (b'# Workflow\n' if root_document else b'# Node: work\n') +
         b'\n<script>window.unsanitized=true</script>\n',
         root=root_document,
         asset_prefix=('.private_resources/viewer/' if root_document else '../.private_resources/viewer/'),

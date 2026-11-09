@@ -9,28 +9,41 @@ from api_agent.workflows import viewer_build as views, document_format as format
 from test_workflow_viewer_discovery import TinyRenderer, minimal_graph
 
 
+def isolate_markdown_preview(monkeypatch):
+    # The release envelope rejects literal quotes first. Admit only that test
+    # mutation here to prove the independent CommonMark preview guard still works.
+    original = format._normalize_view_command
+    def normalize(raw, *, flow_path=None):
+        import re
+        corrected = re.sub(rb'(<pre>[^<]*)(</pre>)',
+            lambda match: match[1].replace(b'"', b'&quot;') + match[2], raw)
+        return original(corrected, flow_path=flow_path)
+    monkeypatch.setattr(format, '_normalize_view_command', normalize)
+
+
 @pytest.mark.parametrize('root,path', [(True, None), (True, 'nested/flow.md.html'),
                                       (False, None)])
 def test_valid_root_and_component_carriers_are_consumed(root, path):
-    source = b'# LangGraph flow\n' if root else b'# Component: work\n'
+    source = b'# Workflow\n' if root else b'# Component: work\n'
     wrapped = wrap_document(source, root=root, asset_prefix='.private_resources/viewer/', flow_path=path)
     check_repository_preview(wrapped, path=Path('example.md.html'))
 
 
 def test_plain_and_legacy_html_have_no_markdown_bootstrap():
-    for source in (b'# LangGraph flow\n', b'<!doctype html><plaintext>\n# LangGraph flow\n'):
+    for source in (b'# Workflow\n', b'<!doctype html><plaintext>\n# Workflow\n'):
         check_repository_preview(source, path=Path('example.md.html'))
 
 
 def test_only_carrier_prefix_is_checked_not_literal_body_examples():
-    source = b'# LangGraph flow\n\n```text\n[workflow-help]: broken example\n```\n'
+    source = b'# Workflow\n\n```text\n[workflow-help]: broken example\n```\n'
     wrapped = wrap_document(source, root=True, asset_prefix='.private_resources/viewer/',
                             flow_path='nested/flow.md.html')
     check_repository_preview(wrapped, path=Path('example.md.html'))
 
 
-def test_legacy_readable_literal_quote_envelope_is_rejected_by_strict_preview_check():
-    wrapped = wrap_document(b'# LangGraph flow\n', root=True,
+def test_literal_quote_bootstrap_is_rejected_by_strict_preview_check(monkeypatch):
+    isolate_markdown_preview(monkeypatch)
+    wrapped = wrap_document(b'# Workflow\n', root=True,
                            asset_prefix='.private_resources/viewer/', flow_path='nested/flow.md.html')
     malformed = wrapped.replace(b'&quot;', b'"')
     assert malformed != wrapped
@@ -40,6 +53,7 @@ def test_legacy_readable_literal_quote_envelope_is_rejected_by_strict_preview_ch
 
 
 def malformed_inventory(root, monkeypatch):
+    isolate_markdown_preview(monkeypatch)
     minimal_graph(root)
     minimal_graph(root, 'nested')
     original = format.wrap_document
@@ -80,6 +94,7 @@ def test_shared_ci_entrypoint_reports_malformed_nested_flow(tmp_path, monkeypatc
 
 
 def test_new_test_flow_after_initial_inventory_is_discovered_automatically(tmp_path, monkeypatch):
+    isolate_markdown_preview(monkeypatch)
     minimal_graph(tmp_path)
     views.generate_views(tmp_path, renderer=TinyRenderer(), repository_url='//github.com/example/agent')
     views.check_views(tmp_path)

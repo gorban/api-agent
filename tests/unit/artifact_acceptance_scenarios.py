@@ -50,9 +50,10 @@ class SourceEngine:
         entry, base, pack = (Path(spec[key]) for key in ('entry', 'base_root', 'pack_root'))
         entry_root = spec.get('entry_root')
         if spec['corpus'] == 'v3':
-            from api_agent.workflows.stateful import load_stateful_catalog, load_stateful_definition
-            self.definition = load_stateful_definition(entry, base_root=base, pack_root=pack, entry_root=entry_root)
-            self._catalog = load_stateful_catalog(self.definition)
+            from api_agent.workflows.native import (load_native_bindings)
+            from api_agent.workflows.definition import (load_definition)
+            self.definition = load_definition(entry, base_root=base, pack_root=pack, entry_root=entry_root)
+            self._catalog = load_native_bindings(self.definition)
         else:
             from api_agent.workflows.definition import load_definition
             self.definition = load_definition(entry, base_root=base, pack_root=pack, entry_root=entry_root)
@@ -60,8 +61,8 @@ class SourceEngine:
         self.graph_id = self.definition.graph_id
 
     def workflow(self, **options):
-        from api_agent.workflows.stateful import StatefulWorkflow
-        return StatefulWorkflow(self.definition, catalog=self._catalog, **options)
+        from api_agent.workflows.execution import (Workflow)
+        return Workflow(self.definition, catalog=self._catalog, **options)
 
     def contrived(self, *, llm, trial, observe, config):
         from api_agent.workflows import contrived

@@ -19,6 +19,7 @@ _EXCLUDED_MODULE_FILES = frozenset({
     'runtime/viewer_host.py',
     'runtime/viewer_modal.py',
     'workflows/definition.py',
+    'workflows/native.py',
     'workflows/document_format.py',
     'workflows/layout.py',
     'workflows/viewer_build.py',
@@ -134,7 +135,7 @@ def build(root, output):
     if retained:
         raise RuntimeError(f'production import closure requires excluded modules: {sorted(retained)}')
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='v2-image-wheel-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='runtime-image-wheel-') as temporary:
         source = Path(temporary)
         package = source / 'src' / 'api_agent'
         shutil.copytree(root / 'src' / 'api_agent', package, ignore=_ignore)

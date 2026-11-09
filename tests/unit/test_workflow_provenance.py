@@ -21,7 +21,7 @@ def admitted(tmp_path):
     git(root, 'config', 'user.name', 'Example')
     git(root, 'config', 'user.email', 'example@example.invalid')
     file = root / 'flow.md.html'
-    file.write_bytes(b'# Workflow v2\n')
+    file.write_bytes(b'# Workflow\n')
     git(root, 'add', 'flow.md.html')
     git(root, 'commit', '-qm', 'add synthetic workflow')
     definition = WorkflowDefinition('Example', file, 'base',
@@ -183,7 +183,7 @@ def test_inline_prompt_is_proven_through_physical_parent(tmp_path):
     from dataclasses import replace
     from api_agent.workflows.definition import InlinePromptRef
     definition, file = admitted(tmp_path)
-    file.write_bytes(b'# Workflow v2\n## Prompt: Intro\n\n```text\nHello\n```\n')
+    file.write_bytes(b'# Workflow\n## Prompt: Intro\n\n```text\nHello\n```\n')
     git(file.parent, 'add', file.name)
     git(file.parent, 'commit', '-qm', 'add synthetic inline prompt')
     virtual = InlinePromptRef(file, 'Intro')
@@ -317,7 +317,7 @@ def test_inline_virtual_bytes_must_match_fenced_parent_body(tmp_path):
     from dataclasses import replace
     from api_agent.workflows.definition import InlinePromptRef
     definition, file = admitted(tmp_path)
-    file.write_bytes(b'# Workflow v2\n## Prompt: Intro\n\n```text\nHello\n```\n\n')
+    file.write_bytes(b'# Workflow\n## Prompt: Intro\n\n```text\nHello\n```\n\n')
     git(file.parent, 'add', file.name)
     git(file.parent, 'commit', '-qm', 'add independent inline document')
     ref = InlinePromptRef(file, 'Intro')
@@ -668,7 +668,7 @@ def test_source_archive_and_wheel_preserve_same_proof(tmp_path, monkeypatch, amb
         shutil.copyfile(source / name, project / name)
     (project / 'LICENSE').write_text('Synthetic test license.\n')
     (project / 'README.md').write_text('Synthetic package.\n')
-    (project / 'flow.md.html').write_text('# Workflow v2\n')
+    (project / 'flow.md.html').write_text('# Workflow\n')
     (project / 'src/api_agent').mkdir(parents=True)
     (project / 'src/api_agent/__init__.py').write_text('"""Synthetic package."""\n')
     (project / 'workflows').mkdir()

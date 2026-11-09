@@ -25,7 +25,7 @@ def controlled(tmp_path, monkeypatch):
     document = SimpleNamespace(
         logical_path="base/flow.md.html", raw_bytes=flow.read_bytes()
     )
-    projection = SimpleNamespace(documents=(document,), resources=())
+    projection = SimpleNamespace(entry_path="base/flow.md.html", documents=(document,), resources=())
     bundle = ViewBundle(
         "r/base/flow.md.html",
         (
@@ -77,8 +77,8 @@ def test_pinned_staging_parent_swap_preserves_external_files(controlled, monkeyp
     assert (diagrams.with_name('kept-diagrams') / 'first.svg').read_bytes() == b'old first'
 
 def test_exclusive_initialization_preserves_concurrent_config(tmp_path, monkeypatch):
-    (tmp_path / "flow.md.html").write_text("# Workflow v2\n")
-    monkeypatch.setattr(vb, '_projection', lambda root: SimpleNamespace(documents=(), resources=()))
+    (tmp_path / "flow.md.html").write_text("# Workflow\n")
+    monkeypatch.setattr(vb, '_projection', lambda root: SimpleNamespace(entry_path="base/flow.md.html", documents=(), resources=()))
     monkeypatch.setattr(vb, 'build_view_bundle', lambda *a, **kw: ViewBundle('', ()))
     config = tmp_path / 'cfg/workflow-view.toml'
     publish = vb._publish_link
@@ -334,7 +334,7 @@ def test_rollback_restore_conflict_preserves_displaced_and_new_human_files(ancho
 
 
 @pytest.fixture
-def legacy_presentations(tmp_path):
+def prior_presentations(tmp_path):
     from pathlib import PurePosixPath
     from api_agent.workflows import document_format
     from api_agent.workflows.viewer_render import _navigation, _physical_file, _route, _svg_route
@@ -349,14 +349,7 @@ def legacy_presentations(tmp_path):
     for document in admitted.documents:
         depth = len(PurePosixPath(document.logical_path).parts) - 2
         assets = ("../" * depth + ".private_resources/viewer/").encode()
-        fallback = (document_format._ROOT_FALLBACK_V1
-                    if document.logical_path == admitted.entry_path else b"")
-        saved = (
-            document_format._HEAD_V1.replace(b"{assets}", assets)
-            + fallback + document_format._CARRIER_V1 + document.executable_bytes
-            + document_format._GENERATED_START + _navigation(admitted, document)
-            + document_format._GENERATED_END
-        )
+        saved = document.executable_bytes
         path = _physical_file(_route(document.logical_path), roots)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(saved)
@@ -384,10 +377,10 @@ def _owner_file_bytes(root):
             for path in root.rglob("*") if path.is_file()}
 
 
-def test_generation_upgrades_root_and_nested_presentations_with_changed_graphics(legacy_presentations):
+def test_generation_refreshes_root_and_nested_presentations_with_changed_graphics(prior_presentations):
     from api_agent.workflows import document_format
     from api_agent.workflows.viewer_render import _physical_file, _route, _svg_route
-    admitted, roots, renderer = legacy_presentations
+    admitted, roots, renderer = prior_presentations
     root = roots["base"]
 
     changed = vb.generate_views(root, renderer=renderer())
@@ -396,17 +389,17 @@ def test_generation_upgrades_root_and_nested_presentations_with_changed_graphics
     assert len(admitted.documents) > 1
     for document in admitted.documents:
         path = _physical_file(_route(document.logical_path), roots)
-        assert path in changed
-        assert b'content="v2"' in path.read_bytes()
+        assert path.is_file()
+        assert b'content="v1"' in path.read_bytes()
         assert document_format.canonical_executable_bytes(path.read_bytes(), path=path) == document.executable_bytes
         graphic = _physical_file(_svg_route(document.logical_path), roots)
         assert graphic in changed
         assert b"Updated diagram" in graphic.read_bytes()
 
 
-def test_failed_nested_upgrade_restores_all_original_files_and_cleans_owned_recovery(legacy_presentations, monkeypatch):
+def test_failed_nested_upgrade_restores_all_original_files_and_cleans_owned_recovery(prior_presentations, monkeypatch):
     from api_agent.workflows.viewer_render import _physical_file, _route
-    admitted, roots, renderer = legacy_presentations
+    admitted, roots, renderer = prior_presentations
     root = roots["base"]
     original_files = _owner_file_bytes(root)
     recoveries = set(root.parent.glob(".workflow-view-recovery-*"))
@@ -427,15 +420,15 @@ def test_failed_nested_upgrade_restores_all_original_files_and_cleans_owned_reco
     assert set(root.parent.glob(".workflow-view-recovery-*")) == recoveries
 
 
-def test_inventory_failure_after_root_upgrade_restores_files_and_cleans_recovery(legacy_presentations, monkeypatch):
-    admitted, roots, renderer = legacy_presentations
+def test_inventory_failure_after_root_upgrade_restores_files_and_cleans_recovery(prior_presentations, monkeypatch):
+    admitted, roots, renderer = prior_presentations
     root = roots["base"]
     original_files = _owner_file_bytes(root)
     recoveries = set(root.parent.glob(".workflow-view-recovery-*"))
     verify = vb._assert_output_unchanged
     def reject_after_root_published(snapshot, owner, *, exclude=()):
         verify(snapshot, owner, exclude=exclude)
-        if b'content="v2"' in (root / "flow.md.html").read_bytes():
+        if b'content="v1"' in (root / "flow.md.html").read_bytes():
             raise ValueError("controlled inventory failure after root publication")
     monkeypatch.setattr(vb, "_assert_output_unchanged", reject_after_root_published)
 

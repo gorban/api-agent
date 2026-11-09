@@ -5,7 +5,7 @@
 ## Ordered delivery
 
 - [x] Freeze the required authoring/compatibility decisions with implementer-facing examples before dependent runtime changes.
-- [x] Extend pure D5 resource capture and parser output with explicit tool usages and inert descriptors. Add a static test-to-graph catalog, including integration fixtures independent of the selected application graph. Preserve existing v2/v3 semantics and selected replacement authority; reject unsupported versions.
+- [x] Extend pure D5 resource capture and parser output with explicit tool usages and inert descriptors. Add a static test-to-graph catalog, including integration fixtures independent of the selected application graph. Preserve selected replacement authority and admitted execution semantics; reject unsupported contracts.
 - [x] Introduce the immutable operation tool plan and phased configuration composition. Bind implementation-local slots to named instance fields; recompute on controlling selections without stale requirements. Use existing presentation metadata for hidden selectors and visible endpoints.
 - [x] Add a named operation-owned tool registry alongside the existing API route provider slot. Remove the assumption that every tool is `api_provider`; do not add repeated singleton API entries that overwrite ownership. Repeated factory paths are valid across distinct tool instances. Preserve start/cancel/rollback/retryable cleanup, borrowed invocation views and partial-start disposal.
 - [x] Drive prerequisite roots and acquired endpoint handoff from selected tool instances through the delivered Compose planner. Replace demo-specific `requires_api`, graph-ID and endpoint wiring with declarations while preserving the application's existing behavioral contract.

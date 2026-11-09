@@ -118,9 +118,8 @@ def _prepare_renderer(*, cache: Path | None, budget: object) -> Path:
     return target
 
 
-def _projection(root: Path, entry: Path | None = None, *, roots=None, entry_root="base"):
+def _projection(root: Path, entry: Path | None = None, *, roots=None, entry_root="base", replacements=()):
     from .definition import load_definition, _read_bounded
-    from .stateful import load_stateful_definition
     from .document_format import canonical_executable_bytes
     from .viewer_projection import project_view
 
@@ -128,10 +127,9 @@ def _projection(root: Path, entry: Path | None = None, *, roots=None, entry_root
     entry = entry or root / "flow.md.html"
     _physical_file(_route("base/" + entry.relative_to(root).as_posix()), {"base": root})
     data = canonical_executable_bytes(_read_bounded(entry, root), path=entry)
-    loader = load_stateful_definition if data.startswith(b"# Workflow v3\n") else load_definition
     roots = roots or {"base": root, "pack": root}
-    return project_view(loader(entry, base_root=roots["base"], pack_root=roots["pack"],
-                               entry_root=entry_root))
+    return project_view(load_definition(entry, base_root=roots["base"], pack_root=roots["pack"],
+                               entry_root=entry_root, replacements=replacements))
 
 
 def _repository_inputs(root: Path):
@@ -190,9 +188,9 @@ def discover_view_entries(root: Path) -> tuple[Path, ...]:
                     raise RenderError("workflow entry must be a bounded regular file")
                 data = canonical_executable_bytes(_read_regular_view(path, parent=descriptor), path=path)
                 heading = data.split(b"\n", 1)[0]
-                if heading in (b"# Workflow v2", b"# LangGraph flow", b"# Workflow v3"):
+                if heading in (b"# Workflow",):
                     found.append(path)
-                elif not re.fullmatch(rb"# (?:Component|Node)(?: v[23])?: [^\r\n]+", heading):
+                elif not re.fullmatch(rb"# (?:Component|Node): [^\r\n]+", heading):
                     raise RenderError("workflow discovery found an invalid entry heading")
                 if len(found) > _MAX_GRAPH_ENTRIES:
                     raise RenderError("workflow discovery graph limit exceeded")
@@ -214,6 +212,7 @@ class ViewRoots:
     base_root: Path
     pack_root: Path
     entry_root: str
+    replacements: tuple = ()
 
     @property
     def roots(self):
@@ -275,12 +274,34 @@ def _roots_bytes(root: Path):
     return data
 
 
+def _library_view_roots(root, entries):
+    """Only the pack's declared workflow library may be an external read owner."""
+    import tomllib
+    from .definition import _read_bounded
+    manifest = root / 'pack.toml'
+    if not manifest.is_file():
+        return {}, None
+    document = tomllib.loads(_read_bounded(manifest, root).decode('utf-8'))
+    if 'library' not in document.get('workflow', {}):
+        return {}, None
+    from api_agent.runtime.resource_pack import load_launch_context
+    from .model import Replacement
+    context = load_launch_context(root, [root])
+    base = context.workflow_base_root
+    selected = context.workflow_entry
+    replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
+    mappings = {entry: ViewRoots(base, root, 'pack', replacements if entry == selected else ())
+                for entry in (entries if entries is not None else discover_view_entries(root))}
+    return mappings, selected
+
+
 def read_view_roots(root: Path, entries: tuple[Path, ...] | None = None) -> dict[Path, ViewRoots]:
     """Read explicit source-view ownership without changing workflow loader semantics."""
     root = Path(root).resolve()
     data = _roots_bytes(root)
+    library_mappings, selected_library_entry = _library_view_roots(root, entries)
     if data is None:
-        return {}
+        return library_mappings
     document = json.loads(data, object_pairs_hook=_strict_object)
     if (not isinstance(document, dict) or set(document) != {"version", "entries"}
             or type(document["version"]) is not int or document["version"] != 1
@@ -293,6 +314,8 @@ def read_view_roots(root: Path, entries: tuple[Path, ...] | None = None) -> dict
         entry = _owned_relative(root, relative)
         if entry not in discovered:
             raise RenderError("workflow view roots entry is unknown or stale")
+        if entry == selected_library_entry:
+            raise RenderError("selected workflow library roots are owned by the pack manifest")
         if (not isinstance(row, dict) or set(row) != {"base_root", "pack_root", "entry_root"}
                 or row["entry_root"] not in ("base", "pack")):
             raise RenderError("invalid workflow view roots entry")
@@ -303,13 +326,13 @@ def read_view_roots(root: Path, entries: tuple[Path, ...] | None = None) -> dict
         if context == ViewRoots(root, root, "base"):
             raise RenderError("workflow view roots must describe a nondefault context")
         mappings[entry] = context
-    return mappings
+    return {**library_mappings, **mappings}
 
 
 def viewer_owner_roots(root: Path) -> tuple[Path, ...]:
     root = Path(root).resolve()
     return tuple(sorted({root, *(owner for context in read_view_roots(root).values()
-                                  for owner in context.roots.values())}))
+                                  for owner in context.roots.values() if owner.is_relative_to(root))}))
 
 
 def _projections(root: Path):
@@ -321,7 +344,7 @@ def _projections(root: Path):
     for entry in entries:
         context = mappings.get(entry)
         if context is not None:
-            projected.append(_projection(root, entry, roots=context.roots, entry_root=context.entry_root))
+            projected.append(_projection(root, entry, roots=context.roots, entry_root=context.entry_root, replacements=context.replacements))
         else:
             projected.append(_projection(root) if entry == root / "flow.md.html" else _projection(root, entry))
     return tuple(projected)
@@ -344,13 +367,34 @@ def _rebase_file(file, roots, root):
 
 
 def _inventory_files(root, projections, contexts, inputs, **kwargs):
-    files = {}
-    groups = {}
-    for projection, context in zip(projections, contexts, strict=True):
-        groups.setdefault(context, []).append(projection)
-    for context, selected in groups.items():
+    if len(projections) == 1 and all(path.is_relative_to(root) for path in contexts[0].roots.values()):
+        context = contexts[0]
         repositories, sources = inputs(context.roots)
-        for file in _bundle_files(selected, roots=context.roots,
+        return tuple(_rebase_file(file, context.roots, root) for file in _bundle_files(
+            projections, roots=context.roots, repositories=repositories, repository_sources=sources, **kwargs))
+    # A reusable document belongs to the nearest discovered graph root that
+    # actually selects it. Other graphs link to that canonical static document;
+    # their invocation-specific managed views still publish the full selection.
+    ownership = {}
+    for index, (projection, context) in enumerate(zip(projections, contexts, strict=True)):
+        entry = _physical_file(_route(projection.entry_path), context.roots)
+        for document in projection.documents:
+            path = _physical_file(_route(document.logical_path), context.roots)
+            if not path.is_relative_to(root):
+                continue
+            rank = len(entry.parent.parts) if path.is_relative_to(entry.parent) else -1
+            previous = ownership.get(path)
+            if previous is None or rank > previous[0]:
+                ownership[path] = (rank, index)
+    files = {}
+    for index, (projection, context) in enumerate(zip(projections, contexts, strict=True)):
+        repositories, sources = inputs(context.roots)
+        documents = frozenset(document.logical_path for document in projection.documents
+            if ownership.get(_physical_file(_route(document.logical_path), context.roots), (None, None))[1] == index)
+        owners = frozenset(owner for owner, path in context.roots.items()
+                          if path.is_relative_to(root) and any(d.logical_path.startswith(owner + '/') for d in projection.documents))
+        for file in _bundle_files((projection,), roots=context.roots, output_owners=owners,
+                                  output_documents=documents,
                                   repositories=repositories, repository_sources=sources, **kwargs):
             file = _rebase_file(file, context.roots, root)
             if file.path in files and files[file.path].body != file.body:
@@ -394,6 +438,12 @@ def _owner_records(root, owners, root_record, *, initialize=False):
     for owner in owners:
         if owner == root:
             continue
+        if not owner.is_relative_to(root):
+            recorded = read_repository_identity(owner)
+            if recorded is None:
+                raise RenderError('workflow library repository identity missing; generate its views first')
+            records[owner] = recorded
+            continue
         if identity is None:
             raise RenderError("workflow repository identity missing for mapped roots")
         prefix = "/".join(part for part in (identity.path_prefix, owner.relative_to(root).as_posix()) if part)
@@ -415,7 +465,11 @@ def _bundle_files(projections, *, roots, **kwargs):
     """Merge the full inventory before publishing any shared output."""
     files = {}
     for projection in projections:
-        bundle = build_view_bundle(projection, roots=roots, **kwargs)
+        options = dict(kwargs)
+        if options.get('output_owners') is not None:
+            options['output_owners'] &= frozenset(document.logical_path.split('/', 1)[0]
+                                                   for document in projection.documents)
+        bundle = build_view_bundle(projection, roots=roots, **options)
         for file in bundle.files:
             path = _physical_file(file.path, roots)
             if path in files and files[path].body != file.body:
@@ -472,7 +526,7 @@ def _checked_view_inventory(root: Path) -> dict[str, bytes]:
         path = root / ".private_resources/viewer" / name
         if path.is_file():
             captured[path] = _read_regular_view(path)
-    return {path.relative_to(root).as_posix(): data for path, data in captured.items()}
+    return {path.relative_to(root).as_posix(): data for path, data in captured.items() if path.is_relative_to(root)}
 
 
 def check_staged_workflow_matches_worktree(snapshot: Path, worktree: Path) -> None:
@@ -652,10 +706,11 @@ def generate_views(root: Path, *, renderer: PlantUMLRenderer | None = None,
 
     def assert_admitted_unchanged():
         _assert_unchanged(admitted)
-        if discover_view_entries(root) != entries or _roots_bytes(root) != mapping_bytes:
+        if (discover_view_entries(root) != entries or _roots_bytes(root) != mapping_bytes
+                or read_view_roots(root, entries) != mappings):
             raise RenderError("workflow discovery inventory changed during generation")
 
-    output_scopes = {owner: _output_snapshot(owner) for owner in owners}
+    output_scopes = {owner: _output_snapshot(owner) for owner in owners if owner.is_relative_to(root)}
     prior_outputs = {path: body for scope in output_scopes.values() for path, body in scope.items()}
 
     def assert_outputs_unchanged(*, exclude=()):
@@ -679,7 +734,7 @@ def generate_views(root: Path, *, renderer: PlantUMLRenderer | None = None,
     expected = {path for path, _, _ in planned}
     orphans = sorted({path for owner in owners for pattern in ("*.svg", "*.md", "contracts/*.md.html")
                       for path in (owner / ".private_resources/diagrams").rglob(pattern)
-                      if path not in expected})
+                      if owner.is_relative_to(root) and path not in expected})
     confirmed = {Path(path).resolve() for path in confirmed_orphans}
     if orphans and (not fix_orphans or not all(path.resolve() in confirmed and _owned_orphan(path)
                                                  for path in orphans)):

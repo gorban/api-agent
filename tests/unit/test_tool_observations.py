@@ -422,9 +422,11 @@ def classic_tool_workflow(tmp_path, services):
 
 
 def stateful_tool_workflow(tmp_path, services):
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_definition, load_stateful_catalog
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.definition import (load_definition)
+    from api_agent.workflows.native import (load_native_bindings)
     (tmp_path / 'native.py').write_text('from typing import TypedDict\nclass State(TypedDict):\n    seen: bool\n\n' + _TOOL_NODE)
-    (tmp_path / 'inspect.md.html').write_text('''# Node v3: inspect
+    (tmp_path / 'inspect.md.html').write_text('''# Node: inspect
 
 ## Native
 
@@ -433,7 +435,7 @@ def stateful_tool_workflow(tmp_path, services):
 | inspect | deterministic | [Python](native.py) |
 ''')
     flow = tmp_path / 'flow.md.html'
-    flow.write_text('''# Workflow v3
+    flow.write_text('''# Workflow
 
 ## Graph ID
 
@@ -457,9 +459,9 @@ def stateful_tool_workflow(tmp_path, services):
 | --- | --- | --- | --- |
 | inspect | END | - | - |
 ''')
-    definition = load_stateful_definition(flow, base_root=tmp_path, pack_root=tmp_path)
+    definition = load_definition(flow, base_root=tmp_path, pack_root=tmp_path)
     journal = WorkflowJournal(definition, log_content=True, content_policy=ContentPolicy(True), boundary=EmissionBoundary(ContentPolicy(True)))
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
         reducers={}, journal=journal, services=services)
     return journal, lambda: workflow.arun({'seen': False}, thread_id='synthetic-tool-thread')
 

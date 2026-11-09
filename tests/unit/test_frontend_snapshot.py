@@ -110,7 +110,7 @@ def test_build_validation_uses_prepared_bytes_without_node_or_npm(inputs, monkey
 def declare_nested_owner(snapshot):
     entry = snapshot / 'nested/flow.md.html'
     entry.parent.mkdir()
-    entry.write_text('# Workflow v2\n')
+    entry.write_text('# Workflow\n')
     context = {'version': 1, 'entries': {'nested/flow.md.html': {
         'base_root': 'nested', 'pack_root': 'nested', 'entry_root': 'base'}}}
     target = snapshot / 'cfg/workflow-view-roots.json'

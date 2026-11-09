@@ -51,7 +51,7 @@ def test_sdist_excludes_untracked_private_and_cache_sentinels(tmp_path):
     local_images = {path for path in images.paths if not path.startswith(('http:', 'https:', '//', 'data:'))}
     assert local_images, 'The README image distribution regression needs local images'
 
-    (staged / 'flow.md.html').write_text('# Workflow v2\n')
+    (staged / 'flow.md.html').write_text('# Workflow\n')
     (staged / 'src/api_agent').mkdir(parents=True)
     (staged / 'src/api_agent/__init__.py').write_text('"""Synthetic package."""\n')
     (staged / 'demo').mkdir()

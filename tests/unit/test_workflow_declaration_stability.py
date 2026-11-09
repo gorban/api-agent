@@ -12,28 +12,27 @@ from api_agent.providers.llm import LLMResult, Message, TextContent
 from api_agent.workflows import LayoutError, NodeFunction, Workflow, load_layout
 from test_workflow_trial_decisions import trial_uuid
 
+from binding_contract_support import compiler_fixture
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
 def declaration(tmp_path):
-    pack = tmp_path / 'fixture'
-    shutil.copytree(ROOT / 'demo/contrived', pack)
-    shutil.copytree(ROOT / 'demo/cfg', pack / 'cfg')
-    path = pack / 'layout.md'
-    path.write_text(path.read_text().replace('../cfg/config.toml', 'cfg/config.toml'))
-    return path
+    from binding_contract_support import contract_graph
+    return contract_graph(tmp_path / 'fixture')
 
 
 def compile_workflow(path, complete, **services):
-    layout = load_layout(path, base_root=ROOT, pack_root=path.parent)
+    from binding_contract_support import mutable_layout
+    layout = mutable_layout(load_layout(path, base_root=ROOT, pack_root=path.parent))
     catalog = runpy.run_path(str(path.parent / 'functions.py'))
     # Keep the original dialect on the node validator; the legacy native
     # generation schema uses its supported strict keyword subset.
     schema = dict(next(row['Output schema'] for row in layout.tables['Functions'] if row['ID'] == 'first_draft'))
     schema.pop('$schema', None)
     trial = services.pop('trial', trial_uuid())
-    return Workflow(layout, {name: NodeFunction(catalog[name]) for name in ('produce', 'validate_format', 'guard')},
+    return compiler_fixture(layout, {name: NodeFunction(catalog[name]) for name in ('produce', 'validate_format', 'guard')},
                     {'skip_second': lambda values: values['first_draft']['route'] == 'skip', **services.pop('conditions', {})},
                     services=dict(llm=complete, selection='synthetic', trial=trial, output_schema=schema, **services))
 
@@ -105,22 +104,27 @@ def test_retry_prompts_are_snapshotted_in_order_per_execution(declaration):
     assert requests[0].payload.messages[1].content[0].text == 'original'
     second.write_text('new conditional prefix')
     asyncio.run(graph.arun({'user_input': 'original'}))
-    assert requests[2].payload.messages[0].content[0].text == 'next execution prefix\n\nnew conditional prefix'
+    assert requests[2].payload.messages[0].content[0].text == 'first prefix\n\nconditional prefix'
     assert requests[2].payload.messages[:2] == requests[3].payload.messages[:2]
 
 
-def test_missing_prompt_at_execution_start_has_no_node_effects_and_failed_scope(declaration):
+def test_removed_prompt_uses_admitted_bytes_without_disk_fallback(declaration):
     requests, events = [], []
-    graph = compile_workflow(declaration, lambda request: requests.append(request), observe=events.append)
+    async def complete(request):
+        requests.append(request)
+        return LLMResult(Message('assistant', (TextContent(json.dumps(dict(
+            original_input='original', route='skip', ready=True, final_output='original'))),)))
+    graph = compile_workflow(declaration, complete, observe=events.append, trial=trial_uuid('skip'))
+    prompt = graph.definition.contents[declaration.parent / 'prompts/produce.md'].decode()
     (declaration.parent / 'prompts/produce.md').unlink()
-    with pytest.raises(FileNotFoundError):
-        asyncio.run(graph.arun({'user_input': 'original'}))
-    assert requests == []
-    assert [row['outcome'] for row in events if row['event'] == 'scope_end'] == ['failed']
-    assert not any(row['event'] == 'node' for row in events)
+
+    asyncio.run(graph.arun({'user_input': 'original'}))
+
+    assert requests[0].payload.messages[0].content[0].text == prompt
+    assert all(row['outcome'] == 'passed' for row in events if row['event'] == 'scope_end')
 
 
-def test_concurrent_executions_keep_independent_prompt_snapshots(declaration):
+def test_concurrent_executions_share_the_admitted_prompt_snapshot(declaration):
     path = declaration.parent / 'prompts/produce.md'
     path.write_text('first execution')
     captured = []
@@ -143,10 +147,10 @@ def test_concurrent_executions_keep_independent_prompt_snapshots(declaration):
         await first
     asyncio.run(exercise())
     assert [text for run, text in captured if run == 'first'] == ['first execution'] * 2
-    assert [text for run, text in captured if run == 'second'] == ['second execution'] * 2
+    assert [text for run, text in captured if run == 'second'] == ['first execution'] * 2
 
 
-def test_shared_prompt_path_is_read_once_per_execution_before_node_effects(declaration, monkeypatch):
+def test_shared_prompt_is_never_reread_during_execution(declaration, monkeypatch):
     requests = []
     async def complete(request):
         requests.append(request)
@@ -164,5 +168,5 @@ def test_shared_prompt_path_is_read_once_per_execution_before_node_effects(decla
         return original_read(path, *args, **kwargs)
     monkeypatch.setattr(Path, 'read_text', read)
     asyncio.run(graph.arun({'user_input': 'original'}))
-    assert reads == [prompt] and len(requests) == 2
+    assert reads == [] and len(requests) == 2
     assert requests[0].payload.messages[0] == requests[1].payload.messages[0]

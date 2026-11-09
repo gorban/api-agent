@@ -6,7 +6,7 @@ import pytest
 
 from api_agent.workflows.definition import Replacement, load_definition
 from api_agent.workflows.layout import LayoutError
-from api_agent.workflows.stateful import load_stateful_definition
+from api_agent.workflows.definition import (load_definition)
 
 
 def tools(*rows):
@@ -14,7 +14,7 @@ def tools(*rows):
         f'| {port} | [instance]({target}) |\n' for port, target in rows)
 
 
-@pytest.fixture(params=[2, 3], ids=['v2', 'v3'])
+@pytest.fixture(params=[2, 3], ids=['bindings', 'typed-state'])
 def graph(tmp_path, request):
     version = request.param
     (tmp_path / 'native.py').write_text('raise AssertionError("native code executed")\n')
@@ -23,7 +23,7 @@ def graph(tmp_path, request):
     (tmp_path / 'instance.toml').write_text('id = "sample/primary"\n')
     node = tmp_path / 'node.md.html'
     node.write_text(
-        f'# Node v{version}: inspect\n\n## Native\n\n'
+        f'# Node: inspect\n\n## Native\n\n'
         '| Registry | Kind | Source |\n| --- | --- | --- |\n'
         '| inspect | deterministic | [source](native.py) |\n' + (
             '\n## Functions\n\n| ID | Registry | Input | Output |\n'
@@ -32,18 +32,18 @@ def graph(tmp_path, request):
             if version == 2 else ''))
     component = tmp_path / 'component.md.html'
     component.write_text(
-        f'# Component v{version}: work\n\n## Flow\n\n'
+        f'# Component: work\n\n## Flow\n\n'
         '1.  [node inspect](node.md.html)\n' + (
             '\n## Components\n\n| ID | Max passes | Guard |\n| --- | --- | --- |\n'
             '| work | 1 | inspect |\n' if version == 2 else ''))
     entry = tmp_path / 'flow.md.html'
     entry.write_text(
-        f'# Workflow v{version}\n\n## Graph ID\n\n| ID |\n| --- |\n| sample |\n'
+        f'# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| sample |\n'
         '\n## Flow\n\n1.  [component work](component.md.html)\n' + (
             '\n## State\n\n| Registry | Source |\n| --- | --- |\n| State | [source](native.py) |\n'
             '\n## Edges\n\n| From | To | Router | Source |\n| --- | --- | --- | --- |\n'
             '| inspect | END | - | - |\n| work | END | - | - |\n' if version == 3 else ''))
-    loader = load_definition if version == 2 else load_stateful_definition
+    loader = load_definition if version == 2 else load_definition
     return tmp_path, entry, component, node, loader
 
 
@@ -129,18 +129,19 @@ def test_graph_and_node_with_same_id_keep_distinct_use_sites(graph):
 
 @pytest.mark.parametrize('graph', [3], indirect=True)
 def test_snapshot_budget_stops_reading_before_later_tools_or_native(graph, monkeypatch):
-    from api_agent.workflows import stateful
+    from api_agent.workflows import native as stateful
     root, entry, _, _, _ = graph
     for name in ('first', 'second', 'third'):
         (root / f'{name}.toml').write_bytes(b'x' * 1024)
     entry.write_text(entry.read_text() + tools(*((name, f'{name}.toml') for name in ('first', 'second', 'third'))))
     monkeypatch.setattr(stateful, '_MAX_SNAPSHOT_BYTES', len(entry.read_bytes()) + 1500)
     reads = []
-    original = stateful._read_bounded
+    from api_agent.workflows import definition as admission
+    original = admission._read_bounded
     def record_read(path, owner):
         reads.append(path)
         return original(path, owner)
-    monkeypatch.setattr(stateful, '_read_bounded', record_read)
+    monkeypatch.setattr(admission, '_read_bounded', record_read)
 
     with pytest.raises(LayoutError, match='snapshot exceeds'):
         admit(graph)
@@ -150,7 +151,7 @@ def test_snapshot_budget_stops_reading_before_later_tools_or_native(graph, monke
 
 @pytest.mark.parametrize('graph', [3], indirect=True)
 def test_repeated_instance_counts_once_against_snapshot_budget(graph, monkeypatch):
-    from api_agent.workflows import stateful
+    from api_agent.workflows import native as stateful
     _, entry, _, node, _ = graph
     entry.write_text(entry.read_text() + tools(('primary', 'instance.toml')))
     node.write_text(node.read_text() + tools(('primary', 'instance.toml')))
@@ -165,7 +166,7 @@ def test_repeated_instance_counts_once_against_snapshot_budget(graph, monkeypatc
 def test_tool_instance_cannot_also_be_configuration_resource(graph):
     _, entry, component, node, loader = graph
     node.write_text(node.read_text() + tools(('primary', 'instance.toml')))
-    if loader is load_definition:
+    if '## State' not in entry.read_text():
         component.write_text(component.read_text().replace('| work | 1 | inspect |',
             '| work | [PASSES](instance.toml) | inspect |'))
     else:

@@ -5,7 +5,7 @@
   if (window.top !== window.self) return;
   const declaration = document.querySelector('meta[name="workflow-managed-svg-routes"]');
   const staticView = !declaration && location.protocol === "file:" &&
-    document.querySelector('meta[name="workflow-view"]')?.content === "v2";
+    document.querySelector('meta[name="workflow-view"]')?.content === "v1";
   if (declaration && !document.currentScript?.src.endsWith("/.private_resources/managed-modal.js")) return;
   let admitted = null;
   let diagramRoot = null;

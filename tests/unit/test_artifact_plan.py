@@ -23,7 +23,7 @@ def _changed(plan, **changes):
     return edited(plan, lambda value: value.update(changes))
 
 
-def test_compiled_plan_loads_the_declared_engine_family(v2_built, v3_built):
+def test_compiled_plan_retains_declared_state_and_binding_features(v2_built, v3_built):
     assert isinstance(load_built(v2_built), CompiledDefinition)
     assert isinstance(load_built(v3_built), CompiledStateDefinition)
 
@@ -175,8 +175,9 @@ def test_tool_bound_graph_admits_and_executes_its_installed_factory(tmp_path, or
             try:
                 services = {'tools': runtime.tools_for(definition)}
                 if origin == 'source':
-                    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog
-                    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+                    from api_agent.workflows.execution import (Workflow)
+                    from api_agent.workflows.native import (load_native_bindings)
+                    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                                 reducers={'messages': add_messages}, services=services)
                 else:
                     workflow = definition.workflow(reducers={'messages': add_messages}, services=services)

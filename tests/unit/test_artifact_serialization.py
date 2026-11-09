@@ -261,7 +261,7 @@ def test_plan_decoder_rejects_invalid_graph_shape(v3_built, change, message):
     change(value)
 
     with pytest.raises(ValueError, match=message):
-        artifact._decode_plan(value, 3)
+        artifact._decode_plan(value, True)
 
 
 def test_plan_decoder_rejects_helper_native_sources(v3_built):
@@ -269,7 +269,7 @@ def test_plan_decoder_rejects_helper_native_sources(v3_built):
     value['state']['helper_sources'] = ['base/helper.py']
 
     with pytest.raises(ArtifactRejected, match='do not support helper'):
-        artifact._decode_plan(value, 3)
+        artifact._decode_plan(value, True)
 
 
 def test_plan_decoder_rejects_a_changed_definition_identity(v3_built):
@@ -277,7 +277,7 @@ def test_plan_decoder_rejects_a_changed_definition_identity(v3_built):
     value['definition_id'] = 'changed'
 
     with pytest.raises(ArtifactRejected, match='definition_id'):
-        artifact._decode_plan(value, 3)
+        artifact._decode_plan(value, True)
 
 
 def test_plan_decoder_rejects_invalid_state_rows(v3_built):
@@ -285,7 +285,7 @@ def test_plan_decoder_rejects_invalid_state_rows(v3_built):
     value['state']['nodes'] = [{'$m': [['invalid', 'row']]}]
 
     with pytest.raises(ValueError, match='invalid state rows'):
-        artifact._decode_plan(value, 3)
+        artifact._decode_plan(value, True)
 
 
 @pytest.mark.parametrize('value', [(), ('only',), ['not-a-tuple']])
@@ -327,7 +327,7 @@ def test_binding_import_failure_is_reported_as_an_artifact_rejection(monkeypatch
                         lambda name: (_ for _ in ()).throw(ImportError(name)))
 
     with pytest.raises(ArtifactRejected, match='cannot import bound module'):
-        artifact._bind(2, decoded, bindings)
+        artifact._bind(False, decoded, bindings)
 
 
 def test_binding_requires_a_declared_source_mapping(monkeypatch):
@@ -336,7 +336,7 @@ def test_binding_requires_a_declared_source_mapping(monkeypatch):
     monkeypatch.setattr(artifact.importlib, 'import_module', lambda name: SimpleNamespace(__name__=name))
 
     with pytest.raises(ArtifactRejected, match='does not name a binding'):
-        artifact._bind(2, decoded, ())
+        artifact._bind(False, decoded, ())
 
 
 def test_binding_requires_the_declared_module_callable(monkeypatch):
@@ -346,7 +346,7 @@ def test_binding_requires_the_declared_module_callable(monkeypatch):
     monkeypatch.setattr(artifact.importlib, 'import_module', lambda name: SimpleNamespace(__name__=name))
 
     with pytest.raises(ArtifactRejected, match='does not define declared binding'):
-        artifact._bind(2, decoded, bindings)
+        artifact._bind(False, decoded, bindings)
 
 
 def test_binding_rejects_one_registry_name_for_different_callables(monkeypatch):
@@ -374,7 +374,7 @@ def test_binding_rejects_one_registry_name_for_different_callables(monkeypatch):
                         lambda name: {'first_module': first, 'second_module': second}[name])
 
     with pytest.raises(ArtifactRejected, match='registry id'):
-        artifact._bind(2, decoded, bindings)
+        artifact._bind(False, decoded, bindings)
 
 
 def test_compiled_catalog_rejects_a_missing_declared_callable(v3_built):

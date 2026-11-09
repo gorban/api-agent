@@ -249,7 +249,7 @@ def build_inline_v2(directory):
     (root / 'native.py').write_bytes(native)
     (root / 'input.json').write_text('{"type":"object"}')
     (root / 'output.json').write_text('{"type":"object","properties":{"seen":{"type":"boolean"}}}')
-    (root / 'flow.md.html').write_text('# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| inline_graph |\n\n'
+    (root / 'flow.md.html').write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| inline_graph |\n\n'
                                        '## Flow\n\n1.  [component group](group.md.html)\n')
     (root / 'group.md.html').write_text(
         '# Component: group\n\n## Flow\n\n1.  [node inspect](#node-inspect)\n\n'

@@ -20,7 +20,7 @@ def catalog_library(tmp_path):
     library.mkdir()
     for root in (tmp_path / 'base', library):
         write(root, 'native.py', 'raise AssertionError("discovery imported native")\n')
-        write(root, 'node.md.html', '# Node v3: inspect\n\n## Native\n\n| Registry | Kind | Source |\n'
+        write(root, 'node.md.html', '# Node: inspect\n\n## Native\n\n| Registry | Kind | Source |\n'
             '| --- | --- | --- |\n| inspect | deterministic | [native](native.py) |\n')
     graph(library, 'catalog_graph', [])
     (pack / 'catalog.toml').write_text('version=1\n[graphs.private]\nroot="base"\nentry="catalog_graph.md.html"\n'
@@ -98,7 +98,7 @@ def test_catalog_and_application_libraries_have_independent_owners(catalog_libra
     write(application, 'node.md.html', (library / 'node.md.html').read_text())
     graph(application, 'flow', [])
     with (pack / 'pack.toml').open('a') as stream:
-        stream.write('[workflow]\nversion=2\nroot="base"\nentry="flow.md.html"\n'
+        stream.write('[workflow]\nversion = 1\nroot="base"\nentry="flow.md.html"\n'
             '[workflow.library]\nsource="../application"\ndistribution="synthetic-app"\nresource="workflows"\n')
     context = load_launch_context(base, pack)
     assert context.workflow_base_root == application

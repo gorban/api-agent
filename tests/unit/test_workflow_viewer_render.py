@@ -550,10 +550,10 @@ def test_selected_hosted_flow_uses_admitted_replacement_without_original(tmp_pat
     base.mkdir()
     pack.mkdir()
     (base / "flow.md.html").write_text(
-        "# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| ticket |\n\n"
+        "# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| ticket |\n\n"
         "## Flow\n\n1.  [node classify](missing-original.md.html)\n")
     (pack / "chosen.md.html").write_text(
-        "# Node v2: classify\n\n## Native\n\n| Registry | Kind | Source |\n"
+        "# Node: classify\n\n## Native\n\n| Registry | Kind | Source |\n"
         "| --- | --- | --- |\n| classify | deterministic | [code](worker.py) |\n\n"
         "## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n"
         "| classify | classify | [input](schema.json) | [output](schema.json) |\n")
@@ -683,7 +683,7 @@ def test_unguarded_linked_single_pass_has_configuration_without_guard_anchor(tmp
     (tmp_path / 'passes.toml').write_text(
         'version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "int"\ndefault = 1\n')
     (tmp_path / 'flow.md.html').write_text(
-        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| single_pass |\n\n'
+        '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| single_pass |\n\n'
         '## Flow\n\n1.  [component group](group.md.html)\n')
     (tmp_path / 'group.md.html').write_text(
         '# Component: group\n\n## Flow\n\n1.  [node work](#node-work)\n\n'

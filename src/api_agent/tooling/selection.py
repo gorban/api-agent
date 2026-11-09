@@ -111,14 +111,21 @@ def discover(context, selection=None, *, definition_loader=None):
                         library_files = frozenset(name.removeprefix(prefix) for name in library_files if name.startswith(prefix))
                     else:
                         library_files = None
+                entry = (resource_root or catalog_roots[spec['root']]) / spec['entry']
+                application_entry = getattr(context, 'workflow_entry', None) or application_roots['base'] / 'flow.md.html'
+                inherit = (entry == application_entry and spec['root'] == context.workflow_root
+                           and resource_root is None
+                           and catalog_roots == application_roots)
+                replacements = (tuple((row['target_id'], Path(row['entry']), row['root_id'])
+                    for row in spec['replacements']) if 'replacements' in spec else
+                    context.workflow_replacements if inherit else ())
                 graph_context = replace(context, workflow_root=spec['root'],
-                    workflow_entry=(resource_root or catalog_roots[spec['root']]) / spec['entry'],
+                    workflow_entry=entry,
                     workflow_base_root=resource_root or catalog_roots['base'],
                     pack_root=resource_root or catalog_roots['pack'],
                     workflow_pack_root=resource_root or catalog_roots['pack'],
                     workflow_library_files=library_files,
-                    workflow_replacements=tuple((row['target_id'], Path(row['entry']), row['root_id'])
-                        for row in spec.get('replacements', ())))
+                    workflow_replacements=replacements)
                 definitions[name] = retain(load(graph_context))
             except ValueError:
                 diagnostics[name] = 'Cannot admit catalog graph: ' + name

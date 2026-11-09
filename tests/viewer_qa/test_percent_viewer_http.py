@@ -26,12 +26,12 @@ def test_percent_declaration_and_diagram_clicks_resolve_exact_captured_http_rout
     child = tmp_path / declaration
     child.parent.mkdir(parents=True)
     root_source = (
-        "# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| percent_paths |\n\n"
+        "# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| percent_paths |\n\n"
         f"## Flow\n\n1.  [node work]({encoded})\n"
     )
     (tmp_path / "flow.md.html").write_text(root_source)
     child.write_text(
-        "# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n"
+        "# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n"
         "| --- | --- | --- |\n| work | deterministic | [code](worker.py) |\n\n"
         "## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n"
         "| work | work | [input](schema.json) | [output](schema.json) |\n"
@@ -62,7 +62,7 @@ def test_percent_declaration_and_diagram_clicks_resolve_exact_captured_http_rout
     )
     expected_route = "r/base/" + encoded
     captured = next(file.body for file in bundle.files if file.path == expected_route)
-    assert b"# Node v2: work" in captured
+    assert b"# Node: work" in captured
 
     async def exercise():
         host = await start_viewer_host(bundle, projection=projection)
