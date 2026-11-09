@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 import inspect
 import json
 import os
-from pathlib import Path
 import time
 from typing import TypedDict
 from uuid import uuid4
@@ -20,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
+from .model import declares_source
 from .predicates import component_controller, component_decision, native_condition_id, parse_predicate, predicate_fields
 
 
@@ -304,7 +304,7 @@ def resolve_timeouts(layout, config, definition=None):
 
 def resolve_component_passes(layout, config):
     """Resolve captured component limits against explicit effective configuration."""
-    from .layout import MAX_COMPONENT_PASSES
+    from .model import MAX_COMPONENT_PASSES
 
     passes, constants = {}, {}
     for row in layout.tables.get('Components', ()):
@@ -338,7 +338,7 @@ class Workflow:
         self.component_passes, self.pass_constants = resolve_component_passes(layout, self.config)
         steps = {step.id: step for step in layout.steps}
         if self.definition is not None:
-            self.definition.verify_native_sources()
+            self.definition.verify_sources()
         for row in self.functions.values():
             function = registry.get(row['Registry'])
             if (not isinstance(function, NodeFunction) or function.kind not in ('llm', 'deterministic')
@@ -347,18 +347,12 @@ class Workflow:
                 layout.error('unknown or invalid registered node function', row['line'])
             if 'Output mode' in row and ((function.kind == 'deterministic') != (row['Output mode'] == '-')):
                 layout.error('response declaration must match registered node kind', row['line'])
-            try:
-                source = inspect.getsourcefile(function.invoke)
-                matches_source = source is not None and Path(source).samefile(steps[row['ID']].source)
-            except (TypeError, OSError):
-                matches_source = False
-            if not matches_source:
-                layout.error('registered function does not match its declared source link', row['line'])
             if self.definition is not None:
-                from .definition import native_origin
-                path = steps[row['ID']].source
-                if native_origin(function.invoke) != (self.definition.definition_id, path):
-                    layout.error('native callable does not belong to the admitted definition', row['line'])
+                rejected = self.definition.native_rejection(function.invoke, steps[row['ID']])
+                if rejected is not None:
+                    layout.error(rejected, row['line'])
+            elif not declares_source(function.invoke, steps[row['ID']].source):
+                layout.error('registered function does not match its declared source link', row['line'])
         for row in (*layout.tables['Edges'], *layout.tables['Prompts']):
             when = row['When']
             if when == 'always' or (when == 'otherwise' and row in layout.tables['Edges']):
@@ -744,9 +738,13 @@ class Workflow:
         if recording_enabled():
             if self.definition is None:
                 raise WorkflowError('Reporting requires an admitted workflow definition')
-            from .provenance import verified_documents
             proof = self._run_services().get('packaged_proof')
-            source_manifest = verified_documents(self.definition, packaged_proof=proof)
+            if getattr(self.definition, 'origin', 'source') == 'compiled':
+                from .artifact import compiled_provenance
+                source_manifest = compiled_provenance(self.definition)
+            else:
+                from .provenance import verified_documents
+                source_manifest = verified_documents(self.definition, packaged_proof=proof)
             from .journal import WorkflowJournal
             from .identity import workflow_identity
             journal = WorkflowJournal(self.definition,
@@ -767,9 +765,16 @@ class Workflow:
         try:
             active_turn = turn_id if turn_id is not None else (journal.turn_id if journal is not None else None)
             if active_turn is not None:
-                from api_agent.testing.inference_usage import user_turn
+                try:
+                    from api_agent.testing.inference_usage import user_turn
+                    usage_context = user_turn(active_turn, kind=turn_kind)
+                except ModuleNotFoundError:
+                    # The stripped runtime intentionally omits test accounting.
+                    usage_context = nullcontext()
+            else:
+                usage_context = nullcontext()
             with execution_context(selected_context), (turn(active_turn) if active_turn is not None else nullcontext()), (
-                    user_turn(active_turn, kind=turn_kind) if active_turn is not None else nullcontext()):
+                    usage_context):
                 terminal_outcome = []
                 async with self._scope('GRAPH', kind='graph', attempt=1, max_passes=1,
                                        _terminal_outcome=terminal_outcome):

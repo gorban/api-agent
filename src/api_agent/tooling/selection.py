@@ -18,6 +18,31 @@ MAX_INDEX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_INDEX_CAPTURE_FILES = 4096
 
 
+def _carry_compiled(capture, definition):
+    """Copy only plan-carried tool instance bytes with their immutable logical names."""
+    if getattr(definition, 'origin', None) != 'compiled':
+        return
+    resources = {item.logical_path: item for item in definition.resources}
+    for key, body in definition.contents.items():
+        logical = key.as_posix().removeprefix('/artifact/') if not isinstance(key, Path) else None
+        resource = resources.get(logical)
+        if resource is not None and resource.kind == 'tool_instance':
+            capture.add_carried(key, body)
+
+
+def _artifact_sites(definitions):
+    """Locate ordinary imported module roots for compiled tool descriptors."""
+    sites = []
+    for definition in definitions:
+        if getattr(definition, 'origin', None) != 'compiled':
+            continue
+        for module in getattr(definition, 'modules', {}).values():
+            location = getattr(module, '__file__', None)
+            if location is not None:
+                sites.append(Path(location).resolve().parents[len(module.__name__.split('.')) - 1])
+    return tuple(dict.fromkeys(sites))
+
+
 def discover(context, selection=None, *, definition_loader=None):
     """Capture available declarations separately from the selected graph closure."""
     operation = operation_selection(selection)
@@ -53,7 +78,8 @@ def discover(context, selection=None, *, definition_loader=None):
         for body in additions.values():
             pool.setdefault(sha256(body).hexdigest(), body)
         contents = {key: pool[sha256(body).hexdigest()] for key, body in definition.contents.items()}
-        resources = tuple(replace(item, content_bytes=pool[item.sha256]) for item in definition.resources)
+        resources = tuple(replace(item, content_bytes=pool.get(item.sha256))
+                          for item in definition.resources)
         return replace(definition, contents=freeze(contents), resources=resources)
     if operation.mode == 'application':
         entry = getattr(context, 'workflow_entry', None) or roots['base'] / 'flow.md.html'
@@ -120,6 +146,7 @@ def discover(context, selection=None, *, definition_loader=None):
         for file, body in definitions[name].contents.items():
             if isinstance(file, Path):
                 capture.add(file, body)
+        _carry_compiled(capture, definitions[name])
     return ToolCatalog(roots, definitions, selected, operation, diagnostics,
                        capture.bodies, profiles, selected_profiles, case_graphs, case_profiles,
                        library_files=capture.library_files)
@@ -251,7 +278,10 @@ def _option_inventory(catalog, base_schema, argv, environ, dotenv, overrides):
             if selector:
                 fields.setdefault(selector, FieldDeclaration(selector, 'str', default=data['implementation']))
     parsed = parse_options(ConfigSchema(fields), argv)
-    inventory = Capture(catalog.roots, library_files=catalog.library_files)
+    inventory = Capture(catalog.roots, library_files=catalog.library_files,
+                        package_sites=_artifact_sites(catalog.definitions.values()))
+    for definition in catalog.definitions.values():
+        _carry_compiled(inventory, definition)
     for path, data in instances.items():
         target = data['implementation']
         selector = data.get('selector')
@@ -292,9 +322,13 @@ def _binding_contract(declaration):
 def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None, dotenv=None, overrides=None, operation_intents=(), definition_loader=None):
     """Compose declarative tool inputs before final explicit-input validation."""
     catalog = discover(context, selection, definition_loader=definition_loader)
-    capture = Capture(catalog.roots, library_files=catalog.library_files)
+    capture = Capture(catalog.roots, library_files=catalog.library_files,
+                      package_sites=_artifact_sites(catalog.definitions.values()))
     for path, body in catalog.assets.items():
-        capture.add(path, body)
+        if isinstance(path, Path):
+            capture.add(path, body)
+        else:
+            capture.add_carried(path, body)
     definitions = tuple(catalog.definitions[name] for name in catalog.selected_graphs)
     option_inventory = _option_inventory(catalog, base_schema, argv, environ, dotenv, overrides)
     base_fields = dict(base_schema.fields)

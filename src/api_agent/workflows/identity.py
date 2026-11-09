@@ -7,12 +7,11 @@ from collections.abc import Mapping
 from hashlib import sha256
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePath
 import re
 import tomllib
 
-from .definition import InlinePromptRef, WorkflowDefinition
-from .layout import MAX_COMPONENT_PASSES
+from .model import MAX_COMPONENT_PASSES, InlinePromptRef
 
 
 def _digest(domain, value):
@@ -54,7 +53,7 @@ class _Snapshot:
         return candidates[0]
 
     def value(self, value):
-        if isinstance(value, (Path, InlinePromptRef)):
+        if isinstance(value, (PurePath, InlinePromptRef)):
             return self.logical(value)
         if isinstance(value, Mapping):
             return {key: self.value(item) for key, item in value.items()}
@@ -68,8 +67,8 @@ class _Snapshot:
 
     def declaration(self):
         d = self.definition
-        v2 = isinstance(d, WorkflowDefinition)
-        if not v2 and type(d).__name__ != 'StatefulDefinition':
+        v2 = getattr(d, 'version', None) == 2
+        if not v2 and getattr(d, 'version', None) != 3:
             raise TypeError('Expected an admitted workflow definition')
         tables = d.layout.tables
         timeout_rows = tables['Timeouts'] if v2 else d.timeouts
@@ -97,7 +96,8 @@ class _Snapshot:
                 resources.append([r.kind, r.logical_path, parsed.get('version'),
                                   {key: parsed['fields'][key] for key in sorted(selected[r.logical_path])}])
             else:
-                resources.append([r.kind, r.logical_path, sha256(r.content_bytes).hexdigest()])
+                digest = sha256(r.content_bytes).hexdigest() if r.content_bytes is not None else r.sha256
+                resources.append([r.kind, r.logical_path, digest])
         result = dict(version=2 if v2 else 3, graph_id=d.graph_id,
                       entry_root=d.entry_root, entry=self.logical(d.entry),
                       steps=[dict(id=s.id, kind=s.kind, parent=s.parent,
@@ -134,6 +134,11 @@ class _Snapshot:
         return result
 
 
+def logical_resolver(definition):
+    """Map an admitted path or inline-prompt reference to its logical resource path."""
+    return _Snapshot(definition).logical
+
+
 def declaration_identity(definition):
     """Hash the ordered executable declaration without refreshing any source."""
     return _digest('workflow-declaration-v1', _Snapshot(definition).declaration())
@@ -141,7 +146,7 @@ def declaration_identity(definition):
 
 def workflow_identity(definition, *, timeouts, component_passes):
     """Bind the declaration to complete, already resolved declared budgets."""
-    v2 = isinstance(definition, WorkflowDefinition)
+    v2 = getattr(definition, 'version', None) == 2
     timeout_rows = definition.layout.tables['Timeouts'] if v2 else definition.timeouts
     components = definition.layout.tables['Components'] if v2 else ()
     if (not isinstance(timeouts, Mapping) or set(timeouts) != {r['Owner'] for r in timeout_rows}

@@ -17,6 +17,31 @@ from api_agent.workflows.execution import WorkflowError
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def compiled_definition(definition):
+    """Expose a source fixture through the parser-free compiled contract."""
+    source_registry = LocalChatApplication(definition).registry
+    return SimpleNamespace(
+        origin='compiled', layout=definition.layout, contents=definition.contents,
+        resources=definition.resources, definition_id=definition.definition_id,
+        graph_id=definition.graph_id, entry=definition.entry, entry_root=definition.entry_root,
+        replacements=definition.replacements, roots=definition.roots, tool_usages=definition.tool_usages,
+        registry=lambda: source_registry, native_rejection=lambda function, step: None,
+        verify_sources=lambda: None,
+    )
+
+
+def test_compiled_definition_uses_verified_callable_without_declaration_catalog(monkeypatch):
+    from api_agent.workflows import definition as declarations
+    source = load_definition(ROOT / 'flow.md.html', base_root=ROOT, pack_root=ROOT)
+    compiled = compiled_definition(source)
+    monkeypatch.setattr(declarations, 'load_native_catalog',
+                        lambda *args, **kwargs: pytest.fail('compiled application parsed declarations'))
+
+    application = LocalChatApplication(compiled)
+
+    assert application.registry['llm_call'] is compiled.registry()['llm_call']
+
+
 def test_selected_application_executes_native_graph_and_preserves_result(monkeypatch):
     from api_agent.workflows.execution import Workflow
     traversals = []

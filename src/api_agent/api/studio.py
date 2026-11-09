@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import math
+import re
 from io import BytesIO
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -25,6 +26,33 @@ from ..providers.inference import request_from_wire, result_to_wire
 from ..providers.progress import report_timeout
 
 
+_HOST = re.compile(r'(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z')
+
+
+def _origin(value):
+    if type(value) is not str or value != value.strip():
+        raise ValueError('Invalid Studio bridge configuration')
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        raise ValueError('Invalid Studio bridge configuration') from None
+    if (parts.scheme not in ('http', 'https') or not parts.hostname or parts.path or parts.query
+            or parts.fragment or parts.username or parts.password or '*' in parts.hostname):
+        raise ValueError('Invalid Studio bridge configuration')
+    hostname = parts.hostname.lower()
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        if _HOST.fullmatch(hostname) is None:
+            raise ValueError('Invalid Studio bridge configuration')
+    authority = hostname if ':' not in hostname else f'[{hostname}]'
+    default_port = 80 if parts.scheme == 'http' else 443
+    if port is not None and port != default_port:
+        authority += f':{port}'
+    return f'{parts.scheme}://{authority}'
+
+
 class StudioBackend:
     """Callbacks: describe(*, auth) -> tuple; complete(request, *, auth, context) -> result.
 
@@ -35,10 +63,19 @@ class StudioBackend:
     def __init__(self, *, owner, describe, complete, policy, origin, nonce,
                  scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None,
                  on_error=None, max_output_tokens=200000, trace_owner=None,
-                 advertised_origin=None, result_projector=None):
-        parts = urlsplit(origin)
-        if (parts.scheme not in ('http', 'https') or parts.hostname not in ('localhost', '127.0.0.1', '::1')
-                or parts.path or parts.query or parts.fragment or parts.username or parts.password
+                 advertised_origin=None, permitted_origins=None, client_address_policy='loopback',
+                 result_projector=None):
+        if client_address_policy not in ('loopback', 'any'):
+            raise ValueError('Invalid Studio bridge configuration')
+        origins = (origin,) if permitted_origins is None else tuple(permitted_origins)
+        if not origins:
+            raise ValueError('Invalid Studio bridge configuration')
+        canonical_origins = tuple(_origin(value) for value in origins)
+        if len(set(canonical_origins)) != len(canonical_origins):
+            raise ValueError('Invalid Studio bridge configuration')
+        parts = urlsplit(canonical_origins[0])
+        if ((permitted_origins is None
+                and parts.hostname not in ('localhost', '127.0.0.1', '::1'))
                 or type(nonce) is not str or not 32 <= len(nonce) <= 256 or not nonce.isascii()
                 or not nonce.isprintable() or not callable(scrub)
                 or type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
@@ -48,7 +85,7 @@ class StudioBackend:
             from api_agent.ui.provider import advertised_origin_identity
             advertised_origin_identity(advertised_origin, scheme=parts.scheme,
                 port=parts.port if parts.port is not None else 443)
-            origin = advertised_origin
+            canonical_origins = (_origin(advertised_origin),)
         if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= chat_contract.MAX_OUTPUT_TOKENS:
             raise ValueError('Invalid output-token ceiling')
         if result_projector is not None and not callable(result_projector):
@@ -57,7 +94,8 @@ class StudioBackend:
         self.trace_owner = trace_owner
         self.max_output_tokens = max_output_tokens
         self.owner, self.describe, self.complete, self.policy = owner, describe, complete, policy
-        self.origin, self._nonce, self.scrub = origin, nonce, scrub
+        self.origin, self.origins, self.client_address_policy = canonical_origins[0], frozenset(canonical_origins), client_address_policy
+        self._nonce, self.scrub = nonce, scrub
         self.timeout, self.body_limit, self.closed = timeout, body_limit, False
         if reasoning_default is not None and reasoning_default not in chat_contract.EFFORTS:
             raise ValueError('Invalid reasoning default')
@@ -99,6 +137,8 @@ class StudioBackend:
                 self._contexts.pop(context.correlation_id, None)
 
     def _local(self, request):
+        if self.client_address_policy == 'any':
+            return True
         try:
             local = ipaddress.ip_address(request.META.get('REMOTE_ADDR', '')).is_loopback
         except ValueError:
@@ -106,7 +146,7 @@ class StudioBackend:
         return local
 
     def _guard(self, request):
-        return (self._local(request) and request.headers.get('Origin') == self.origin and
+        return (self._local(request) and request.headers.get('Origin') in self.origins and
                 hmac.compare_digest(request.headers.get('X-API-Agent-Session', '').encode(), self._nonce.encode()))
 
     def _trace_runtime(self):
@@ -150,7 +190,7 @@ class StudioBackend:
     def _admit(self, request, capability):
         # Browsers cannot attach the nonce to preflight; validate its exact intent.
         if request.method == 'OPTIONS':
-            if (not self._local(request) or request.headers.get('Origin') != self.origin
+            if (not self._local(request) or request.headers.get('Origin') not in self.origins
                     or request.headers.get('Access-Control-Request-Method') != ('GET' if capability == 'models' else 'POST')
                     or {x.strip().lower() for x in request.headers.get('Access-Control-Request-Headers', '').split(',')} != ({'x-api-agent-session'} if capability == 'models' else {'content-type', 'x-api-agent-session'})):
                 return self._response({'code': 'forbidden'}, 403)
@@ -163,10 +203,11 @@ class StudioBackend:
             return self._response({'code': 'method_not_allowed'}, 405)
         else:
             return None
-        return self._cors(response)
+        return self._cors(response, request.headers.get('Origin'))
 
-    def _cors(self, response):
-        response['Access-Control-Allow-Origin'] = self.origin
+    def _cors(self, response, origin=None):
+        if origin in self.origins:
+            response['Access-Control-Allow-Origin'] = origin
         response['Vary'] = 'Origin'
         return response
 
@@ -179,7 +220,7 @@ class StudioBackend:
                 raise
             except Exception as error:
                 response = self._error(error)
-        return self._cors(response)
+        return self._cors(response, request.headers.get('Origin'))
 
     async def handle_asgi(self, scope, receive, send, dispatch):
         routes = {'/app/agent/models': 'models', '/app/agent/chat': 'chat',
@@ -190,9 +231,11 @@ class StudioBackend:
         if capability is None:
             return await dispatch(scope, receive, send)
         seen = set()
-        response = None
+        response = request_origin = None
         for name, value in scope.get('headers', ()):
             name = name.decode('latin1').lower()
+            if name == 'origin' and request_origin is None:
+                request_origin = value.decode('latin1')
             if name in seen and name in ('origin', 'x-api-agent-session', 'host',
                     'access-control-request-method', 'access-control-request-headers'):
                 response = self._response({'code': 'forbidden'}, 403)
@@ -207,9 +250,9 @@ class StudioBackend:
             except (DisallowedHost, UnicodeDecodeError):
                 response = self._response({'code': 'invalid_request'}, 400)
         if response is not None:
-            return await self._send_asgi(self._cors(response), send)
+            return await self._send_asgi(self._cors(response, request_origin), send)
         if self.closed:
-            return await self._send_asgi(self._cors(self._response({'code': 'unavailable'}, 503)), send)
+            return await self._send_asgi(self._cors(self._response({'code': 'unavailable'}, 503), request_origin), send)
         async with report_timeout('Application HTTP request', self.timeout) as budget:
             body = bytearray()
             try:
@@ -226,9 +269,9 @@ class StudioBackend:
                         if not message.get('more_body', False):
                             break
             except TimeoutError:
-                return await self._send_asgi(self._cors(self._response({'code': 'deadline'}, 408)), send)
+                return await self._send_asgi(self._cors(self._response({'code': 'deadline'}, 408), request_origin), send)
             if response is not None:
-                return await self._send_asgi(self._cors(response), send)
+                return await self._send_asgi(self._cors(response, request_origin), send)
             delivered = False
             async def bounded_receive():
                 nonlocal delivered

@@ -2,7 +2,6 @@
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.inference import async_request_to_wire
 from api_agent.providers.inference import result_to_wire
-from api_agent.workflows.definition import load_native_catalog
 from api_agent.workflows.execution import NodeFunction, Workflow, WorkflowError
 from api_agent.tooling.runtime import OwnerTools
 
@@ -32,11 +31,20 @@ class UsefulDemoApplication:
                 or len(layout.tables['Components']) != 1
                 or layout.tables['Components'][0]['Guard'] != 'review'):
             raise ContractError('Selected workflow does not implement the useful demo contract')
-        self.registry = {}
-        for step in nodes:
-            row = rows[step.id]
-            catalog = load_native_catalog(definition, step.source)
-            self.registry[row['Registry']] = NodeFunction(catalog[row['Registry']], row['Kind'])
+        if getattr(definition, 'origin', 'source') == 'compiled':
+            # Compiled definitions expose only the callables verified while the
+            # artifact was decoded.  Do not import the declaration loader here:
+            # production artifacts deliberately omit their source declarations.
+            registry = definition.registry()
+            self.registry = {row['Registry']: registry[row['Registry']]
+                             for row in rows.values()}
+        else:
+            from api_agent.workflows.definition import load_native_catalog
+            self.registry = {}
+            for step in nodes:
+                row = rows[step.id]
+                catalog = load_native_catalog(definition, step.source)
+                self.registry[row['Registry']] = NodeFunction(catalog[row['Registry']], row['Kind'])
         self.timeouts = Workflow(definition, self.registry, config=self.config).timeouts
 
     async def complete(self, request, *, llm, context, tool_owner=None):

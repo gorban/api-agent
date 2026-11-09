@@ -1,5 +1,4 @@
 """A restricted structural Markdown grammar with source-located diagnostics."""
-from dataclasses import dataclass
 import json
 import tomllib
 from pathlib import Path
@@ -10,34 +9,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
+from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID
 from .predicates import PredicateError, parse_predicate, predicate_fields
-
-
-MAX_COMPONENT_PASSES = 99
-
-
-class LayoutError(ValueError):
-    pass
-
-
-@dataclass(frozen=True)
-class Step:
-    id: str
-    kind: str
-    parent: str | None
-    source: Path
-    line: int
-
-
-@dataclass(frozen=True)
-class Layout:
-    path: Path
-    steps: tuple[Step, ...]
-    tables: dict
-    files: tuple[Path, ...]
-
-    def error(self, message, line=1):
-        raise LayoutError(f'{self.path}:{line}: {message}')
 
 
 _COLUMNS = {
@@ -53,7 +26,6 @@ _SUMMARY_COLUMNS = (*_RESPONSE_COLUMNS, 'Display summary')
 
 # Notes cannot supply reference definitions to executable sections.
 _MD = MarkdownIt('commonmark').enable('table').disable('reference')
-_ID = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
 
 
 def _plain(token):

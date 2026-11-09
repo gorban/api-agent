@@ -20,7 +20,7 @@ import time
 import tomllib
 from threading import Lock, RLock
 from types import MappingProxyType
-from typing import Annotated, get_args, get_origin, get_type_hints
+from typing import Annotated, ClassVar, get_args, get_origin, get_type_hints
 from typing_extensions import is_typeddict
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
@@ -31,9 +31,14 @@ from langgraph.graph.message import add_messages
 
 from api_agent.providers.progress import bind_timeout_budget, component_timeout
 from api_agent.runtime.tasks import offload, settle
-from .definition import Replacement, Resource, ToolUsage, _tool_operations, _MAX_SNAPSHOT_BYTES, _declaration_parts, _inline_selection, _freeze, _read_bounded, _sections, _table as _shared_table
-from .document_format import canonical_executable_bytes, validate_presentation_location
-from .layout import Layout, LayoutError, Step, _ID
+from .model import (Layout, LayoutError, Replacement, Resource, Step, ToolUsage, freeze as _freeze,
+                    _ID, _MAX_SNAPSHOT_BYTES)
+
+
+def _read_bounded(path, root):
+    # The bounded reader belongs to the source loader; production never reads sources.
+    from .definition import _read_bounded as read
+    return read(path, root)
 
 
 _LINK = re.compile(r'\[[^\]\n]+\]\(([^()\n]+)\)\Z')
@@ -100,6 +105,8 @@ class _AdmittedDependencyLoader(MetaPathFinder, Loader):
 
 @dataclass(frozen=True)
 class StatefulDefinition:
+    version: ClassVar[int] = 3
+    origin: ClassVar[str] = 'source'
     graph_id: str
     entry: Path
     entry_root: str
@@ -128,10 +135,17 @@ class StatefulDefinition:
             if _read_bounded(path, root) != admitted:
                 raise LayoutError(f'{path}:1: resource changed after admission')
 
+    def load_catalog(self, *, packaged_proof=None, config=None):
+        """Execute the admitted native sources (source mode only)."""
+        return load_stateful_catalog(self, packaged_proof=packaged_proof, config=config)
+
 
 def load_stateful_definition(entry, *, base_root, pack_root, replacements=(), entry_root=None):
     """Admit a fully declared v3 graph and immutable native source snapshot."""
+    # Parser imports stay here so the engine module is importable without them.
     from api_agent.config.source_reads import resolve_path
+    from .definition import _declaration_parts, _inline_selection, _sections, _table as _shared_table, _tool_operations
+    from .document_format import canonical_executable_bytes, validate_presentation_location
     entry = resolve_path(entry)
     roots = {'base': resolve_path(base_root), 'pack': resolve_path(pack_root)}
     if not any(entry.is_relative_to(root) for root in roots.values()):
@@ -450,6 +464,9 @@ class StatefulCatalog:
     namespaces: object
     timeout_values: object
     timeout_keys: object
+    admitted_modules: frozenset = frozenset({'<stateful_catalog>'})
+    bindings: object = field(default_factory=lambda: MappingProxyType({}))
+    binding_proofs: object = field(default_factory=lambda: MappingProxyType({}))
 
 
 def _validated_timeouts(definition, config=None):
@@ -475,7 +492,10 @@ def _validated_timeouts(definition, config=None):
 
 
 def _source_manifest(definition, packaged_proof=None):
-    """Verify every logical owner before native effects."""
+    """Produce source or compiled-plan provenance before native effects."""
+    if getattr(definition, 'origin', 'source') == 'compiled':
+        from .artifact import compiled_provenance
+        return compiled_provenance(definition)
     from .provenance import verified_documents
     return verified_documents(definition, packaged_proof=packaged_proof)
 
@@ -577,7 +597,10 @@ def load_stateful_catalog(definition, *, packaged_proof=None, config=None):
                     del _ADMITTED_LOADERS[definition.definition_id]
                     sys.meta_path.remove(loader)
             raise
-    return StatefulCatalog(definition.definition_id, MappingProxyType(result), timeout_values, timeout_keys)
+    bindings = {(path, name): value for path, namespace in result.items()
+                for name, value in namespace.items()}
+    return StatefulCatalog(definition.definition_id, MappingProxyType(result), timeout_values, timeout_keys,
+                           bindings=MappingProxyType(bindings))
 
 
 @dataclass(frozen=True)
@@ -680,8 +703,13 @@ class StatefulWorkflow:
 
     def _binding(self, path, name):
         namespace = self.catalog.namespaces.get(path)
-        value = namespace.get(name) if namespace is not None else None
-        if value is None or getattr(value, '__module__', None) != '<stateful_catalog>':
+        value = self.catalog.bindings.get((path, name))
+        proof = self.catalog.binding_proofs.get((path, name))
+        if (value is None or namespace is None or namespace.get(name) is not value
+                or callable(value) and getattr(value, '__module__', None) not in self.catalog.admitted_modules
+                or proof is not None and (value is not proof[0]
+                                          or getattr(value, '__code__', proof[1]) is not proof[1]
+                                          or getattr(value, '__globals__', proof[2].__dict__) is not proof[2].__dict__)):
             raise LayoutError(f'{path}:1: missing admitted native binding {name}')
         return value
 

@@ -34,6 +34,7 @@ def staged_repo(tmp_path):
     (root / 'src/api_agent/__init__.py').write_text('')
     (package / '__init__.py').write_text('')
     (package / 'viewer_build.py').write_text('def check_views(root):\n    assert (root / "proof.txt").read_text() == "ok\\n"\n\ndef check_staged_workflow_matches_worktree(snapshot, worktree):\n    pass\n')
+    (package / 'artifact_plans.py').write_text('def check_plans(root):\n    pass\n')
     (root / 'proof.txt').write_text('ok\n')
     git(root, 'add', '.')
     return root
@@ -328,6 +329,41 @@ def test_checker_requires_complete_snapshot_and_calls_packaged_check(tmp_path, m
     monkeypatch.setitem(sys.modules, module.__name__, module)
     checks.check(tmp_path)
     assert selected == [tmp_path.resolve()]
+
+
+def _snapshot_with_views(root, monkeypatch):
+    (root / 'tools').mkdir()
+    (root / 'tools/workflow_views.py').write_text('')
+    views = ModuleType('api_agent.workflows.viewer_build')
+    views.check_views = lambda _root: None
+    monkeypatch.setitem(sys.modules, views.__name__, views)
+
+
+def test_checker_runs_plan_freshness_when_snapshot_ships_the_plan_checker(tmp_path, monkeypatch):
+    _snapshot_with_views(tmp_path, monkeypatch)
+    plan_module = tmp_path / 'src/api_agent/workflows/artifact_plans.py'
+    plan_module.parent.mkdir(parents=True)
+    plan_module.write_text('')
+    plans = ModuleType('api_agent.workflows.artifact_plans')
+    def stale(root):
+        raise ValueError('compiled plan is stale: ' + str(root))
+    plans.check_plans = stale
+    monkeypatch.setitem(sys.modules, plans.__name__, plans)
+
+    with pytest.raises(ValueError, match='compiled plan is stale'):
+        checks.check(tmp_path)
+
+
+def test_checker_skips_plan_freshness_for_snapshots_without_the_plan_checker(tmp_path, monkeypatch):
+    _snapshot_with_views(tmp_path, monkeypatch)
+    plans = ModuleType('api_agent.workflows.artifact_plans')
+    called = []
+    plans.check_plans = called.append
+    monkeypatch.setitem(sys.modules, plans.__name__, plans)
+
+    checks.check(tmp_path)
+
+    assert called == []
 
 
 def test_checker_cli_modes(monkeypatch, tmp_path):

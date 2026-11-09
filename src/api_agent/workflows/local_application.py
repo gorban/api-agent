@@ -1,10 +1,10 @@
 """Execute the selected one-pass chat declaration through its native binding."""
 import json
 from dataclasses import replace
+from pathlib import Path
 
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.inference import result_to_wire
-from .definition import load_native_catalog
 from .execution import NodeFunction, Workflow, WorkflowError
 from .resources import bundled_root
 
@@ -21,12 +21,21 @@ class LocalChatApplication:
                 or functions[0]['Kind'] != 'llm' or layout.tables['Edges'] or layout.tables['Prompts']
                 or any(row['Guard'] != '-' or int(row['Max passes']) != 1 for row in layout.tables['Components'])):
             raise ContractError('Selected workflow does not implement the local chat application contract.')
-        contract_root = bundled_root() / 'workflows/contracts'
+        packaged_contracts = Path(__file__).parent / 'contracts'
+        contract_root = (packaged_contracts if getattr(definition, 'origin', 'source') == 'compiled'
+                         and packaged_contracts.is_dir() else bundled_root() / 'workflows/contracts')
         for column, filename in (('Input', 'llm_call_input.json'), ('Output', 'llm_call_output.json')):
             if json.loads(definition.contents[functions[0][column]]) != json.loads((contract_root / filename).read_bytes()):
                 raise ContractError('Selected workflow has an unsupported local chat schema.')
-        catalog = load_native_catalog(definition, nodes[0].source)
-        self.registry = {functions[0]['Registry']: NodeFunction(catalog[functions[0]['Registry']], 'llm')}
+        registry_id = functions[0]['Registry']
+        if getattr(definition, 'origin', 'source') == 'compiled':
+            # Artifact decoding has already admitted these exact bindings.
+            # Keep declaration loading out of the production import closure.
+            self.registry = {registry_id: definition.registry()[registry_id]}
+        else:
+            from .definition import load_native_catalog
+            catalog = load_native_catalog(definition, nodes[0].source)
+            self.registry = {registry_id: NodeFunction(catalog[registry_id], 'llm')}
         # Compile now, before local services or provider resources are acquired.
         self.timeouts = Workflow(definition, self.registry, config=self.config).timeouts
 

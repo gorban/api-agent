@@ -6,17 +6,15 @@ from secrets import token_urlsafe
 from types import MappingProxyType
 
 from api_agent.api.composition import compose_runtime
-from api_agent.api.studio import StudioBackend
 from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.progress import component_timeout, independent_timeout_scope, report_timeout
-from api_agent.providers.selection import ModelSelectionPolicy
 from api_agent.runtime.local_contracts import LocalComponent, LocalDestination, LocalSnapshot, LocalEvent
 from api_agent.runtime.local_llm import LocalLLM, _create_task
 from api_agent.runtime.operation import local_operation
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.view_flow import _prepare_view
 from api_agent.ui.session import PreparedUISession
-from api_agent.runtime.local_tools import selected_application, bind_local_tools
+from api_agent.runtime.local_tools import selected_application
 
 
 def _plan(config, schema, context, scope, *, engine_environment=None, requires_api=False,
@@ -211,48 +209,32 @@ class LocalRunOwner:
     def _runtime(self, config, origin, material):
         from api_agent.ui.process import StudioProcesses
         from api_agent.runtime.client_tls import verified_client_context
-        runtime = compose_runtime(self.context, config, callback_origin=origin,
-            tls_material=material, required_kinds=())
-        self._emissions = runtime.emissions
-        tool_plan = getattr(config, 'tool_plan', None)
-        if tool_plan is not None and tool_plan.tools:
-            runtime.tool_plan = tool_plan
-            self._graph.tools = runtime.tools_for(self._graph.definition)
-        elif self._requires_api:
-            bind_local_tools(runtime, self._graph, config)
-        options = ({'interaction_owner': self.interaction_owner}
-                   if self.interaction_owner is not None else {})
-        self._llm = self.llm_factory(config.values, self.context.owner_root, emissions=runtime.emissions,
-                                     on_status=self._workflow_event, trace=runtime.tracing, **options)
-        from api_agent.workflows.observations import WorkflowObservationFactory
-        self._graph.observations = WorkflowObservationFactory(config, boundary=runtime.emissions,
-            sink=self._workflow_event, trace=runtime.tracing)
-        async def describe(*, auth):
-            return await self._llm.describe()
-        async def workflow_complete(request, *, llm, context):
-            return await self._graph.complete(request, llm=llm, context=context)
-        async def complete(request, *, auth, context):
-            return await workflow_complete(request, llm=self._llm, context=context)
         nonce = token_urlsafe(32)
-        backend = StudioBackend(owner=self._llm, describe=describe, complete=complete,
-            policy=ModelSelectionPolicy(config.values),
-            origin=config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/'),
-            nonce=nonce, scrub=lambda message: 'Selected provider rejected the request.',
-            result_projector=getattr(self._graph, 'project_result', None),
-            **({'timeout': self._graph.timeouts['GRAPH']}
-               if getattr(self._graph, 'timeouts', {}).get('GRAPH') is not None else {}),
-            on_error=self._execution_error,
-            reasoning_default=config.values.get('LLM_REASONING_EFFORT') or None,
-            max_output_tokens=config.values.get('LLM_MAX_OUTPUT_TOKENS', 200000))
-        services = {**runtime.services, 'studio_backend': backend, 'ui_access_token': nonce,
-                    'workflow_complete': workflow_complete,
-                    'workflow_application': self._graph,
-                    'ensure_llm_ready': self._llm.ensure_ready,
-                    'ui_processes': StudioProcesses(ssl_context=verified_client_context(str(material.ca_file)),
-                        log_callback=lambda text: self._log('ui', text), emissions=runtime.emissions)}
-        runtime.emissions.register_secret(nonce)
-        runtime.services = MappingProxyType(services)
-        return runtime
+        from api_agent.runtime.chat_composition import compose_chat_runtime
+        def runtime_factory(*args, **kwargs):
+            runtime = compose_runtime(*args, **kwargs)
+            # Diagnostics retain the boundary even if provider composition
+            # fails before the complete shared result is returned.
+            self._emissions = runtime.emissions
+            return runtime
+        composed = compose_chat_runtime(
+            self.context, config,
+            callback_origin=origin,
+            tls_material=material, graph=self._graph, llm_factory=self.llm_factory,
+            on_error=self._execution_error, on_status=self._workflow_event,
+            interaction_owner=self.interaction_owner, requires_api=self._requires_api,
+            runtime_factory=runtime_factory, nonce=nonce,
+            chat_origin=config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/'),
+            extra_services=lambda runtime: {
+                'ui_access_token': nonce,
+                'ensure_llm_ready': lambda: composed.llm.ensure_ready(),
+                'ui_processes': StudioProcesses(
+                    ssl_context=verified_client_context(str(material.ca_file)),
+                    log_callback=lambda text: self._log('ui', text),
+                    emissions=runtime.emissions),
+            })
+        self._emissions, self._llm = composed.runtime.emissions, composed.llm
+        return composed.runtime
 
     async def _ui(self, *, browser_owner):
         from api_agent.auth.bindings import bind_role_credentials

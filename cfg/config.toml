@@ -97,6 +97,38 @@ default = ""
 review_optional = true
 help = "Owner-relative tracing provider file.py:create_tracing_provider. The bundled default contributes TRACE_MODE and its applicable exporter/dashboard settings. Custom providers contribute their own configuration. Factories remain lazy during help and review."
 
+[fields.API_AGENT_LISTEN_HOST]
+type = "str"
+default = "127.0.0.1"
+acknowledge_default = false
+help = "Production ASGI bind address. The loopback default is safe for local qualification; a non-loopback bind requires explicit production ingress settings."
+
+[fields.API_AGENT_LISTEN_PORT]
+type = "int"
+default = 8080
+validation = "positive"
+acknowledge_default = false
+help = "Production ASGI listen port."
+
+[fields.API_AGENT_ALLOWED_HOSTS]
+type = "str"
+default = "localhost,127.0.0.1"
+acknowledge_default = false
+help = "Comma-separated exact Host authorities accepted by the production ASGI server. Wildcards, schemes, ports, and empty items are rejected."
+
+[fields.API_AGENT_PERMITTED_BROWSER_ORIGINS]
+type = "str"
+default = ""
+acknowledge_default = false
+help = "Comma-separated exact http/https browser origins admitted by the production chat bridge. Empty retains the legacy API_AGENT_CHAT_ORIGIN value for loopback-only deployments; wildcards are rejected."
+
+[fields.API_AGENT_CLIENT_ADDRESS_POLICY]
+type = "str"
+default = "loopback"
+enum = ["loopback", "any"]
+acknowledge_default = false
+help = "Production chat-client address policy. loopback is the safe local default; any is required for an explicitly configured service or ingress deployment."
+
 [fields.LOG_CONTENT]
 type = "bool"
 default = false

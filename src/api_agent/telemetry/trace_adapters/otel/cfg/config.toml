@@ -1,0 +1,79 @@
+version = 1
+
+[fields.TRACE_MODE]
+type = "str"
+enum = ["", "OTEL"]
+default = ""
+review_optional = true
+help = "Trace exporter mode. Empty disables tracing; OTEL selects the vendor-neutral OTLP HTTP exporter."
+
+[fields.TRACE_EXPORT_ENDPOINT]
+type = "str"
+conditional_defaults = [{when = {TRACE_MODE = "OTEL"}, value = "http://localhost:4318/v1/traces"}]
+review_optional = true
+help = "Complete OTLP HTTP trace ingestion URL. Explicit empty values are retained; active tracing requires a usable URL."
+[fields.TRACE_EXPORT_ENDPOINT.applies_when]
+TRACE_MODE = "OTEL"
+
+[fields.TRACE_EXPORT_PROTOCOL]
+type = "str"
+default = ""
+enum = ["", "http/protobuf"]
+review_optional = true
+help = "Explicit OTLP protocol. The owned exporter supports http/protobuf."
+[fields.TRACE_EXPORT_PROTOCOL.applies_when]
+TRACE_MODE = "OTEL"
+
+[fields.TRACE_EXPORT_HEADERS]
+type = "str"
+default = ""
+sensitive = true
+review_optional = true
+help = "Comma-separated key=value OTLP export headers. Values are never reported."
+[fields.TRACE_EXPORT_HEADERS.applies_when]
+TRACE_MODE = "OTEL"
+
+[fields.TRACE_METRICS]
+type = "bool"
+default = false
+review_optional = true
+help = "Opt in to OTLP metrics at a separately configured destination."
+[fields.TRACE_METRICS.applies_when]
+TRACE_MODE = "OTEL"
+
+[fields.TRACE_METRICS_ENDPOINT]
+type = "str"
+default = ""
+review_optional = true
+help = "Complete OTLP metric ingestion URL."
+[fields.TRACE_METRICS_ENDPOINT.applies_when]
+TRACE_MODE = "OTEL"
+TRACE_METRICS = true
+
+[fields.TRACE_METRICS_TEMPORALITY]
+type = "str"
+default = ""
+enum = ["", "DELTA", "CUMULATIVE"]
+review_optional = true
+help = "Explicit metric temporality; otherwise CUMULATIVE is used."
+[fields.TRACE_METRICS_TEMPORALITY.applies_when]
+TRACE_MODE = "OTEL"
+TRACE_METRICS = true
+
+[fields.TRACE_RESOURCE_ATTRIBUTES]
+type = "jsonobject"
+default = {}
+review_optional = true
+help = "Bounded service and deployment resource identities for exported telemetry."
+[fields.TRACE_RESOURCE_ATTRIBUTES.applies_when]
+TRACE_MODE = "OTEL"
+
+[fields.TRACE_METRIC_PROFILE]
+type = "str"
+default = "current"
+enum = ["current", "legacy"]
+review_optional = true
+help = "Pinned GenAI metric vocabulary."
+[fields.TRACE_METRIC_PROFILE.applies_when]
+TRACE_MODE = "OTEL"
+TRACE_METRICS = true

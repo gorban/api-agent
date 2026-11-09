@@ -8,52 +8,20 @@ from pathlib import Path
 import re
 import stat
 from types import MappingProxyType
+from typing import ClassVar
 from urllib.parse import unquote, urlsplit
 from weakref import WeakKeyDictionary
 
-from .layout import Layout, LayoutError, Step, _COLUMNS, _RESPONSE_COLUMNS, _SUMMARY_COLUMNS, _ID, _MD, _validate
+from .layout import _COLUMNS, _RESPONSE_COLUMNS, _SUMMARY_COLUMNS, _ID, _MD, _validate
+from .model import (InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage,
+                    declares_source, freeze as _freeze, _MAX_SNAPSHOT_BYTES)
 from .document_format import extract_document, validate_presentation_location
 
 
 @dataclass(frozen=True)
-class Replacement:
-    target_id: str
-    entry: Path
-    root_id: str
-
-
-@dataclass(frozen=True)
-class Resource:
-    kind: str
-    logical_path: str
-    content_bytes: bytes
-    sha256: str
-
-
-@dataclass(frozen=True)
-class InlinePromptRef:
-    owner: Path
-    id: str
-
-    def as_uri(self):
-        return self.owner.as_uri() + '#prompt-' + self.id
-
-
-@dataclass(frozen=True)
-class ToolUsage:
-    """One declared port binding in a selected graph scope."""
-
-    scope: str
-    port: str
-    instance: Path
-    scope_kind: str
-    declaration: Path
-    line: int
-    operations: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
 class WorkflowDefinition:
+    version: ClassVar[int] = 2
+    origin: ClassVar[str] = 'source'
     graph_id: str
     entry: Path
     entry_root: str
@@ -78,6 +46,17 @@ class WorkflowDefinition:
             if current != self.contents[step.source]:
                 raise LayoutError(f'{step.source}:1: native source changed after definition admission')
 
+    def verify_sources(self):
+        self.verify_native_sources()
+
+    def native_rejection(self, function, step):
+        """Return why ``function`` is not this node's admitted loader-owned binding."""
+        if not declares_source(function, step.source):
+            return 'registered function does not match its declared source link'
+        if native_origin(function) != (self.definition_id, step.source):
+            return 'native callable does not belong to the admitted definition'
+        return None
+
 
 _LINK = re.compile(r'\[([^\]\n]+)\]\(([^()\n]+)\)\Z')
 _FLOW = re.compile(r'( *)([1-9][0-9]?)\.( +)(\[([^\]]+)\]\(([^()]+)\))\Z')
@@ -85,7 +64,6 @@ _SECTION = re.compile(r'## ([^\n]+)\Z')
 _NATIVE = ('Registry', 'Kind', 'Source')
 _MAX_STEPS = 4096
 _MAX_RESOURCE_BYTES = 8 * 1024 * 1024
-_MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 _NATIVE_ORIGIN = WeakKeyDictionary()
 
 
@@ -294,14 +272,6 @@ def _table(path, body, columns):
     if cells(nonempty[0]) != columns or any(not re.fullmatch(r':?-{3,}:?', part) for part in cells(nonempty[1])):
         raise LayoutError(f'{path}:{nonempty[0][0]}: unknown table columns')
     return [dict(zip(columns, cells(item)), line=item[0]) for item in nonempty[2:]]
-
-
-def _freeze(value):
-    if isinstance(value, dict):
-        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze(item) for item in value)
-    return value
 
 
 def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=None):

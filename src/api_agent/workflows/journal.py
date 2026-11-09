@@ -11,7 +11,7 @@ from threading import Lock
 from uuid import uuid4, UUID
 
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary, _COUNTS
-from .layout import MAX_COMPONENT_PASSES
+from .model import MAX_COMPONENT_PASSES
 from .predicates import PredicateError, native_condition_id, parse_predicate
 
 _CAPTURE_CALLBACKS = ContextVar('workflow_capture_callbacks', default=None)
@@ -180,7 +180,8 @@ def projection(definition, *, component_passes=None):
                                          guard=row['Guard'])
                                     for row in definition.layout.tables.get('Components', ())],
                   resources=[dict(kind=item.kind, logical_path=item.logical_path,
-                                  sha256=item.sha256, length=len(item.content_bytes))
+                                  sha256=item.sha256,
+                                  length=len(item.content_bytes) if item.content_bytes is not None else item.size)
                              for item in definition.resources],
                   replacements=[dict(target_id=item.target_id, root_id=item.root_id)
                                 for item in definition.replacements])

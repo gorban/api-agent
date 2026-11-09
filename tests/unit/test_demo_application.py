@@ -62,6 +62,25 @@ def application(owner):
     return UsefulDemoApplication(definition, tool_owner=owner)
 
 
+def test_compiled_demo_uses_verified_callables_without_declaration_catalog(monkeypatch):
+    from api_agent.workflows import definition as declarations
+    source = load_definition(ENTRY, base_root=ROOT, pack_root=ROOT / 'demo', entry_root='base')
+    source_registry = UsefulDemoApplication(source, tool_owner=Owner()).registry
+    compiled = SimpleNamespace(
+        origin='compiled', layout=source.layout, contents=source.contents, resources=source.resources,
+        definition_id=source.definition_id, graph_id=source.graph_id, entry=source.entry,
+        entry_root=source.entry_root, replacements=source.replacements, roots=source.roots,
+        tool_usages=source.tool_usages, registry=lambda: source_registry,
+        native_rejection=lambda function, step: None, verify_sources=lambda: None,
+    )
+    monkeypatch.setattr(declarations, 'load_native_catalog',
+                        lambda *args, **kwargs: pytest.fail('compiled application parsed declarations'))
+
+    application = UsefulDemoApplication(compiled, tool_owner=Owner())
+
+    assert application.registry == source_registry
+
+
 def request():
     return LLMRequest('chosen-model', CompletionRequest((Message('user', (TextContent('Who?'),)),)))
 

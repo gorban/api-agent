@@ -20,6 +20,9 @@ def check(root: Path, frontend_source: Path | None = None) -> None:
         prepare_snapshot(root, frontend_source.resolve())
     from api_agent.workflows.viewer_build import check_views
     check_views(root)
+    if (root / 'src/api_agent/workflows/artifact_plans.py').is_file():
+        from api_agent.workflows.artifact_plans import check_plans
+        check_plans(root)
     if frontend_source is not None:
         from api_agent.workflows.viewer_build import check_staged_workflow_matches_worktree
         check_staged_workflow_matches_worktree(root, frontend_source.resolve())

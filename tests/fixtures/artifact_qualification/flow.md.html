@@ -1,0 +1,80 @@
+<!-- -*- mode: markdown -*- -->
+<!--
+
+
+
+
+
+  Open this file in a browser to view the workflow.
+  For managed viewing, follow Getting started in README.md, then run the launcher.
+./launch.sh --view-flow "tests/fixtures/artifact_qualification/flow.md.html"
+
+
+
+
+
+-->
+
+
+<meta charset="utf-8">
+<meta name="workflow-view" content="v2">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-hashes' 'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis=' 'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E='; img-src 'self'; frame-src 'self'; connect-src 'none'">
+
+[workflow-hidden-text]: <html style="font-size:0">
+[workflow-styles]: <link rel="stylesheet" href="../../../.private_resources/viewer/viewer.css">
+[workflow-markdown]: <script defer src="../../../.private_resources/viewer/marked.js"> "</script>"
+[workflow-headings]: <script defer src="../../../.private_resources/viewer/heading-id.js"> "</script>"
+[workflow-sanitize]: <script defer src="../../../.private_resources/viewer/dompurify.js"> "</script>"
+[workflow-viewer]: <script defer src="../../../.private_resources/viewer/viewer.js"> "</script>"
+[workflow-modal-styles]: <link rel="stylesheet" href="../../../.private_resources/viewer/flow-modal.css">
+[workflow-modal-script]: <script defer src="../../../.private_resources/viewer/flow-modal.js"> "</script>"
+
+[workflow-help]: <section id="workflow-fallback" style="font:16px/1.6 system-ui,sans-serif"> "
+    <h2>Viewing this file</h2><p>Follow Getting started in README.md, then run from the repository root:</p>
+    <pre>./launch.sh --view-flow &quot;tests/fixtures/artifact_qualification/flow.md.html&quot;</pre></section>"
+[workflow-source]: <plaintext id="workflow-source" hidden>
+
+# Workflow v3
+
+<!-- workflow-generated-diagram-v2:start -->
+[![Workflow diagram](../../../.private_resources/diagrams/tests/fixtures/artifact_qualification/flow.svg)](../../../.private_resources/diagrams/tests/fixtures/artifact_qualification/flow.svg)
+
+<details open>
+<summary>Diagram links</summary>
+
+[Open standalone diagram](../../../.private_resources/diagrams/tests/fixtures/artifact_qualification/flow.svg)
+
+- [intake](intake.md.html)
+- [review](review.md.html)
+- [work](work.md.html)
+- [finish](finish.md.html)
+
+</details>
+<!-- workflow-generated-diagram-v2:end -->
+
+## Graph ID
+
+| ID |
+| --- |
+| artifact_qualification |
+
+## State
+
+| Registry | Source |
+| --- | --- |
+| State | [Python](src/aq_bindings/native.py) |
+
+## Flow
+
+1.  [node intake](intake.md.html)
+2.  [component review](review.md.html)
+
+## Edges
+
+| From | To | Router | Source |
+| --- | --- | --- | --- |
+| intake | review | - | - |
+| work | work | route_work | [Python](src/aq_bindings/native.py) |
+| work | finish | route_work | [Python](src/aq_bindings/native.py) |
+| finish | END | - | - |
+| review | END | - | - |

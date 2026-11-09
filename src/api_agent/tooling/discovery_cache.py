@@ -37,7 +37,10 @@ class DefinitionCache:
         entry = context.workflow_entry or base / 'flow.md.html'
         owned = getattr(context, 'workflow_library_files', None)
         key = (base, getattr(context, 'workflow_pack_root', None) or context.pack_root, entry, context.workflow_root,
-               tuple(context.workflow_replacements), None if owned is None else frozenset(owned))
+               tuple(context.workflow_replacements), None if owned is None else frozenset(owned),
+               getattr(context, 'workflow_artifact_plan', None),
+               getattr(context, 'workflow_artifact_graph_id', None),
+               tuple(getattr(context, 'workflow_artifact_wheels', ())))
         with self._lock:
             cached = self._entries.pop(key, None)
             if cached is not None:

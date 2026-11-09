@@ -1,0 +1,6 @@
+FROM api-agent-runtime:local
+USER root
+COPY qualification/deterministic_llm.py /opt/api-agent/providers/deterministic_llm.py
+COPY qualification/simple_chat.json /opt/api-agent/plans/simple_chat.json
+RUN chown -R apiagent:apiagent /opt/api-agent/providers /opt/api-agent/plans
+USER 10001:10001

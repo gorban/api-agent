@@ -84,6 +84,32 @@ def test_compiled_langgraph_preserves_input_and_independent_pass_budgets(route, 
     assert 'flowchart TD' in workflow.diagram()
 
 
+def test_stripped_runtime_skips_test_usage_when_admission_reports_the_missing_package(monkeypatch):
+    import sys
+
+    class MissingTestAccounting:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == 'api_agent.testing':
+                raise ModuleNotFoundError(f'No module named {fullname!r}', name=fullname)
+            return None
+
+    for name in tuple(sys.modules):
+        if name == 'api_agent.testing' or name.startswith('api_agent.testing.'):
+            monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, 'meta_path', [MissingTestAccounting(), *sys.meta_path])
+
+    async def complete(request):
+        return LLMResult(Message('assistant', (TextContent(json.dumps({
+            'original_input': 'hello', 'route': 'skip', 'ready': True, 'final_output': 'hello',
+        })),)))
+
+    workflow = build(ROOT, llm=complete, selection='gpt-example', trial=trial_uuid('skip'))
+
+    assert asyncio.run(workflow.arun(
+        {'user_input': 'hello'}, turn_id='00000000-0000-4000-8000-000000000001'
+    ))['first_draft']['ready'] is True
+
+
 @pytest.mark.parametrize('response', ['not json', '{}'])
 def test_generated_contract_failure_repairs_origin_within_component_budget(response):
     calls=[]
