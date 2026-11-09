@@ -271,11 +271,12 @@ def _test_environment(values):
 
 
 @suite_locked
-def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, coverage_owner_only=False, successful_test_diagnostics_level='warning', evidence_boundary=None, test_environment=None):
+def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, coverage_owner_only=False, successful_test_diagnostics_level='warning', evidence_boundary=None, test_environment=None, unit_timeout=None, unit_idle_timeout=None, collection_timeout=None, frontend_timeout=None):
     """Run selected collected identities once; preserve owner configs and coverage scope.
 
     Callbacks run on the calling thread. Cancellation terminates and reaps only
     owned process groups. Ordinary skips and incomplete selected tests remain nonpassing.
+    Unset timeouts keep the collection, frontend and watchdog defaults.
     """
     test_environment = _test_environment(test_environment)
     started_at = time.monotonic()
@@ -288,14 +289,16 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
         raise ValueError('parallel_jobs must be nonnegative')
     # Validate against actual mandatory base/optional pack discovery, preventing
     # callers from passing fabricated node IDs or bypassing a missing base suite.
-    available = {test.id: test for test in collect_tests(context, 'unit', cancel_event=cancel_event)}
+    available = {test.id: test for test in collect_tests(context, 'unit', cancel_event=cancel_event,
+                                                          timeout=collection_timeout)}
     if any(available.get(test.id) != test for test in tests):
         raise CollectionError('Unit selection contains identities outside the collected suites')
     base, owner = Path(context.base_root).resolve(), Path(context.owner_root).resolve()
     from api_agent.runtime.frontend import ensure_source_frontend, source_root
     # The reusable runner prepares only the selected source library's own base suite.
     if base == source_root():
-        ensure_source_frontend(cancellation=cancel_event)
+        ensure_source_frontend(cancellation=cancel_event,
+                               **({'timeout': frontend_timeout} if frontend_timeout is not None else {}))
     from .pack_sources import composition_roots, composition_pythonpath
     ordered = bool(getattr(context, 'pack_layers', ()))
     owner_roots = composition_roots(context) if ordered else (base, owner)
@@ -394,7 +397,8 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
                         raw(repo, f'Cannot start pytest: {exc}\n')
                         failed = True
                         continue
-                    watchdog = UnitWatchdog(deadline=budget.deadline)
+                    watchdog = UnitWatchdog(deadline=budget.deadline, test_limit=unit_timeout,
+                                            idle_limit=unit_idle_timeout)
                     expired = ()
                     timeout_details = {}
                     ordinals = {test.id: index for index, test in enumerate(tests, 1)}

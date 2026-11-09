@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tomllib
 
+from api_agent.config.process_settings import process_setting
+
 
 def _requirement_types():
     """Use an installed standards parser, including pip's bundled copy."""
@@ -244,7 +246,8 @@ print(json.dumps(result))
 '''
     try:
         probe = subprocess.run([str(python), '-c', script, json.dumps(wanted)],
-                               capture_output=True, text=True, timeout=20, check=True)
+                               capture_output=True, text=True, check=True,
+                               timeout=process_setting('BOOTSTRAP_DEPENDENCY_PROBE_TIMEOUT_SECONDS'))
         return tuple(json.loads(probe.stdout))
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError, json.JSONDecodeError) as exc:
         raise OSError('Cannot verify dependencies in the target interpreter') from exc
@@ -271,10 +274,7 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
     if os.environ.get('API_AGENT_MISE') == '1' and (environment.exists() or environment.is_symlink()):
         # Do not let an older checkout environment bypass the selected runtime.
         try:
-            probe = subprocess.run([str(python), '-I', '-c',
-                'import sys; print(sys._base_executable)'], check=True,
-                capture_output=True, text=True, timeout=30)
-            matches = Path(probe.stdout.strip()).resolve() == Path(sys._base_executable).resolve()
+            matches = Path(_interpreter_base_executable(python)).resolve() == Path(sys._base_executable).resolve()
         except (OSError, subprocess.SubprocessError):
             matches = False
         if not matches:
@@ -372,9 +372,17 @@ def _prepare_requirement_parser(environment, python):
         raise OSError('Dependency validator remains unavailable after preparation')
 
 
+def _interpreter_base_executable(python):
+    probe = subprocess.run([str(python), '-I', '-c', 'import sys; print(sys._base_executable)'],
+                           check=True, capture_output=True, text=True,
+                           timeout=process_setting('BOOTSTRAP_INTERPRETER_PROBE_TIMEOUT_SECONDS'))
+    return probe.stdout.strip()
+
+
 def _requirement_parser_status(python):
     try:
         return subprocess.run([str(python), '-c', _PARSER_PROBE],
-                              capture_output=True, timeout=20, check=False).returncode
+                              capture_output=True, check=False,
+                              timeout=process_setting('BOOTSTRAP_DEPENDENCY_PROBE_TIMEOUT_SECONDS')).returncode
     except (subprocess.TimeoutExpired, OSError) as error:
         raise OSError('Cannot verify the dependency validator in the target interpreter') from error

@@ -276,6 +276,28 @@ def test_collector_implicit_roots_keep_unique_effective_repository_labels(tmp_pa
     assert collection.repository_label(context(base, owner), other) == ('pack' if base_name == owner_name else other.name)
 
 
+@pytest.mark.parametrize(('options', 'expected'), [
+    ({}, 120.0),
+    ({'config': {'TEST_COLLECTION_TIMEOUT_SECONDS': 240.0}}, 240.0),
+    ({'config': {'TEST_COLLECTION_TIMEOUT_SECONDS': 240.0}, 'timeout': 300.0}, 300.0),
+])
+def test_collection_timeout_comes_from_the_caller_or_its_configuration(tmp_path, monkeypatch, options, expected):
+    import json
+    from api_agent.testing import collection
+    base = tmp_path / 'base'
+    suite(base)
+    timeouts = []
+    def collect(args, root, env, repo, cancel_event, timeout):
+        timeouts.append(timeout)
+        Path(args[3]).write_text(json.dumps([dict(node_id='tests/unit/test_tiny.py::test_value', tags=[])]))
+        return subprocess.CompletedProcess(args, 0, '', '')
+    monkeypatch.setattr(collection, '_run_collection', collect)
+
+    collect_tests(context(base), 'unit', **options)
+
+    assert timeouts == [expected]
+
+
 def test_executing_source_checkout_is_canonical_under_any_directory_name(tmp_path, monkeypatch):
     from api_agent.testing import collection
     checkout = tmp_path / 'src_repo'; checkout.mkdir()

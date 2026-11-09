@@ -4,11 +4,15 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 import uuid
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from api_agent.config.process_settings import process_setting  # noqa: E402
 
 
 FORBIDDEN = (
@@ -80,7 +84,11 @@ def _forbidden_archive(body, label):
 
 
 def _run(*command, cwd=None):
-    return subprocess.run(command, cwd=cwd, check=True, text=True, capture_output=True)
+    try:
+        return subprocess.run(command, cwd=cwd, check=True, text=True, capture_output=True)
+    except subprocess.CalledProcessError as error:
+        sys.stderr.write((error.stdout or '') + (error.stderr or ''))
+        raise
 
 
 def assert_runtime_results(results, *, shutdown_bound):
@@ -149,6 +157,12 @@ def _http(container, path, *, method='POST', body=None):
                            '-' if body is None else json.dumps(body)).stdout)
 
 
+def timeouts():
+    """Scenario bounds in seconds, from their declared settings."""
+    return {key: process_setting(f'QUALIFICATION_{key.upper()}_TIMEOUT_SECONDS')
+            for key in ('http', 'ready', 'stream', 'shutdown', 'stop')}
+
+
 def _external_http(port, path, *, method='POST', body=None, host='qualification.example.test',
                    origin='https://console.example.test'):
     """Send a host-originating request through the published container port."""
@@ -157,7 +171,7 @@ def _external_http(port, path, *, method='POST', body=None, host='qualification.
         headers['Content-Type'] = 'application/json'
         body = json.dumps(body)
     import http.client
-    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=15)
+    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=timeouts()['http'])
     connection.request(method, path, body, headers)
     response = connection.getresponse()
     return {'status': response.status, 'body': response.read().decode()}
@@ -186,23 +200,30 @@ def _wait_ready(container):
 
 
 def _wait_ready_external(port):
-    for _ in range(40):
+    deadline = time.monotonic() + timeouts()['ready']
+    while True:
         try:
             response = _external_http(port, '/app/agent/internals/health/ready', method='GET')
         except OSError:
-            time.sleep(.25)
-            continue
-        if response['status'] == 200:
+            response = None
+        if response is not None and response['status'] == 200:
             return response
+        if time.monotonic() >= deadline:
+            raise RuntimeError('qualification container never became ready')
         time.sleep(.25)
-    raise RuntimeError('qualification container never became ready')
 
 
-def _runtime_qualification(root, evidence, *, tag, shutdown_bound=10, trace_endpoint=None):
+def _runtime_qualification(root, evidence, *, tag, shutdown_bound=None, trace_endpoint=None):
     """Exercise the published API from a host client through Docker port forwarding."""
+    bounds = timeouts()
+    if shutdown_bound is None:
+        shutdown_bound = bounds['shutdown']
     image, state = tag + ':qualification', Path(tempfile.mkdtemp(prefix='v2-image-state-'))
     name = 'api-agent-qualification-' + uuid.uuid4().hex
-    _run('docker', 'build', '--no-cache', '-f', 'Dockerfile.qualification', '--tag', image, '.',
+    # The image runs as its own unprivileged user; a private 0700 mount is not its.
+    state.chmod(0o777)
+    _run('docker', 'build', '--no-cache', '-f', 'Dockerfile.qualification',
+         '--build-arg', f'BASE_IMAGE={tag}:local', '--tag', image, '.',
          cwd=root)
     environment = (
         'API_AGENT_PRODUCTION_PLAN=/opt/api-agent/plans/simple_chat.json',
@@ -216,7 +237,7 @@ def _runtime_qualification(root, evidence, *, tag, shutdown_bound=10, trace_endp
         'API_AGENT_SESSION_NONCE=' + 'n' * 32,
         'API_AGENT_STATE_DIR=/var/lib/api-agent', 'DEBUG=1', 'RUN_UI=1',
         'PYTHONPROFILEIMPORTTIME=1',
-        f'API_AGENT_SHUTDOWN_TIMEOUT_SECONDS={shutdown_bound}')
+        f'API_AGENT_SHUTDOWN_TIMEOUT_SECONDS={shutdown_bound:g}')
     if trace_endpoint is not None:
         environment += (
             'TRACE_EXPORT_ENDPOINT=' + trace_endpoint,
@@ -252,25 +273,25 @@ def _runtime_qualification(root, evidence, *, tag, shutdown_bound=10, trace_endp
         blocked = {**request, 'session_id': session,
                    'messages': [{'role': 'user', 'content': 'block-until-cancelled'}]}
         source = (
-            'import http.client,json,sys; c=http.client.HTTPConnection("127.0.0.1",int(sys.argv[1]),timeout=15); '
+            'import http.client,json,sys; '
+            'c=http.client.HTTPConnection("127.0.0.1",int(sys.argv[1]),timeout=float(sys.argv[3])); '
             'c.request("POST","/app/agent/chat/stream",sys.argv[2],'
             '{"Host":"qualification.example.test","Origin":"https://console.example.test",'
             '"X-API-Agent-Session":"n"*32,"Content-Type":"application/json"}); '
             'r=c.getresponse(); print(r.status); print(r.read().decode())')
-        stream = subprocess.Popen(('python', '-c', source, str(port), json.dumps(blocked)),
+        stream = subprocess.Popen(('python', '-c', source, str(port), json.dumps(blocked), str(bounds['stream'])),
                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         time.sleep(1)
         results['heartbeat'] = _external_http(port, '/app/agent/chat/heartbeat', body={'session_id': session})
         results['cancel'] = _external_http(port, '/app/agent/chat/cancel', body={'session_id': session})
-        results['in_flight_stream'] = stream.communicate(timeout=15)[0]
+        results['in_flight_stream'] = stream.communicate(timeout=bounds['stream'])[0]
         started = time.monotonic()
         _run('docker', 'kill', '--signal', 'TERM', name)
-        for _ in range(80):
-            if _run('docker', 'inspect', name, '--format', '{{.State.Running}}').stdout.strip() == 'false':
-                break
+        stop_by = time.monotonic() + bounds['stop']
+        while _run('docker', 'inspect', name, '--format', '{{.State.Running}}').stdout.strip() != 'false':
+            if time.monotonic() >= stop_by:
+                raise RuntimeError('qualification container did not stop after SIGTERM')
             time.sleep(.125)
-        else:
-            raise RuntimeError('qualification container did not stop after SIGTERM')
         _run('docker', 'wait', name)
         results['shutdown_seconds'] = time.monotonic() - started
         results['provider_cleanup'] = (state / 'deterministic-provider-closed').read_text()

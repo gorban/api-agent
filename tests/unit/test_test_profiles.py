@@ -446,7 +446,7 @@ def test_real_collector_implicit_base_and_external_owner_share_correct_profile_s
     context = SimpleNamespace(base_root=ROOT, owner_root=owner, defaults={},
                               suite_paths=lambda mode: [owner / 'tests/integration'])
     ordinary, workflow = CASES[0].node_id, CASES[-1].node_id
-    def collect(args, root, env, repo, cancel_event):
+    def collect(args, root, env, repo, cancel_event, timeout):
         nodes = [ordinary, workflow] if root == ROOT else [ordinary]
         Path(args[3]).write_text(json.dumps([dict(node_id=node, tags=[]) for node in nodes]))
         return SimpleNamespace(returncode=0, stdout='', stderr='')

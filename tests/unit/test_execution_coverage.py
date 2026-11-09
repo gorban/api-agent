@@ -165,7 +165,7 @@ def test_matching_owner_names_and_inherited_pythonpath_are_preserved(monkeypatch
     ctx.suite_paths = lambda mode: [ctx.base_root / 'tests/unit', pack / 'tests/unit']
     seen = []
     monkeypatch.setenv('PYTHONPATH', '/extra/path')
-    def collect(args, root, env, repo, cancel_event):
+    def collect(args, root, env, repo, cancel_event, timeout):
         seen.append((repo, env['PYTHONPATH']))
         Path(args[3]).write_text(json.dumps([{'node_id':'tests/unit/test.py::test_one', 'tags':[]}]))
         return subprocess.CompletedProcess(args, 0, '', '')
