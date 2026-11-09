@@ -81,6 +81,70 @@ def test_inspector_explicitly_allows_unmodified_base_stdlib_viewer_and_ensurepip
     assert module['forbidden_members'](layer) == []
 
 
+def test_qualification_plan_is_a_fresh_compile_of_the_root_workflow():
+    # Its bound module ships only in the production wheel, so equality with a
+    # fresh compile, not a source-checkout load, keeps it runnable.
+    from api_agent.workflows.artifact_compile import compile_plan
+    plan = (ROOT / 'qualification/simple_chat.json').read_bytes()
+    fresh = compile_plan(ROOT / 'flow.md.html', base_root=ROOT, pack_root=ROOT, entry_root='base',
+                         wheels=[ROOT / 'demo/.private_resources/wheels/api_agent-0.1.0-py3-none-any.whl'])
+
+    assert plan == fresh, 'qualification/simple_chat.json is stale; regenerate it as docs/compiled_plan.md describes'
+
+
+def test_failed_command_output_is_reported_before_the_error(capsys):
+    import subprocess
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+
+    with pytest.raises(subprocess.CalledProcessError):
+        module['_run']('sh', '-c', 'echo progress; echo broken base image >&2; exit 3')
+
+    assert capsys.readouterr().err == 'progress\nbroken base image\n'
+
+
+def test_scenario_image_builds_on_the_tag_being_qualified(monkeypatch, tmp_path):
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    commands = []
+    class Stop(Exception):
+        pass
+    def run(*command, cwd=None):
+        commands.append(command)
+        raise Stop
+    monkeypatch.setitem(module['_runtime_qualification'].__globals__, '_run', run)
+    (tmp_path / 'state').mkdir()
+    monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda prefix: str(tmp_path / 'state'))
+
+    with pytest.raises(Stop):
+        module['_runtime_qualification'](tmp_path, tmp_path, tag='custom-runtime')
+
+    assert commands == [('docker', 'build', '--no-cache', '-f', 'Dockerfile.qualification',
+                         '--build-arg', 'BASE_IMAGE=custom-runtime:local',
+                         '--tag', 'custom-runtime:qualification', '.')]
+    assert (ROOT / 'Dockerfile.qualification').read_text().splitlines()[:2] == [
+        'ARG BASE_IMAGE=api-agent-runtime:local', 'FROM ${BASE_IMAGE}']
+
+
+def test_scenario_state_mount_is_writable_by_the_image_user(monkeypatch, tmp_path):
+    import subprocess
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    state = tmp_path / 'state'
+    state.mkdir(mode=0o700)
+    class Stop(Exception):
+        pass
+    def run(*command, cwd=None):
+        if command[:2] == ('docker', 'run'):
+            raise Stop
+        return subprocess.CompletedProcess(command, 0, '', '')
+    monkeypatch.setitem(module['_runtime_qualification'].__globals__, '_run', run)
+    monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda prefix: str(state))
+
+    with pytest.raises(Stop):
+        module['_runtime_qualification'](tmp_path, tmp_path, tag='custom-runtime')
+
+    # The image runs as its own unprivileged user, not the qualifying host user.
+    assert state.stat().st_mode & 0o777 == 0o777
+
+
 def test_runtime_result_guard_accepts_complete_transcript_and_rejects_regression():
     module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
     results = {
