@@ -129,8 +129,10 @@ class ChatLifecycle:
             return
         turn._watch_error = error
         self.report_error(error, turn=turn)
-        turn.state, turn._cancelled = 'cleanup_pending', True
-        _cancel_once(turn.task, turn._requested)
+        turn.state = 'cleanup_pending'
+        if not turn.task.done():
+            turn._cancelled = True
+            _cancel_once(turn.task, turn._requested)
         try:
             self._settle_task(turn)
         except CleanupPendingError:
@@ -184,8 +186,11 @@ class ChatLifecycle:
             while True:
                 delay = max(0, self.expiry - (time.monotonic() - turn._heartbeat))
                 if delay == 0:
-                    turn._cancelled = True
-                    _cancel_once(turn.task, turn._requested)
+                    # A lease expiring while an ended turn's cleanup is pending
+                    # must not replace how that operation ended.
+                    if not turn.task.done():
+                        turn._cancelled = True
+                        _cancel_once(turn.task, turn._requested)
                     self._settle_task(turn)
                     return
                 turn._wake.clear()

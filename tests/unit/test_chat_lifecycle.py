@@ -540,6 +540,35 @@ def test_receipt_created_during_invocation_cancellation_blocks_terminal_publicat
     asyncio.run(exercise())
 
 
+def test_lease_expiring_during_cleanup_keeps_an_ended_turns_outcome():
+    async def exercise():
+        engine = registry()
+        invoked, disposing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def dispose():
+            disposing.set()
+            await release.wait()
+        async def invoke(context):
+            invoked.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise CleanupPendingError(('resource',), dispose)
+        turn = engine.start('owner', 'session', invoke,
+                            context=OperationContext('request', time.monotonic() + .02))
+        await invoked.wait()
+        waiting = asyncio.create_task(engine.wait('owner', 'session'))
+        await asyncio.wait_for(disposing.wait(), .3)
+        with pytest.raises(CleanupPendingError) as pending:
+            await waiting
+        assert turn.task.done()
+        await asyncio.sleep(engine.expiry * 2)
+        release.set()
+        await pending.value.retry()
+        assert turn.state == 'failed'
+        await engine.aclose()
+    asyncio.run(exercise())
+
+
 def test_grouped_distinct_cleanup_receipts_are_drained_once_each():
     async def exercise():
         engine = registry()
