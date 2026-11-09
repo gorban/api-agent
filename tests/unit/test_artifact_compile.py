@@ -185,7 +185,9 @@ def test_source_definition_loader_selects_the_engine_family_by_heading():
 
 def test_replacements_are_compiled_with_their_resolved_selection(tmp_path):
     root = copy_tree(QUALIFICATION, tmp_path / 'tree')
-    (root / 'alt.md.html').write_text((root / 'intake.md.html').read_text())
+    from api_agent.workflows.document_format import canonical_executable_bytes
+    source = root / 'intake.md.html'
+    (root / 'alt.md.html').write_bytes(canonical_executable_bytes(source.read_bytes(), path=source))
     selected = (Replacement('intake', Path('alt.md.html'), 'base'),)
     wheel = qualification_wheel(tmp_path)
 

@@ -27,7 +27,7 @@ def test_repository_inventory_includes_permanent_and_integration_fixtures():
         "simple_chat": "base/flow.md.html",
         "useful_api_demo": "base/demo/simple/flow.md.html",
         "contrived_qualification": "pack/contrived/flow.md.html",
-        "artifact_qualification": "base/tests/fixtures/artifact_qualification/flow.md.html",
+        "artifact_qualification": "base/flow.md.html",
         "workflow_preferences": "base/flow.md.html",
         "independent_tools": "base/tests/integration/fixtures/tool_instances/independent/flow.md.html",
         "shared_primary_tools": "base/tests/integration/fixtures/tool_instances/shared_primary/flow.md.html",
