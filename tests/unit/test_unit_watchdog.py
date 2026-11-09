@@ -35,6 +35,24 @@ def test_active_clock_spans_all_phases_without_refresh():
                                      '60.00s elapsed; limit 60.00s.')
 
 
+def test_per_test_and_idle_limits_are_independent():
+    clock = Clock()
+    watchdog = UnitWatchdog(clock=clock, test_limit=120, idle_limit=90)
+    clock.now = 89
+    assert not watchdog.expired()
+    clock.now = 90
+    gap, = watchdog.expired()
+    assert (gap.identity, gap.phase, gap.limit) == (None, 'startup/finalization gap', 90)
+
+    watchdog = UnitWatchdog(clock=clock, test_limit=120, idle_limit=90)
+    watchdog.observe('one', 'test_started')
+    clock.now = 209
+    assert not watchdog.expired()
+    clock.now = 210
+    active, = watchdog.expired()
+    assert (active.identity, active.phase, active.limit) == ('one', 'setup-through-teardown', 120)
+
+
 def test_parallel_units_own_independent_deadlines_clipped_to_caller():
     clock = Clock()
     watchdog = UnitWatchdog(clock=clock, deadline=80)
@@ -137,6 +155,32 @@ def controlled_runner(tmp_path, monkeypatch):
         **{**vars(runner.subprocess), 'Popen': launch}))
     monkeypatch.setattr(runner, '_stop_execution', stop)
     return context, tests, clock, state
+
+
+@pytest.mark.parametrize('configured', [False, True])
+def test_runner_threads_its_timeouts_to_collection_frontend_and_watchdog(controlled_runner, monkeypatch, configured):
+    from api_agent.runtime import frontend
+    context, tests, clock, state = controlled_runner
+    calls = {}
+    def collect(*args, **kwargs):
+        calls['collect'] = kwargs
+        return tests
+    def watchdog(**kwargs):
+        calls['watchdog'] = kwargs
+        return UnitWatchdog(clock=clock, **kwargs)
+    monkeypatch.setattr(runner, 'collect_tests', collect)
+    monkeypatch.setattr(frontend, 'source_root', lambda: Path(context.base_root).resolve())
+    monkeypatch.setattr(frontend, 'ensure_source_frontend', lambda **kwargs: calls.setdefault('frontend', kwargs))
+    monkeypatch.setattr(runner, 'UnitWatchdog', watchdog)
+    state.rows = [phase(test.node_id, part) for test in tests for part in ('setup', 'call', 'teardown')]
+    options = dict(unit_timeout=120.0, unit_idle_timeout=121.0, collection_timeout=240.0, frontend_timeout=600.0)
+
+    runner.run_unit_tests(context, tests, **(options if configured else {}))
+
+    assert calls['collect']['timeout'] == (240.0 if configured else None)
+    assert calls['frontend'] == ({'cancellation': None, 'timeout': 600.0} if configured else {'cancellation': None})
+    assert (calls['watchdog']['test_limit'], calls['watchdog']['idle_limit']) == (
+        (120.0, 121.0) if configured else (None, None))
 
 
 def test_timeout_is_sticky_after_late_pass_reports_and_keeps_prior_verdicts(controlled_runner):

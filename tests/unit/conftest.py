@@ -1,4 +1,5 @@
 """Unit recording fixtures use disposable history rather than the user cache."""
+import functools
 import sys
 
 import pytest
@@ -22,6 +23,19 @@ def pytest_runtest_teardown(item, nextitem):
     if changed:
         raise AssertionError(f'Test evicted or replaced imported modules: {changed}')
     return result
+
+
+@functools.cache
+def _timeout_settings():
+    from api_agent.config import load_shared_schema
+    return tuple(name for name in load_shared_schema().fields if name.endswith('_TIMEOUT_SECONDS'))
+
+
+@pytest.fixture(autouse=True)
+def default_build_and_test_timeouts(monkeypatch):
+    """A caller's timeout settings bound the suite run, not the code under test."""
+    for name in _timeout_settings():
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

@@ -373,7 +373,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 return status
             from api_agent.testing.collection import collect_tests
             from api_agent.testing.runner import run_unit_tests, format_unit_summary, unit_parallel_jobs, unit_test_environment
-            tests = collect_tests(context, 'unit', result.positionals)
+            tests = collect_tests(context, 'unit', result.positionals,
+                                  timeout=result.values['TEST_COLLECTION_TIMEOUT_SECONDS'])
             from api_agent.testing.unit_scope import unit_default_tests, owner_unit_only, EMPTY_OWNER_UNITS
             if not result.positionals:
                 tests = unit_default_tests(context, tests, all_unit=result.values.get('ALL_UNIT', False))
@@ -397,6 +398,10 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             test_environment = unit_test_environment(schema, result.values)
             execution = run_unit_tests(context, tests, evidence_boundary=unit_scrubber.boundary, output=lambda chunk: print(chunk, end='', flush=True),
                                        parallel_jobs=unit_parallel_jobs(result.values),
+                                       unit_timeout=result.values['UNIT_TEST_TIMEOUT_SECONDS'],
+                                       unit_idle_timeout=result.values['UNIT_TEST_IDLE_TIMEOUT_SECONDS'],
+                                       collection_timeout=result.values['TEST_COLLECTION_TIMEOUT_SECONDS'],
+                                       frontend_timeout=result.values['SOURCE_FRONTEND_TIMEOUT_SECONDS'],
                                        **({'test_environment': test_environment} if test_environment else {}),
                                        coverage_full=result.values.get('UNIT_COVERAGE_FULL', False),
                                        **({'coverage_owner_only': True} if owner_unit_only(context, result.values) else {}),

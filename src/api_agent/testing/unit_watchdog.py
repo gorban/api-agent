@@ -19,10 +19,16 @@ class UnitDeadline:
 
 
 class UnitWatchdog:
-    """Each active unit owns one setup-through-teardown clock, beside its peers."""
-    def __init__(self, *, deadline=None, clock=None):
+    """Each active unit owns one setup-through-teardown clock, beside its peers.
+
+    Unset limits use UNIT_LIMIT: test_limit bounds each active unit and
+    idle_limit bounds the startup/finalization gap when none is active.
+    """
+    def __init__(self, *, deadline=None, clock=None, test_limit=None, idle_limit=None):
         self.clock = clock or time.monotonic
         self.deadline = deadline
+        self.test_limit = test_limit
+        self.idle_limit = idle_limit
         self.active = {}
         self.completed = set()
         self.last_completed = None
@@ -39,7 +45,8 @@ class UnitWatchdog:
             return now
 
     def _expiry(self, identity, started, observed, phase):
-        end = started + UNIT_LIMIT
+        limit = self.idle_limit if phase == 'startup/finalization gap' else self.test_limit
+        end = started + (UNIT_LIMIT if limit is None else limit)
         if self.deadline is not None:
             end = min(end, self.deadline)
         if observed >= end:

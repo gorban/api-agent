@@ -154,7 +154,10 @@ def _stop_collection(process):
     return finalize(process, communicate=True)
 
 
-def _run_collection(args, root, env, repo, cancel_event, timeout=120):
+_COLLECTION_TIMEOUT = 120.0
+
+
+def _run_collection(args, root, env, repo, cancel_event, timeout=_COLLECTION_TIMEOUT):
     if cancel_event is not None and cancel_event.is_set():
         raise CollectionError(f"Pytest collection cancelled for {repo}")
     try:
@@ -236,8 +239,14 @@ def provider_integration_suites(context, config):
     return suites
 
 
-def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None):
-    """Collect each owner's suites using its working directory and pytest config."""
+def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None, timeout=None):
+    """Collect each owner's suites using its working directory and pytest config.
+
+    Each suite root's deadline is timeout, else the configured
+    TEST_COLLECTION_TIMEOUT_SECONDS, else the declared default.
+    """
+    if timeout is None:
+        timeout = (config or {}).get('TEST_COLLECTION_TIMEOUT_SECONDS', _COLLECTION_TIMEOUT)
     if mode not in {"unit", "integration", "e2e"}:
         raise CollectionError(f"Collection requires unit, integration, or e2e mode; got {mode!r}")
     base = Path(context.base_root).resolve()
@@ -297,7 +306,7 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
             output = Path(temporary) / "collection.json"
             args = [sys.executable, "-c", _PLUGIN, str(output), "--collect-only", "-q", "-o", "addopts=", "--rootdir", str(root)]
             args.extend(str(path) for path in dict.fromkeys(paths))
-            result = _run_collection(args, root, child_env, repo, cancel_event)
+            result = _run_collection(args, root, child_env, repo, cancel_event, timeout)
             if result.returncode == 5 and mode == "unit" and root != base:
                 continue
             if result.returncode:

@@ -282,6 +282,99 @@ help = "Unit-test worker override (default 16). Larger counts can contend with i
 TUI_MODE = "unit"
 COLLECT_ONLY = false
 
+[fields.UNIT_TEST_TIMEOUT_SECONDS]
+type = "float"
+default = 60.0
+validation = "positive"
+acknowledge_default = false
+help = "Deadline in seconds for each unit test from setup through teardown; output and progress never extend it."
+[fields.UNIT_TEST_TIMEOUT_SECONDS.applies_when]
+TUI_MODE = "unit"
+COLLECT_ONLY = false
+
+[fields.UNIT_TEST_IDLE_TIMEOUT_SECONDS]
+type = "float"
+default = 60.0
+validation = "positive"
+acknowledge_default = false
+help = "Deadline in seconds while no unit test is active: worker startup and collection before the first test, gaps between tests, and coverage reporting after the last."
+[fields.UNIT_TEST_IDLE_TIMEOUT_SECONDS.applies_when]
+TUI_MODE = "unit"
+COLLECT_ONLY = false
+
+[fields.TEST_COLLECTION_TIMEOUT_SECONDS]
+type = "float"
+default = 120.0
+validation = "positive"
+acknowledge_default = false
+help = "Deadline in seconds for collecting each suite root's tests."
+
+[fields.SOURCE_FRONTEND_TIMEOUT_SECONDS]
+type = "float"
+default = 300.0
+validation = "positive"
+acknowledge_default = false
+help = "Deadline in seconds for preparing a source checkout's frontend (npm ci and its checks) before unit tests run."
+[fields.SOURCE_FRONTEND_TIMEOUT_SECONDS.applies_when]
+TUI_MODE = "unit"
+COLLECT_ONLY = false
+
+[fields.BOOTSTRAP_GIT_TIMEOUT_SECONDS]
+type = "float"
+default = 5.0
+validation = "positive"
+acknowledge_default = false
+help = "Deadline in seconds for each launcher Git probe (hook and worktree checks). Read from the process environment because it applies before configuration loads; .env files and options do not change it."
+
+[fields.BOOTSTRAP_DEPENDENCY_PROBE_TIMEOUT_SECONDS]
+type = "float"
+default = 20.0
+validation = "positive"
+acknowledge_default = false
+help = "Deadline in seconds for each probe of the installed dependencies and their validator in the target interpreter. Read from the process environment; .env files and options do not change it."
+
+[fields.BOOTSTRAP_INTERPRETER_PROBE_TIMEOUT_SECONDS]
+type = "float"
+default = 30.0
+validation = "positive"
+acknowledge_default = false
+help = "Deadline in seconds for confirming which runtime an existing virtual environment uses. Read from the process environment; .env files and options do not change it."
+
+[fields.QUALIFICATION_HTTP_TIMEOUT_SECONDS]
+type = "float"
+default = 15.0
+validation = "positive"
+acknowledge_default = false
+help = "Production image qualification: deadline in seconds for each HTTP request to a scenario container. Read from the process environment by scripts/qualify_production_image.py."
+
+[fields.QUALIFICATION_READY_TIMEOUT_SECONDS]
+type = "float"
+default = 10.0
+validation = "positive"
+acknowledge_default = false
+help = "Production image qualification: seconds to wait for a scenario container to report ready. Read from the process environment by scripts/qualify_production_image.py."
+
+[fields.QUALIFICATION_STREAM_TIMEOUT_SECONDS]
+type = "float"
+default = 15.0
+validation = "positive"
+acknowledge_default = false
+help = "Production image qualification: deadline in seconds for the in-flight streaming request held across shutdown. Read from the process environment by scripts/qualify_production_image.py."
+
+[fields.QUALIFICATION_SHUTDOWN_TIMEOUT_SECONDS]
+type = "float"
+default = 10.0
+validation = "positive"
+acknowledge_default = false
+help = "Production image qualification: the container's API_AGENT_SHUTDOWN_TIMEOUT_SECONDS and the longest accepted graceful shutdown (at most 120). Read from the process environment by scripts/qualify_production_image.py."
+
+[fields.QUALIFICATION_STOP_TIMEOUT_SECONDS]
+type = "float"
+default = 10.0
+validation = "positive"
+acknowledge_default = false
+help = "Production image qualification: seconds to wait for a container to stop after SIGTERM. Read from the process environment by scripts/qualify_production_image.py."
+
 [fields.ALL_UNIT]
 type = "bool"
 default = false

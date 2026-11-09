@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+from api_agent.config.process_settings import process_setting
+
 MARKER = '# api-agent managed pre-commit dispatcher v1'
 DISPATCHER_SHA256 = 'ee8a6311873df766ed3091e548c8b6aa7c12b4ab8109514fa99bebf5738623e8'
 PREVIOUS_DISPATCHER_SHA256 = frozenset({
@@ -24,7 +26,8 @@ def _git_environment():
 
 def _git(root, *arguments):
     return subprocess.run(['git', *arguments], cwd=root, env=_git_environment(),
-                          capture_output=True, timeout=5, check=True).stdout
+                          capture_output=True, timeout=process_setting('BOOTSTRAP_GIT_TIMEOUT_SECONDS'),
+                          check=True).stdout
 
 
 def _trusted_checkout_template(root):
@@ -108,7 +111,8 @@ def assure_hook(root: Path, *, report=None) -> str:
             report('Managed pre-commit hook not installed: hook path leaves this Git directory; integrate tools/pre_commit_dispatcher.py manually.')
             return 'foreign'
         configured = subprocess.run(['git', 'config', '--get', 'core.hooksPath'], cwd=root,
-                                    env=_git_environment(), capture_output=True, timeout=5)
+                                    env=_git_environment(), capture_output=True,
+                                    timeout=process_setting('BOOTSTRAP_GIT_TIMEOUT_SECONDS'))
         if configured.returncode == 0:
             report('Managed pre-commit hook not installed: custom hooksPath; integrate tools/pre_commit_dispatcher.py manually.')
             return 'foreign'

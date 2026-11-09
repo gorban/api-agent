@@ -11,6 +11,8 @@ import subprocess
 import sys
 from typing import Sequence, TextIO
 
+from api_agent.config.process_settings import process_setting
+
 
 class WorktreeGateError(RuntimeError):
     """The selected checkout could not be verified or was not acknowledged."""
@@ -66,7 +68,7 @@ def _git(root: Path, *args: str, allowed: tuple[int, ...] = (0,), input: bytes |
     try:
         result = subprocess.run(
             ["git", "-C", os.fspath(root), *args], capture_output=True, check=False,
-            input=input, env=environment, timeout=5
+            input=input, env=environment, timeout=process_setting("BOOTSTRAP_GIT_TIMEOUT_SECONDS")
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise WorktreeGateError(f"Cannot run Git for {root}: {exc}") from exc
