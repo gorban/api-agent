@@ -1,11 +1,11 @@
-<!-- api-agent-companion-v1 sha256:c4ab6bf3bc8673bebdfb7a518342c61937e02d0452b1a1fa18e602682462c173 -->
+<!-- api-agent-companion-v1 sha256:a2d76661f50bb51ec99085305fc138abe2f164472ad4525e65bbf78270a02470 -->
 # Workflow diagram: review
 
 ![Workflow diagram](review.svg)
 
 [Open standalone diagram](review.svg)
 
-[Source declaration](../../../../../tests/fixtures/artifact_qualification/review.md.html)
+[Source declaration](../../review.md.html)
 
 ## Navigation
 

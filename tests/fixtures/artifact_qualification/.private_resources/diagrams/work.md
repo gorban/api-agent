@@ -1,11 +1,11 @@
-<!-- api-agent-companion-v1 sha256:b5b91c7bf67793d4661f0b8cf4928a4ddbd14bbdd5bd233e3b556f06e5aab8d0 -->
+<!-- api-agent-companion-v1 sha256:083aa9ccf76944e65ef453dba229a04878fafc990576330d63b7da8836f3712c -->
 # Workflow diagram: work
 
 ![Workflow diagram](work.svg)
 
 [Open standalone diagram](work.svg)
 
-[Source declaration](../../../../../tests/fixtures/artifact_qualification/work.md.html)
+[Source declaration](../../work.md.html)
 
 ## Navigation
 

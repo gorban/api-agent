@@ -25,6 +25,11 @@
       "base_root": ".",
       "pack_root": "tests/integration/fixtures/tool_instances",
       "entry_root": "base"
+    },
+    "tests/fixtures/artifact_qualification/flow.md.html": {
+      "base_root": "tests/fixtures/artifact_qualification",
+      "pack_root": "tests/fixtures/artifact_qualification",
+      "entry_root": "base"
     }
   }
 }

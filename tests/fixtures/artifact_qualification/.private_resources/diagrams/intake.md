@@ -1,11 +1,11 @@
-<!-- api-agent-companion-v1 sha256:9ea7f835103ab28f18a91ea14db5101ece3459c4b9695068653741c554318524 -->
+<!-- api-agent-companion-v1 sha256:ebb6b86666649db50a4d5d41030c6347a1edaabbdb52f1cdce94c4e4194df7d8 -->
 # Workflow diagram: intake
 
 ![Workflow diagram](intake.svg)
 
 [Open standalone diagram](intake.svg)
 
-[Source declaration](../../../../../tests/fixtures/artifact_qualification/intake.md.html)
+[Source declaration](../../intake.md.html)
 
 ## Navigation
 
