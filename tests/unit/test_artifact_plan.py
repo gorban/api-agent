@@ -44,9 +44,9 @@ def test_compatibility_rejects_wrong_schema_abi_and_engine(request, fixture_name
         artifact._check_versions(value)
 
 
-def test_compiled_load_does_not_import_the_declaration_parser(v3_built):
-    sys.modules.pop('api_agent.workflows.definition', None)
-    sys.modules.pop('api_agent.workflows.document_format', None)
+def test_compiled_load_does_not_import_the_declaration_parser(v3_built, monkeypatch):
+    monkeypatch.delitem(sys.modules, 'api_agent.workflows.definition', raising=False)
+    monkeypatch.delitem(sys.modules, 'api_agent.workflows.document_format', raising=False)
 
     definition = load_built(v3_built)
 

@@ -1,5 +1,27 @@
 """Unit recording fixtures use disposable history rather than the user cache."""
+import sys
+
 import pytest
+
+
+_IMPORTED = pytest.StashKey[dict]()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    item.stash[_IMPORTED] = {name: module for name, module in sys.modules.items()
+                             if name.startswith('api_agent')}
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    """An evicted module is re-imported later, splitting class identity for other tests."""
+    result = yield
+    changed = sorted(name for name, module in item.stash.get(_IMPORTED, {}).items()
+                     if sys.modules.get(name) is not module)
+    if changed:
+        raise AssertionError(f'Test evicted or replaced imported modules: {changed}')
+    return result
 
 
 @pytest.fixture(autouse=True)
