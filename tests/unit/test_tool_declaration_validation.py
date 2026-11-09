@@ -1,5 +1,7 @@
 """Malformed declarations reject before configuration or executable acquisition."""
 from pathlib import Path
+from pathlib import PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -98,6 +100,88 @@ def test_capture_rejects_invalid_toml_and_rechecks_disk_bytes(tmp_path):
 
     with pytest.raises(ToolSelectionError, match='changed during admission'):
         fresh.verify()
+
+
+def test_capture_retains_compiled_bytes_without_a_disk_read(tmp_path):
+    capture = Capture({'base': tmp_path, 'pack': tmp_path})
+    logical = PurePosixPath('/artifact/base/tools/instance.toml')
+
+    capture.add_carried(logical, b'version=1')
+    capture.verify()
+
+    assert capture.bodies[logical] == b'version=1'
+    assert capture.identity()[0][:2] == ('artifact', 'base/tools/instance.toml')
+
+
+def test_capture_accepts_repeated_unchanged_compiled_bytes(tmp_path, monkeypatch):
+    capture = Capture({'base': tmp_path, 'pack': tmp_path})
+    logical = PurePosixPath('/artifact/base/tools/instance.toml')
+    monkeypatch.setattr(declarations, 'MAX_CAPTURE_FILES', 1)
+    capture.add_carried(logical, b'version=1')
+
+    repeated = capture.add_carried(logical, b'version=1')
+
+    assert repeated == b'version=1'
+    assert capture.identity() == (('artifact', 'base/tools/instance.toml',
+                                   declarations.sha256(b'version=1').hexdigest()),)
+
+
+def test_capture_rejects_changed_compiled_bytes(tmp_path):
+    capture = Capture({'base': tmp_path, 'pack': tmp_path})
+    logical = PurePosixPath('/artifact/base/tools/instance.toml')
+    capture.add_carried(logical, b'version=1')
+
+    with pytest.raises(ToolSelectionError, match='changed during admission'):
+        capture.add_carried(logical, b'version=2')
+
+
+def test_capture_enforces_compiled_byte_budget(tmp_path, monkeypatch):
+    capture = Capture({'base': tmp_path, 'pack': tmp_path})
+    monkeypatch.setattr(declarations, 'MAX_CAPTURE_BYTES', 1)
+    capture.add_carried(PurePosixPath('/artifact/base/tools/one.toml'), b'x')
+
+    with pytest.raises(ToolSelectionError, match='capture budget'):
+        capture.add_carried(PurePosixPath('/artifact/base/tools/two.toml'), b'x')
+
+
+def test_capture_requires_a_logical_path_for_compiled_bytes(tmp_path):
+    capture = Capture({'base': tmp_path, 'pack': tmp_path})
+
+    with pytest.raises(ToolSelectionError, match='logical path'):
+        capture.add_carried('base/tools/instance.toml', b'version=1')
+
+
+def test_capture_requires_bytes_for_compiled_resources(tmp_path):
+    capture = Capture({'base': tmp_path, 'pack': tmp_path})
+
+    with pytest.raises(ToolSelectionError, match='requires bytes'):
+        capture.add_carried(PurePosixPath('/artifact/base/tools/instance.toml'), 'version=1')
+
+
+def test_compiled_capture_ignores_source_definitions(tmp_path):
+    from api_agent.tooling.selection import _carry_compiled
+
+    capture = Capture({'base': tmp_path, 'pack': tmp_path})
+
+    _carry_compiled(capture, SimpleNamespace(origin='source'))
+
+    assert capture.bodies == {}
+
+
+def test_compiled_capture_ignores_non_tool_instance_resources(tmp_path):
+    from api_agent.tooling.selection import _carry_compiled
+    from api_agent.workflows.model import Resource
+
+    capture = Capture({'base': tmp_path, 'pack': tmp_path})
+    logical = PurePosixPath('/artifact/base/assets/options.toml')
+    definition = SimpleNamespace(
+        origin='compiled',
+        resources=(Resource('configuration', 'base/assets/options.toml', b'option=true', 'unused'),),
+        contents={logical: b'option=true'})
+
+    _carry_compiled(capture, definition)
+
+    assert capture.bodies == {}
 
 
 @pytest.mark.parametrize('kwargs,message', [

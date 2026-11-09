@@ -95,6 +95,37 @@ def test_admission_precedes_provider_access(headers):
     asyncio.run(run())
 
 
+def test_explicit_ingress_origin_and_client_policy_admit_only_configured_browser():
+    async def run():
+        origin = 'https://console.example.test'
+        backend, calls = setup_bridge(
+            permitted_origins=(origin,),
+            client_address_policy='any',
+        )
+        factory = RequestFactory()
+        allowed = factory.generic(
+            'GET', '/app/agent/models', headers={'Origin': origin, 'X-API-Agent-Session': NONCE},
+            REMOTE_ADDR='10.0.0.8',
+        )
+        rejected = factory.generic(
+            'GET', '/app/agent/models',
+            headers={'Origin': 'https://unconfigured.example.test', 'X-API-Agent-Session': NONCE},
+            REMOTE_ADDR='10.0.0.8',
+        )
+
+        accepted = await backend.handle(allowed, 'models')
+        denied = await backend.handle(rejected, 'models')
+
+        assert accepted.status_code == 200
+        assert accepted['Access-Control-Allow-Origin'] == origin
+        assert denied.status_code == 403
+        assert 'Access-Control-Allow-Origin' not in denied
+        assert calls == ['catalog']
+        await backend.aclose()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('body', [b'{', b'{"a":1,"a":2}', b'{"a":NaN}', payload(model='missing'), payload(session_id=''), payload(reasoning_effort='high')],
                          ids=['malformed-json', 'duplicate-key', 'nonfinite-number', 'unknown-model', 'empty-session', 'unsupported-reasoning'])
 def test_invalid_requests_do_not_complete(body):
@@ -510,3 +541,34 @@ def test_closed_session_returns_fixed_actionable_message_without_exception_conte
         assert b'confidential' not in response.content
         await backend.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('changes', [
+    {'client_address_policy': 'unrestricted'},
+    {'permitted_origins': ()},
+    {'permitted_origins': ('https://EXAMPLE.test', 'https://example.test:443')},
+    {'origin': None},
+    {'origin': ' http://localhost'},
+    {'origin': 'https://[bad'},
+    {'origin': 'http://localhost:invalid'},
+    {'origin': 'https://bad_host'},
+    {'origin': 'ftp://localhost'},
+    {'origin': 'http://localhost/path'},
+    {'origin': 'http://user:password@localhost'},
+    {'origin': 'http://*.example.test'},
+])
+def test_ingress_configuration_rejects_invalid_policy_or_origins(changes):
+    with pytest.raises(ValueError, match='Invalid Studio bridge configuration'):
+        setup_bridge(**changes)
+
+
+@pytest.mark.parametrize(('origin', 'canonical'), [
+    ('https://[::1]:443', 'https://[::1]'),
+    ('http://127.0.0.1:80', 'http://127.0.0.1'),
+    ('http://[::1]:8080', 'http://[::1]:8080'),
+])
+def test_ingress_origin_canonicalization_preserves_authority(origin, canonical):
+    backend, _ = setup_bridge(origin=origin)
+    assert backend.origin == canonical
+    assert backend.origins == frozenset({canonical})
+    asyncio.run(backend.aclose())

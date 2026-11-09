@@ -19,10 +19,12 @@ _INTERFACE = re.compile(r'[a-z][a-z0-9-]{0,63}@[1-9][0-9]{0,3}\Z')
 
 
 class Capture:
-    def __init__(self, roots, *, library_files=None):
+    def __init__(self, roots, *, library_files=None, package_sites=()):
         self.roots = dict(roots)
         self.bodies = {}
         self.library_files = library_files
+        self.package_sites = tuple(Path(site) for site in package_sites)
+        self.logical_paths = {}
         self.total = 0
         self.package_ownership = {}
 
@@ -49,7 +51,8 @@ class Capture:
                 and executing == source_root):
             self.roots['package:' + distribution_name + ':' + relative.parts[0]] = executing
             return executing.joinpath(*relative.parts[1:])
-        distributions = list(metadata.distributions(name=distribution_name))
+        distributions = list(metadata.distributions(
+            name=distribution_name, **({'path': self.package_sites} if self.package_sites else {})))
         from api_agent.runtime.resource_pack import _distribution_identity
         from api_agent.config.source_reads import record_probe, capturing
         owners = lambda: tuple(sorted(repr(_distribution_identity(item))
@@ -146,7 +149,26 @@ class Capture:
         self.total += len(body)
         return body
 
+    def add_carried(self, logical, body):
+        """Retain plan-carried bytes without pretending their logical key is a disk path."""
+        if type(logical) is not Path and not hasattr(logical, 'as_posix'):
+            raise ToolSelectionError('Compiled tool resource requires a logical path')
+        if type(body) is not bytes:
+            raise ToolSelectionError('Compiled tool resource requires bytes')
+        if logical in self.bodies:
+            if self.bodies[logical] != body:
+                raise ToolSelectionError('Compiled tool resource changed during admission')
+            return body
+        if len(self.bodies) >= MAX_CAPTURE_FILES or self.total + len(body) > MAX_CAPTURE_BYTES:
+            raise ToolSelectionError('Tool declaration closure exceeds capture budget')
+        self.bodies[logical] = body
+        self.logical_paths[logical] = logical.as_posix().removeprefix('/artifact/')
+        self.total += len(body)
+        return body
+
     def read(self, path):
+        if path in self.logical_paths:
+            return self.bodies[path]
         try:
             body = _read_bounded(path, self.owner(path))
         except ValueError:
@@ -167,6 +189,9 @@ class Capture:
     def identity(self):
         rows = []
         for path, body in self.bodies.items():
+            if path in self.logical_paths:
+                rows.append(('artifact', self.logical_paths[path], sha256(body).hexdigest()))
+                continue
             root = self.owner(path)
             labels = sorted(key for key, value in self.roots.items() if value == root)
             rows.append((labels[0], path.relative_to(root).as_posix(), sha256(body).hexdigest()))

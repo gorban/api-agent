@@ -8,7 +8,6 @@ import math
 from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent, StructuredOutput, Usage
 from api_agent.providers.progress import component_timeout
 from .execution import CandidateCorrection, NodeFunction, Workflow, WorkflowError
-from .definition import load_definition, load_native_catalog
 
 
 def trial_decisions(trial, component):
@@ -125,6 +124,8 @@ def guard(inputs, context):
 
 
 def build(base_root, *, llm, selection, trial, observe=None, config=None):
+    # Source loader: the parser is imported here, never at module import.
+    from .definition import load_definition, load_native_catalog
     root = Path(base_root).resolve()
     path = root / 'demo/contrived/flow.md.html'
     if not path.is_file():

@@ -68,6 +68,84 @@ def test_invalid_workflow_rejected_before_loading_functions(tmp_path, declaratio
         load_launch_context(base)
 
 
+_ARTIFACT_ENTRY = '[workflow]\nversion=2\nroot="pack"\nentry="flow.md.html"\n'
+
+
+def artifact_pack(tmp_path, artifact):
+    base, selected = pack(tmp_path, _ARTIFACT_ENTRY + 'artifact=' + artifact + '\n')
+    (selected / 'one.whl').write_bytes(b'wheel')
+    (selected / 'plan.json').write_text('{}')
+    (selected / 'plans').mkdir()
+    return base, selected
+
+
+@pytest.mark.parametrize(('artifact', 'message'), [
+    ('"plan.json"', 'requires plan, wheels and graph_id'),
+    ('{plan="plan.json",wheels=["one.whl"]}', 'requires plan, wheels and graph_id'),
+    ('{plan="",wheels=["one.whl"],graph_id="g"}', 'requires plan, wheels and graph_id'),
+    ('{plan="plan.json",wheels="one.whl",graph_id="g"}', 'requires plan, wheels and graph_id'),
+    ('{plan="../outside.json",wheels=["one.whl"],graph_id="g"}', 'must be a file inside the pack'),
+    ('{plan="plans",wheels=["one.whl"],graph_id="g"}', 'must be a file inside the pack'),
+    ('{plan="plan.json",wheels=[],graph_id="g"}', 'must name unique source wheels'),
+    ('{plan="plan.json",wheels=["plan.json"],graph_id="g"}', 'must name unique source wheels'),
+    ('{plan="plan.json",wheels=["one.whl","one.whl"],graph_id="g"}', 'must name unique source wheels'),
+    ('{plan="plan.json",wheels=["one.whl"],graph_id="Bad-Graph"}', 'must be a graph identifier'),
+])
+def test_invalid_workflow_artifact_rejected_before_loading(tmp_path, artifact, message):
+    base, _ = artifact_pack(tmp_path, artifact)
+
+    with pytest.raises(ResourcePackError, match=message):
+        load_launch_context(base)
+
+
+def test_valid_workflow_artifact_declaration_is_recorded_without_loading(tmp_path):
+    base, selected = artifact_pack(tmp_path, '{plan="plan.json",wheels=["one.whl"],graph_id="g"}')
+
+    context = load_launch_context(base)
+
+    assert context.workflow_artifact_plan == selected / 'plan.json'
+    assert context.workflow_artifact_wheels == (selected / 'one.whl',)
+    assert context.workflow_artifact_graph_id == 'g'
+
+
+def test_workflow_artifact_declaration_allows_a_missing_source_wheel_for_local_loading(tmp_path):
+    base, selected = artifact_pack(tmp_path, '{plan="plan.json",wheels=["missing.whl"],graph_id="g"}')
+    (selected / 'one.whl').unlink()
+    make_graph(selected)
+
+    context = load_launch_context(base)
+
+    assert context.workflow_artifact_wheels == (selected / 'missing.whl',)
+    assert load_selected_definition(context).origin == 'source'
+
+
+@pytest.mark.parametrize('wheel', ['../missing.whl', 'alias/missing.whl'])
+def test_workflow_artifact_wheel_must_stay_inside_pack(tmp_path, wheel):
+    base, selected = artifact_pack(tmp_path, f'{{plan="plan.json",wheels=["{wheel}"],graph_id="g"}}')
+    (selected / 'one.whl').unlink()
+    if wheel.startswith('alias/'):
+        (selected / 'alias').symlink_to(tmp_path)
+
+    with pytest.raises(ResourcePackError, match='workflow.artifact.wheels'):
+        load_launch_context(base)
+
+
+@pytest.mark.parametrize('plan', [None, b'not a plan'])
+def test_local_selected_definition_uses_source_when_checked_in_artifact_is_unreadable(tmp_path, plan):
+    base, selected = artifact_pack(tmp_path, '{plan="plan.json",wheels=["one.whl"],graph_id="g"}')
+    make_graph(selected)
+    context = load_launch_context(base)
+    if plan is None:
+        (selected / 'plan.json').unlink()
+    else:
+        (selected / 'plan.json').write_bytes(plan)
+
+    definition = load_selected_definition(context)
+
+    assert definition.origin == 'source'
+    assert definition.entry == selected / 'flow.md.html'
+
+
 def test_symlink_outside_declared_root_is_rejected(tmp_path):
     base, selected = pack(tmp_path, '[workflow]\nversion=2\nroot="pack"\nentry="linked.md.html"\n')
     outside = tmp_path / 'outside.md.html'

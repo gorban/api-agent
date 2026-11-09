@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from importlib import metadata
 from importlib.resources import files
+import os
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -41,6 +42,9 @@ class LaunchContext:
     workflow_replacements: tuple[tuple[str, Path, str], ...] = ()
     workflow_base_root: Path | None = None
     workflow_library_files: frozenset[str] | None = None
+    workflow_artifact_plan: Path | None = None
+    workflow_artifact_graph_id: str | None = None
+    workflow_artifact_wheels: tuple[Path, ...] = ()
     infrastructure_paths: tuple[Path, ...] = ()
     tool_catalog_path: Path | None = None
     inventory_sources: tuple = ()
@@ -212,8 +216,10 @@ def load_launch_context(
     workflow_replacements = ()
     workflow_base_root = None
     workflow_library_files = None
+    artifact_plan = artifact_graph_id = None
+    artifact_wheels = ()
     if workflow is not None:
-        if (type(workflow) is not dict or set(workflow) - {'version', 'root', 'entry', 'replacements', 'library'}
+        if (type(workflow) is not dict or set(workflow) - {'version', 'root', 'entry', 'replacements', 'library', 'artifact'}
                 or not {'version', 'root', 'entry'} <= set(workflow)
                 or type(workflow.get('version')) is not int or workflow['version'] != 2):
             raise ResourcePackError('workflow must declare version=2, root and entry')
@@ -246,6 +252,25 @@ def load_launch_context(
                                               'workflow.replacements entry')
             selected.append((target, checked.relative_to(roots[replacement_root]), replacement_root))
         workflow_replacements = tuple(selected)
+        artifact = workflow.get('artifact')
+        if artifact is not None:
+            if (type(artifact) is not dict or set(artifact) != {'plan', 'wheels', 'graph_id'}
+                    or any(type(artifact[key]) is not str or not artifact[key]
+                           for key in ('plan', 'graph_id'))
+                    or type(artifact.get('wheels')) is not list):
+                raise ResourcePackError('workflow.artifact requires plan, wheels and graph_id')
+            artifact_plan = _relative_path(artifact['plan'], pack, 'workflow.artifact.plan')
+            if (not artifact_plan.is_relative_to(pack)
+                    or artifact_plan.exists() and not artifact_plan.is_file()):
+                raise ResourcePackError('workflow.artifact.plan must be a file inside the pack')
+            artifact_wheels = tuple(_workflow_artifact_wheel_path(value, pack, 'workflow.artifact.wheels')
+                                   for value in artifact['wheels'])
+            if (not artifact_wheels or any(path.suffix != '.whl' for path in artifact_wheels)
+                    or len(set(artifact_wheels)) != len(artifact_wheels)):
+                raise ResourcePackError('workflow.artifact.wheels must name unique source wheels')
+            if not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', artifact['graph_id']):
+                raise ResourcePackError('workflow.artifact.graph_id must be a graph identifier')
+            artifact_graph_id = artifact['graph_id']
     from .pack_composition import validate_replacements
     composition_replacements = validate_replacements(data.get("composition"))
     defaults = data.get("defaults", {})
@@ -341,6 +366,9 @@ def load_launch_context(
         workflow_replacements=workflow_replacements,
         workflow_base_root=workflow_base_root,
         workflow_library_files=workflow_library_files,
+        workflow_artifact_plan=artifact_plan,
+        workflow_artifact_graph_id=artifact_graph_id,
+        workflow_artifact_wheels=artifact_wheels,
         infrastructure_paths=tuple(infrastructure_paths),
         tool_catalog_path=tool_catalog_path,
         tooling_pack_root=pack if tooling is not None else None,
@@ -364,6 +392,16 @@ def _workflow_selected_path(value: object, root: Path, field: str) -> Path:
     path = (root / value).resolve()
     if not path.is_relative_to(root) or not path.is_file():
         raise ResourcePackError(f'{field} must exist inside its declared root')
+    return path
+
+
+def _workflow_artifact_wheel_path(value: object, root: Path, field: str) -> Path:
+    """Resolve a declared build input without requiring local source artifacts."""
+    if type(value) is not str or not value or Path(value).is_absolute() or '..' in Path(value).parts:
+        raise ResourcePackError(f'{field} must be a relative file')
+    path = (root / value).resolve()
+    if not path.is_relative_to(root):
+        raise ResourcePackError(f'{field} must be inside its declared root')
     return path
 
 
@@ -494,7 +532,12 @@ def _workflow_base(context) -> Path:
 
 
 def load_selected_definition(context):
-    """Load the selected complete graph without initializing providers or executing nodes."""
+    """Load source declarations for local launch, viewer, and test execution.
+
+    A pack's compiled plan is a checked-in freshness artifact.  The production
+    entrypoint owns the explicit-plan loading path; local contexts retain source
+    paths and provenance so tooling, views, and developer runs behave normally.
+    """
     from api_agent.workflows.definition import Replacement, _read_bounded, load_definition
     base = _workflow_base(context)
     entry = context.workflow_entry or base / 'flow.md.html'
@@ -525,27 +568,36 @@ def load_selected_definition(context):
 
 def load_workflow(context, registry, conditions=None, *, definition=None, config=None, services=None,
                   reducers=None, checkpointer=None, journal=None):
-    """Join the selected immutable definition to an independently owned catalog."""
+    """Join the selected immutable definition to an independently owned catalog.
+
+    ``definition`` is any workflow definition satisfying the ``model`` protocol:
+    parsed from declarations (the default) or loaded from a compiled plan. The
+    engines consume both identically through ``verify_sources``.
+    """
     from api_agent.workflows import Workflow
-    from api_agent.workflows.definition import Replacement, WorkflowDefinition
-    from api_agent.workflows.stateful import StatefulDefinition, StatefulWorkflow
+    from api_agent.workflows.model import Definition, Replacement
+    from api_agent.workflows.stateful import StatefulWorkflow
     if definition is None:
         definition = load_selected_definition(context)
     base = _workflow_base(context)
     expected_entry = context.workflow_entry or base / 'flow.md.html'
     expected_replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
-    if (not isinstance(definition, (WorkflowDefinition, StatefulDefinition)) or definition.entry != expected_entry
+    # A compiled plan has no physical entry or roots: its identity is its digest-pinned plan.
+    physical = getattr(definition, 'origin', None) == 'source'
+    if (not isinstance(definition, Definition) or definition.version not in (2, 3)
+            or physical and definition.entry != expected_entry
             or definition.entry_root != context.workflow_root
-            or definition.roots != {'base': base, 'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
-            or definition.replacements != expected_replacements):
+            or physical and definition.roots != {'base': base, 'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
+            or definition.replacements != expected_replacements
+            or (not physical and getattr(context, 'workflow_artifact_graph_id', None) is not None
+                and definition.graph_id != context.workflow_artifact_graph_id)):
         raise ResourcePackError('Workflow definition does not match selected pack graph')
-    if isinstance(definition, StatefulDefinition):
-        definition.verify_sources()
+    definition.verify_sources()
+    if definition.version == 3:
         if conditions is not None:
             raise ResourcePackError('Workflow v3 uses declared routers, not external conditions')
         return StatefulWorkflow(definition, catalog=registry, reducers=reducers or {},
                                 services=services, journal=journal, checkpointer=checkpointer,
                                 config=config)
-    definition.verify_native_sources()
     return Workflow(definition, registry, conditions,
                     config=config, services=services)

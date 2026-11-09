@@ -702,6 +702,18 @@ def test_dependency_guard_rejects_nonreceipt_loader_contract(tmp_path, monkeypat
         admission.admitted_dependency_spec(selected, 'sample_owned_dependency', None)
 
 
+def test_dependency_guard_reports_an_absent_unowned_submodule(tmp_path, monkeypatch):
+    path = tmp_path / 'api_agent' / '__init__.py'
+    path.parent.mkdir()
+    body = b''
+    path.write_bytes(body)
+    selected = receipt_admission('api_agent', path, body)
+    monkeypatch.setattr(machinery.PathFinder, 'find_spec', lambda fullname, path=None: None)
+
+    with pytest.raises(ModuleNotFoundError, match='api_agent.testing'):
+        admission.admitted_dependency_spec(selected, 'api_agent.testing', None)
+
+
 def test_namespace_dependency_guard_keeps_only_its_owned_search_directory(tmp_path, monkeypatch):
     package = tmp_path / 'sample_namespace'
     package.mkdir()
@@ -729,7 +741,11 @@ def test_installed_runtime_identity_uses_distribution_version_with_import_proof(
         (tmp_path / 'lib64').symlink_to(tmp_path / 'lib', target_is_directory=True)
         selected_module = tmp_path / 'lib64/site-packages/api_agent/tooling/admission.py'
     monkeypatch.setattr(admission, '__file__', str(selected_module))
-    monkeypatch.setattr(admission.metadata, 'version', lambda name: '1.0-fixture')
+    versions = []
+    monkeypatch.setattr(admission.metadata, 'version',
+                        lambda name: versions.append(name) or '1.0-fixture')
+    monkeypatch.setattr(admission.metadata, 'packages_distributions',
+                        lambda: {'api_agent': ['api-agent-runtime']})
     proofs = []
 
     def imported_identity(name, owned):
@@ -741,7 +757,42 @@ def test_installed_runtime_identity_uses_distribution_version_with_import_proof(
     receipt = admission._dependency('api_agent')
 
     assert receipt[0][1] == '1.0-fixture'
+    assert versions == ['api-agent-runtime']
     assert proofs == [('api_agent', tuple(sorted((str(package / '__init__.py'), str(module)))))]
+
+
+def test_installed_runtime_identity_requires_one_distribution_owner(tmp_path, monkeypatch):
+    package = tmp_path / 'lib/site-packages/api_agent'
+    (package / 'tooling').mkdir(parents=True)
+    (package / '__init__.py').write_text('')
+    module = package / 'tooling/admission.py'
+    module.write_text('')
+    monkeypatch.setattr(admission, '__file__', str(module))
+    monkeypatch.setattr(admission.metadata, 'packages_distributions',
+                        lambda: {'api_agent': ['api-agent', 'api-agent-runtime']})
+
+    with pytest.raises(admission.ToolAdmissionError, match='unique installed'):
+        admission._dependency('api_agent')
+
+
+def test_dependency_requires_an_installed_distribution(monkeypatch):
+    monkeypatch.setattr(admission.metadata, 'packages_distributions', lambda: {})
+
+    with pytest.raises(admission.ToolDependencyMissing, match='missing'):
+        admission._dependency('missing')
+
+
+def test_prepare_reports_missing_admitted_dependency(monkeypatch):
+    selected = admission.FactoryAdmission(
+        'create_tool', 'provider.py', {'provider.py': b'def create_tool(config, services):\n    return None\n'},
+        (('missing', None),), 'unused')
+    monkeypatch.setattr(admission, '_check_admission', lambda value: None)
+    monkeypatch.setattr(admission, '_manifest_requirements', lambda value: ())
+    monkeypatch.setattr(admission, '_dependency',
+                        lambda name, extras: (_ for _ in ()).throw(admission.ToolDependencyMissing(name)))
+
+    with pytest.raises(admission.ToolAdmissionError, match='Missing tool dependencies: missing'):
+        admission.prepare_tool_admission(selected)
 
 
 def test_canonical_runtime_owner_does_not_admit_symlinked_executable_children(tmp_path, monkeypatch):
