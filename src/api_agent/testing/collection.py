@@ -77,7 +77,8 @@ def repository_label(context, root):
             if root == Path(layer.owner_root).resolve():
                 return f'pack:{index}:{root.name}'
     raw_collision = base != owner and base.name == owner.name
-    base_label = 'api-agent' if _installed_base_identity(base) else ('base' if raw_collision else base.name)
+    canonical = _installed_base_identity(base) or _source_base_identity(base)
+    base_label = 'api-agent' if canonical else ('base' if raw_collision else base.name)
     owner_label = 'pack' if raw_collision else owner.name
     if base != owner and base_label == owner_label:
         base_label, owner_label = 'base', 'pack'
@@ -86,6 +87,11 @@ def repository_label(context, root):
     if root == owner:
         return owner_label
     return 'pack' if raw_collision else root.name
+
+
+def _source_base_identity(base):
+    """Canonicalize the executing source checkout whatever its directory is named."""
+    return Path(__file__).resolve().parents[3] == base
 
 
 def _installed_base_identity(base):
