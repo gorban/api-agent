@@ -112,7 +112,7 @@ def check_head(root: Path) -> bool:
             if data is None:
                 raise ValueError('Committed workflow document exceeds size limit')
             heading = canonical_executable_bytes(data, path=root / path).split(b'\n', 1)[0]
-            if heading in (b'# Workflow v2', b'# Workflow v3', b'# LangGraph flow'):
+            if heading in (b'# Workflow', b'# Workflow', b'# Workflow'):
                 relevant.append(path)
     relevant.sort()
     if relevant:

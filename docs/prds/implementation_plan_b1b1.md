@@ -2,7 +2,7 @@
 
 [Resource format](implementation_plan_b1a.md) · [Conversion and equivalence](implementation_plan_b1b.md)
 
-[Stateful Workflow v3 extension](implementation_plan_b1b4.md) records the minimum typed state, routing and checkpoint contract.
+[Typed workflow state](implementation_plan_b1b4.md) records the minimum typed state, routing and checkpoint contract.
 
 These generic contracts must be reviewed and versioned before dependent format conversion. They preserve existing accepted behavior; they do not authorize inference, qualification spending or application acceptance.
 

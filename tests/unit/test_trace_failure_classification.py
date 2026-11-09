@@ -174,19 +174,21 @@ def test_repaired_child_failure_does_not_poison_graph_or_request():
 
 def test_stateful_failure_cause_survives_component_teardown_cancellation(fixture_graph):
     from langgraph.graph.message import add_messages
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_definition, load_stateful_catalog
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.definition import (load_definition)
+    from api_agent.workflows.native import (load_native_bindings)
     root, entry = fixture_graph
     native = root / 'native.py'
     native.write_text(native.read_text() + '\nasync def intake(state, context):\n'
                       '    from api_agent.providers.contracts import ContractError\n'
                       '    raise ContractError("' + SENTINEL + '")\n')
-    (root / 'group.md.html').write_text('# Component v3: group\n\n## Flow\n\n'
+    (root / 'group.md.html').write_text('# Component: group\n\n## Flow\n\n'
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)\n')
     entry.write_text(entry.read_text().replace('1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
         '1.  [component group](group.md.html)').replace('| finish | END | - | - |',
         '| finish | END | - | - |\n| group | END | - | - |'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    flow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition), reducers={'messages': add_messages})
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    flow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
     with trace_runtime() as (runtime, resolved, exporter):
         factory = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(), trace=runtime)
         with operation(runtime) as owner:
@@ -373,14 +375,16 @@ def test_handled_nested_graph_failure_does_not_claim_terminal_request(nested_eng
                 await child.arun({'user_input': 'user'})
         else:
             from langgraph.graph.message import add_messages
-            from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_definition, load_stateful_catalog
+            from api_agent.workflows.execution import (Workflow)
+            from api_agent.workflows.definition import (load_definition)
+            from api_agent.workflows.native import (load_native_bindings)
             root, entry = fixture_graph
             native = root / 'native.py'
             native.write_text(native.read_text() + '\nasync def intake(state, context):\n'
                               '    from api_agent.providers.contracts import ContractError\n'
                               '    raise ContractError("' + SENTINEL + '")\n')
-            definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-            child = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition), reducers={'messages': add_messages})
+            definition = load_definition(entry, base_root=root, pack_root=root)
+            child = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
             async def run_child():
                 await child.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='nested',
                                  services={'observation_factory': factory})

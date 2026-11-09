@@ -5,7 +5,7 @@ owner = ".."
 config = "simple/cfg/config.toml"
 
 [workflow]
-version = 2
+version = 1
 root = "base"
 entry = "demo/simple/flow.md.html"
 

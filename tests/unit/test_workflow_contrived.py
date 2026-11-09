@@ -63,62 +63,21 @@ def test_build_bundled_workflow():
     assert len(workflow.layout.steps)==8
 
 
-def test_declarative_fixture_preserves_legacy_graph_contract():
+def test_declarative_fixture_has_owned_nodes_and_configured_retry_budgets():
     from pathlib import Path
     from api_agent.workflows.definition import load_definition
-    from api_agent.workflows.layout import load_layout
 
     root = Path(__file__).resolve().parents[2]
-    fixture = root / 'demo/contrived'
-    previous = load_layout(fixture / 'layout.md', base_root=root, pack_root=root / 'demo')
-    current = load_definition(fixture / 'flow.md.html', base_root=root, pack_root=root / 'demo')
+    current = load_definition(root / 'demo/contrived/flow.md.html', base_root=root, pack_root=root / 'demo')
 
-    assert [(step.id, step.kind, step.parent) for step in current.layout.steps] == [
-        (step.id, step.kind, step.parent) for step in previous.steps]
-    assert [step.source for step in current.layout.steps if step.kind == 'node'] == [
-        step.source for step in previous.steps if step.kind == 'node']
-    for section in previous.tables:
-        def contract(rows):
-            return [{key: value for key, value in row.items()
-                     if key not in {'line', '_owner', '_owner_id', 'Input schema', 'Output schema', 'Kind',
-                                    'max_passes_key', 'max_passes_link', 'max_passes_default',
-                                    'Response schema', 'Output mode', 'Fallback', 'Response schema value'}
-                     and not (section == 'Prompts' and key == 'File')}
-                    for row in rows]
-        if section == 'Components':
-            assert [(row['ID'], row['max_passes_default'], row['Guard'])
-                    for row in current.layout.tables[section]] == [
-                (row['ID'], int(row['Max passes']), row['Guard'])
-                for row in previous.tables[section]]
-            assert all(row['max_passes_key'] == 'WORKFLOW_MAX_PASSES'
-                       for row in current.layout.tables[section])
-        elif section == 'Edges':
-            from api_agent.workflows.predicates import parse_predicate, predicate_fields
-            before, after = previous.tables[section], current.layout.tables[section]
-            assert [(row['From'], row['To']) for row in after] == [
-                (row['From'], row['To']) for row in before]
-            for old, new in zip(before, after):
-                if old['When'] == 'otherwise':
-                    assert new['When'] == 'otherwise'
-                    continue
-                fields = predicate_fields(current.layout, new['From'])
-                old_predicate = parse_predicate(old['When'], fields)
-                new_predicate = parse_predicate(new['When'], fields)
-                for route in ('skip', 'next_a', 'next_b'):
-                    values = {'first_draft': {'route': route}}
-                    assert old_predicate.evaluate(values) == new_predicate.evaluate(values)
-        else:
-            assert contract(current.layout.tables[section]) == contract(previous.tables[section])
-    assert [current.contents[row['File']] for row in current.layout.tables['Prompts']] == [
-        row['File'].read_bytes() for row in previous.tables['Prompts']]
+    assert [(step.id, step.parent) for step in current.layout.steps] == [
+        ('first', None), ('first_draft', 'first'), ('first_format', 'first'), ('first_guard', 'first'),
+        ('second', None), ('second_draft', 'second'), ('second_format', 'second'), ('second_guard', 'second')]
     assert {row['ID']: row['Kind'] for row in current.layout.tables['Functions']} == {
-        name: 'llm' if name.endswith('_draft') else 'deterministic'
-        for name in (step.id for step in previous.steps if step.kind == 'node')}
-    for resource in current.resources:
-        if resource.kind in {'schema', 'configuration', 'native_source'}:
-            scope, relative = resource.logical_path.split('/', 1)
-            source_root = root / 'demo' if scope == 'pack' else root
-            assert resource.content_bytes == (source_root / relative).read_bytes()
+        'first_draft': 'llm', 'first_format': 'deterministic', 'first_guard': 'deterministic',
+        'second_draft': 'llm', 'second_format': 'deterministic', 'second_guard': 'deterministic'}
+    assert [(r['max_passes_key'], r['max_passes_default']) for r in current.layout.tables['Components']] == [
+        ('WORKFLOW_MAX_PASSES', 2), ('WORKFLOW_MAX_PASSES', 2)]
 
 
 def test_build_installed_resource_fallback(monkeypatch,tmp_path):

@@ -66,11 +66,11 @@ def packet(tmp_path, monkeypatch):
     for name in ('one', 'two'):
         write(root, name + '.toml', f'version=1\nid="fixture/{name}"\ninterface="verified-read@1"\nimplementation="implementation.toml"\n'
               f'[bindings]\nLABEL="{name.upper()}_LABEL"\nENDPOINT="{name.upper()}_ENDPOINT"\n[defaults]\nLABEL="{name}"\n')
-        write(root, name + '-node.md.html', f'# Node v2: read\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+        write(root, name + '-node.md.html', f'# Node: read\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
               '| read | deterministic | [source](native.py) |\n\n## Functions\n\n| ID | Registry | Input | Output |\n'
               '| --- | --- | --- | --- |\n| read | read | [input](empty.json) | [output](empty.json) |\n\n## Tools\n\n'
               f'| Port | Instance |\n| --- | --- |\n| reader | [instance]({name}.toml) |\n')
-        write(root, name + '.md.html', f'# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| {name} |\n\n'
+        write(root, name + '.md.html', f'# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| {name} |\n\n'
               f'## Flow\n\n1.  [node read]({name}-node.md.html)\n')
     catalog = write(root, 'catalog.toml', f'version=1\n[graphs.one]\nroot="base"\nentry="one.md.html"\n'
         f'[graphs.two]\nroot="base"\nentry="two.md.html"\n[test_cases]\n"{CASE}"=["one"]\n"{OTHER_CASE}"=["two"]\n')

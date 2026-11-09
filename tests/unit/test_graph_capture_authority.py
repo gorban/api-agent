@@ -17,7 +17,7 @@ BINDING={'worker_id':'example-worker'}
 def definition():
     node=SimpleNamespace(id='Make',kind='node',parent=None)
     layout=SimpleNamespace(steps=[node],tables={'Edges':[], 'Functions':[{'ID':'Make','Kind':'deterministic'}]})
-    resource=SimpleNamespace(kind='declaration',logical_path='flows/main.md.html',sha256='a'*64,content_bytes=b'# Workflow v2')
+    resource=SimpleNamespace(kind='declaration',logical_path='flows/main.md.html',sha256='a'*64,content_bytes=b'# Workflow')
     return SimpleNamespace(graph_id='Example',definition_id='b'*64,entry_root='base',layout=layout,resources=[resource],replacements=[])
 
 
@@ -266,7 +266,9 @@ def test_nested_partial_binding_does_not_inherit_outer_authority():
 
 
 def test_stateful_invocation_partial_bundle_never_inherits_constructor_authority(tmp_path,monkeypatch):
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
+    from api_agent.workflows.definition import (load_definition)
     monkeypatch.delenv('API_AGENT_ALLURE_REPORTING',raising=False)
     (tmp_path/'native.py').write_text('''from typing import TypedDict
 
@@ -276,7 +278,7 @@ class State(TypedDict):
 def inspect_services(state, context):
     return {'inherited': 'content_policy' in context.services or 'capture_authority' in context.services}
 ''')
-    (tmp_path/'inspect.md.html').write_text('''# Node v3: inspect
+    (tmp_path/'inspect.md.html').write_text('''# Node: inspect
 
 ## Native
 
@@ -285,7 +287,7 @@ def inspect_services(state, context):
 | inspect_services | deterministic | [Python](native.py) |
 ''')
     flow=tmp_path/'flow.md.html'
-    flow.write_text('''# Workflow v3
+    flow.write_text('''# Workflow
 
 ## Graph ID
 
@@ -309,9 +311,9 @@ def inspect_services(state, context):
 | --- | --- | --- | --- |
 | inspect | END | - | - |
 ''')
-    definition=load_stateful_definition(flow,base_root=tmp_path,pack_root=tmp_path)
-    catalog=load_stateful_catalog(definition)
-    workflow=StatefulWorkflow(definition,catalog=catalog,reducers={},services={
+    definition=load_definition(flow,base_root=tmp_path,pack_root=tmp_path)
+    catalog=load_native_bindings(definition)
+    workflow=Workflow(definition,catalog=catalog,reducers={},services={
         'content_policy':ContentPolicy(True),'capture_authority':object()})
     result=asyncio.run(workflow.arun({'inherited':False},thread_id='capture-thread',services={'emissions':None}))
     assert result['inherited'] is False
@@ -384,7 +386,9 @@ def test_credential_union_does_not_derive_permission_from_owner_policies(source_
 
 @pytest.mark.parametrize('enabled',[False,True])
 def test_stateful_native_writes_are_invocation_local_and_cannot_rebind_capture(tmp_path,monkeypatch,enabled):
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
+    from api_agent.workflows.definition import (load_definition)
     monkeypatch.delenv('API_AGENT_ALLURE_REPORTING',raising=False)
     (tmp_path/'native.py').write_text('''from typing import TypedDict
 
@@ -402,7 +406,7 @@ def read(state, context):
     return {}
 ''')
     for name in ('write','read'):
-        (tmp_path/(name+'.md.html')).write_text('''# Node v3: '''+name+'''
+        (tmp_path/(name+'.md.html')).write_text('''# Node: '''+name+'''
 
 ## Native
 
@@ -411,7 +415,7 @@ def read(state, context):
 | '''+name+''' | deterministic | [Python](native.py) |
 ''')
     flow=tmp_path/'flow.md.html'
-    flow.write_text('''# Workflow v3
+    flow.write_text('''# Workflow
 
 ## Graph ID
 
@@ -437,14 +441,14 @@ def read(state, context):
 | write | read | - | - |
 | read | END | - | - |
 ''')
-    definition=load_stateful_definition(flow,base_root=tmp_path,pack_root=tmp_path)
+    definition=load_definition(flow,base_root=tmp_path,pack_root=tmp_path)
     owner=EmissionBoundary(ContentPolicy(enabled))
     admitted=[]
     @asynccontextmanager
     async def capability():
         admitted.append(True)
         yield owner
-    workflow=StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),reducers={},
+    workflow=Workflow(definition,catalog=load_native_bindings(definition),reducers={},
         services={'emissions':owner,'content_policy':ContentPolicy(enabled),'capture_authority':capability})
     async def run():
         for label in ('first','second'):
@@ -676,13 +680,15 @@ def test_plain_source_projection_loss_preserves_actual_stateful_business_result(
     from langgraph.graph.message import add_messages
     from api_agent.config.resolve import ConfigResult, ResolvedValue
     from api_agent.workflows.observations import WorkflowObservationFactory
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
+    from api_agent.workflows.definition import (load_definition)
     root, entry = fixture_graph
     native = root/'native.py'
     native.write_text(native.read_text().replace('    visits: int','    visits: int\n    text: str').replace(
         "'visits': state['visits'] + 1}","'visits': state['visits'] + 1, 'text': state['text']}"))
     monkeypatch.delenv('API_AGENT_ALLURE_REPORTING',raising=False)
-    declared = load_stateful_definition(entry,base_root=root,pack_root=root)
+    declared = load_definition(entry,base_root=root,pack_root=root)
     source = EmissionBoundary(secrets=['a'])
     original = 'a b '*8192
     assert len(original) < 65536 and len(source.content_export({'text':original})['text']) > 65536
@@ -711,7 +717,7 @@ def test_plain_source_projection_loss_preserves_actual_stateful_business_result(
         finally:
             lease.release()
     contract = {'schema':{'type':'object','properties':{'text':{'type':'string'}}},'plain_fields':('text',)}
-    workflow = StatefulWorkflow(declared,catalog=load_stateful_catalog(declared),reducers={'messages':add_messages},
+    workflow = Workflow(declared,catalog=load_native_bindings(declared),reducers={'messages':add_messages},
         config=flags,services={'observation_factory':factory,'capture_authority':capability,
         'plain_io_contracts':{'intake':{'input':contract,'output':contract},
                               'finish':{'input':contract,'output':contract}}})

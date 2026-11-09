@@ -1,7 +1,7 @@
 # Strict Markdown executable Layout
 
 The future versioned `flow.md.html` resource layout and viewer contract are in
-[B1a](implementation_plan_b1a.md). The `layout.md` example below records the
+[B1a](implementation_plan_b1a.md). The executable examples record the
 earlier grammar proposal; conversion requires parser/compiler equivalence.
 
 ## Checklist
@@ -31,31 +31,11 @@ earlier grammar proposal; conversion requires parser/compiler equivalence.
 
 ## Illustrative readable declaration
 
-The exact schema will be reviewed before implementation. This example is located conceptually at `api-agent/layout.md`; its ordinary relative path refers to the planned skeleton, not to this planning document. The pack prompt deliberately retains `<resource_pack>` and cannot be followed on GitHub.
+The exact schema will be reviewed before implementation. This example is located conceptually at `api-agent/flow.md.html`; its ordinary relative path refers to the planned skeleton, not to this planning document. The pack prompt deliberately retains `<resource_pack>` and cannot be followed on GitHub.
 
-```markdown
-# LangGraph Layout v1
+The executable [root workflow](../../flow.md.html) and
+[retry example](../../demo/contrived/flow.md.html) replace the prototype syntax.
 
-## Nodes
-
-| ID | Function |
-| --- | --- |
-| renderer | render_response |
-
-## Edges
-
-| From | To | When |
-| --- | --- | --- |
-| START | renderer | always |
-| renderer | END | always |
-
-## Prompts
-
-| Node | File | When |
-| --- | --- | --- |
-| renderer | [Response contract](../src/api_agent/workflows/rendering/renderer/prompts/response_contract.md) | always |
-| renderer | [Say Ok from \<resource_pack\>](../\<resource_pack\>/workflows/rendering/renderer/prompts/say_ok.md) | always |
-```
 
 [GitHub's relative-link documentation](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#relative-links) confirms that ordinary relative Markdown links are relative to their containing file and follow the viewed branch. Editor link navigation depends on the editor's Markdown support. Neither resolves `<resource_pack>`; the runtime loader supplies that resolution and validates the selected pack's paths.
 

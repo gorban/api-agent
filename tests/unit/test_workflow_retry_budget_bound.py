@@ -26,7 +26,7 @@ def guarded_graph(tmp_path):
             'accepted': {'type': 'boolean'}, 'feedback': {'type': 'object'}},
         'required': ['accepted', 'feedback']}))
     entry = tmp_path / 'flow.md.html'
-    entry.write_text('# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| bounded |\n\n'
+    entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| bounded |\n\n'
                      '## Flow\n\n1.  [component group](group.md.html)\n')
     component = tmp_path / 'group.md.html'
     component.write_text('# Component: group\n\n## Flow\n\n1.  [node accept](#node-accept)\n\n'

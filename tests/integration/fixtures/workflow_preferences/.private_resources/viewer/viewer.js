@@ -1,14 +1,14 @@
 /* Static workflow presentation. The document's plaintext carrier is inert. */
 (() => {
   "use strict";
-  const carrier = document.querySelector("plaintext#workflow-source, plaintext");
+  const carrier = document.querySelector("plaintext#workflow-source");
   if (carrier) carrier.hidden = true;
   // Replayed bootstrap scripts share the carrier, even across script elements.
   const renderedDocument = Symbol.for("api-agent.workflow-viewer.document");
   const state = carrier ? (carrier[renderedDocument] ||= {}) : {};
   if (state.document) return;
   if (!carrier || !window.marked || !window.DOMPurify ||
-      (document.querySelector('meta[name="workflow-view"]')?.content === "v2" && !window.markedGfmHeadingId)) {
+      !window.markedGfmHeadingId) {
     const fallback = document.getElementById("workflow-fallback");
     const diagnostic = fallback || state.diagnostic || document.createElement("section");
     state.diagnostic = diagnostic;
@@ -17,7 +17,7 @@
     const heading = document.createElement("h2");
     heading.textContent = "Workflow viewer dependencies are unavailable";
     const guidance = document.createElement("p");
-    guidance.textContent = "For a source checkout, run npm ci from the repository root, then reopen this file or run ./launch.py --view-flow. For an installed Python package, reinstall a complete api-agent distribution; do not run npm inside the installed package.";
+    guidance.textContent = "For a source checkout, run npm ci from the repository root, then reopen this file or run ./launch.sh --view-flow. For an installed Python package, reinstall a complete api-agent distribution; do not run npm inside the installed package.";
     diagnostic.replaceChildren(heading, guidance);
     if (!fallback) document.body.append(diagnostic);
     return;
@@ -29,21 +29,21 @@
   const source = carrier.textContent.startsWith("\n") ? carrier.textContent.slice(1) : carrier.textContent;
   // Only the finite generator-owned alternatives disappear locally. The saved
   // linked image remains in its authored position for all renderers.
-  const segmentV2 = "(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+";
-  const pathV2 = `(?:\\.\\./)*(?:${segmentV2}/)*${segmentV2}`;
-  const blockV2 = new RegExp(
-    `<!-- workflow-generated-diagram-v2:start -->\\n` +
-    `\\[!\\[Workflow diagram\\]\\((${pathV2}\\.svg)\\)\\]\\(\\1\\)\\n\\n` +
+  const segment = "(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+";
+  const relativePath = `(?:\\.\\./)*(?:${segment}/)*${segment}`;
+  const diagramBlock = new RegExp(
+    `<!-- workflow-generated-diagram:start -->\\n` +
+    `\\[!\\[Workflow diagram\\]\\((${relativePath}\\.svg)\\)\\]\\(\\1\\)\\n\\n` +
     `<details open>\\n<summary>Diagram links</summary>\\n\\n` +
-    `\\[Open standalone diagram\\]\\(\\1\\)(?:\\n\\n- \\[([a-z][a-z0-9_]{0,63})\\]\\((?:${pathV2}\\.md\\.html|#node-\\2)\\)(?:\\n- \\[([a-z][a-z0-9_]{0,63})\\]\\((?:${pathV2}\\.md\\.html|#node-\\3)\\))*)?` +
-    `\\n\\n</details>\\n<!-- workflow-generated-diagram-v2:end -->`, "g");
+    `\\[Open standalone diagram\\]\\(\\1\\)(?:\\n\\n- \\[([a-z][a-z0-9_]{0,63})\\]\\((?:${relativePath}\\.md\\.html|#node-\\2)\\)(?:\\n- \\[([a-z][a-z0-9_]{0,63})\\]\\((?:${relativePath}\\.md\\.html|#node-\\3)\\))*)?` +
+    `\\n\\n</details>\\n<!-- workflow-generated-diagram:end -->`, "g");
   let tokenOffset = 0;
   const codeRanges = [];
   for (const token of markdown.lexer(source)) {
     if (token.type === "code") codeRanges.push([tokenOffset, tokenOffset + token.raw.length]);
     tokenOffset += token.raw.length;
   }
-  const presentation = !local ? source : source.replace(blockV2, (block, target, offset) =>
+  const presentation = !local ? source : source.replace(diagramBlock, (block, target, offset) =>
     codeRanges.some(([start, end]) => offset >= start && offset < end) ? block :
       `[![Workflow diagram](${target})](${target})`);
   const headingIds = [];
@@ -142,37 +142,6 @@
     }
   }
   main.append(template.content);
-  // Only the terminal generator-owned section participates in presentation.
-  // Its image must already have passed the owner-local image guard above.
-  const segment = "(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+";
-  const relative = `(?:${segment}/)*${segment}`;
-  const nodeLink = `- \\[([a-z][a-z0-9_]{0,63})\\]\\(${relative}\\.md\\.html\\)`;
-  const generated = new RegExp(
-    `\\n\\n## Generated Diagram v1\\n!\\[Workflow diagram\\]\\((${relative}\\.svg)\\)\\n\\n` +
-    `\\[Open standalone diagram\\]\\(\\1\\)(?:\\n\\n${nodeLink}(?:\\n${nodeLink})*)?` +
-    "\\n<!-- workflow-generated-diagram-v1:end -->\\n$").exec(source);
-  const title = main.querySelector("h1");
-  const headings = [...main.querySelectorAll("h2")];
-  const heading = headings.at(-1);
-  if (local && generated && title && heading?.textContent === "Generated Diagram v1") {
-    const picture = heading.nextElementSibling;
-    const standalone = picture?.nextElementSibling;
-    const image = picture?.querySelector(":scope > img:only-child");
-    const link = standalone?.querySelector(":scope > a:only-child");
-    const navigation = standalone?.nextElementSibling;
-    if (image && link && image.getAttribute("src") === generated[1] &&
-        link.getAttribute("href") === generated[1] &&
-        (!navigation || (navigation.tagName === "UL" && !navigation.nextElementSibling))) {
-      const clickable = document.createElement("a");
-      clickable.href = link.getAttribute("href");
-      clickable.append(image);
-      picture.replaceChildren(clickable);
-      title.after(picture);
-      navigation?.remove();
-      heading.remove();
-      standalone.remove();
-    }
-  }
   document.getElementById("workflow-fallback")?.remove();
   state.diagnostic?.remove();
   const documentHeading = main.querySelector("h1,h2,h3,h4,h5,h6");

@@ -19,7 +19,7 @@ def selected(tmp_path):
         '[component branch](children/branch.md.html)') +
         '\n## Components\n\n| ID | Max passes | Guard |\n| --- | --- | --- |\n| branch | 1 | - |\n'
         '\n## Tools\n\n| Port | Instance |\n| --- | --- |\n| root_port | [shared](shared.toml) |\n')
-    (tmp_path / 'children/branch.md.html').write_text('# Component v2: branch\n\n## Flow\n\n'
+    (tmp_path / 'children/branch.md.html').write_text('# Component: branch\n\n## Flow\n\n'
         '1.  [node work](work.md.html)\n\n## Tools\n\n| Port | Instance |\n| --- | --- |\n'
         '| component_port | [shared](../shared.toml) |\n')
     node = tmp_path / 'children/work.md.html'

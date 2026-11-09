@@ -25,14 +25,14 @@ def _definition(root: Path, *, accepted_type='boolean', detail_type='object', wh
             'score': {'type': 'integer'}},
         'required': ['accepted', 'detail', 'score']}))
     (root / 'workflows/inspect.md.html').write_text(
-        '# Node v2: inspect\n\n## Native\n\n'
+        '# Node: inspect\n\n## Native\n\n'
         '| Registry | Kind | Source |\n| --- | --- | --- |\n'
         '| inspect | deterministic | [source](../native.py) |\n\n'
         '## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
         '| inspect | inspect | [input](../schemas/input.json) | [output](../schemas/output.json) |\n')
     entry = root / 'flow.md.html'
     entry.write_text(
-        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| sample_graph |\n\n'
+        '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| sample_graph |\n\n'
         '## Flow\n\n1.  [node inspect](workflows/inspect.md.html)\n\n'
         '## Edges\n\n| From | To | When |\n| --- | --- | --- |\n'
         f'| inspect | END | {when} |\n| inspect | END | otherwise |\n')

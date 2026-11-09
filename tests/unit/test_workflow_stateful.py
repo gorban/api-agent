@@ -9,8 +9,9 @@ from langgraph.graph.message import add_messages
 import pytest
 
 from api_agent.workflows.definition import Replacement
-from api_agent.workflows.stateful import (StatefulWorkflow, load_stateful_catalog,
-                                          load_stateful_definition)
+from api_agent.workflows.execution import (Workflow)
+from api_agent.workflows.native import (load_native_bindings)
+from api_agent.workflows.definition import (load_definition)
 from api_agent.workflows.layout import LayoutError
 from api_agent.runtime.resource_pack import (ResourcePackError, load_launch_context,
                                              load_selected_definition, load_workflow)
@@ -47,7 +48,7 @@ def finish(state, context):
 def choose(state, context):
     return 'finish' if not state['pending'] else 'END'
 ''')
-    _write(root, 'intake.md.html', '''# Node v3: intake
+    _write(root, 'intake.md.html', '''# Node: intake
 
 ## Native
 
@@ -55,7 +56,7 @@ def choose(state, context):
 | --- | --- | --- |
 | intake | deterministic | [Python](native.py) |
 ''')
-    _write(root, 'finish.md.html', '''# Node v3: finish
+    _write(root, 'finish.md.html', '''# Node: finish
 
 ## Native
 
@@ -63,7 +64,7 @@ def choose(state, context):
 | --- | --- | --- |
 | finish | deterministic | [Python](native.py) |
 ''')
-    entry = _write(root, 'flow.md.html', '''# Workflow v3
+    entry = _write(root, 'flow.md.html', '''# Workflow
 
 ## Graph ID
 
@@ -95,9 +96,9 @@ def choose(state, context):
 
 def test_admitted_state_continues_at_entry_with_message_id_replacement(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    catalog = load_stateful_catalog(definition)
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    catalog = load_native_bindings(definition)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
 
     first = asyncio.run(workflow.arun({'messages': [HumanMessage(id='human', content='hello')], 'pending': False,
                                       'visits': 0},
@@ -129,7 +130,7 @@ def test_stateful_cycle_keeps_node_history_but_a_new_turn_starts_fresh(fixture_g
     entry.write_text(entry.read_text().replace('2.  [node finish](finish.md.html)\n', '').replace(
         '| intake | finish | choose |', '| intake | intake | choose |').replace(
         '| finish | END | - | - |\n', ''))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     requests = []
     native = [
         {'type': 'reasoning', 'id': 'rs-1', 'status': 'completed', 'summary': [],
@@ -142,7 +143,7 @@ def test_stateful_cycle_keeps_node_history_but_a_new_turn_starts_fresh(fixture_g
     async def complete(value):
         requests.append(value)
         return LLMResult(assistant)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
         reducers={'messages':add_messages}, services={'complete':complete})
 
     async def turns():
@@ -166,16 +167,16 @@ def test_stateful_cycle_keeps_node_history_but_a_new_turn_starts_fresh(fixture_g
 
 def test_source_change_is_rejected_before_catalog_execution(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     (root / 'native.py').write_text((root / 'native.py').read_text() + '\n# changed\n')
 
     with pytest.raises(LayoutError, match='resource changed'):
-        load_stateful_catalog(definition)
+        load_native_bindings(definition)
 
 
 def test_nested_component_uses_declared_subgraph(fixture_graph):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -188,9 +189,9 @@ def test_nested_component_uses_declared_subgraph(fixture_graph):
     original = original.replace('| finish | END | - | - |',
                                 '| finish | END | - | - |\n| group | END | - | - |')
     entry.write_text(original)
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    catalog = load_stateful_catalog(definition)
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    catalog = load_native_bindings(definition)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
 
     result = asyncio.run(workflow.arun({'messages': [HumanMessage(content='hello')],
                                         'pending': False, 'visits': 0}, thread_id='nested'))
@@ -210,9 +211,9 @@ def test_declared_helper_is_captured_and_checked(fixture_graph):
 | --- |
 | [Python](helper.py) |
 ''')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    catalog = load_stateful_catalog(definition)
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    catalog = load_native_bindings(definition)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
 
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                         thread_id='helpers'))
@@ -220,7 +221,7 @@ def test_declared_helper_is_captured_and_checked(fixture_graph):
 
     assert result['visits'] == 1
     with pytest.raises(LayoutError, match='resource changed'):
-        load_stateful_catalog(definition)
+        load_native_bindings(definition)
 
 
 def test_resource_replacement_is_selected_before_original_read(fixture_graph):
@@ -236,10 +237,10 @@ def test_resource_replacement_is_selected_before_original_read(fixture_graph):
     source = root / 'native.py'
     source.write_text(source.read_text().replace("content='new'",
                         "content=context.resources['greeting'].content_bytes.decode()"))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=pack,
+    definition = load_definition(entry, base_root=root, pack_root=pack,
                                            replacements=(Replacement('greeting', Path('selected.txt'), 'pack'),))
-    catalog = load_stateful_catalog(definition)
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    catalog = load_native_bindings(definition)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
 
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                         thread_id='replacement'))
@@ -264,18 +265,18 @@ def test_declared_package_dependency_uses_admitted_bytes_and_rejects_stale_cache
 | {package} | [Python](src/{package}/__init__.py) |
 | {package}.helper | [Python](src/{package}/helper.py) |
 ''')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     try:
-        catalog = load_stateful_catalog(definition)
-        workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+        catalog = load_native_bindings(definition)
+        workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
         result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                             thread_id='dependency'))
         dependency.write_text('def next_count(value):\n    return value + 2\n')
-        revised = load_stateful_definition(entry, base_root=root, pack_root=root)
+        revised = load_definition(entry, base_root=root, pack_root=root)
 
         assert result['visits'] == 1
         with pytest.raises(LayoutError, match='restart required'):
-            load_stateful_catalog(revised)
+            load_native_bindings(revised)
     finally:
         sys.modules.pop(package + '.helper', None)
         sys.modules.pop(package, None)
@@ -309,10 +310,10 @@ def test_lazy_native_import_uses_admitted_bytes_without_ambient_path(fixture_gra
     package = 'synthetic_lazy_preloaded' if preload else 'synthetic_lazy_only'
     root, entry, helper = _lazy_dependency_graph(fixture_graph, package, preload=preload)
     assert str(root) not in sys.path and str(root / 'src') not in sys.path
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    catalog = load_stateful_catalog(definition)
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    catalog = load_native_bindings(definition)
     assert package + '.helper' not in sys.modules
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                         thread_id=package))
     assert result['visits'] == 1
@@ -322,9 +323,9 @@ def test_lazy_native_import_uses_admitted_bytes_without_ambient_path(fixture_gra
 def test_lazy_native_import_does_not_read_disk_after_turn_verification(fixture_graph):
     package = 'synthetic_lazy_midturn'
     root, entry, helper = _lazy_dependency_graph(fixture_graph, package, preload=True, gated=True)
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    catalog = load_stateful_catalog(definition)
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages},
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    catalog = load_native_bindings(definition)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages},
                                 services={'entered': asyncio.Event(), 'release': asyncio.Event()})
 
     async def run():
@@ -341,13 +342,13 @@ def test_lazy_native_import_does_not_read_disk_after_turn_verification(fixture_g
 def test_unloaded_dependency_name_is_reserved_for_first_definition(fixture_graph, tmp_path):
     package = 'synthetic_lazy_reserved'
     root, entry, helper = _lazy_dependency_graph(fixture_graph, package)
-    first = load_stateful_definition(entry, base_root=root, pack_root=root)
-    load_stateful_catalog(first)
+    first = load_definition(entry, base_root=root, pack_root=root)
+    load_native_bindings(first)
     assert package not in sys.modules and package + '.helper' not in sys.modules
     helper.write_text('def next_count(value):\n    return value + 2\n')
-    second = load_stateful_definition(entry, base_root=root, pack_root=root)
+    second = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='restart required'):
-        load_stateful_catalog(second)
+        load_native_bindings(second)
 
 
 def test_failed_catalog_releases_new_dependency_reservations(fixture_graph):
@@ -355,14 +356,14 @@ def test_failed_catalog_releases_new_dependency_reservations(fixture_graph):
     root, entry, helper = _lazy_dependency_graph(fixture_graph, package, preload=True)
     source = root / 'native.py'
     source.write_text(source.read_text() + '\nraise RuntimeError("catalog failure")\n')
-    failed = load_stateful_definition(entry, base_root=root, pack_root=root)
+    failed = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(RuntimeError, match='catalog failure'):
-        load_stateful_catalog(failed)
+        load_native_bindings(failed)
     assert package not in sys.modules
     source.write_text(source.read_text().replace('\nraise RuntimeError("catalog failure")\n', '\n'))
     helper.write_text('def next_count(value):\n    return value + 3\n')
-    recovered = load_stateful_definition(entry, base_root=root, pack_root=root)
-    load_stateful_catalog(recovered)
+    recovered = load_definition(entry, base_root=root, pack_root=root)
+    load_native_bindings(recovered)
 
 
 def test_lazy_import_relocated_fresh_process(fixture_graph, tmp_path):
@@ -372,12 +373,14 @@ def test_lazy_import_relocated_fresh_process(fixture_graph, tmp_path):
     command = '''import asyncio, sys
 from pathlib import Path
 from langgraph.graph.message import add_messages
-from api_agent.workflows.stateful import load_stateful_definition, load_stateful_catalog, StatefulWorkflow
+from api_agent.workflows.definition import load_definition
+from api_agent.workflows.native import load_native_bindings
+from api_agent.workflows.execution import Workflow
 root = Path(sys.argv[1]); entry = Path(sys.argv[2])
 assert str(root) not in sys.path and str(root / 'src') not in sys.path
-definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-catalog = load_stateful_catalog(definition)
-workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+definition = load_definition(entry, base_root=root, pack_root=root)
+catalog = load_native_bindings(definition)
+workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
 result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='relocated'))
 assert result['visits'] == 1
 '''
@@ -387,10 +390,10 @@ assert result['visits'] == 1
 
 
 def test_unreserved_loader_refuses_finding_or_executing_module(fixture_graph):
-    from api_agent.workflows.stateful import _AdmittedDependencyLoader
+    from api_agent.workflows.native import (_AdmittedDependencyLoader)
     package = 'synthetic_lazy_unreserved'
     root, entry, _helper = _lazy_dependency_graph(fixture_graph, package)
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     loader = _AdmittedDependencyLoader(definition)
     assert loader.find_spec(package) is None
     with pytest.raises(LayoutError, match='reservation changed'):
@@ -403,13 +406,13 @@ def test_reused_catalog_loader_survives_later_catalog_failure(fixture_graph, mon
     source = root / 'native.py'
     source.write_text('import os\nif os.environ.get("SYNTHETIC_FAIL_RELOAD"):\n'
                       '    raise RuntimeError("second load")\n' + source.read_text())
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    catalog = load_stateful_catalog(definition)
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    catalog = load_native_bindings(definition)
     monkeypatch.setenv('SYNTHETIC_FAIL_RELOAD', '1')
     with pytest.raises(RuntimeError, match='second load'):
-        load_stateful_catalog(definition)
+        load_native_bindings(definition)
     monkeypatch.delenv('SYNTHETIC_FAIL_RELOAD')
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
     assert asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                      thread_id=package))['visits'] == 1
 
@@ -422,10 +425,10 @@ def test_failed_catalog_cleans_loaded_dependency_even_if_cache_entry_replaced(fi
 sys.modules[{package!r}] = object()
 raise RuntimeError("catalog failure")
 ''')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     try:
         with pytest.raises(RuntimeError, match='catalog failure'):
-            load_stateful_catalog(definition)
+            load_native_bindings(definition)
         assert package not in sys.modules or type(sys.modules[package]) is object
     finally:
         sys.modules.pop(package, None)
@@ -438,8 +441,8 @@ def test_lazy_import_proceeds_while_another_catalog_executes_native_code(fixture
 
     first_package = 'synthetic_lazy_concurrent_first'
     first_root, first_entry, _ = _lazy_dependency_graph(fixture_graph, first_package)
-    first = load_stateful_definition(first_entry, base_root=first_root, pack_root=first_root)
-    load_stateful_catalog(first)
+    first = load_definition(first_entry, base_root=first_root, pack_root=first_root)
+    load_native_bindings(first)
     assert first_package not in sys.modules
 
     second_root = tmp_path / 'other_graph'
@@ -457,7 +460,7 @@ def test_lazy_import_proceeds_while_another_catalog_executes_native_code(fixture
                              second_source.read_text().replace(
                                  f'from {first_package}.helper import next_count',
                                  "next_count = lambda value: value + 1"))
-    second = load_stateful_definition(second_entry, base_root=second_root, pack_root=second_root)
+    second = load_definition(second_entry, base_root=second_root, pack_root=second_root)
     entered, release = Event(), Event()
     monkeypatch.setattr(builtins, '_loader_entered', entered, raising=False)
     monkeypatch.setattr(builtins, '_loader_release', release, raising=False)
@@ -465,7 +468,7 @@ def test_lazy_import_proceeds_while_another_catalog_executes_native_code(fixture
 
     def load_second():
         try:
-            load_stateful_catalog(second)
+            load_native_bindings(second)
         except BaseException as error:
             errors.append(error)
 
@@ -488,7 +491,7 @@ def test_failed_catalog_does_not_resurrect_inflight_import(fixture_graph, monkey
     import builtins
     import importlib
     from threading import Event, Thread
-    from api_agent.workflows import stateful
+    from api_agent.workflows import native as stateful
 
     package = f'synthetic_failed_overlap_{target_kind}_{rollback_first}'
     root, entry, helper = _lazy_dependency_graph(fixture_graph, package)
@@ -500,7 +503,7 @@ def test_failed_catalog_does_not_resurrect_inflight_import(fixture_graph, monkey
     target = helper.parent / '__init__.py' if target_kind == 'parent' else helper
     target.write_text('import builtins\nbuiltins._import_entered.set()\n'
                       'assert builtins._import_release.wait(2)\n' + target.read_text())
-    failed = load_stateful_definition(entry, base_root=root, pack_root=root)
+    failed = load_definition(entry, base_root=root, pack_root=root)
     catalog_entered, catalog_release, import_entered, import_release = (Event() for _ in range(4))
     for name, event in (('_catalog_entered', catalog_entered), ('_catalog_release', catalog_release),
                         ('_import_entered', import_entered), ('_import_release', import_release)):
@@ -509,7 +512,7 @@ def test_failed_catalog_does_not_resurrect_inflight_import(fixture_graph, monkey
 
     def load_failed():
         try:
-            load_stateful_catalog(failed)
+            load_native_bindings(failed)
         except BaseException as error:
             catalog_errors.append(error)
 
@@ -557,25 +560,25 @@ def test_failed_catalog_does_not_resurrect_inflight_import(fixture_graph, monkey
     source.write_text(original)
     target.write_text('' if target_kind == 'parent' else
                       'def next_count(value):\n    return value + 1\n')
-    corrected = load_stateful_definition(entry, base_root=root, pack_root=root)
-    load_stateful_catalog(corrected)
+    corrected = load_definition(entry, base_root=root, pack_root=root)
+    load_native_bindings(corrected)
 
 
 def test_interrupted_catalog_releases_declared_lazy_names(fixture_graph):
-    from api_agent.workflows import stateful
+    from api_agent.workflows import native as stateful
     package = 'synthetic_lazy_interrupted'
     root, entry, _ = _lazy_dependency_graph(fixture_graph, package)
     source = root / 'native.py'
     original = source.read_text()
     source.write_text('raise KeyboardInterrupt()\n' + original)
-    interrupted = load_stateful_definition(entry, base_root=root, pack_root=root)
+    interrupted = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(KeyboardInterrupt):
-        load_stateful_catalog(interrupted)
+        load_native_bindings(interrupted)
     assert package not in stateful._RESERVED_DEPENDENCIES
     assert interrupted.definition_id not in stateful._ADMITTED_LOADERS
     source.write_text(original)
-    corrected = load_stateful_definition(entry, base_root=root, pack_root=root)
-    load_stateful_catalog(corrected)
+    corrected = load_definition(entry, base_root=root, pack_root=root)
+    load_native_bindings(corrected)
 
 
 def test_selected_pack_loader_dispatches_v3_with_same_identity(fixture_graph):
@@ -583,7 +586,7 @@ def test_selected_pack_loader_dispatches_v3_with_same_identity(fixture_graph):
     context = SimpleNamespace(workflow_entry=entry, base_root=root, pack_root=root,
                               workflow_root='base', workflow_replacements=())
     definition = load_selected_definition(context)
-    catalog = load_stateful_catalog(definition)
+    catalog = load_native_bindings(definition)
 
     workflow = load_workflow(context, catalog, definition=definition,
                              reducers={'messages': add_messages})
@@ -600,8 +603,8 @@ def test_parallel_conversations_keep_request_and_services_isolated(fixture_graph
     source.write_text('import asyncio\n' + source.read_text().replace(
         'def intake(state, context):', 'async def intake(state, context):\n    await asyncio.sleep(0.02)')
         .replace("content='new'", "content=context.request + context.services['suffix']"))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
 
     async def execute():
@@ -621,8 +624,8 @@ def test_overlapping_turns_on_one_conversation_are_rejected(fixture_graph):
     source = root / 'native.py'
     source.write_text('import asyncio\n' + source.read_text().replace(
         'def intake(state, context):', 'async def intake(state, context):\n    await asyncio.sleep(0.04)'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
 
     async def execute():
@@ -655,8 +658,8 @@ def test_raw_cli_validates_and_diagrams_v3_from_foreign_cwd(fixture_graph, tmp_p
 
 def test_native_v2_stream_events_preserve_node_identity(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
 
     async def collect():
@@ -671,8 +674,8 @@ def test_native_v2_stream_events_preserve_node_identity(fixture_graph):
 
 def test_stream_close_closes_graph_scope_and_releases_conversation(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     observed = []
 
@@ -692,9 +695,9 @@ def test_stream_close_closes_graph_scope_and_releases_conversation(fixture_graph
 
 def test_v3_journal_records_complete_declared_route_without_state(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, journal=journal)
 
     asyncio.run(workflow.arun({'messages': [HumanMessage(content='secret input')],
@@ -708,7 +711,7 @@ def test_v3_journal_records_complete_declared_route_without_state(fixture_graph)
 
 def test_nested_component_journal_has_scope_owned_route_chain(fixture_graph):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -719,9 +722,9 @@ def test_nested_component_journal_has_scope_owned_route_chain(fixture_graph):
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
         '1.  [component group](group.md.html)').replace(
         '| finish | END | - | - |', '| finish | END | - | - |\n| group | END | - | - |'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, journal=journal)
 
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='nested-journal'))
@@ -735,20 +738,20 @@ def test_nested_component_journal_has_scope_owned_route_chain(fixture_graph):
 @pytest.mark.parametrize('observe', [False, True])
 def test_reporting_marker_verifies_before_native_exec_and_publishes_turn(fixture_graph, monkeypatch, observe):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     calls = []
     from api_agent.workflows import provenance, evidence
     monkeypatch.setattr(provenance, 'verified_documents',
                         lambda admitted, packaged_proof=None: calls.append(admitted.definition_id) or None)
     monkeypatch.setattr(evidence, 'publish', calls.append)
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
-    catalog = load_stateful_catalog(definition)
+    catalog = load_native_bindings(definition)
     rows = []
     from api_agent.workflows.observations import WorkflowObservationFactory
     from api_agent.telemetry.privacy import EmissionBoundary
     services = {'observation_factory': WorkflowObservationFactory(
         {}, boundary=EmissionBoundary(), sink=rows.append)} if observe else {}
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages},
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages},
                                 services=services)
 
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -775,11 +778,11 @@ def test_reporting_records_unstaged_workflow_identity_that_matches_later_commit(
     git('add', '.')
     git('commit', '-qm', 'initial workflow')
     entry.write_text(entry.read_text().replace('synthetic_flow', 'changed_flow'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     records = []
     monkeypatch.setattr(evidence, 'publish', records.append)
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='reported'))
     recorded = records[-1]
@@ -789,7 +792,7 @@ def test_reporting_records_unstaged_workflow_identity_that_matches_later_commit(
 
     git('add', '.')
     git('commit', '-qm', 'update workflow')
-    committed = load_stateful_definition(entry, base_root=root, pack_root=root)
+    committed = load_definition(entry, base_root=root, pack_root=root)
     assert committed.definition_id == recorded['projection']['definition_id']
     assert verified_documents(committed)['documents'] == recorded['source_manifest']['documents']
 
@@ -804,9 +807,9 @@ def test_declared_recovery_loop_revisits_node_then_ends(fixture_graph):
         '| intake | finish | choose | [Python](native.py) |',
         '| intake | intake | choose | [Python](native.py) |\n'
         '| intake | finish | choose | [Python](native.py) |'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, journal=journal)
 
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -828,8 +831,8 @@ def test_closing_stream_drains_started_offload_before_releasing_thread(fixture_g
     (folder / 'started').write_text('started')
     time.sleep(0.2)
     (folder / 'done').write_text('done')'''))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     folder = root / 'probe'
     folder.mkdir()
@@ -854,7 +857,7 @@ def test_closing_stream_drains_started_offload_before_releasing_thread(fixture_g
 
 def test_admitted_nodes_routes_and_journal_projection_cannot_be_mutated(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     original_id = definition.definition_id
 
     with pytest.raises(TypeError):
@@ -870,7 +873,7 @@ def test_admitted_nodes_routes_and_journal_projection_cannot_be_mutated(fixture_
 
 def test_admission_captures_each_resource_once(fixture_graph, monkeypatch):
     root, entry = fixture_graph
-    from api_agent.workflows import stateful
+    from api_agent.workflows import definition as stateful
     original_read = stateful._read_bounded
     reads = []
     def count_read(path, owner):
@@ -878,7 +881,7 @@ def test_admission_captures_each_resource_once(fixture_graph, monkeypatch):
         return original_read(path, owner)
     monkeypatch.setattr(stateful, '_read_bounded', count_read)
 
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
 
     assert len(reads) == len(set(reads)) == len(definition.contents)
     assert reads.count(root / 'native.py') == 1
@@ -886,7 +889,7 @@ def test_admission_captures_each_resource_once(fixture_graph, monkeypatch):
 
 def test_nested_component_uses_shared_budget_and_real_parent_scope(fixture_graph):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -916,9 +919,9 @@ default = 0.25
 | group | [config](limits.toml) | GROUP_LIMIT |
 | intake | [config](limits.toml) | NODE_LIMIT |
 ''')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     events = []
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, services={'observe': events.append})
 
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='timed'))
@@ -933,7 +936,7 @@ default = 0.25
 
 def test_component_deadline_drains_child_offload_and_closes_scopes(fixture_graph):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -960,9 +963,9 @@ default = 0.02
 | --- | --- | --- |
 | group | [config](limit.toml) | GROUP_LIMIT |
 ''')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     events = []
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, services={'observe': events.append})
     probe = root / 'finished.txt'
 
@@ -977,7 +980,7 @@ default = 0.02
 
 def test_component_startup_error_does_not_leave_waiting_turn(fixture_graph, monkeypatch):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -988,11 +991,12 @@ def test_component_startup_error_does_not_leave_waiting_turn(fixture_graph, monk
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
         '1.  [component group](group.md.html)').replace(
         '| finish | END | - | - |', '| finish | END | - | - |\n| group | END | - | - |'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
-    from api_agent.workflows import stateful
-    original = stateful.component_timeout
+    from api_agent.workflows import native as stateful
+    from api_agent.workflows import execution
+    original = execution.component_timeout
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -1002,7 +1006,7 @@ def test_component_startup_error_does_not_leave_waiting_turn(fixture_graph, monk
         async with original(name, timeout) as budget:
             yield budget
 
-    monkeypatch.setattr(stateful, 'component_timeout', refuse_group)
+    monkeypatch.setattr(execution, 'component_timeout', refuse_group)
 
     async def invoke():
         with pytest.raises(TimeoutError, match='parent budget exhausted'):
@@ -1013,7 +1017,7 @@ def test_component_startup_error_does_not_leave_waiting_turn(fixture_graph, monk
 
 
 @pytest.mark.parametrize(('old', 'new', 'message'), [
-    ('# Workflow v3', '# Workflow v9', 'expected Workflow v3'),
+    ('# Workflow', '# Workflow v9', 'expected Workflow heading'),
     ('## Edges', '## Unsupported', 'missing required section'),
     ('| synthetic_flow |', '| invalid-id |', 'invalid graph or state identity'),
     ('| State | [Python](native.py) |', '| State | native.py |', 'expected one source link'),
@@ -1036,28 +1040,28 @@ def test_stateful_admission_rejects_invalid_declarations(fixture_graph, old, new
     entry.write_text(text.replace(old, new))
 
     with pytest.raises(LayoutError, match=message):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_admission_rejects_entry_outside_roots_and_invalid_root(fixture_graph, tmp_path):
     root, entry = fixture_graph
-    with pytest.raises(LayoutError, match='outside roots'):
-        load_stateful_definition(entry, base_root=tmp_path / 'a', pack_root=tmp_path / 'b')
+    with pytest.raises(LayoutError, match='outside declared roots'):
+        load_definition(entry, base_root=tmp_path / 'a', pack_root=tmp_path / 'b')
     with pytest.raises(LayoutError, match='invalid declared entry root'):
-        load_stateful_definition(entry, base_root=root, pack_root=root, entry_root='other')
+        load_definition(entry, base_root=root, pack_root=root, entry_root='other')
 
 
 def test_stateful_admission_rejects_duplicate_and_unknown_replacements(fixture_graph):
     root, entry = fixture_graph
     replacement = Replacement('intake', Path('intake.md.html'), 'base')
     with pytest.raises(LayoutError, match='invalid replacements'):
-        load_stateful_definition(entry, base_root=root, pack_root=root,
+        load_definition(entry, base_root=root, pack_root=root,
                                  replacements=(replacement, replacement))
     with pytest.raises(LayoutError, match='unknown replacement target'):
-        load_stateful_definition(entry, base_root=root, pack_root=root,
+        load_definition(entry, base_root=root, pack_root=root,
                                  replacements=(Replacement('missing', Path('intake.md.html'), 'base'),))
     with pytest.raises(LayoutError, match='invalid replacement'):
-        load_stateful_definition(entry, base_root=root, pack_root=root,
+        load_definition(entry, base_root=root, pack_root=root,
                                  replacements=(Replacement('intake', Path('../outside.md.html'), 'base'),))
 
 
@@ -1111,7 +1115,7 @@ def test_stateful_admission_rejects_invalid_optional_tables(fixture_graph, secti
     entry.write_text(entry.read_text() + '\n' + section)
 
     with pytest.raises(LayoutError, match=message):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 @pytest.mark.parametrize(('replacement', 'message'), [
@@ -1128,7 +1132,7 @@ def test_stateful_resource_replacement_admission_rejects_invalid_targets(
 | greeting | prompt | [text](missing.txt) |
 ''')
     with pytest.raises(LayoutError, match=message):
-        load_stateful_definition(entry, base_root=root, pack_root=root,
+        load_definition(entry, base_root=root, pack_root=root,
                                  replacements=(replacement,))
 
 
@@ -1137,16 +1141,16 @@ def test_stateful_component_and_node_sections_must_be_exact(fixture_graph):
     child = root / 'intake.md.html'
     child.write_text(child.read_text().replace('## Native', '## Invalid'))
     with pytest.raises(LayoutError, match='node requires only Native'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
     child.write_text(child.read_text().replace('## Invalid', '## Native'))
     child.write_text(child.read_text().replace('| intake | deterministic |', '| intake | network |'))
     with pytest.raises(LayoutError, match='invalid native binding'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_component_requires_only_flow(fixture_graph):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Extra
 
@@ -1156,7 +1160,7 @@ something
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
         '1.  [component group](group.md.html)'))
     with pytest.raises(LayoutError, match='component requires only Flow'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 @pytest.mark.parametrize(('schema', 'settings', 'message'), [
@@ -1178,29 +1182,29 @@ def test_stateful_timeout_config_rejects_invalid_values(fixture_graph, schema, s
 ''')
     if message != 'finite positive':
         with pytest.raises(LayoutError, match=message):
-            load_stateful_definition(entry, base_root=root, pack_root=root)
+            load_definition(entry, base_root=root, pack_root=root)
     else:
-        definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+        definition = load_definition(entry, base_root=root, pack_root=root)
         with pytest.raises(LayoutError, match=message):
-            load_stateful_catalog(definition, config=settings)
+            load_native_bindings(definition, config=settings)
 
 
 def test_stateful_schema_and_bindings_are_explicit(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    catalog = load_stateful_catalog(definition)
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    catalog = load_native_bindings(definition)
     with pytest.raises(LayoutError, match='catalog does not match'):
-        StatefulWorkflow(definition, catalog=None, reducers={'messages': add_messages})
+        Workflow(definition, catalog=None, reducers={'messages': add_messages})
     with pytest.raises(LayoutError, match='unregistered state reducer'):
-        StatefulWorkflow(definition, catalog=catalog, reducers={})
+        Workflow(definition, catalog=catalog, reducers={})
     with pytest.raises(LayoutError, match='undeclared state field'):
-        StatefulWorkflow(definition, catalog=catalog,
+        Workflow(definition, catalog=catalog,
                          reducers={'messages': add_messages, 'missing': lambda a, b: b})
     source = root / 'native.py'
     source.write_text(source.read_text().replace('class State(TypedDict):', 'def State():\n    return {}\n\nclass Unused(TypedDict):'))
-    revised = load_stateful_definition(entry, base_root=root, pack_root=root)
+    revised = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='must name a TypedDict'):
-        StatefulWorkflow(revised, catalog=load_stateful_catalog(revised), reducers={})
+        Workflow(revised, catalog=load_native_bindings(revised), reducers={})
 
 
 @pytest.mark.parametrize(('before', 'after', 'message'), [
@@ -1212,8 +1216,8 @@ def test_stateful_runtime_rejects_bad_native_returns(fixture_graph, before, afte
     root, entry = fixture_graph
     source = root / 'native.py'
     source.write_text(source.read_text().replace(before, after))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     with pytest.raises(ValueError, match=message):
         asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='invalid'))
@@ -1222,8 +1226,8 @@ def test_stateful_runtime_rejects_bad_native_returns(fixture_graph, before, afte
 @pytest.mark.parametrize('call', ['arun', 'astream_events'])
 def test_stateful_runtime_requires_explicit_thread_and_update(fixture_graph, call):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     async def invoke():
         operation = getattr(workflow, call)([], thread_id='')
@@ -1240,21 +1244,21 @@ def test_stateful_native_bindings_must_be_present_and_callable(fixture_graph):
     source = root / 'native.py'
     original = source.read_text()
     source.write_text(original.replace('def intake(state, context):', 'def renamed(state, context):'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='missing admitted native binding'):
-        StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        Workflow(definition, catalog=load_native_bindings(definition),
                          reducers={'messages': add_messages})
     source.write_text(original.replace('def intake(state, context):',
                                        'class Binding:\n    pass\n\nintake = Binding()\n\ndef unused(state, context):'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='node registry must be callable'):
-        StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        Workflow(definition, catalog=load_native_bindings(definition),
                          reducers={'messages': add_messages})
     source.write_text(original.replace('def choose(state, context):',
                                        'class Binding:\n    pass\n\nchoose = Binding()\n\ndef unused(state, context):'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='router registry must be callable'):
-        StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        Workflow(definition, catalog=load_native_bindings(definition),
                          reducers={'messages': add_messages})
 
 
@@ -1267,8 +1271,8 @@ def test_stateful_sync_native_can_return_awaitable(fixture_graph):
 
 def finish(state, context):
     return delayed()'''))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
 
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -1283,9 +1287,9 @@ def test_stateful_declared_local_import_must_be_captured_before_execution(fixtur
     _write(root, 'src/omitted/helper.py', 'def count(value):\n    return value + 1\n')
     source = root / 'native.py'
     source.write_text('from omitted.helper import count\n' + source.read_text())
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='must be declared'):
-        load_stateful_catalog(definition)
+        load_native_bindings(definition)
 
 
 def test_stateful_admitted_resource_bytes_not_mutable(fixture_graph):
@@ -1297,7 +1301,7 @@ def test_stateful_admitted_resource_bytes_not_mutable(fixture_graph):
 | greeting | prompt | [text](greeting.txt) |
 ''')
     _write(root, 'greeting.txt', 'immutable')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     assert definition.declared_resources['greeting'].content_bytes == b'immutable'
     with pytest.raises(TypeError):
         definition.contents[root / 'greeting.txt'] = b'changed'
@@ -1315,7 +1319,7 @@ def test_stateful_source_link_accepts_explicit_pack_root(fixture_graph):
 | --- | --- | --- |
 | greeting | prompt | [text](<resource_pack>/greeting.txt) |
 ''')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=pack)
+    definition = load_definition(entry, base_root=root, pack_root=pack)
     assert definition.declared_resources['greeting'].logical_path == 'pack/greeting.txt'
 
 
@@ -1330,7 +1334,7 @@ def test_stateful_declaration_link_and_flow_edges(fixture_graph, old, new, messa
     root, entry = fixture_graph
     entry.write_text(entry.read_text().replace(old, new))
     with pytest.raises(LayoutError, match=message):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_replaced_node_selected_before_original_read(fixture_graph):
@@ -1338,7 +1342,7 @@ def test_stateful_replaced_node_selected_before_original_read(fixture_graph):
     pack = root / 'pack'
     _write(pack, 'replacement.md.html', (root / 'intake.md.html').read_text().replace('(native.py)', '(../native.py)'))
     (root / 'intake.md.html').unlink()
-    definition = load_stateful_definition(entry, base_root=root, pack_root=pack,
+    definition = load_definition(entry, base_root=root, pack_root=pack,
         replacements=(Replacement('intake', Path('replacement.md.html'), 'pack'),))
     assert pack / 'replacement.md.html' in definition.contents
     assert root / 'intake.md.html' not in definition.contents
@@ -1354,12 +1358,12 @@ def test_stateful_resource_id_cannot_alias_a_step(fixture_graph):
 | intake | prompt | [text](prompt.txt) |
 ''')
     with pytest.raises(LayoutError, match='resource ID conflicts'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_packaged_proof_verified_before_native_execution(fixture_graph, monkeypatch):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     from api_agent.workflows import provenance, evidence
     calls = []
     monkeypatch.setattr(provenance, 'verified_documents',
@@ -1367,8 +1371,8 @@ def test_stateful_packaged_proof_verified_before_native_execution(fixture_graph,
     monkeypatch.setattr(evidence, 'publish', lambda envelope: None)
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
     proof = object()
-    catalog = load_stateful_catalog(definition, packaged_proof=proof)
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages},
+    catalog = load_native_bindings(definition, packaged_proof=proof)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages},
                                 services={'packaged_proof': proof})
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='packaged'))
     assert calls == [(definition.definition_id, proof), (definition.definition_id, proof)]
@@ -1378,7 +1382,7 @@ def test_stateful_entry_must_be_utf8(fixture_graph):
     root, entry = fixture_graph
     entry.write_bytes(b'\xff')
     with pytest.raises(LayoutError, match='invalid UTF-8'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_rejects_component_nesting_over_limit(fixture_graph):
@@ -1387,17 +1391,17 @@ def test_stateful_rejects_component_nesting_over_limit(fixture_graph):
         next_step = (f'1.  [component group{index + 1}](group{index + 1}.md.html)'
                      if index < 65 else '1.  [node intake](intake.md.html)')
         _write(root, f'group{index}.md.html',
-               f'# Component v3: group{index}\n\n## Flow\n\n{next_step}\n')
+               f'# Component: group{index}\n\n## Flow\n\n{next_step}\n')
     entry.write_text(entry.read_text().replace(
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
         '1.  [component group0](group0.md.html)'))
     with pytest.raises(LayoutError, match='nesting exceeds 64'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_snapshot_has_total_size_limit(fixture_graph, monkeypatch):
     root, entry = fixture_graph
-    from api_agent.workflows import stateful
+    from api_agent.workflows import native as stateful
     original = stateful._read_bounded
     fake_blob = b'x' * (8 * 1024 * 1024)
     for index in range(8):
@@ -1413,12 +1417,12 @@ def test_stateful_snapshot_has_total_size_limit(fixture_graph, monkeypatch):
         return original(path, owner)
     monkeypatch.setattr(stateful, '_read_bounded', oversized_total)
     with pytest.raises(LayoutError, match='snapshot exceeds 64 MiB'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_static_edge_between_nodes_and_routed_component_end(fixture_graph):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -1432,8 +1436,8 @@ def test_stateful_static_edge_between_nodes_and_routed_component_end(fixture_gra
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
         '1.  [component group](group.md.html)')
         .replace('| finish | END | - | - |', '| finish | END | - | - |\n| group | END | - | - |'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                        thread_id='routed-end'))
@@ -1443,8 +1447,8 @@ def test_stateful_static_edge_between_nodes_and_routed_component_end(fixture_gra
     entry.write_text(entry.read_text().replace(
         '| intake | finish | choose | [Python](native.py) |\n| intake | END | choose | [Python](native.py) |',
         '| intake | finish | - | - |'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                        thread_id='static-next'))
@@ -1453,7 +1457,7 @@ def test_stateful_static_edge_between_nodes_and_routed_component_end(fixture_gra
 
 def test_stateful_failed_nested_node_closes_owned_component(fixture_graph):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -1467,9 +1471,9 @@ def test_stateful_failed_nested_node_closes_owned_component(fixture_graph):
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
         '1.  [component group](group.md.html)')
         .replace('| finish | END | - | - |', '| finish | END | - | - |\n| group | END | - | - |'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     events = []
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, services={'observe': events.append})
     with pytest.raises(RuntimeError, match='failed'):
         asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -1495,10 +1499,10 @@ def test_stateful_relative_package_dependency_uses_selected_source(fixture_graph
 | {package} | [Python](src/{package}/__init__.py) |
 | {package}.helper | [Python](src/{package}/helper.py) |
 ''')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     try:
-        catalog = load_stateful_catalog(definition)
-        workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+        catalog = load_native_bindings(definition)
+        workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
         result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                            thread_id='relative'))
         assert result['visits'] == 1
@@ -1511,9 +1515,9 @@ def test_stateful_invalid_relative_import_rejected_before_native_exec(fixture_gr
     root, entry = fixture_graph
     source = root / 'native.py'
     source.write_text('from ..unavailable import helper\n' + source.read_text())
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='relative native import leaves package'):
-        load_stateful_catalog(definition)
+        load_native_bindings(definition)
 
 
 def test_stateful_graph_cancellation_closes_scope_and_releases_thread(fixture_graph):
@@ -1521,9 +1525,9 @@ def test_stateful_graph_cancellation_closes_scope_and_releases_thread(fixture_gr
     source = root / 'native.py'
     source.write_text('import asyncio\n' + source.read_text().replace(
         'def intake(state, context):', 'async def intake(state, context):\n    await asyncio.sleep(0.2)'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     events = []
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, services={'observe': events.append})
 
     async def cancel_then_retry():
@@ -1544,8 +1548,8 @@ def test_stateful_graph_cancellation_closes_scope_and_releases_thread(fixture_gr
 
 def test_stateful_component_completion_is_idempotent(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     async def complete():
         token = workflow._turn_state.set({'visits': {}, 'open_components': {}})
@@ -1562,7 +1566,7 @@ def test_stateful_nested_declaration_cannot_leave_selected_roots(fixture_graph):
     outside.write_text((root / 'intake.md.html').read_text())
     entry.write_text(entry.read_text().replace('(intake.md.html)', '(../outside.md.html)'))
     with pytest.raises(LayoutError, match='source outside roots'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_relative_import_without_package_is_explicitly_rejected(fixture_graph):
@@ -1570,14 +1574,14 @@ def test_stateful_relative_import_without_package_is_explicitly_rejected(fixture
     source = root / 'native.py'
     source.write_text('from . import helper\n' + source.read_text())
     _write(root, 'helper.py', 'def helper():\n    return 1\n')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='local native import must be declared'):
-        load_stateful_catalog(definition)
+        load_native_bindings(definition)
 
 
 def test_stateful_scope_end_survives_component_cleanup_failure(fixture_graph):
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -1588,9 +1592,9 @@ def test_stateful_scope_end_survives_component_cleanup_failure(fixture_graph):
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
         '1.  [component group](group.md.html)')
         .replace('| finish | END | - | - |', '| finish | END | - | - |\n| group | END | - | - |'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     events = []
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, services={'observe': events.append})
     original = workflow._complete_component
     calls = 0
@@ -1617,8 +1621,8 @@ def test_stateful_scope_end_survives_component_cleanup_failure(fixture_graph):
 
 def test_stateful_stream_drains_queued_events_after_fast_producer(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
 
     class FastGraph:
@@ -1636,8 +1640,8 @@ def test_stateful_stream_drains_queued_events_after_fast_producer(fixture_graph)
 
 def test_stateful_dependency_finder_declines_unlisted_modules(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    from api_agent.workflows.stateful import _AdmittedDependencyLoader
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    from api_agent.workflows.native import (_AdmittedDependencyLoader)
     finder = _AdmittedDependencyLoader(definition)
     assert finder.find_spec('unlisted_dependency') is None
 
@@ -1648,8 +1652,8 @@ def test_stateful_stream_propagates_langchain_runnable_callbacks(fixture_graph):
     source.write_text('from langchain_core.runnables import RunnableLambda\n' + source.read_text().replace(
         'def intake(state, context):', '''async def intake(state, context):
     await RunnableLambda(lambda value: value, name='synthetic_leaf').ainvoke('safe')'''))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
 
     async def collect():
@@ -1673,7 +1677,7 @@ def _library_pack(root, library, *, source='../library', distribution='synthetic
 id="synthetic-pack"
 config="config.toml"
 [workflow]
-version=2
+version = 1
 root="base"
 entry="flow.md.html"
 replacements=[{{target_id="greeting",entry="selected.txt",root_id="pack"}}]
@@ -1707,7 +1711,7 @@ def test_source_sibling_workflow_library_keeps_runtime_base_and_pack_replacement
     runtime.mkdir()
     context = load_launch_context(runtime, pack)
     definition = load_selected_definition(context)
-    catalog = load_stateful_catalog(definition)
+    catalog = load_native_bindings(definition)
     workflow = load_workflow(context, catalog, definition=definition,
                              reducers={'messages': add_messages})
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -1743,7 +1747,7 @@ def test_installed_workflow_library_requires_distribution_owned_selection(fixtur
                         lambda **kwargs: iter([Distribution()]))
     context = load_launch_context(runtime, pack)
     definition = load_selected_definition(context)
-    catalog = load_stateful_catalog(definition)
+    catalog = load_native_bindings(definition)
     workflow = load_workflow(context, catalog, definition=definition,
                              reducers={'messages': add_messages})
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -1785,7 +1789,7 @@ def test_installed_workflow_library_accepts_alias_above_distribution_root(fixtur
     context = load_launch_context(runtime, pack)
     assert context.workflow_base_root == library
     definition = load_selected_definition(context)
-    catalog = load_stateful_catalog(definition)
+    catalog = load_native_bindings(definition)
     workflow = load_workflow(context, catalog, definition=definition,
                              reducers={'messages': add_messages})
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -1826,21 +1830,21 @@ def test_timeout_admission_rejects_bad_schema_and_selected_override_before_nativ
 | GRAPH | [config](limit.toml) | LIMIT |
 ''')
     with pytest.raises(LayoutError, match='invalid timeout declaration'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
     assert not marker.exists()
 
     _write(root, 'limit.toml', 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=1.0\n')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='finite positive'):
-        load_stateful_catalog(definition, config={'LIMIT': 0})
+        load_native_bindings(definition, config={'LIMIT': 0})
     assert not marker.exists()
 
-    catalog = load_stateful_catalog(definition, config={'LIMIT': 0.5})
+    catalog = load_native_bindings(definition, config={'LIMIT': 0.5})
     assert marker.exists()
     with pytest.raises(LayoutError, match='does not match selected values'):
-        StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages},
+        Workflow(definition, catalog=catalog, reducers={'messages': add_messages},
                          config={'LIMIT': 1.0})
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages},
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages},
                                 config={'LIMIT': 0.5})
     assert workflow.timeouts['GRAPH'] == 0.5
 
@@ -1861,20 +1865,20 @@ def test_timeout_source_cannot_relabel_prompt_resource(fixture_graph):
 | GRAPH | [config](limit.toml) | LIMIT |
 ''')
     with pytest.raises(LayoutError, match='timeout source has conflicting kind'):
-        load_stateful_definition(entry, base_root=root, pack_root=root)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_recorded_stateful_installed_owner_proof_precedes_native_effects(fixture_graph, monkeypatch):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     from api_agent.workflows import provenance, evidence
     calls = []
     monkeypatch.setattr(provenance, 'verified_documents',
                         lambda admitted, packaged_proof=None: calls.append(admitted.definition_id) or {})
     monkeypatch.setattr(evidence, 'publish', lambda payload: None)
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
-    catalog = load_stateful_catalog(definition)
-    workflow = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    catalog = load_native_bindings(definition)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='installed-proof'))
     assert calls == [definition.definition_id, definition.definition_id]
 
@@ -1961,7 +1965,7 @@ def test_workflow_library_rejects_malformed_manifest(fixture_graph, library_tabl
 id="pack"
 config="config.toml"
 [workflow]
-version=2
+version = 1
 root="base"
 entry="flow.md.html"
 [workflow.library]
@@ -2102,7 +2106,7 @@ def test_workflow_library_origin_check_rejects_other_logical_base(fixture_graph)
     runtime.mkdir()
     context = load_launch_context(runtime, pack)
     definition = load_selected_definition(context)
-    catalog = load_stateful_catalog(definition)
+    catalog = load_native_bindings(definition)
     wrong_context = replace(context, workflow_base_root=runtime)
     with pytest.raises(ResourcePackError, match='does not match selected pack graph'):
         load_workflow(wrong_context, catalog, definition=definition,
@@ -2115,9 +2119,9 @@ def test_native_host_runtime_import_is_trusted_by_physical_origin(fixture_graph)
     runtime_root = Path(api_agent.__file__).resolve().parents[2]
     source = root / 'native.py'
     source.write_text('from api_agent.providers.llm import Message\n' + source.read_text())
-    definition = load_stateful_definition(entry, base_root=runtime_root, pack_root=root,
+    definition = load_definition(entry, base_root=runtime_root, pack_root=root,
                                            entry_root='pack')
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages})
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                        thread_id='host-runtime'))
@@ -2131,10 +2135,10 @@ def test_native_shadow_with_host_prefix_still_requires_admission(fixture_graph):
     _write(root, 'src/api_agent/extra.py', 'def hidden():\n    return 1\n')
     source = root / 'native.py'
     source.write_text('from api_agent.extra import hidden\n' + source.read_text())
-    definition = load_stateful_definition(entry, base_root=runtime_root, pack_root=root,
+    definition = load_definition(entry, base_root=runtime_root, pack_root=root,
                                            entry_root='pack')
     with pytest.raises(LayoutError, match='local native import must be declared'):
-        load_stateful_catalog(definition)
+        load_native_bindings(definition)
 
 
 @pytest.mark.parametrize('explicit', [False, True])
@@ -2148,10 +2152,10 @@ from api_agent.testing.inference_usage import publish
     request = LLMRequest('gpt-6-luna', CompletionRequest((Message('user', (TextContent('x'),)),)))
     result = LLMResult(Message('assistant', (TextContent('x'),)), Usage(1, 1, 0, cache_write_tokens=0))
     publish(request, result)'''))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     selected_turn = '00000000-0000-4000-8000-000000000012' if explicit else None
     journal = WorkflowJournal(definition, turn_id=selected_turn)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, journal=journal)
     import json
     events = tmp_path / 'usage.jsonl'
@@ -2179,17 +2183,17 @@ def test_stateful_rejects_mismatched_turn_before_effects(
     source.write_text('from pathlib import Path\n' + source.read_text().replace(
         'def intake(state, context):',
         f'def intake(state, context):\n    Path({str(marker)!r}).write_text("ran")'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition, turn_id='00000000-0000-4000-8000-000000000010')
-    workflow = StatefulWorkflow(
-        definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(
+        definition, catalog=load_native_bindings(definition),
         reducers={'messages': add_messages},
         journal=journal if journal_source == 'workflow' else None)
     supplied_journal = journal if journal_source == 'invocation' else None
     services = {'journal': journal} if journal_source == 'service' else None
     if recorded:
         monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
-        monkeypatch.setattr('api_agent.workflows.stateful._source_manifest',
+        monkeypatch.setattr('api_agent.workflows.execution._source_manifest',
                             lambda *args: pytest.fail('provenance ran before turn check'))
     with pytest.raises(ValueError, match='turn identity disagrees'):
         asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -2202,9 +2206,9 @@ def test_stateful_rejects_mismatched_turn_before_effects(
 
 def test_stateful_missing_node_event_cannot_complete_journal(fixture_graph):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
                                 reducers={'messages': add_messages}, journal=journal)
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                thread_id='complete'))
@@ -2243,7 +2247,7 @@ def test_mixed_workflow_owners_verify_before_native_import(fixture_graph, monkey
     monkeypatch.setattr(provenance, 'verified_documents', verify)
     monkeypatch.setattr(evidence, 'publish', lambda envelope: None)
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
-    catalog = load_stateful_catalog(definition)
+    catalog = load_native_bindings(definition)
     workflow = load_workflow(context, catalog, definition=definition,
                              reducers={'messages': add_messages})
     asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0},
@@ -2272,7 +2276,7 @@ def test_stateful_pack_rejects_external_conditions(fixture_graph):
     context = SimpleNamespace(base_root=root, pack_root=root, workflow_entry=entry,
         workflow_root='base', workflow_replacements=())
     definition = load_selected_definition(context)
-    catalog = load_stateful_catalog(definition)
+    catalog = load_native_bindings(definition)
     workflow = load_workflow(context, catalog, conditions=None, definition=definition,
                              reducers={'messages': add_messages})
     assert workflow.definition is definition
@@ -2283,9 +2287,9 @@ def test_stateful_pack_rejects_external_conditions(fixture_graph):
 
 def test_presented_stateful_selection_keeps_the_real_loader(fixture_graph):
     from api_agent.workflows.document_format import wrap_document
-    from api_agent.workflows.stateful import StatefulDefinition
+    from api_agent.workflows.native import (TypedDefinition)
     root, entry = fixture_graph
-    bare = load_stateful_definition(entry, base_root=root, pack_root=root)
+    bare = load_definition(entry, base_root=root, pack_root=root)
     expected_edge_line = entry.read_text().splitlines()[bare.edges[0]['line'] - 1]
     entry.write_bytes(wrap_document(entry.read_bytes(), root=True,
                                     asset_prefix='.private_resources/viewer/'))
@@ -2294,7 +2298,7 @@ def test_presented_stateful_selection_keeps_the_real_loader(fixture_graph):
 
     selected = load_selected_definition(context)
 
-    assert isinstance(selected, StatefulDefinition)
+    assert isinstance(selected, TypedDefinition)
     assert selected.graph_id == bare.graph_id
     assert tuple({key: value for key, value in edge.items() if key != 'line'}
                  for edge in selected.edges) == tuple(
@@ -2324,13 +2328,13 @@ def test_presented_stateful_cli_keeps_validation_and_topology(fixture_graph, cap
 @pytest.mark.parametrize('with_journal', [False,True])
 def test_stateful_plain_capture_requires_explicit_contract_and_retains_only_fields(fixture_graph,with_journal):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry,base_root=root,pack_root=root)
+    definition = load_definition(entry,base_root=root,pack_root=root)
     from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
     boundary = EmissionBoundary(ContentPolicy(True))
     journal = WorkflowJournal(definition,log_content=True,content_policy=ContentPolicy(True), boundary=boundary) if with_journal else None
     contract = {'schema':{'type':'object','properties':{'visits':{'type':'integer'}}},
                 'plain_fields':['visits']}
-    workflow = StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition,catalog=load_native_bindings(definition),
         reducers={'messages':add_messages},journal=journal,
         services={'emissions': boundary, 'plain_io_contracts':{'intake':{'input':contract,'output':contract}}})
     result = asyncio.run(workflow.arun({'messages':[HumanMessage(content='unclassified text')],
@@ -2363,11 +2367,11 @@ def test_recorded_stateful_graph_publishes_only_resolved_log_permission(fixture_
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING','1')
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(events))
     monkeypatch.setattr('api_agent.workflows.provenance.verified_documents',lambda *args,**kwargs:None)
-    definition = load_stateful_definition(entry,base_root=root,pack_root=root)
+    definition = load_definition(entry,base_root=root,pack_root=root)
     rows = []
     contract = {'schema':{'type':'object','properties':{'text':{'type':'string'}}},'plain_fields':['text']}
     factory = WorkflowObservationFactory(resolved,boundary=EmissionBoundary(),sink=rows.append)
-    workflow = StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),reducers={'messages':add_messages},
+    workflow = Workflow(definition,catalog=load_native_bindings(definition),reducers={'messages':add_messages},
         config={'LOG_CONTENT':True},services={'observation_factory':factory if observe else None,
             'content_policy':factory.log_policy if authority else None,
             **({'emissions':factory.boundary} if authority else {}),
@@ -2416,8 +2420,8 @@ def test_recorded_stateful_frozen_capture_contract_is_observational(
     schema = freeze({'type':'object','properties':freeze({
         'text':freeze({'type':'array' if isinstance(case,list) else 'string'})})})
     contract = MappingProxyType({'schema':schema,'plain_fields':('text',)})
-    definition = load_stateful_definition(entry,base_root=root,pack_root=root)
-    workflow = StatefulWorkflow(definition,catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry,base_root=root,pack_root=root)
+    workflow = Workflow(definition,catalog=load_native_bindings(definition),
         reducers={'messages':add_messages},config={'LOG_CONTENT':log},
         services={'observation_factory':factory,'plain_io_contracts':{
             'intake':{'input':contract,'output':contract}}})
@@ -2461,9 +2465,9 @@ def test_stateful_nodes_transfer_declared_grant_and_new_turn_is_fresh(fixture_gr
         path = root / f'{name}.md.html'
         path.write_text(path.read_text() + '\n## Tools\n\n| Port | Instance | Operations |\n'
                         f'| --- | --- | --- |\n| {port} | [reader](instance.toml) | {operations} |\n')
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     owner = Owner('synthetic')
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
         reducers={'messages': add_messages}, services={'tools': OwnerTools(definition, owner)})
     async def turns():
         for _ in range(2):
@@ -2496,8 +2500,8 @@ def test_stateful_parent_lends_provider_without_checkpoint_or_history_to_child_g
     def build_child(borrowed):
         return build(base, llm=borrowed, selection='example',
                      trial=trial_uuid('skip', first_ready=False))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
         reducers={'messages': add_messages}, services={'complete': complete, 'build_child': build_child})
 
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='parent'))
@@ -2518,7 +2522,7 @@ def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, lo
     root, entry = fixture_graph
     source = root / 'native.py'
     source.write_text(source.read_text().replace('    visits: int', '    visits: int\n    records: list'))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     boundary = EmissionBoundary(ContentPolicy(log), secrets=['registered-credential'])
     journal = WorkflowJournal(definition, log_content=log, content_policy=ContentPolicy(log), boundary=boundary)
     def project(direction, values=None):
@@ -2529,7 +2533,7 @@ def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, lo
         projected.append(direction)
         return project(direction, values)
     projection = project_async if awaited else project
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
         reducers={'messages': add_messages}, journal=journal,
         services={'emissions': boundary, 'node_io_projections': {'intake': projection, 'finish': projection},
                   'graph_io_projection': projection})
@@ -2557,7 +2561,7 @@ def test_explicit_io_projection_precedes_large_state_admission(fixture_graph, lo
 @pytest.mark.parametrize('awaited', [False, True])
 def test_io_projection_failure_warns_without_failing_workflow(fixture_graph, scope, invalid, caplog, awaited):
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition)
     def projection(*args):
         if invalid == 'raise':
@@ -2571,7 +2575,7 @@ def test_io_projection_failure_warns_without_failing_workflow(fixture_graph, sco
     callback = project_async if awaited else projection
     services = ({'node_io_projections': {'intake': callback}} if scope == 'node'
                 else {'graph_io_projection': callback})
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+    workflow = Workflow(definition, catalog=load_native_bindings(definition),
         reducers={'messages': add_messages}, journal=journal, services=services)
 
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='invalid-projection'))
@@ -2590,7 +2594,7 @@ def test_io_projection_failure_warns_without_failing_workflow(fixture_graph, sco
 def test_explicit_scope_outcomes_use_returned_state_without_interrupting(fixture_graph, state_name, routed, recorded):
     from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeCause, OutcomeState
     root, entry = fixture_graph
-    _write(root, 'group.md.html', '''# Component v3: group
+    _write(root, 'group.md.html', '''# Component: group
 
 ## Flow
 
@@ -2604,7 +2608,7 @@ def test_explicit_scope_outcomes_use_returned_state_without_interrupting(fixture
     if not routed:
         text = text.replace('| intake | finish | choose | [Python](native.py) |\n| intake | END | choose | [Python](native.py) |', '| intake | finish | - | - |')
     entry.write_text(text)
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     seen, events = [], []
     journal = WorkflowJournal(definition) if recorded else None
     def outcome(kind, owner, state):
@@ -2615,7 +2619,7 @@ def test_explicit_scope_outcomes_use_returned_state_without_interrupting(fixture
             return None
         status = OutcomeState(state_name)
         return ExecutionOutcome(status, OutcomeCause.EXECUTION if status in {OutcomeState.FAILURE, OutcomeState.PARTIAL} else None)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition), reducers={'messages': add_messages}, services={'scope_outcome': outcome, 'observe': events.append}, journal=journal)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages}, services={'scope_outcome': outcome, 'observe': events.append}, journal=journal)
     if state_name == 'invalid':
         with pytest.raises(ValueError, match='Invalid explicit scope outcome'):
             asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='invalid-scope'))
@@ -2661,8 +2665,8 @@ def test_returned_child_failure_does_not_poison_terminal_request(fixture_graph):
     from api_agent.telemetry.outcomes import (ExecutionOutcome, OperationOutcome,
         OutcomeCause, OutcomeState, bind_operation, report_outcome)
     root, entry = fixture_graph
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition), reducers={'messages': add_messages})
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
     runtime = object()
     owner = OperationOutcome(runtime, None)
     receipts = []

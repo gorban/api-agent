@@ -35,15 +35,17 @@ _RECORD_HASH = re.compile(r'sha256=([A-Za-z0-9_-]{43})\Z')
 _MODULE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z')
 _VERSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+!-]*\Z')
 _NAME = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z')
+_REGISTRY = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
+_GRAPH_ID = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
 _TOP_KEYS = frozenset({
-    'format', 'plan_version', 'runtime_abi', 'workflow_version', 'graph_id',
+    'format', 'plan_version', 'runtime_abi', 'workflow_version', 'graph_id', 'state', 'imports', 'declaration_entry',
     'definition_id', 'entry_root', 'entry', 'replacements', 'resources', 'layout',
     'selected_declarations', 'declaration_fragments', 'tool_usages', 'bindings',
     'distributions', 'compiled_plan_identity',
 })
 _STATE_KEYS = frozenset({
     'helper_sources', 'native_dependencies', 'timeouts', 'schema_name',
-    'schema_source', 'nodes', 'edges', 'declared_resources',
+    'schema_source', 'nodes', 'edges', 'declared_resources', 'application_binding',
 })
 
 
@@ -247,9 +249,9 @@ def _check_versions(value):
     if ints['plan_version'] != PLAN_VERSION or ints['runtime_abi'] != RUNTIME_ABI:
         raise ArtifactRejected(f"unsupported plan version {ints['plan_version']} "
                                f"or runtime ABI {ints['runtime_abi']}")
-    if ints['workflow_version'] not in (2, 3):
+    if ints['workflow_version'] != 1:
         raise ArtifactRejected(f"unsupported workflow version {ints['workflow_version']}")
-    expected = _TOP_KEYS | ({'state'} if ints['workflow_version'] == 3 else set())
+    expected = _TOP_KEYS
     if set(value) != expected:
         raise ArtifactRejected('plan has missing or unknown sections')
     identity = value.get('compiled_plan_identity')
@@ -257,7 +259,7 @@ def _check_versions(value):
         raise ArtifactRejected('compiled plan identity is invalid')
     if not hmac.compare_digest(identity, compiled_plan_identity(value)):
         raise ArtifactRejected('compiled plan identity does not match the encoded graph')
-    return ints['workflow_version']
+    return value['state'] is not None
 
 
 def _definition_id(version, graph_id, resources, replacements):
@@ -334,7 +336,7 @@ def _row(value, length, name):
     return value
 
 
-def _decode_plan(value, version):
+def _decode_plan(value, typed):
     resources, contents = _decode_resources(value['resources'])
     graph_id, entry_root = value['graph_id'], value['entry_root']
     replacements = tuple(Replacement(target, Path(entry), root)
@@ -343,10 +345,20 @@ def _decode_plan(value, version):
     if (type(graph_id) is not str or entry_root not in ('base', 'pack')
             or not all(type(item) is str for row in value['replacements'] for item in row)):
         raise ValueError('invalid identity')
-    definition_id = _definition_id(version, graph_id, resources, replacements)
+    definition_id = _definition_id(1, graph_id, resources, replacements)
     if definition_id != value['definition_id']:
         raise ArtifactRejected('definition_id does not match the plan resources')
     entry = _virtual(value['entry'])
+    imports = _decode(value['imports'])
+    declaration_entry = _decode(value['declaration_entry'])
+    declarations = {_virtual(item.logical_path) for item in resources if item.kind == 'declaration'}
+    if (type(imports) is not tuple or len(imports) > 64
+            or any(type(row) is not tuple or len(row) != 2
+                   or row[0] not in declarations or type(row[1]) is not str
+                   or not _GRAPH_ID.fullmatch(row[1]) for row in imports)
+            or len({entry, *(row[0] for row in imports)}) != len(imports) + 1
+            or declaration_entry != (imports[-1][0] if imports else None)):
+        raise ValueError('invalid workflow import metadata')
     encoded_layout = value['layout']
     if set(encoded_layout) != {'steps', 'tables', 'files'} or type(encoded_layout['steps']) is not list:
         raise ValueError('invalid layout')
@@ -359,11 +371,12 @@ def _decode_plan(value, version):
             raise ValueError('invalid layout step')
         steps.append(Step(row['id'], row['kind'], row['parent'], _virtual(row['source']), row['line']))
     tables, files = _decode(encoded_layout['tables']), _decode(encoded_layout['files'])
-    expected_tables = {'Components', 'Functions', 'Bindings', 'Edges', 'Prompts', 'Timeouts'} if version == 2 else {'Edges'}
+    expected_tables = {'Components', 'Functions', 'Bindings', 'Edges', 'Prompts', 'Timeouts'} if not typed else {'Edges'}
     if not isinstance(tables, MappingProxyType) or set(tables) != expected_tables:
         raise ValueError('invalid layout tables')
     decoded = dict(
         graph_id=graph_id, entry=entry, entry_root=entry_root,
+        imports=imports, declaration_entry=declaration_entry,
         roots=MappingProxyType({root: ARTIFACT_ROOT / root for root in ('base', 'pack')}),
         replacements=replacements, resources=resources, definition_id=definition_id,
         compiled_plan_identity=value['compiled_plan_identity'], layout=Layout(entry, tuple(steps), tables, files),
@@ -373,7 +386,7 @@ def _decode_plan(value, version):
                                     tuple(_row(row, 7, 'tool usage')[6]))
                           for row in _decode(value['tool_usages'])),
     )
-    if version == 3:
+    if typed:
         state = value['state']
         if set(state) != _STATE_KEYS:
             raise ValueError('invalid state section')
@@ -388,10 +401,17 @@ def _decode_plan(value, version):
         by_logical = {item.logical_path: item for item in resources}
         if state['helper_sources']:
             raise ArtifactRejected('compiled plans do not support helper native sources')
+        application_binding = _decode(state['application_binding'])
+        native_sources = {_virtual(item.logical_path) for item in resources if item.kind == 'native_source'}
+        if application_binding is not None and (
+                type(application_binding) is not tuple or len(application_binding) != 2
+                or type(application_binding[0]) is not str or not _REGISTRY.fullmatch(application_binding[0])
+                or application_binding[1] not in native_sources):
+            raise ValueError('invalid application binding')
         decoded.update(
             helper_sources=(), native_dependencies=_decode(state['native_dependencies']),
             timeouts=timeouts, schema_name=state['schema_name'], schema_source=_decode(state['schema_source']),
-            nodes=nodes, edges=edges,
+            nodes=nodes, edges=edges, application_binding=application_binding,
             declared_resources=MappingProxyType({key: by_logical[path]
                                                  for key, path in state['declared_resources'].items()}),
         )
@@ -399,17 +419,18 @@ def _decode_plan(value, version):
     return decoded, distributions, bindings
 
 
-def _demanded(version, decoded):
-    if version == 2:
+def _demanded(typed, decoded):
+    if not typed:
         steps = {step.id: step for step in decoded['layout'].steps}
         return [(row['ID'], row['Registry'], steps[row['ID']].source)
                 for row in decoded['layout'].tables['Functions']]
     return [(None, decoded['schema_name'], decoded['schema_source']),
             *((None, row['Registry'], row['Source']) for row in decoded['nodes']),
-            *((None, row['Router'], row['Source']) for row in decoded['edges'] if row['Router'] != '-')]
+            *((None, row['Router'], row['Source']) for row in decoded['edges'] if row['Router'] != '-'),
+            *([(None, *decoded['application_binding'])] if decoded['application_binding'] is not None else [])]
 
 
-def _bind(version, decoded, bindings):
+def _bind(typed, decoded, bindings):
     """Import plan-bound modules normally and resolve declared callables."""
     by_source = {row['source']: row for row in bindings}
     modules = {}
@@ -419,7 +440,7 @@ def _bind(version, decoded, bindings):
         except (ImportError, ValueError) as error:
             raise ArtifactRejected(f"cannot import bound module {row['module']}: {error}") from error
     callables, registry = {}, {}
-    for node, name, source in _demanded(version, decoded):
+    for node, name, source in _demanded(typed, decoded):
         try:
             module = modules[by_source[_logical(source)]['module']]
         except KeyError as error:
@@ -450,7 +471,7 @@ class _Compiled:
 
 @dataclass(frozen=True)
 class CompiledDefinition(_Compiled):
-    version: ClassVar[int] = 2
+    version: ClassVar[int] = 1
     graph_id: str
     entry: PurePosixPath
     entry_root: str
@@ -468,6 +489,8 @@ class CompiledDefinition(_Compiled):
     bindings: tuple
     modules: object = repr(False)
     callables: object = repr(False)
+    imports: tuple = ()
+    declaration_entry: PurePosixPath | None = None
 
     def native_rejection(self, function, step):
         return None
@@ -484,7 +507,7 @@ class CompiledDefinition(_Compiled):
 
 @dataclass(frozen=True)
 class CompiledStateDefinition(_Compiled):
-    version: ClassVar[int] = 3
+    version: ClassVar[int] = 1
     graph_id: str
     entry: PurePosixPath
     entry_root: str
@@ -510,12 +533,18 @@ class CompiledStateDefinition(_Compiled):
     bindings: tuple
     modules: object = repr(False)
     callables: object = repr(False)
+    application_binding: tuple | None = None
+    imports: tuple = ()
+    declaration_entry: PurePosixPath | None = None
 
     def load_catalog(self, *, packaged_proof=None, config=None):
-        from .stateful import StatefulCatalog, _validated_timeouts
-        values, keys = _validated_timeouts(self, config)
+        from .model import NativeCatalog
+        from .configuration import resolve_state_timeouts
+        values, keys = resolve_state_timeouts(self, config)
         sources = {self.schema_source, *(row['Source'] for row in self.nodes),
                    *(row['Source'] for row in self.edges if row['Source'] is not None)}
+        if self.application_binding is not None:
+            sources.add(self.application_binding[1])
         by_source = {row['source']: row['module'] for row in self.bindings}
         namespaces = {
             source: MappingProxyType(dict(vars(self.modules[by_source[_logical(source)]])))
@@ -523,17 +552,17 @@ class CompiledStateDefinition(_Compiled):
         }
         bindings = {
             (source, name): namespaces[source].get(name)
-            for _, name, source in _demanded(3, self.__dict__)
+            for _, name, source in _demanded(True, self.__dict__)
             if callable(namespaces[source].get(name))
         }
-        if any((source, name) not in bindings for _, name, source in _demanded(3, self.__dict__)):
+        if any((source, name) not in bindings for _, name, source in _demanded(True, self.__dict__)):
             raise ArtifactRejected('compiled catalog has an unbound declared callable')
-        return StatefulCatalog(self.definition_id, MappingProxyType(namespaces), values, keys,
+        return NativeCatalog(self.definition_id, MappingProxyType(namespaces), values, keys,
                                frozenset(self.modules), MappingProxyType(bindings))
 
     def workflow(self, *, reducers, services=None, journal=None, checkpointer=None, config=None):
-        from .stateful import StatefulWorkflow
-        return StatefulWorkflow(self, catalog=self.load_catalog(config=config), reducers=reducers,
+        from .execution import Workflow
+        return Workflow(self, catalog=self.load_catalog(config=config), reducers=reducers,
                                 services=services, journal=journal, checkpointer=checkpointer, config=config)
 
 
@@ -542,16 +571,16 @@ def load_artifact(plan):
     if type(plan) is not bytes or len(plan) > MAX_PLAN_BYTES:
         raise ArtifactRejected('plan must be bytes within the size limit')
     value = _parse(plan)
-    version = _check_versions(value)
+    typed = _check_versions(value)
     try:
-        decoded, _distributions, bindings = _decode_plan(value, version)
-        modules, callables = _bind(version, decoded, bindings)
+        decoded, _distributions, bindings = _decode_plan(value, typed)
+        modules, callables = _bind(typed, decoded, bindings)
     except ArtifactRejected:
         raise
     except (KeyError, TypeError, ValueError, AttributeError, IndexError, RecursionError) as error:
         raise ArtifactRejected(f'malformed plan: {error}') from error
     decoded.update(bindings=bindings, modules=modules, callables=callables, plan_digest=plan_digest(plan))
-    if version == 2:
+    if not typed:
         return CompiledDefinition(**decoded)
     return CompiledStateDefinition(**decoded)
 

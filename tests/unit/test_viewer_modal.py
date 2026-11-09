@@ -10,40 +10,27 @@ from types import SimpleNamespace
 import pytest
 
 from api_agent.runtime import viewer_host, viewer_modal
-from api_agent.workflows.document_format import (_CARRIER, _HEAD_PRE_MODAL, _ROOT_HEAD_PRE_MODAL,
-                                                 _ROOT_HELP,
+from api_agent.workflows.document_format import (_CARRIER,
                                                  extract_document, validate_presentation_location,
                                                  wrap_document)
 from api_agent.workflows.viewer_render import ViewFile
 
 
 def _wrapper(root=True):
-    source = b'# Workflow v2\n' if root else b'# Component\n'
+    source = b'# Workflow\n' if root else b'# Component\n'
     prefix = '.private_resources/viewer/' if root else '../.private_resources/viewer/'
     return wrap_document(source, root=root, asset_prefix=prefix)
 
 
 @pytest.mark.parametrize('root', [True, False])
-def test_old_v2_envelope_remains_exactly_readable_while_new_header_is_emitted(tmp_path, root):
-    prefix = b'.private_resources/viewer/' if root else b'../.private_resources/viewer/'
-    old_head = (_ROOT_HEAD_PRE_MODAL.replace(b'{assets}', prefix) + _ROOT_HELP if root else
-                _HEAD_PRE_MODAL.replace(b'{assets}', prefix))
-    old = old_head + _CARRIER + (b'# Workflow v2\n' if root else b'# Component\n')
-    location = tmp_path / ('flow.md.html' if root else 'components/agent.md.html')
-    assert extract_document(old, path=location).executable_bytes == (
-        b'# Workflow v2\n' if root else b'# Component\n')
-    validate_presentation_location(old, path=location, root=tmp_path)
-    hosted, managed = viewer_modal.decorate_managed_wrapper(
-        'r/base/flow.md.html' if root else 'r/base/components/agent.md.html',
-        'text/html; charset=utf-8', old)
-    assert managed and b"frame-src 'self'" in hosted.partition(_CARRIER)[0]
-    assert hosted.partition(_CARRIER)[2] == old.partition(_CARRIER)[2]
+def test_incomplete_pre_release_envelope_is_rejected(tmp_path, root):
     current = _wrapper(root)
-    assert b"frame-src 'self'" in current and b'flow-modal.js' in current
-    hybrid = old.replace(b"img-src 'self'; connect-src 'none'",
-                         b"img-src 'self'; frame-src 'self'; connect-src 'none'")
+    incomplete = current.replace(b"frame-src 'self'; ", b'')
+    location = tmp_path / ('flow.md.html' if root else 'components/agent.md.html')
+
     with pytest.raises(ValueError, match='invalid workflow presentation envelope'):
-        extract_document(hybrid, path=location)
+        extract_document(incomplete, path=location)
+
 
 
 def test_packaged_modal_assets_are_finite_and_missing_assets_fail(tmp_path, monkeypatch):
@@ -218,7 +205,7 @@ def test_host_serves_fixed_assets_without_mutating_captured_graph_or_svg(monkeyp
             headers, _, body = await _get(host.port, files[0].path)
             assert b'frame-src \'self\'' in headers
             assert b'workflow-managed-svg-routes' in body
-            assert body.endswith(b'# Workflow v2\n')
+            assert body.endswith(b'# Workflow\n')
             for file in files[1:]:
                 _, _, served = await _get(host.port, file.path)
                 assert served == file.body
@@ -296,7 +283,7 @@ def test_host_serves_captured_native_text_for_saved_and_temporary_views(temporar
             assert headers.startswith(b'HTTP/1.1 200')
             assert b'text/plain; charset=utf-8' in headers
             assert source == (root / 'demo/simple/functions.py').read_bytes()
-            assert b'workflow-generated-diagram-v2:start' in body
+            assert b'workflow-generated-diagram:start' in body
             assert b'[input](../../schemas/empty.json)' in body
         finally:
             await host.aclose()

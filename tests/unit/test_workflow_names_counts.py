@@ -20,14 +20,14 @@ def root_graph(root, heading):
     entry.write_text(heading + '\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
                      '## Flow\n\n1.  [node work](work.md.html)\n')
     (root / 'work.md.html').write_text(
-        '# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+        '# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
         '| work | deterministic | [Python](native.py) |\n\n## Functions\n\n'
         '| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
         '| work | work | [input](schema.json) | [output](schema.json) |\n')
     return entry
 
 
-@pytest.mark.parametrize('heading', ['# Workflow v2', '# LangGraph flow'])
+@pytest.mark.parametrize('heading', ['# Workflow', '# Workflow'])
 def test_exact_v2_root_headings_keep_execution_and_root_carrier(tmp_path, heading):
     entry = root_graph(tmp_path, heading)
     raw = entry.read_bytes()
@@ -41,7 +41,7 @@ def test_exact_v2_root_headings_keep_execution_and_root_carrier(tmp_path, headin
     assert b'<h2>Viewing this file</h2>' in entry.read_bytes()
 
 
-@pytest.mark.parametrize('heading', ['# LangGraph flow extra', '# LangGraph flow <script>x</script>', '# Arbitrary title'])
+@pytest.mark.parametrize('heading', ['# Workflow extra', '# Workflow <script>x</script>', '# Arbitrary title'])
 def test_unapproved_root_titles_are_rejected(tmp_path, heading):
     entry = root_graph(tmp_path, heading)
 
@@ -93,7 +93,7 @@ def test_nested_counts_include_executable_descendants_only_even_in_component_vie
 
 
 def test_alias_keeps_physical_diagnostics_and_cannot_replace_child_identity(tmp_path):
-    entry = root_graph(tmp_path, '# LangGraph flow')
+    entry = root_graph(tmp_path, '# Workflow')
     raw = entry.read_bytes() + (b'\n## Bindings\n\n| Node | Input | From | Field | Default |\n'
                                 b'| --- | --- | --- | --- | --- |\n| missing | field | START | field | - |\n')
     wrapped = wrap_document(raw, root=True, asset_prefix='.private_resources/viewer/')
@@ -103,10 +103,10 @@ def test_alias_keeps_physical_diagnostics_and_cannot_replace_child_identity(tmp_
     with pytest.raises(LayoutError, match=str(entry) + ':' + str(physical) + ':'):
         load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
 
-    entry.write_text('# LangGraph flow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+    entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
                      '## Flow\n\n1.  [node work](work.md.html)\n')
     child = tmp_path / 'work.md.html'
-    child_raw = child.read_bytes().replace(b'# Node v2: work', b'# LangGraph flow')
+    child_raw = child.read_bytes().replace(b'# Node: work', b'# Workflow')
     child.write_bytes(wrap_document(child_raw, root=True, asset_prefix='.private_resources/viewer/'))
     with pytest.raises(LayoutError, match='identity mismatch'):
         load_definition(entry, base_root=tmp_path, pack_root=tmp_path)

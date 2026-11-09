@@ -221,8 +221,8 @@ def load_launch_context(
     if workflow is not None:
         if (type(workflow) is not dict or set(workflow) - {'version', 'root', 'entry', 'replacements', 'library', 'artifact'}
                 or not {'version', 'root', 'entry'} <= set(workflow)
-                or type(workflow.get('version')) is not int or workflow['version'] != 2):
-            raise ResourcePackError('workflow must declare version=2, root and entry')
+                or type(workflow.get('version')) is not int or workflow['version'] != 1):
+            raise ResourcePackError('workflow must declare version=1, root and entry')
         library = workflow.get('library')
         if library is not None:
             workflow_base_root, workflow_library_files = _workflow_library(pack, library)
@@ -546,17 +546,8 @@ def load_selected_definition(context):
     replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
     pack = getattr(context, 'workflow_pack_root', None) or context.pack_root
     owner = pack if context.workflow_root == 'pack' else base
-    from api_agent.workflows.document_format import canonical_executable_bytes
-    heading = canonical_executable_bytes(_read_bounded(entry, owner), path=entry).split(b'\n', 1)[0]
-    if heading == b'# Workflow v3':
-        from api_agent.workflows.stateful import load_stateful_definition
-        definition = load_stateful_definition(entry, base_root=base,
-                                              pack_root=pack, replacements=replacements,
-                                              entry_root=context.workflow_root)
-    else:
-        definition = load_definition(entry, base_root=base,
-                                     pack_root=pack, replacements=replacements,
-                                     entry_root=context.workflow_root)
+    definition = load_definition(entry, base_root=base, pack_root=pack,
+                                 replacements=replacements, entry_root=context.workflow_root)
     owned = getattr(context, 'workflow_library_files', None)
     if owned is not None:
         selected = {path.relative_to(base).as_posix() for path in definition.contents
@@ -572,11 +563,10 @@ def load_workflow(context, registry, conditions=None, *, definition=None, config
 
     ``definition`` is any workflow definition satisfying the ``model`` protocol:
     parsed from declarations (the default) or loaded from a compiled plan. The
-    engines consume both identically through ``verify_sources``.
+    engine consumes both identically through ``verify_sources``.
     """
     from api_agent.workflows import Workflow
     from api_agent.workflows.model import Definition, Replacement
-    from api_agent.workflows.stateful import StatefulWorkflow
     if definition is None:
         definition = load_selected_definition(context)
     base = _workflow_base(context)
@@ -584,7 +574,7 @@ def load_workflow(context, registry, conditions=None, *, definition=None, config
     expected_replacements = tuple(Replacement(*item) for item in context.workflow_replacements)
     # A compiled plan has no physical entry or roots: its identity is its digest-pinned plan.
     physical = getattr(definition, 'origin', None) == 'source'
-    if (not isinstance(definition, Definition) or definition.version not in (2, 3)
+    if (not isinstance(definition, Definition) or definition.version != 1
             or physical and definition.entry != expected_entry
             or definition.entry_root != context.workflow_root
             or physical and definition.roots != {'base': base, 'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
@@ -593,10 +583,10 @@ def load_workflow(context, registry, conditions=None, *, definition=None, config
                 and definition.graph_id != context.workflow_artifact_graph_id)):
         raise ResourcePackError('Workflow definition does not match selected pack graph')
     definition.verify_sources()
-    if definition.version == 3:
+    if getattr(definition, 'schema_source', None) is not None:
         if conditions is not None:
-            raise ResourcePackError('Workflow v3 uses declared routers, not external conditions')
-        return StatefulWorkflow(definition, catalog=registry, reducers=reducers or {},
+            raise ResourcePackError('Typed state uses declared routers, not external conditions')
+        return Workflow(definition, catalog=registry, reducers=reducers or {},
                                 services=services, journal=journal, checkpointer=checkpointer,
                                 config=config)
     return Workflow(definition, registry, conditions,

@@ -64,12 +64,12 @@ def shape_plan(root, with_config, with_prerequisite):
     write(root, 'native.py', NATIVE)
     write(root, 'empty.json', '{"type":"object","properties":{},"additionalProperties":false}')
     write(root, 'output.json', '{"type":"object","properties":{"label":{"type":"string"}},"required":["label"],"additionalProperties":false}')
-    write(root, 'node.md.html', '# Node v2: read\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+    write(root, 'node.md.html', '# Node: read\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
           '| execute | deterministic | [source](native.py) |\n\n## Functions\n\n'
           '| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
           '| read | execute | [input](empty.json) | [output](output.json) |\n\n## Tools\n\n'
           '| Port | Instance |\n| --- | --- |\n| reader | [instance](instance.toml) |\n')
-    entry = write(root, 'flow.md.html', '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| shape |\n\n'
+    entry = write(root, 'flow.md.html', '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| shape |\n\n'
                   '## Flow\n\n1.  [node read](node.md.html)\n')
     instance = 'version=1\nid="fixture/shape"\ninterface="verified-read@1"\nimplementation="implementation.toml"\n'
     if with_prerequisite:

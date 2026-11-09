@@ -7,7 +7,7 @@ from api_agent.workflows.viewer_render import RenderError, ViewBundle, ViewFile
 from test_viewer_configuration import seed_renderer_declaration
 
 
-def entry(root, relative="flow.md.html", heading="# Workflow v2"):
+def entry(root, relative="flow.md.html", heading="# Workflow"):
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(heading + "\n")
@@ -49,8 +49,8 @@ def test_foreign_repositories_are_excluded(tmp_path):
     assert vb.discover_view_entries(tmp_path) == (root,)
 
 
-@pytest.mark.parametrize("heading", ["# Component v2: child", "# Node v2: child",
-                                      "# Component v3: child", "# Node v3: child"])
+@pytest.mark.parametrize("heading", ["# Component: child", "# Node: child",
+                                      "# Component: child", "# Node: child"])
 def test_named_component_and_node_documents_are_not_graph_roots(tmp_path, heading):
     root = entry(tmp_path)
     entry(tmp_path, "nested/flow.md.html", heading)
@@ -108,7 +108,7 @@ def test_shared_outputs_deduplicated_only_when_bytes_agree(tmp_path, monkeypatch
 def test_shared_output_conflict_fails_without_writes(tmp_path, monkeypatch):
     source = entry(tmp_path)
     original = source.read_bytes()
-    projections = (SimpleNamespace(documents=(), resources=()),) * 2
+    projections = (SimpleNamespace(entry_path="base/flow.md.html", documents=(), resources=()),) * 2
     monkeypatch.setattr(vb, "_projections", lambda root: projections)
     counter = iter((b"first", b"second"))
     monkeypatch.setattr(vb, "build_view_bundle", lambda *a, **k: ViewBundle("", (
@@ -122,12 +122,14 @@ def test_shared_output_conflict_fails_without_writes(tmp_path, monkeypatch):
 def test_check_processes_nested_inventory_without_writes(tmp_path, monkeypatch):
     root = entry(tmp_path)
     nested = entry(tmp_path, "nested/flow.md.html")
-    monkeypatch.setattr(vb, "_projection", lambda root, path=None: path or root / "flow.md.html")
+    monkeypatch.setattr(vb, "_projection", lambda root, path=None: SimpleNamespace(
+        entry_path="base/" + (path or root / "flow.md.html").relative_to(root).as_posix(), documents=(), resources=()))
     calls = []
     def check(projection, **kwargs):
         assert kwargs["verify"] is True
-        calls.append(projection)
-        if projection == nested:
+        source = tmp_path / projection.entry_path.removeprefix("base/")
+        calls.append(source)
+        if source == nested:
             raise RenderError("nested saved view stale")
         return ViewBundle("", ())
     monkeypatch.setattr(vb, "build_view_bundle", check)
@@ -145,10 +147,10 @@ def minimal_graph(root, directory=""):
     (root / "native.py").write_text("raise RuntimeError('must never execute')\n")
     (root / "schema.json").write_text('{"type":"object"}')
     (base / "flow.md.html").write_text(
-        "# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n"
+        "# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n"
         "## Flow\n\n1.  [node work](work.md.html)\n")
     (base / "work.md.html").write_text(
-        "# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n"
+        "# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n"
         f"| work | deterministic | [Python]({prefix}native.py) |\n\n"
         "## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n"
         f"| work | work | [input]({prefix}schema.json) | [output]({prefix}schema.json) |\n")
@@ -307,8 +309,8 @@ def test_discovery_rejects_fifo_entry_without_blocking(tmp_path):
         vb.discover_view_entries(tmp_path)
 
 
-@pytest.mark.parametrize("heading", ["# Component v2: child", "# Node v2: child",
-                                      "# Component v3: child", "# Node v3: child"])
+@pytest.mark.parametrize("heading", ["# Component: child", "# Node: child",
+                                      "# Component: child", "# Node: child"])
 def test_top_level_component_does_not_mask_nested_graph(tmp_path, heading):
     entry(tmp_path, heading=heading)
     nested = entry(tmp_path, "nested/flow.md.html")
@@ -618,7 +620,7 @@ def test_mapping_missing_owner_directory_fails_clearly(tmp_path):
 
 def test_mapping_existing_component_document_is_not_a_source_graph_entry(tmp_path):
     entry(tmp_path)
-    entry(tmp_path, "nested/flow.md.html", "# Component v2: child")
+    entry(tmp_path, "nested/flow.md.html", "# Component: child")
     roots_manifest(tmp_path, {"nested/flow.md.html": {"base_root": ".", "pack_root": ".", "entry_root": "pack"}})
     with pytest.raises(RenderError, match="unknown or stale"):
         vb.read_view_roots(tmp_path)
@@ -650,7 +652,7 @@ def test_real_workflow_head_check_matches_committed_inventory(tmp_path):
     minimal_graph(tmp_path)
     vb.generate_views(tmp_path, renderer=TinyRenderer(), repository_url='//github.com/example/agent')
     (tmp_path / 'unrelated').mkdir()
-    (tmp_path / 'unrelated/flow.md.html').write_text('# Component v2: unrelated\n')
+    (tmp_path / 'unrelated/flow.md.html').write_text('# Component: unrelated\n')
     (tmp_path / 'unrelated/.private_resources/diagrams').mkdir(parents=True)
     (tmp_path / 'unrelated/.private_resources/diagrams/art.svg').write_text(
         '<svg/>\n<!-- api-agent-view-v1 not-json -->\n')

@@ -12,7 +12,9 @@ from api_agent.testing.inference_usage import publish
 from api_agent.workflows.contrived import build
 from api_agent.workflows.journal import WorkflowJournal
 from api_agent.workflows.run_context import conversation, current_execution_context, current_turn_id, turn
-from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+from api_agent.workflows.execution import (Workflow)
+from api_agent.workflows.native import (load_native_bindings)
+from api_agent.workflows.definition import (load_definition)
 from test_studio_bridge import payload, request, setup_bridge
 from test_workflow_stateful import fixture_graph
 
@@ -30,7 +32,7 @@ def test_explicit_turn_is_visible_to_nested_journals_and_usage(
     monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(usage_path))
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1' if recorded else '0')
     monkeypatch.setattr('api_agent.workflows.provenance.verified_documents', lambda *a, **k: None)
-    monkeypatch.setattr('api_agent.workflows.stateful._source_manifest', lambda *a, **k: None)
+    monkeypatch.setattr('api_agent.workflows.execution._source_manifest', lambda *a, **k: None)
     packets, observed = [], []
     monkeypatch.setattr('api_agent.workflows.evidence.publish', packets.append)
 
@@ -57,9 +59,9 @@ def test_explicit_turn_is_visible_to_nested_journals_and_usage(
         source = root / 'native.py'
         source.write_text(source.read_text().replace('def intake(state, context):',
             "def intake(state, context):\n    context.services['record']()"))
-        definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+        definition = load_definition(entry, base_root=root, pack_root=root)
         journal = WorkflowJournal(definition, turn_id=EXPLICIT)
-        workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        workflow = Workflow(definition, catalog=load_native_bindings(definition),
             reducers={'messages': add_messages}, journal=journal, services={'record': record})
         operation = lambda: workflow.arun({'messages': [], 'pending': False, 'visits': 0},
             thread_id='example', turn_id=EXPLICIT)
@@ -313,8 +315,8 @@ def test_explicit_invalid_turn_rejects_before_accessing_execution_services(execu
     from api_agent.workflows.execution import Workflow
 
     async def execute():
-        workflow = (Workflow if executor == 'declarative' else StatefulWorkflow).__new__(
-            Workflow if executor == 'declarative' else StatefulWorkflow)
+        workflow = (Workflow if executor == 'declarative' else Workflow).__new__(
+            Workflow if executor == 'declarative' else Workflow)
         if executor == 'declarative':
             operation = workflow.arun({}, turn_id=identity)
         else:

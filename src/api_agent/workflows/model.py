@@ -1,13 +1,9 @@
-"""Parser-free workflow definition model and the protocol the engines consume.
+"""Parser-free definition features consumed by the workflow engine.
 
-Both engines (``execution.Workflow`` and ``stateful.StatefulWorkflow``), the
-journal and the identity helpers depend only on the names in this module.
-Source loaders (``definition`` and ``stateful``) produce *parsed* definitions
-from ``.md.html`` declarations; ``artifact`` produces *compiled* definitions
-from a canonical JSON plan. Neither the Markdown parser nor source ``exec`` is
-reachable from here, which keeps a production process free of both.
+Source admission captures declarations; the compiled-plan loader supplies the
+same runtime contract without importing the declaration parser.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import inspect
 from pathlib import Path
 import re
@@ -112,12 +108,23 @@ def require_source_provenance(definition):
         raise LayoutError('source provenance is unavailable for a compiled plan')
 
 
+@dataclass(frozen=True)
+class NativeCatalog:
+    definition_id: str
+    namespaces: object
+    timeout_values: object
+    timeout_keys: object
+    admitted_modules: frozenset = frozenset({'<stateful_catalog>'})
+    bindings: object = field(default_factory=lambda: MappingProxyType({}))
+    binding_proofs: object = field(default_factory=lambda: MappingProxyType({}))
+
+
+
 @runtime_checkable
 class Definition(Protocol):
-    """What every engine, the journal and the identity helpers need.
+    """The shared workflow, journal and identity contract.
 
-    ``version`` selects the engine family (2: ``Workflow``, 3:
-    ``StatefulWorkflow``). ``origin`` is ``'source'`` for definitions parsed
+    ``version`` is the initial serialization contract. ``origin`` is ``'source'`` for definitions parsed
     from declarations and ``'compiled'`` for definitions loaded from a plan.
     ``contents`` maps resource keys (paths or inline-prompt references) to the
     admitted bytes; a compiled definition omits declaration and native source.
@@ -144,7 +151,7 @@ class Definition(Protocol):
 
 @runtime_checkable
 class GraphDefinition(Definition, Protocol):
-    """Protocol of a v2 definition run by ``execution.Workflow``."""
+    """Declared node-binding features of the workflow contract."""
 
     def native_rejection(self, function, step) -> str | None:
         """Return why ``function`` is not the admitted binding for ``step``, else ``None``."""
@@ -152,7 +159,7 @@ class GraphDefinition(Definition, Protocol):
 
 @runtime_checkable
 class StateDefinition(Definition, Protocol):
-    """Protocol of a v3 definition run by ``stateful.StatefulWorkflow``."""
+    """Declared typed-state features of the workflow contract."""
 
     helper_sources: tuple
     native_dependencies: Mapping
@@ -164,8 +171,8 @@ class StateDefinition(Definition, Protocol):
     declared_resources: Mapping
 
     def load_catalog(self, *, packaged_proof=None, config=None):
-        """Return the ``StatefulCatalog`` that supplies this definition's bindings."""
+        """Return the ``NativeCatalog`` that supplies this definition's bindings."""
 
 
 __all__ = ['MAX_COMPONENT_PASSES', 'LayoutError', 'Step', 'Layout', 'Replacement', 'Resource',
-           'InlinePromptRef', 'ToolUsage', 'freeze', 'declares_source', 'require_source_provenance', 'Definition', 'GraphDefinition', 'StateDefinition']
+           'InlinePromptRef', 'ToolUsage', 'freeze', 'declares_source', 'require_source_provenance', 'Definition', 'GraphDefinition', 'StateDefinition', 'NativeCatalog']

@@ -5,7 +5,7 @@ service_name = "synthetic-service"
 config = "config.toml"
 
 [workflow]
-version = 2
+version = 1
 root = "base"
 entry = "flow.md.html"
 

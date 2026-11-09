@@ -1,3 +1,4 @@
+from binding_contract_support import compiler_fixture
 """Declared routing and controller decisions remain data only."""
 from test_workflow_trial_decisions import trial_uuid
 import asyncio
@@ -186,7 +187,7 @@ def _branch_workflow(conditions=None):
                   {'From': 'route_final', 'To': 'END', 'When': 'route_optional["flag"] != "x"', 'line': 1}],
         'Prompts': [], 'Timeouts': []}
     layout = Layout(source, steps, tables, ())
-    return Workflow(layout, {'start': NodeFunction(_route_start), 'optional': NodeFunction(_route_optional),
+    return compiler_fixture(layout, {'start': NodeFunction(_route_start), 'optional': NodeFunction(_route_optional),
                              'final': NodeFunction(_route_final)}, conditions=conditions)
 
 
@@ -209,7 +210,7 @@ def test_same_relative_condition_is_compiled_for_each_routing_source():
         {'From': 'route_optional', 'To': 'END', 'When': 'otherwise', 'line': 1},
     ]
     layout = Layout(baseline.layout.path, baseline.layout.steps, tables, ())
-    workflow = Workflow(layout, baseline.registry)
+    workflow = compiler_fixture(layout, baseline.registry)
 
     assert set(workflow._predicates) == {
         ('route_start', '.flag == "skip"'), ('route_optional', '.flag == "skip"')}
@@ -259,7 +260,7 @@ def test_compiled_branch_distinguishes_present_null_from_other_scalar():
                                {'From': 'route_start', 'To': 'route_final', 'When': 'otherwise', 'line': 1}],
                      'Prompts': [], 'Timeouts': []}, ())
     events = []
-    workflow = Workflow(layout, {'start': NodeFunction(_nullable_route),
+    workflow = compiler_fixture(layout, {'start': NodeFunction(_nullable_route),
                                  'final': NodeFunction(_route_final)}, services={'observe': events.append})
 
     null_values = asyncio.run(workflow.arun({'route': None}))
@@ -290,7 +291,7 @@ def test_compiled_numeric_route_uses_python_int_float_comparison():
                                {'From': 'route_start', 'To': 'route_final', 'When': 'otherwise', 'line': 1}],
                      'Prompts': [], 'Timeouts': []}, ())
     events = []
-    workflow = Workflow(layout, {'start': NodeFunction(_numeric_route),
+    workflow = compiler_fixture(layout, {'start': NodeFunction(_numeric_route),
                                  'final': NodeFunction(_route_final)}, services={'observe': events.append})
 
     integer_values = asyncio.run(workflow.arun({'score': 1}))

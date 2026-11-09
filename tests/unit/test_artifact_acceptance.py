@@ -59,8 +59,8 @@ def wheels(tmp_path_factory):
 
 def _source_definition(corpus, entry, base_root, pack_root, entry_root=None):
     if corpus == 'v3':
-        from api_agent.workflows.stateful import load_stateful_definition
-        return load_stateful_definition(entry, base_root=base_root, pack_root=pack_root, entry_root=entry_root)
+        from api_agent.workflows.definition import (load_definition)
+        return load_definition(entry, base_root=base_root, pack_root=pack_root, entry_root=entry_root)
     from api_agent.workflows.definition import load_definition
     return load_definition(entry, base_root=base_root, pack_root=pack_root, entry_root=entry_root)
 

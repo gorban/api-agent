@@ -60,8 +60,8 @@ def packaged_owner(tmp_path):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / '.private_resources/viewer' / name, target)
     for relative, body in {
-        'tests/integration/fixture/flow.md.html': '# Workflow v2\n',
-        'tests/integration/fixture/nodes/step.md.html': '# Node v2: step\n',
+        'tests/integration/fixture/flow.md.html': '# Workflow\n',
+        'tests/integration/fixture/nodes/step.md.html': '# Node: step\n',
         'tests/integration/fixture/cfg/workflow-view.toml': 'version=1\n',
         'tests/integration/fixture/.private_resources/diagrams/flow.svg': '<svg/>',
         'tests/integration/fixture/.private_resources/diagrams/contracts/0123456789abcdef01234567.md.html': '<!doctype html><title>Captured field</title>',
@@ -176,15 +176,15 @@ def test_owner_artifacts_and_originals_ship_in_sdist_and_rebuilt_wheel(packaged_
     for relative, text in {
         'LICENSE': 'Independent package fixture license.\n',
         'README.md': 'Independent package fixture.\n',
-        'flow.md.html': '# Workflow v2\n',
+        'flow.md.html': '# Workflow\n',
         'src/api_agent/__init__.py': '"""Independent package fixture."""\n',
         'demo/placeholder.txt': 'Public example fixture.\n',
         'workflows/placeholder.txt': 'Public example fixture.\n',
         'infra/compose/placeholder.txt': 'Public example fixture.\n',
         'tests/integration/fixtureo/public.txt': 'Tracked literal sibling.\n',
-        'tests/integration/fixtureo/flow.md.html': '# Workflow v2\n',
+        'tests/integration/fixtureo/flow.md.html': '# Workflow\n',
         'tests/integration/fixtureXone/public.txt': 'Tracked literal sibling.\n',
-        'tests/integration/fixtureXone/flow.md.html': '# Workflow v2\n',
+        'tests/integration/fixtureXone/flow.md.html': '# Workflow\n',
     }.items():
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)

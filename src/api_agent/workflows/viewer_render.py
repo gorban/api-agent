@@ -93,7 +93,26 @@ class StaleViewError(RenderError):
     """A saved diagram does not represent the selected workflow."""
 
 
-def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_sources: tuple[ViewSource, ...] = ()) -> None:
+def _publication_documents(projection, output_owners, output_documents):
+    owners = {d.logical_path.split('/', 1)[0] for d in projection.documents}
+    if output_owners is not None:
+        if (type(output_owners) is not frozenset or not output_owners <= owners
+                or projection.entry_path.split('/', 1)[0] not in output_owners):
+            raise RenderError('invalid static workflow publication owners')
+        owners &= output_owners
+    documents = tuple(d for d in projection.documents if d.logical_path.split('/', 1)[0] in owners)
+    if output_documents is not None:
+        if (type(output_documents) is not frozenset
+                or not output_documents <= {d.logical_path for d in documents}
+                or projection.entry_path not in output_documents):
+            raise RenderError('invalid static workflow publication documents')
+        documents = tuple(d for d in documents if d.logical_path in output_documents)
+    return documents, owners
+
+
+def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_sources: tuple[ViewSource, ...] = (),
+                        output_owners: frozenset[str] | None = None,
+                        output_documents: frozenset[str] | None = None) -> None:
     """Bind host routes to one admitted identity and captured source inventory."""
     if (bundle.graph_id, bundle.definition_id, bundle.projection_sha256) != (
             projection.graph_id, projection.definition_id, projection.projection_sha256):
@@ -107,7 +126,8 @@ def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_so
                             for f in bundle.files)
     if bundle.routes != expected_routes:
         raise RenderError("workflow view route digest mismatch")
-    owners = {PurePosixPath(d.logical_path).parts[0] for d in projection.documents}
+    published, owners = _publication_documents(projection, output_owners, output_documents)
+    published_paths = {d.logical_path for d in published}
     asset_types = {"viewer.js": "text/javascript; charset=utf-8",
                    "viewer.css": "text/css; charset=utf-8",
                    "flow-modal.js": "text/javascript; charset=utf-8",
@@ -124,13 +144,14 @@ def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_so
                    "github-slugger-LICENSE.txt": "text/plain; charset=utf-8"}
     allowed = {(f"r/{owner}/.private_resources/viewer/{name}", kind)
                for owner in owners for name, kind in asset_types.items()}
-    for document in projection.documents:
+    for document in published:
         allowed.update(((_route(document.logical_path), "text/html; charset=utf-8"),
                         (_svg_route(document.logical_path), "image/svg+xml"),
                         (_companion_route(document.logical_path), "text/markdown; charset=utf-8")))
     reference_sources = _reference_sources(projection)
     allowed.update((route, ('application/json; charset=utf-8' if route.endswith('.json')
-                            else 'text/plain; charset=utf-8')) for route in reference_sources)
+                            else 'text/plain; charset=utf-8')) for route in reference_sources
+                   if PurePosixPath(route).parts[1] in owners)
     if {(file.path, file.content_type) for file in bundle.files} != allowed or len(bundle.files) != len(allowed):
         raise RenderError("workflow view route inventory mismatch")
     if any(file.body != reference_sources[file.path] for file in bundle.files
@@ -139,12 +160,14 @@ def verify_bundle_proof(bundle: ViewBundle, projection: object, *, repository_so
     selected_paths = {d.logical_path for d in projection.documents}
     served_references = {unquote(route.removeprefix('r/')) for route in reference_sources}
     expected_sources = [ViewSource(d.logical_path, "declaration", sha256(d.raw_bytes).hexdigest(),
-                                   len(d.raw_bytes), True) for d in projection.documents]
+                                   len(d.raw_bytes), d.logical_path in published_paths)
+                        for d in projection.documents]
     for resource in projection.resources:
         if resource.logical_path not in selected_paths:
             expected_sources.append(ViewSource(resource.logical_path, resource.kind, resource.sha256,
                                                len(resource.content_bytes),
-                                               resource.logical_path in served_references))
+                                               resource.logical_path in served_references and (output_owners is None
+                                                   or PurePosixPath(resource.logical_path).parts[0] in output_owners)))
     if bundle.sources != tuple(expected_sources) + repository_sources:
         raise RenderError("workflow view source inventory mismatch")
 
@@ -247,7 +270,7 @@ def _markdown_id(value: object) -> str:
 
 def _projection_source(projection: object, document: object, *, repositories: Mapping[str, RepositoryIdentity] | None = None) -> tuple[bytes, frozenset[str]]:
     all_steps = {step.id: step for step in projection.steps}
-    if document.logical_path == projection.entry_path:
+    if document.logical_path == projection.entry_path or getattr(document, 'executable_bytes', b'').startswith(b'# Workflow\n'):
         owner = "GRAPH"
         steps = [step for step in projection.steps if step.parent is None]
         node_detail = False
@@ -1040,7 +1063,9 @@ def build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                       renderer: PlantUMLRenderer | None = None, verify: bool = True,
                       hosted_selected: bool | None = None, check_orphans: bool = False,
                       repositories: Mapping[str, RepositoryIdentity] | None = None,
-                      repository_sources: tuple[ViewSource, ...] = ()) -> ViewBundle:
+                      repository_sources: tuple[ViewSource, ...] = (),
+                      output_owners: frozenset[str] | None = None,
+                        output_documents: frozenset[str] | None = None) -> ViewBundle:
     from api_agent.providers.progress import report_timeout_sync
 
     with report_timeout_sync("Workflow view bundle", 120) as budget:
@@ -1050,22 +1075,26 @@ def build_view_bundle(projection: object, *, roots: Mapping[str, Path],
         return _build_view_bundle(projection, roots=roots, renderer=renderer,
                                   verify=verify, hosted_selected=selected, budget=budget,
                                   check_orphans=check_orphans,
-                                  repositories=repositories, repository_sources=repository_sources)
+                                  repositories=repositories, repository_sources=repository_sources, output_owners=output_owners, output_documents=output_documents)
 
 
 def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                        renderer: PlantUMLRenderer | None, verify: bool,
                        hosted_selected: bool, budget: object, check_orphans: bool = False,
                        repositories: Mapping[str, RepositoryIdentity] | None = None,
-                       repository_sources: tuple[ViewSource, ...] = ()) -> ViewBundle:
+                       repository_sources: tuple[ViewSource, ...] = (),
+                      output_owners: frozenset[str] | None = None,
+                        output_documents: frozenset[str] | None = None) -> ViewBundle:
     """Generate a finite immutable bundle from one admitted projection."""
     if projection.version != 1 or len(projection.documents) > _MAX_RECORDS:
         raise RenderError("unsupported projection")
-    from .document_format import wrap_document
+    from .document_format import wrap_document, _is_root_document
 
     if not verify:
         renderer = renderer or default_renderer()
     files: list[ViewFile] = []
+    published, published_owners = _publication_documents(projection, output_owners, output_documents)
+    published_paths = {d.logical_path for d in published}
     semantic = projection.projection_sha256
     asset_root = _asset_root()
     owners = {PurePosixPath(d.logical_path).parts[0] for d in projection.documents}
@@ -1090,7 +1119,7 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
             raise RenderError("workflow viewer dependencies missing; " + guidance)
         asset_bodies[name] = body
     asset_digest = sha256(b"".join(asset_bodies.values())).hexdigest()
-    for owner in sorted(owners):
+    for owner in sorted(published_owners):
         for name in asset_names:
             body = asset_bodies[name]
             suffix = name.rsplit(".", 1)[-1]
@@ -1098,10 +1127,12 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
                             "txt": "text/plain; charset=utf-8"}[suffix]
             files.append(ViewFile(f"r/{owner}/.private_resources/viewer/{name}", content_type, body))
     for route, body in sorted(reference_sources.items()):
+        if PurePosixPath(route).parts[1] not in published_owners:
+            continue
         content_type = ('application/json; charset=utf-8' if route.endswith('.json')
                         else 'text/plain; charset=utf-8')
         files.append(ViewFile(route, content_type, body))
-    for document in projection.documents:
+    for document in published:
         if budget.remaining is not None and budget.remaining <= 0:
             raise RenderError("workflow view generation timed out")
         source, links = _projection_source(projection, document, repositories=repositories)
@@ -1144,13 +1175,14 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
         repository = repositories.get(owner) if repositories else None
         flow_path = '/'.join(part for part in
                              (repository.path_prefix if repository else '', relative) if part)
-        presented = wrap_document(executable, root=document.logical_path == projection.entry_path,
+        presented = wrap_document(executable, root=_is_root_document(executable),
                                   asset_prefix=prefix, generated=_navigation(projection, document),
                                   flow_path=flow_path)
         files.append(ViewFile(_route(document.logical_path), "text/html; charset=utf-8", presented))
     entry = _route(projection.entry_path)
     sources = [ViewSource(d.logical_path, "declaration", sha256(d.raw_bytes).hexdigest(),
-                          len(d.raw_bytes), True) for d in projection.documents]
+                          len(d.raw_bytes), d.logical_path in published_paths)
+                        for d in projection.documents]
     selected_paths = {d.logical_path for d in projection.documents}
     served_references = {unquote(route.removeprefix('r/'))
                          for route in reference_sources}
@@ -1158,12 +1190,13 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
         if resource.logical_path not in selected_paths:
             sources.append(ViewSource(resource.logical_path, resource.kind, resource.sha256,
                                       len(resource.content_bytes),
-                                      resource.logical_path in served_references))
+                                      resource.logical_path in served_references and (output_owners is None
+                                                   or PurePosixPath(resource.logical_path).parts[0] in output_owners)))
     routes = tuple(ViewRoute(f.path, f.content_type, sha256(f.body).hexdigest(), len(f.body))
                    for f in files)
     bundle = ViewBundle(entry, tuple(files), projection.graph_id, projection.definition_id,
                         projection.projection_sha256, tuple(sources) + repository_sources, routes)
-    verify_bundle_proof(bundle, projection, repository_sources=repository_sources)
+    verify_bundle_proof(bundle, projection, repository_sources=repository_sources, output_owners=output_owners, output_documents=output_documents)
     if verify:
         check_view_bundle(bundle, roots=roots, check_orphans=check_orphans)
     return bundle

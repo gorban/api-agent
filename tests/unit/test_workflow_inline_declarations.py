@@ -8,7 +8,7 @@ import pytest
 from api_agent.workflows.definition import InlinePromptRef, Replacement, load_definition
 from api_agent.workflows.layout import LayoutError
 from api_agent.workflows.provenance import verify_inline_prompts
-from api_agent.workflows.stateful import load_stateful_definition
+from api_agent.workflows.definition import (load_definition)
 from api_agent.workflows.document_format import extract_document, validate_presentation_location, wrap_document
 
 
@@ -29,7 +29,7 @@ def inline_graph(tmp_path):
     (tmp_path / 'input.json').write_text('{"type":"object"}')
     (tmp_path / 'output.json').write_text('{"type":"object","properties":{"seen":{"type":"boolean"}}}')
     entry = tmp_path / 'flow.md.html'
-    entry.write_text('# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| inline_graph |\n\n'
+    entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| inline_graph |\n\n'
                      '## Flow\n\n1.  [component group](group.md.html)\n')
     component = tmp_path / 'group.md.html'
     component.write_text('# Component: group\n\n## Flow\n\n1.  [node inspect](#node-inspect)\n\n'
@@ -95,7 +95,7 @@ def test_fenced_fake_inline_heading_does_not_define_a_node(inline_graph):
 def test_inline_original_can_be_replaced_by_a_versioned_split_node(inline_graph):
     entry, component = inline_graph
     split = entry.parent / 'replacement.md.html'
-    split.write_text('# Node v2: inspect\n\n' + node_sections(level='##'))
+    split.write_text('# Node: inspect\n\n' + node_sections(level='##'))
 
     definition = load_definition(entry, base_root=entry.parent, pack_root=entry.parent,
         replacements=(Replacement('inspect', Path(split.name), 'base'),))
@@ -212,7 +212,7 @@ def test_provenance_rejects_prompt_whose_selected_scope_points_to_another_file(i
                                       selected_declarations=MappingProxyType(selected)))
 
 
-def test_new_root_editor_comment_precedes_metadata_and_preserves_old_envelope(inline_graph):
+def test_root_editor_comment_precedes_metadata_and_rejects_old_envelope(inline_graph):
     from api_agent.workflows import document_format as format
 
     entry, _ = inline_graph
@@ -223,8 +223,8 @@ def test_new_root_editor_comment_precedes_metadata_and_preserves_old_envelope(in
     assert extract_document(wrapped, path=entry).executable_bytes == executable
     validate_presentation_location(wrapped, path=entry, root=entry.parent)
     old = format._HEAD.replace(b'{assets}', b'.private_resources/viewer/') + format._ROOT_FALLBACK + format._CARRIER + executable
-    validate_presentation_location(old, path=entry, root=entry.parent)
-    assert extract_document(old, path=entry).executable_bytes == executable
+    with pytest.raises(LayoutError, match='envelope'):
+        extract_document(old, path=entry)
 
 
 def test_presented_inline_rows_keep_exact_physical_lines(inline_graph):
@@ -295,13 +295,13 @@ def stateful_graph(tmp_path, version='alias'):
     (tmp_path / 'native.py').write_text('from typing import TypedDict\nclass State(TypedDict):\n    seen: bool\n'
                                        'def inspect(state, context):\n    return {"seen": True}\n')
     entry = tmp_path / 'flow.md.html'
-    entry.write_text('# Workflow v3\n\n## Graph ID\n\n| ID |\n| --- |\n| stateful_inline |\n\n'
+    entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| stateful_inline |\n\n'
                      '## State\n\n| Registry | Source |\n| --- | --- |\n| State | [Python](native.py) |\n\n'
                      '## Flow\n\n1.  [component group](group.md.html)\n\n'
                      '## Edges\n\n| From | To | Router | Source |\n| --- | --- | --- | --- |\n'
                      '| group | END | - | - |\n| inspect | END | - | - |\n')
     component = tmp_path / 'group.md.html'
-    heading = '# Component v3: group' if version == 'v3' else '# Component: group'
+    heading = '# Component: group' if version == 'v3' else '# Component: group'
     component.write_text(heading + '\n\n## Flow\n\n1.  [node inspect](#node-inspect)\n\n'
                          '## Node: inspect\n\n### Native\n\n| Registry | Kind | Source |\n'
                          '| --- | --- | --- |\n| inspect | deterministic | [Python](native.py) |\n')
@@ -312,7 +312,7 @@ def stateful_graph(tmp_path, version='alias'):
 def test_stateful_component_inline_leaf_keeps_native_semantics_and_fragments(tmp_path, version):
     entry, component = stateful_graph(tmp_path, version)
 
-    definition = load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+    definition = load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
 
     assert definition.declaration_fragments == {'inspect': 'node-inspect'}
     assert definition.selected_declarations['inspect'][2] == component
@@ -324,10 +324,10 @@ def test_stateful_component_inline_leaf_keeps_native_semantics_and_fragments(tmp
 def test_stateful_replacement_keeps_selected_split_node(tmp_path):
     entry, component = stateful_graph(tmp_path)
     split = tmp_path / 'replacement.md.html'
-    split.write_text('# Node v3: inspect\n\n## Native\n\n| Registry | Kind | Source |\n'
+    split.write_text('# Node: inspect\n\n## Native\n\n| Registry | Kind | Source |\n'
                      '| --- | --- | --- |\n| inspect | deterministic | [Python](native.py) |\n')
 
-    definition = load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+    definition = load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
         replacements=(Replacement('inspect', Path(split.name), 'base'),))
 
     assert definition.selected_declarations['inspect'][2] == split
@@ -341,7 +341,7 @@ def test_stateful_rejects_unreferenced_inline_node(tmp_path):
     component.write_text(component.read_text() + '\n## Node: spare\n\n### Native\n')
 
     with pytest.raises(LayoutError, match='unreferenced inline node declaration'):
-        load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
 
 
 @pytest.mark.parametrize('old,new,diagnostic', [
@@ -354,14 +354,14 @@ def test_stateful_inline_leaf_rejects_foreign_duplicate_or_nested_structure(tmp_
     component.write_text(component.read_text().replace(old, new))
 
     with pytest.raises(LayoutError, match=diagnostic):
-        load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
 
 
 @pytest.mark.parametrize('version', ['v2', 'alias'])
 def test_optional_split_node_heading_forms_remain_compatible(inline_graph, version):
     entry, component = inline_graph
     split = entry.parent / 'split.md.html'
-    heading = '# Node v2: inspect' if version == 'v2' else '# Node: inspect'
+    heading = '# Node: inspect' if version == 'v2' else '# Node: inspect'
     split.write_text(heading + '\n\n' + node_sections(level='##'))
     component.write_text(component.read_text().partition('## Node: inspect')[0].replace(
         '#node-inspect', split.name))

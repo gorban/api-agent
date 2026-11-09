@@ -17,10 +17,10 @@ def test_pack_resource_uses_pinned_renderer_and_keeps_owner_source(tmp_path, mon
     (base / 'children').mkdir(parents=True)
     pack.mkdir()
     (base / 'flow.md.html').write_text(
-        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+        '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
         '## Flow\n\n1.  [node work](children/work.md.html)\n')
     (base / 'children/work.md.html').write_text(
-        '# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+        '# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
         '| work | deterministic | [Python](../native.py) |\n\n'
         '## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
         '| work | work | [input](../schema.json) | [output](../schema.json) |\n\n'

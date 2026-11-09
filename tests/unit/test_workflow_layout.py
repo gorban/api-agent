@@ -11,36 +11,20 @@ ROOT=Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 def declaration(tmp_path):
-    pack=tmp_path/'pack'
-    shutil.copytree(ROOT/'demo/contrived',pack)
-    shutil.copytree(ROOT/'demo/cfg',pack/'cfg')
-    path=pack/'layout.md'
-    path.write_text(path.read_text().replace('../../src/api_agent/workflows/contrived.py','functions.py').replace('../cfg/config.toml','cfg/config.toml'))
-    (pack/'functions.py').write_text('# Registered implementation link fixture\n')
-    return path
+    from binding_contract_support import contract_graph
+    return contract_graph(tmp_path / 'pack')
 
 
 def parse(path): return load_layout(path,base_root=ROOT,pack_root=path.parent)
 
 
 @pytest.mark.parametrize('old,new,expected',[
- ('# LangGraph Layout v1','# LangGraph Layout v9','heading'),
- ('## Components','## Unknown','heading'),
- ('## Notes','## Flow','heading'),
- ('# LangGraph Layout v1','# LangGraph Layout v1\n\nunowned prose','declared section'),
- ('## Notes','### Notes','heading'),
- ('## Timeouts','## Notes','heading'),
- ('    1.  [node first_draft]','     1.  [node first_draft]','four-space'),
- ('    1.  [node first_draft]','\t1.  [node first_draft]','ordered linked'),
- ('    1.  [node first_draft]','    1. [node first_draft]','four-column'),
- ('    2.  [node first_format]','    3.  [node first_format]','sequential'),
- ('2.  [component second]','100. [component second]','1..99'),
- ('    1.  [node first_draft]','        1.  [node first_draft]','four-space'),
+ ('## Components','## Unknown','unknown or missing'),
+ ('## Timeouts','## Notes','duplicate section'),
+ ('2.  [component second]','100. [component second]','direct ordered linked'),
  ('[node first_draft]','[llm first_draft]','step label'),
  ('[node first_draft]','[node FirstDraft]','step label'),
  ('[node second_draft]','[node first_draft]','duplicate step'),
- ('[component first]','[node first]','only components'),
- ('[component first](components.md)','not a link','inline file link'),
  ('| ID | Registry | Input | Output |','| ID | Wrong | Input | Output |','columns'),
  ('| second | 2 | second_guard |','| first | 2 | second_guard |','exactly once'),
  ('| first | 2 | first_guard |','| first | 0 | first_guard |','positive integer'),
@@ -62,20 +46,23 @@ def parse(path): return load_layout(path,base_root=ROOT,pack_root=path.parent)
  ('| first | second | otherwise |','| first | second | always |','conditional edges require otherwise'),
  ('| second_draft | [Producer]','| missing | [Producer]','prompt node'),
  ('[Producer](prompts/produce.md) | always','[Producer](prompts/produce.md) | bad-condition','condition'),
- ('(prompts/produce.md)','(https://example.invalid/prompt.md)','relative local'),
- ('(prompts/produce.md)','(prompts/produce.md#heading)','relative local'),
- ('(prompts/produce.md)','(prompts/produce.md?query)','relative local'),
- ('(prompts/produce.md)','(/tmp/prompt.md)','invalid local'),
- ('(prompts/produce.md)','(missing.md)','missing'),
- ('| Registry |','| **Registry** |','identifier'),
+ ('(prompts/produce.md)','(https://example.invalid/prompt.md)','invalid resource link'),
+ ('(prompts/produce.md)','(prompts/produce.md#heading)','invalid resource link'),
+ ('(prompts/produce.md)','(prompts/produce.md?query)','invalid resource link'),
+ ('(prompts/produce.md)','(/tmp/prompt.md)','invalid resource link'),
+ ('(prompts/produce.md)','(missing.md)','unavailable'),
+ ('| Registry |','| **Registry** |','columns'),
 ])
 def test_single_declaration_mistake_has_located_diagnostic(declaration,old,new,expected):
-    text=declaration.read_text()
-    assert old in text
-    declaration.write_text(text.replace(old,new,1))
+    owner = next(path for path in (declaration, *declaration.parent.glob('*.md.html')) if old in path.read_text())
+    text = owner.read_text()
+    if new == '| first_draft | invalid-id |':
+        child = declaration.parent / 'first.md.html'
+        child.write_text(child.read_text().replace('| produce | deterministic |', '| invalid-id | deterministic |', 1))
+    owner.write_text(text.replace(old,new,1))
     with pytest.raises(LayoutError,match=expected) as caught:
         parse(declaration)
-    assert str(declaration)+':' in str(caught.value)
+    assert str(declaration.parent) in str(caught.value) and ':' in str(caught.value)
 
 
 def test_runtime_pack_prompt_token_and_uri_escaped_file(declaration,monkeypatch,tmp_path):
@@ -125,19 +112,16 @@ def test_notes_cannot_change_execution(declaration):
 
 
 @pytest.mark.parametrize('old,new,expected', [
-    ('# LangGraph Layout v1', '# **LangGraph Layout v1**', 'plain cell'),
-    ('## Notes', '## Notes\n\nnotes\n\n## Notes', 'heading'),
-    ('## Timeouts', '## Timeouts\n\nnot a table', 'fixed-column table'),
-    ('| first | 2 | first_guard |', '| first | 2 | first_guard | extra |', 'cells per row'),
-    ('| first | 2 | first_guard |', '| first | 2 |', 'cells per row'),
-    ('1.  [component first]', '- [component first]', 'nested ordered list'),
-    ('## Components', 'flow prose\n\n## Components', 'only a nested ordered list'),
+    ('# Workflow', '# **Workflow**', 'plain text'),
+    ('## Notes', '## Notes\n\nnotes\n\n## Notes', 'duplicate'),
+    ('## Timeouts', '## Timeouts\n\nnot a table', 'table'),
+    ('| first | 2 | first_guard |', '| first | 2 | first_guard | extra |', 'table column count'),
+    ('| first | 2 | first_guard |', '| first | 2 |', 'table column count'),
+    ('1.  [component first]', '- [component first]', 'direct ordered linked'),
+    ('## Components', 'flow prose\n\n## Components', 'direct ordered linked'),
     ('| first_draft | attempt | ATTEMPT | value | - |', '| first_draft | attempt | ATTEMPT | wrong | - |', 'source field'),
     ('| first_draft | previous | PREVIOUS | * | null |', '| first_draft | previous | PREVIOUS | * | {"nested": NaN} |', 'nonfinite'),
     ('| first_draft | attempt | ATTEMPT | value | - |', '| first_draft | attempt | ATTEMPT | value | "wrong" |', 'not of type'),
-    ('(prompts/produce.md)', r'(\<resource_pack\>/prompts/produce.md)', 'visible in the label'),
-    ('(prompts/produce.md)', r'(prefix/\<resource_pack\>/prompts/produce.md)', 'leading root token'),
-    ('(prompts/produce.md)', r'(\<unknown\>/prompts/produce.md)', 'unresolved variable'),
 ])
 def test_additional_structural_rejections(declaration, old, new, expected):
     declaration.write_text(declaration.read_text().replace(old, new, 1))
@@ -145,16 +129,8 @@ def test_additional_structural_rejections(declaration, old, new, expected):
         parse(declaration)
 
 
-def test_all_fixed_sections_are_required(declaration):
-    declaration.write_text(declaration.read_text().replace('## Timeouts\n', ''))
-    with pytest.raises(LayoutError, match='all fixed table sections'):
-        parse(declaration)
 
 
-def test_separate_flow_lists_are_rejected(declaration):
-    declaration.write_text(declaration.read_text().replace('2.  [component second]', '2)  [component second]'))
-    with pytest.raises(LayoutError, match='exactly one nested ordered list'):
-        parse(declaration)
 
 
 @pytest.mark.parametrize('owner,key', [('missing', 'LIMIT'), ('GRAPH', 'bad-key')])
@@ -182,7 +158,7 @@ def test_linked_pass_limit_reads_declared_integer_default(declaration):
         '| first | [WORKFLOW_MAX_PASSES](passes.toml) | first_guard |'))
 
     row = parse(declaration).tables['Components'][0]
-    assert row['Max passes'] == 'WORKFLOW_MAX_PASSES'
+    assert row['Max passes'] == '[WORKFLOW_MAX_PASSES](passes.toml)'
     assert row['max_passes_key'] == 'WORKFLOW_MAX_PASSES'
     assert row['max_passes_link'] == config
     assert row['max_passes_default'] == 3
@@ -243,8 +219,11 @@ def test_two_digit_numbering_supports_all_99_siblings(tmp_path):
     (tmp_path / 'schema.json').write_text('{"type":"object"}')
     flow = '\n'.join(f'{number}.{" " * (3 - len(str(number)))}[node step_{number}](functions.py)' for number in range(1, 100))
     functions = '\n'.join(f'| step_{number} | invoke | [input](schema.json) | [output](schema.json) |' for number in range(1, 100))
-    path = tmp_path / 'layout.md'
-    path.write_text('# LangGraph Layout v1\n\n## Flow\n\n' + flow + '\n\n## Components\n\n## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n' + functions + '\n\n## Bindings\n\n## Edges\n\n## Prompts\n\n## Timeouts\n')
+    for number in range(1, 100):
+        (tmp_path / f'step_{number}.md.html').write_text(f'# Node: step_{number}\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n| invoke | deterministic | [Python](functions.py) |\n')
+    flow = '\n'.join(f'{number}.{ " " * (3 - len(str(number)))}[node step_{number}](step_{number}.md.html)' for number in range(1, 100))
+    path = tmp_path / 'flow.md.html'
+    path.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| many_steps |\n\n## Flow\n\n' + flow + '\n\n## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n' + functions + '\n')
     layout = load_layout(path, base_root=tmp_path, pack_root=tmp_path)
     assert len(layout.steps) == 99 and layout.steps[-1].id == 'step_99'
 

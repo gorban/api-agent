@@ -21,7 +21,7 @@ def imported_after(statement):
 
 
 @pytest.mark.parametrize('module', ['api_agent.workflows', 'api_agent.workflows.model', 'api_agent.workflows.execution',
-                                    'api_agent.workflows.stateful', 'api_agent.workflows.journal',
+                                    'api_agent.workflows.native', 'api_agent.workflows.journal',
                                     'api_agent.workflows.identity', 'api_agent.workflows.contrived'])
 def test_engines_journal_and_loader_import_without_the_parser(module):
     assert imported_after(f'import {module}') == []
@@ -74,23 +74,23 @@ def test_compiled_plans_cannot_claim_source_provenance():
 def test_parsed_definitions_satisfy_their_protocols():
     from api_agent.workflows.definition import load_definition
     from api_agent.workflows.model import Definition, GraphDefinition, StateDefinition
-    from api_agent.workflows.stateful import load_stateful_definition
+    from api_agent.workflows.definition import (load_definition)
 
     v2 = load_definition(ROOT / 'demo/contrived/flow.md.html', base_root=ROOT, pack_root=ROOT / 'demo')
-    v3 = load_stateful_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION,
+    v3 = load_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION,
                                   pack_root=QUALIFICATION)
 
     assert isinstance(v2, GraphDefinition) and not isinstance(v2, StateDefinition)
     assert isinstance(v3, StateDefinition) and not isinstance(v3, GraphDefinition)
-    assert [(item.version, item.origin) for item in (v2, v3)] == [(2, 'source'), (3, 'source')]
+    assert [(item.version, item.origin) for item in (v2, v3)] == [(1, 'source'), (1, 'source')]
     assert all(isinstance(item, Definition) for item in (v2, v3))
     assert not isinstance(SimpleNamespace(), Definition)
 
 
 def test_parsed_v3_definition_loads_its_catalog_through_the_protocol():
-    from api_agent.workflows.stateful import load_stateful_definition
+    from api_agent.workflows.definition import (load_definition)
 
-    definition = load_stateful_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION,
+    definition = load_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION,
                                           pack_root=QUALIFICATION)
 
     catalog = definition.load_catalog()
@@ -117,9 +117,9 @@ def test_parsed_v2_definition_names_why_a_callable_is_not_its_binding():
 
 def test_load_workflow_binds_any_protocol_definition_and_rejects_others(tmp_path):
     from api_agent.runtime.resource_pack import ResourcePackError, load_workflow
-    from api_agent.workflows.stateful import load_stateful_definition
+    from api_agent.workflows.definition import (load_definition)
 
-    definition = load_stateful_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION,
+    definition = load_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION,
                                           pack_root=QUALIFICATION)
     context = SimpleNamespace(base_root=QUALIFICATION, pack_root=QUALIFICATION, workflow_base_root=None,
                               workflow_entry=QUALIFICATION / 'flow.md.html', workflow_root='base',
@@ -187,14 +187,15 @@ def test_stateful_workflow_requires_bindings_from_admitted_catalog_modules():
     from dataclasses import replace
 
     from api_agent.workflows.model import LayoutError
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_definition
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.definition import (load_definition)
     from langgraph.graph.message import add_messages
 
-    definition = load_stateful_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION,
+    definition = load_definition(QUALIFICATION / 'flow.md.html', base_root=QUALIFICATION,
                                           pack_root=QUALIFICATION)
     catalog = definition.load_catalog()
 
-    StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
     with pytest.raises(LayoutError, match='missing admitted native binding'):
-        StatefulWorkflow(definition, catalog=replace(catalog, admitted_modules=frozenset({'elsewhere'})),
+        Workflow(definition, catalog=replace(catalog, admitted_modules=frozenset({'elsewhere'})),
                          reducers={'messages': add_messages})

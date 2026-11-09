@@ -18,12 +18,12 @@ def make_graph(root: Path):
     (root / 'schemas' / 'input.json').write_text('{"type":"object"}')
     (root / 'schemas' / 'output.json').write_text('{"type":"object","properties":{"seen":{"type":"boolean"}}}')
     (root / 'flow.md.html').write_text(
-        '# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| sample_graph |\n\n'
+        '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| sample_graph |\n\n'
         '## Flow\n\n1.  [node inspect](workflows/inspect.md.html)\n\n'
         '## Bindings\n\n| Node | Input | From | Field | Default |\n'
         '| --- | --- | --- | --- | --- |\n')
     (root / 'workflows' / 'inspect.md.html').write_text(
-        '# Node v2: inspect\n\n## Native\n\n| Registry | Kind | Source |\n'
+        '# Node: inspect\n\n## Native\n\n| Registry | Kind | Source |\n'
         '| --- | --- | --- |\n| inspect | deterministic | [source](../native.py) |\n\n'
         '## Functions\n\n| ID | Registry | Input | Output |\n'
         '| --- | --- | --- | --- |\n'
@@ -72,7 +72,7 @@ def test_html_is_rejected_before_execution(tmp_path):
 def test_component_owns_nested_flow_without_root_repetition(tmp_path):
     entry = make_graph(tmp_path)
     (tmp_path / 'workflows' / 'review.md.html').write_text(
-        '# Component v2: review\n\n## Flow\n\n'
+        '# Component: review\n\n## Flow\n\n'
         '1.  [node inspect](inspect.md.html)\n\n'
         '## Components\n\n| ID | Max passes | Guard |\n'
         '| --- | --- | --- |\n| review | 2 | inspect |\n')
@@ -92,7 +92,7 @@ def test_linked_pass_limit_is_captured_with_definition(tmp_path):
     config.write_text('version = 1\n[fields.WORKFLOW_MAX_PASSES]\ntype = "int"\ndefault = 2\n')
     component = tmp_path / 'workflows' / 'review.md.html'
     component.write_text(
-        '# Component v2: review\n\n## Flow\n\n'
+        '# Component: review\n\n## Flow\n\n'
         '1.  [node inspect](inspect.md.html)\n\n'
         '## Components\n\n| ID | Max passes | Guard |\n'
         '| --- | --- | --- |\n'
@@ -300,7 +300,7 @@ def test_component_depth_rejected_with_located_diagnostic(tmp_path):
         target = f'component_{index + 1}' if index < 65 else 'inspect'
         kind = 'component' if index < 65 else 'node'
         (tmp_path / 'workflows' / f'{name}.md.html').write_text(
-            f'# Component v2: {name}\n\n## Flow\n\n'
+            f'# Component: {name}\n\n## Flow\n\n'
             f'1.  [{kind} {target}]({target}.md.html)\n')
     entry.write_text(entry.read_text().replace('node inspect](workflows/inspect.md.html)',
                                                'component component_0](workflows/component_0.md.html)'))
@@ -327,7 +327,7 @@ def test_pack_identity_stable_when_pack_moves_inside_base(tmp_path):
 
 
 @pytest.mark.parametrize(('old', 'new', 'message'), [
-    ('# Workflow v2', '# Workflow v3', 'Workflow v2'),
+    ('# Workflow', '# Unsupported workflow', 'Workflow heading'),
     ('## Graph ID', '## Missing', 'unknown or missing'),
     ('| sample_graph |', '| Invalid-ID |', 'stable ID'),
     ('1.  [node inspect]', '2.  [node inspect]', 'step sequence'),
@@ -342,7 +342,7 @@ def test_pack_identity_stable_when_pack_moves_inside_base(tmp_path):
 def test_root_admission_rejects_incompatible_structure(tmp_path, old, new, message):
     entry = make_graph(tmp_path)
     if new == '(workflows/inspect.txt)':
-        (tmp_path / 'workflows' / 'inspect.txt').write_text('# Node v2: inspect\n')
+        (tmp_path / 'workflows' / 'inspect.txt').write_text('# Node: inspect\n')
     entry.write_text(entry.read_text().replace(old, new, 1))
 
     with pytest.raises(LayoutError, match=message):
@@ -350,7 +350,7 @@ def test_root_admission_rejects_incompatible_structure(tmp_path, old, new, messa
 
 
 @pytest.mark.parametrize(('old', 'new', 'message'), [
-    ('# Node v2: inspect', '# Node v2: other', 'identity mismatch'),
+    ('# Node: inspect', '# Node: other', 'identity mismatch'),
     ('## Native', '## Tool', 'unknown declaration section'),
     ('| inspect | deterministic |', '| inspect | tool |', 'unsupported native callable kind'),
     ('| inspect | deterministic |', '| other | deterministic |', 'Native registry'),
@@ -403,7 +403,7 @@ def test_inline_prompt_reference_links_to_owning_declaration(tmp_path):
 def test_native_source_verification_handles_component_and_unavailable_file(tmp_path):
     entry = make_graph(tmp_path)
     component = tmp_path / 'workflows' / 'review.md.html'
-    component.write_text('# Component v2: review\n\n## Flow\n\n'
+    component.write_text('# Component: review\n\n## Flow\n\n'
                          '1.  [node inspect](inspect.md.html)\n\n'
                          '## Components\n\n| ID | Max passes | Guard |\n'
                          '| --- | --- | --- |\n| review | 1 | inspect |\n')
@@ -420,9 +420,9 @@ def test_native_source_verification_handles_component_and_unavailable_file(tmp_p
     (b'\xff', 'UTF-8'),
     (b'', 'empty declaration'),
     (b'not a heading\n', 'version heading'),
-    (b'# Workflow v2\n\nstray prose\n\n## Flow\n', 'content before section'),
-    (b'# Workflow v2\n\n### Flow\n', 'unknown heading'),
-    (b'# Workflow v2\n\n## Flow\n\n## Flow\n', 'duplicate section'),
+    (b'# Workflow\n\nstray prose\n\n## Flow\n', 'content before section'),
+    (b'# Workflow\n\n### Flow\n', 'unknown heading'),
+    (b'# Workflow\n\n## Flow\n\n## Flow\n', 'duplicate section'),
     (b'# *Workflow* v2\n', 'heading must be plain text'),
 ])
 def test_markdown_structure_diagnostics(tmp_path, data, message):
@@ -514,12 +514,12 @@ def test_node_rejects_broken_resource_or_prompt(tmp_path, old, new, message):
 def test_component_and_node_ownership_sections_are_required(tmp_path):
     entry = make_graph(tmp_path)
     component = tmp_path / 'workflows' / 'review.md.html'
-    component.write_text('# Component v2: review\n')
+    component.write_text('# Component: review\n')
     entry.write_text(entry.read_text().replace('node inspect](workflows/inspect.md.html)',
                                                'component review](workflows/review.md.html)'))
     with pytest.raises(LayoutError, match='component requires Flow'):
         load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
-    component.write_text('# Component v2: review\n\n## Flow\n\n'
+    component.write_text('# Component: review\n\n## Flow\n\n'
                          '1.  [node inspect](inspect.md.html)\n\n'
                          '## Native\n\n| Registry | Kind | Source |\n'
                          '| --- | --- | --- |\n| inspect | deterministic | [source](../native.py) |\n')
@@ -536,12 +536,12 @@ def test_component_and_node_ownership_sections_are_required(tmp_path):
 def test_empty_component_flow_and_wrong_child_identity_rejected(tmp_path):
     entry = make_graph(tmp_path)
     component = tmp_path / 'workflows' / 'review.md.html'
-    component.write_text('# Component v2: review\n\n## Flow\n')
+    component.write_text('# Component: review\n\n## Flow\n')
     entry.write_text(entry.read_text().replace('node inspect](workflows/inspect.md.html)',
                                                'component review](workflows/review.md.html)'))
     with pytest.raises(LayoutError, match='Flow requires steps'):
         load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
-    component.write_text('# Component v2: other\n\n## Flow\n\n'
+    component.write_text('# Component: other\n\n## Flow\n\n'
                          '1.  [node inspect](inspect.md.html)\n')
     with pytest.raises(LayoutError, match='identity mismatch'):
         load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
@@ -705,7 +705,7 @@ def test_bounded_reader_rejects_change_while_reading(tmp_path, monkeypatch):
 def test_symlink_to_outside_declared_roots_is_rejected(tmp_path):
     entry = make_graph(tmp_path)
     outside = tmp_path.parent / 'outside-workflow.md.html'
-    outside.write_text('# Node v2: inspect\n')
+    outside.write_text('# Node: inspect\n')
     linked = tmp_path / 'workflows' / 'inspect.md.html'
     linked.unlink()
     linked.symlink_to(outside)

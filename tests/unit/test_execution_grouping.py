@@ -125,11 +125,13 @@ def test_supplied_journal_context_admitted_before_execution(
     from langgraph.graph.message import add_messages
     from api_agent.providers.llm import LLMResult, Message, TextContent
     from api_agent.workflows.contrived import build
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
+    from api_agent.workflows.definition import (load_definition)
 
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1' if recorded else '0')
     monkeypatch.setattr('api_agent.workflows.provenance.verified_documents', lambda *a, **k: None)
-    monkeypatch.setattr('api_agent.workflows.stateful._source_manifest', lambda *a, **k: None)
+    monkeypatch.setattr('api_agent.workflows.execution._source_manifest', lambda *a, **k: None)
     packets, calls = [], []
     monkeypatch.setattr('api_agent.workflows.evidence.publish', packets.append)
 
@@ -150,8 +152,8 @@ def test_supplied_journal_context_admitted_before_execution(
         source = root / 'native.py'
         source.write_text(source.read_text().replace('def intake(state, context):',
             "def intake(state, context):\n    context.services['record']()"))
-        admitted = load_stateful_definition(entry, base_root=root, pack_root=root)
-        workflow = StatefulWorkflow(admitted, catalog=load_stateful_catalog(admitted),
+        admitted = load_definition(entry, base_root=root, pack_root=root)
+        workflow = Workflow(admitted, catalog=load_native_bindings(admitted),
             reducers={'messages': add_messages}, services={'record': record})
 
     with conversation(OTHER if binding == 'conflict' else CONVERSATION) if binding in ('journal', 'conflict') else nullcontext():
@@ -202,7 +204,9 @@ def test_empty_explicit_turn_rejects_without_journal(fixture_graph, monkeypatch,
     from pathlib import Path
     from langgraph.graph.message import add_messages
     from api_agent.workflows.contrived import build
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
+    from api_agent.workflows.definition import (load_definition)
 
     monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '0')
     calls = []
@@ -214,8 +218,8 @@ def test_empty_explicit_turn_rejects_without_journal(fixture_graph, monkeypatch,
         operation = lambda: workflow.arun({'user_input': 'x'}, turn_id='')
     else:
         root, entry = fixture_graph
-        admitted = load_stateful_definition(entry, base_root=root, pack_root=root)
-        workflow = StatefulWorkflow(admitted, catalog=load_stateful_catalog(admitted),
+        admitted = load_definition(entry, base_root=root, pack_root=root)
+        workflow = Workflow(admitted, catalog=load_native_bindings(admitted),
                                     reducers={'messages': add_messages})
         operation = lambda: workflow.arun({'messages': [], 'pending': False, 'visits': 0},
                                          thread_id='example', turn_id='')

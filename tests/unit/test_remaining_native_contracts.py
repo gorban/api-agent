@@ -245,12 +245,14 @@ from test_workflow_stateful import fixture_graph
 @pytest.mark.asyncio
 @pytest.mark.parametrize('valid', [False, True])
 async def test_stateful_executor_validates_terminal_contract_without_optional_observer(fixture_graph, valid):
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_definition, load_stateful_catalog
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.definition import (load_definition)
+    from api_agent.workflows.native import (load_native_bindings)
     from langgraph.graph.message import add_messages
     from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeState
     root, entry = fixture_graph
-    declared = load_stateful_definition(entry, base_root=root, pack_root=root)
-    workflow = StatefulWorkflow(declared, catalog=load_stateful_catalog(declared),
+    declared = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(declared, catalog=load_native_bindings(declared),
         reducers={'messages': add_messages}, services={'execution_outcome': lambda:
             ExecutionOutcome(OutcomeState.SUCCESS) if valid else 'success'})
     if valid:

@@ -9,7 +9,9 @@ from api_agent.telemetry.operation import operation
 from api_agent.telemetry.outcomes import ExecutionOutcome, OutcomeCause, OutcomeState
 from api_agent.telemetry.privacy import EmissionBoundary
 from api_agent.workflows.observations import WorkflowObservationFactory
-from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+from api_agent.workflows.execution import (Workflow)
+from api_agent.workflows.native import (load_native_bindings)
+from api_agent.workflows.definition import (load_definition)
 from test_trace_failure_classification import trace_runtime
 from test_workflow_candidate_repair import workflow, replace_node, draft
 from test_workflow_stateful import fixture_graph as fixture_graph
@@ -31,8 +33,8 @@ def test_explicit_outcome_preserves_successful_nodes_and_truthful_graph(
     services = {'execution_outcome': lambda: outcome, 'observe': events.append}
     if engine == 'stateful':
         root, entry = fixture_graph
-        definition = load_stateful_definition(entry, base_root=root, pack_root=root)
-        flow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition),
+        definition = load_definition(entry, base_root=root, pack_root=root)
+        flow = Workflow(definition, catalog=load_native_bindings(definition),
             reducers={'messages': add_messages}, services=services)
         async def invoke():
             result = await flow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='synthetic')
@@ -50,7 +52,7 @@ def test_explicit_outcome_preserves_successful_nodes_and_truthful_graph(
     with trace_runtime() as (runtime, resolved, exporter):
         factory = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(), trace=runtime)
         if engine == 'stateful':
-            flow = StatefulWorkflow(flow.definition, catalog=flow.catalog, reducers=flow.reducers,
+            flow = Workflow(flow.definition, catalog=flow.catalog, reducers=flow.reducers,
                 services={**services, 'observation_factory': factory})
         else:
             flow.services['observation_factory'] = factory

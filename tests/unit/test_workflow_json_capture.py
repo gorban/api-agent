@@ -629,16 +629,18 @@ from test_workflow_stateful import fixture_graph
 
 
 def test_parsed_stateful_result_survives_non_utf8_optional_capture(fixture_graph):
-    from api_agent.workflows.stateful import StatefulWorkflow, load_stateful_catalog, load_stateful_definition
+    from api_agent.workflows.execution import (Workflow)
+    from api_agent.workflows.native import (load_native_bindings)
+    from api_agent.workflows.definition import (load_definition)
     from api_agent.workflows.journal import WorkflowJournal, validate_journal
     root, entry = fixture_graph
     source = root / 'native.py'
     source.write_text(source.read_text().replace('    visits: int', '    visits: int\n    text: str').replace(
         "return {'pending': True}", "return {'pending': True, 'text': chr(0xD800)}"))
-    definition = load_stateful_definition(entry, base_root=root, pack_root=root)
+    definition = load_definition(entry, base_root=root, pack_root=root)
     journal = WorkflowJournal(definition, log_content=True, content_policy=ContentPolicy(True))
     from langgraph.graph.message import add_messages
-    workflow = StatefulWorkflow(definition, catalog=load_stateful_catalog(definition), reducers={'messages': add_messages}, journal=journal)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages}, journal=journal)
     result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0, 'text': 'ordinary'},
                                       thread_id='invalid-encoding'))
     assert result['text'] == chr(0xD800)

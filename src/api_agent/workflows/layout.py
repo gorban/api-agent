@@ -28,43 +28,6 @@ _SUMMARY_COLUMNS = (*_RESPONSE_COLUMNS, 'Display summary')
 _MD = MarkdownIt('commonmark').enable('table').disable('reference')
 
 
-def _plain(token):
-    children = token.children or []
-    if any(child.type not in ('text', 'code_inline') for child in children):
-        raise ValueError('expected an identifier or plain cell')
-    return ''.join(child.content for child in children)
-
-
-def _link(token, path, pack_root, roots, *, prompt=False):
-    children = token.children or []
-    if [child.type for child in children] != ['link_open', 'text', 'link_close'] or children[0].markup == 'autolink':
-        raise ValueError('expected one inline file link')
-    destination = unquote(children[0].attrGet('href'), errors='strict')
-    parsed = urlsplit(destination)
-    if parsed.scheme or parsed.netloc or parsed.query or (prompt and parsed.fragment):
-        raise ValueError('expected a relative local file link')
-    name = parsed.path
-    if '<resource_pack>' in name:
-        if not name.startswith('<resource_pack>/') or (prompt and '<resource_pack>' not in children[1].content):
-            raise ValueError('resource_pack must be a leading root token and visible in the label')
-        source = pack_root / name.removeprefix('<resource_pack>/')
-    else:
-        source = path.parent / name
-    if not name or Path(name).is_absolute() or '\\' in name or '<' in name.replace('<resource_pack>', ''):
-        raise ValueError('invalid local path or unresolved variable')
-    from api_agent.config.source_reads import resolve_path
-    source = resolve_path(source)
-    if not any(source.is_relative_to(root) for root in roots) or not source.is_file():
-        raise ValueError('linked file is missing or outside the declared roots')
-    if prompt:
-        source.read_text(encoding='utf-8')
-    return children[1].content, source
-
-
-def _plain_cell_dash(cell):
-    return len(cell.children or ()) == 1 and cell.children[0].type == 'text' and cell.children[0].content == '-'
-
-
 def _decode_json(text):
     def pairs(items):
         result = {}
@@ -85,141 +48,9 @@ def _json(source):
 
 
 def load_layout(path, *, base_root, pack_root):
-    """Validate all structural sections and links without importing functions."""
-    from api_agent.config.source_reads import resolve_path
-    path, base_root, pack_root = map(resolve_path, (path, base_root, pack_root))
-    roots = (base_root, pack_root)
-    layout = Layout(path, (), {}, ())
-    try:
-        if not path.is_relative_to(base_root) and not path.is_relative_to(pack_root):
-            raise ValueError('layout is outside the declared roots')
-        text = path.read_text(encoding='utf-8')
-        tokens = _MD.parse(text)
-    except (OSError, ValueError, UnicodeError) as error:
-        layout.error(str(error))
-    sections, current, title = {}, None, False
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        line = token.map[0] + 1 if token.map else 1
-        if token.type == 'heading_open':
-            try:
-                heading = _plain(tokens[index + 1])
-            except ValueError as error:
-                layout.error(str(error), line)
-            if token.tag == 'h1' and heading == 'LangGraph Layout v1' and not title and current is None:
-                title = True
-            elif token.tag == 'h2' and title and heading in {*_COLUMNS, 'Flow', 'Notes'} and heading not in sections:
-                current = heading
-                sections[current] = []
-            else:
-                layout.error('unknown, duplicate or misplaced heading', line)
-            index += 3
-        else:
-            if current is None:
-                layout.error('content must belong to a declared section', line)
-            sections[current].append(token)
-            index += 1
-    if not title or set(sections) - {'Notes'} != {*_COLUMNS, 'Flow'}:
-        layout.error('Layout requires Flow and all fixed table sections')
-    tables, files = {}, set()
-    for name, columns in _COLUMNS.items():
-        body = sections[name]
-        if not body:
-            tables[name] = []
-            continue
-        line = body[0].map[0] + 1 if body[0].map else 1
-        if body[0].type != 'table_open' or body[-1].type != 'table_close' or sum(token.type == 'table_open' for token in body) != 1:
-            layout.error(f'{name} requires exactly one fixed-column table', line)
-        rows, row = [], []
-        for token in body:
-            if token.type == 'inline':
-                row.append(token)
-            elif token.type == 'tr_close':
-                rows.append(row)
-                row = []
-        try:
-            header = tuple(_plain(cell) for cell in rows[0])
-            if name == 'Functions' and header == _RESPONSE_COLUMNS:
-                columns = _RESPONSE_COLUMNS
-            if name == 'Functions' and header == _SUMMARY_COLUMNS:
-                columns = _SUMMARY_COLUMNS
-            if header != columns:
-                raise ValueError(f'{name} has unknown or misplaced columns')
-            # markdown-it pads/truncates table rows: reject malformed source first.
-            for offset, raw_line in enumerate(text.splitlines()[body[0].map[0]:body[0].map[1]], body[0].map[0] + 1):
-                line = offset
-                stripped = raw_line.strip()
-                cells_source = re.split(r'(?<!\\)\|', stripped.removeprefix('|').removesuffix('|'))
-                if len(cells_source) != len(columns):
-                    raise ValueError(f'{name} requires exactly {len(columns)} cells per row')
-            entries = []
-            for cells in rows[1:]:
-                values = {}
-                line = cells[0].map[0] + 1
-                for column, cell in zip(columns, cells):
-                    if column == 'Max passes' and name == 'Components' and cell.children and cell.children[0].type == 'link_open':
-                        label, source = _link(cell, path, pack_root, roots)
-                        files.add(source)
-                        values[column] = label
-                        values['max_passes_key'] = label
-                        values['max_passes_link'] = source
-                    elif (column in ('File', 'Source', 'Input', 'Output', 'Response schema') and name != 'Bindings'
-                          and not (column == 'Response schema' and _plain_cell_dash(cell))):
-                        _, source = _link(cell, path, pack_root, roots, prompt=column == 'File')
-                        files.add(source)
-                        values[column] = source
-                    else:
-                        values[column] = _plain(cell)
-                values['line'] = line
-                entries.append(values)
-            tables[name] = entries
-        except (OSError, ValueError, UnicodeError) as error:
-            layout.error(str(error), line)
-    flow = sections['Flow']
-    if not flow or flow[0].type != 'ordered_list_open':
-        layout.error('Flow requires a nested ordered list')
-    if flow[-1].type != 'ordered_list_close' or any(token.type in ('bullet_list_open', 'fence', 'code_block', 'html_block') for token in flow):
-        layout.error('Flow requires only a nested ordered list', flow[0].map[0] + 1)
-    start = flow[0].map[0]
-    stop = flow[0].map[1]
-    if any(token.map and token.map[0] >= stop for token in flow):
-        layout.error('Flow requires exactly one nested ordered list', stop + 1)
-    # Source columns enforce the deliberately stricter grammar over the Markdown AST.
-    steps, parents, counts = [], [], {}
-    for offset, raw in enumerate(text.splitlines()[start:stop], start + 1):
-        if not raw.strip():
-            continue
-        match = re.fullmatch(r'( *)([1-9][0-9]?)\.( +)(.+)', raw)
-        if match is None:
-            layout.error('Flow accepts only ordered linked steps numbered 1..99', offset)
-        indent, number, spacing, content = match.groups()
-        depth = len(indent) // 4
-        if len(indent) % 4 or len(number) + 1 + len(spacing) != 4 or depth > len(parents):
-            layout.error('steps require four-column markers and four-space nesting', offset)
-        parents = parents[:depth]
-        parent = parents[-1] if parents else None
-        count = counts.get(parent, 0) + 1
-        if int(number) != count:
-            layout.error('steps must be sequential from 1 at each level', offset)
-        counts[parent] = count
-        try:
-            label, source = _link(_MD.parseInline(content)[0], path, pack_root, roots)
-            kind, identifier = label.split(' ')
-            if kind not in ('component', 'node') or _ID.fullmatch(identifier) is None:
-                raise ValueError('step label must be component ID or node ID')
-        except (OSError, ValueError, UnicodeError) as error:
-            layout.error(str(error), offset)
-        if depth and next(item.kind for item in steps if item.id == parent) != 'component':
-            layout.error('only components can own nested steps', offset)
-        if identifier in {item.id for item in steps}:
-            layout.error('duplicate step ID', offset)
-        steps.append(Step(identifier, kind, parent, source, offset))
-        files.add(source)
-        parents.append(identifier)
-    layout = Layout(path, tuple(steps), tables, tuple(sorted(files)))
-    _validate(layout)
-    return layout
+    """Project a validated release declaration to its structural layout."""
+    from .definition import load_definition
+    return load_definition(path, base_root=base_root, pack_root=pack_root).layout
 
 
 def _validate(layout, resource_bytes=None):
@@ -244,7 +75,7 @@ def _validate(layout, resource_bytes=None):
                 schema = (_decode_json(resource_bytes[row[column]].decode('utf-8'))
                           if resource_bytes is not None else _json(row[column]))
                 if _has_unsupported_dialect(schema):
-                    raise ValueError('Layout v1 supports only JSON Schema draft 2020-12')
+                    raise ValueError('Workflows support only JSON Schema draft 2020-12')
                 Draft202012Validator.check_schema(schema)
                 if schema.get('type') != 'object' or _has_reference(schema):
                     raise ValueError('schemas must be object contracts without remote references')
@@ -263,7 +94,7 @@ def _validate(layout, resource_bytes=None):
                         schema = (_decode_json(resource_bytes[response].decode('utf-8'))
                                   if resource_bytes is not None else _json(response))
                         if _has_unsupported_dialect(schema):
-                            raise ValueError('Layout v1 supports only JSON Schema draft 2020-12')
+                            raise ValueError('Workflows support only JSON Schema draft 2020-12')
                         Draft202012Validator.check_schema(schema)
                         from api_agent.providers.rich_inference import response_schema
                         from api_agent.providers.contracts import ContractError

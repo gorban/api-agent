@@ -12,7 +12,8 @@ from api_agent.workflows.document_format import (canonical_executable_bytes, ext
                                                  validate_presentation_location, wrap_document)
 from api_agent.workflows.layout import LayoutError
 from api_agent.workflows.execution import diagram_layout
-from api_agent.workflows.stateful import diagram_stateful, load_stateful_definition
+from api_agent.workflows.native import (diagram_state)
+from api_agent.workflows.definition import (load_definition)
 from api_agent.workflows.viewer_projection import project_view
 
 
@@ -21,10 +22,10 @@ def graph(root):
     (root / 'native.py').write_text('def work(inputs, context):\n    return {}\n')
     (root / 'schema.json').write_text('{"type":"object"}')
     entry = root / 'flow.md.html'
-    entry.write_text('# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+    entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
                      '## Flow\n\n1.  [node work](children/work.md.html)\n')
     (root / 'children' / 'work.md.html').write_text(
-        '# Node v2: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
+        '# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
         '| work | deterministic | [Python](../native.py) |\n\n'
         '## Functions\n\n| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
         '| work | work | [input](../schema.json) | [output](../schema.json) |\n\n'
@@ -74,7 +75,7 @@ def test_presented_documents_keep_semantics_and_original_line_locations(tmp_path
 
 
 @pytest.mark.parametrize('corruption', [
-    lambda raw: raw.replace(b'content="v2"', b'content="v9"'),
+    lambda raw: raw.replace(b'content="v1"', b'content="v9"'),
     lambda raw: raw.replace(b'viewer.js', b'https://elsewhere.invalid/viewer.js'),
     lambda raw: raw.replace(b'font-size:0', b'font-size:1px'),
     lambda raw: raw.replace(b'font:16px/1.6', b'font:18px/1.6'),
@@ -97,8 +98,8 @@ def test_generated_marker_must_be_terminal_and_exact(tmp_path):
     wrapped = wrap_document(entry.read_bytes(), root=True, asset_prefix='.private_resources/viewer/',
                             generated=(b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
                                        b'[Open standalone diagram](.private_resources/diagrams/flow.svg)'))
-    entry.write_bytes(wrapped.replace(b'workflow-generated-diagram-v2:end',
-                                      b'workflow-generated-diagram-v2:changed'))
+    entry.write_bytes(wrapped.replace(b'workflow-generated-diagram:end',
+                                      b'workflow-generated-diagram:changed'))
 
     with pytest.raises(LayoutError):
         admit(entry)
@@ -160,7 +161,7 @@ def test_generated_heading_needs_exact_blank_line_and_multiple_safe_links(tmp_pa
     assert extract_document(presented, path=entry).executable_bytes == raw
     entry.write_bytes(presented)
     assert admit(entry).graph_id == 'example'
-    malformed = presented.replace(b'\n\n<!-- workflow-generated-diagram-v2:start', b'\n<!-- workflow-generated-diagram-v2:start')
+    malformed = presented.replace(b'\n\n<!-- workflow-generated-diagram:start', b'\n<!-- workflow-generated-diagram:start')
     with pytest.raises(LayoutError, match='generated diagram'):
         extract_document(malformed, path=entry)
 
@@ -190,7 +191,7 @@ def test_root_fallback_is_exact_and_nested_document_has_bootstrap_only(tmp_path)
 def test_generated_navigation_accepts_uri_escaped_names_within_owner(tmp_path):
     (tmp_path / 'children').mkdir()
     child = tmp_path / 'children' / 'my node.md.html'
-    executable = b'# Node v2: work\n'
+    executable = b'# Node: work\n'
     svg = b'../.private_resources/diagrams/children/my%20node.svg'
     body = (b'![Workflow diagram](' + svg + b')\n\n'
             b'[Open standalone diagram](' + svg + b')\n\n'
@@ -302,10 +303,10 @@ def test_v3_presented_graph_has_selected_routes_and_frozen_state_reference(tmp_p
         'from typing import TypedDict\nclass State(TypedDict):\n    seen: bool\n'
         'def work(state, context):\n    return {"seen": True}\n')
     (tmp_path / 'work.md.html').write_text(
-        '# Node v3: work\n\n## Native\n\n| Registry | Kind | Source |\n'
+        '# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n'
         '| --- | --- | --- |\n| work | deterministic | [Python](native.py) |\n')
     entry = tmp_path / 'flow.md.html'
-    entry.write_text('# Workflow v3\n\n## Graph ID\n\n| ID |\n| --- |\n| state_graph |\n\n'
+    entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| state_graph |\n\n'
                      '## State\n\n| Registry | Source |\n| --- | --- |\n| State | [Python](native.py) |\n\n'
                      '## Flow\n\n1.  [node work](work.md.html)\n\n## Edges\n\n'
                      '| From | To | Router | Source |\n| --- | --- | --- | --- |\n'
@@ -317,20 +318,20 @@ def test_v3_presented_graph_has_selected_routes_and_frozen_state_reference(tmp_p
                      '| --- | --- | --- |\n| greeting | prompt | [text](prompt.txt) |\n\n'
                      '## Timeouts\n\n| Owner | Source | Key |\n| --- | --- | --- |\n'
                      '| GRAPH | [config](limits.toml) | GRAPH_LIMIT |\n')
-    bare = load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+    bare = load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
     bare_view = project_view(bare)
-    bare_diagram = diagram_stateful(bare)
+    bare_diagram = diagram_state(bare)
     entry.write_bytes(wrap_document(entry.read_bytes(), root=True,
                                     asset_prefix='.private_resources/viewer/',
                                     generated=(b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
                                                b'[Open standalone diagram](.private_resources/diagrams/flow.svg)')))
-    selected = load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path)
+    selected = load_definition(entry, base_root=tmp_path, pack_root=tmp_path)
     view = project_view(selected)
 
     assert [(edge.source, edge.target, edge.implicit) for edge in view.edges] == [
         ('START', 'work', True), ('work', 'END', False)]
     assert view.edges == bare_view.edges
-    assert diagram_stateful(selected) == bare_diagram
+    assert diagram_state(selected) == bare_diagram
     root_lines = extract_document(entry.read_bytes(), path=entry).line_map
     assert view.steps[0].flow_line == root_lines[bare_view.steps[0].flow_line - 1]
     assert any(ref.kind == 'state_schema' and ref.target_path == 'base/native.py'
@@ -347,13 +348,13 @@ def nested_v3_graph(root, *, original='group.md.html', routed=False):
     (root / 'native.py').write_text(
         'from typing import TypedDict\nclass State(TypedDict):\n    seen: bool\n')
     (root / 'work.md.html').write_text(
-        '# Node v3: work\n\n## Native\n\n| Registry | Kind | Source |\n'
+        '# Node: work\n\n## Native\n\n| Registry | Kind | Source |\n'
         '| --- | --- | --- |\n| work | deterministic | [Python](native.py) |\n')
     (root / 'group.md.html').write_text(
-        '# Component v3: group\n\n## Flow\n\n1.  [node work](work.md.html)\n')
+        '# Component: group\n\n## Flow\n\n1.  [node work](work.md.html)\n')
     entry = root / 'flow.md.html'
     entry.write_text(
-        '# Workflow v3\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+        '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
         '## State\n\n| Registry | Source |\n| --- | --- |\n| State | [Python](native.py) |\n\n'
         f'## Flow\n\n1.  [component group]({original})\n\n'
         '## Edges\n\n| From | To | Router | Source |\n| --- | --- | --- | --- |\n'
@@ -366,7 +367,7 @@ def nested_v3_graph(root, *, original='group.md.html', routed=False):
 def test_nested_v3_projection_has_component_entry_and_backlink(tmp_path):
     entry = nested_v3_graph(tmp_path)
 
-    view = project_view(load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path))
+    view = project_view(load_definition(entry, base_root=tmp_path, pack_root=tmp_path))
 
     assert ('group', 'START', 'work', True) in {
         (edge.owner, edge.source, edge.target, edge.implicit) for edge in view.edges}
@@ -377,7 +378,7 @@ def test_nested_v3_projection_has_component_entry_and_backlink(tmp_path):
 def test_v3_projection_binds_router_source_once_to_all_targets(tmp_path):
     entry = nested_v3_graph(tmp_path, routed=True)
     (tmp_path / 'work_two.md.html').write_text(
-        '# Node v3: work_two\n\n## Native\n\n| Registry | Kind | Source |\n'
+        '# Node: work_two\n\n## Native\n\n| Registry | Kind | Source |\n'
         '| --- | --- | --- |\n| work_two | deterministic | [Python](native.py) |\n')
     group = tmp_path / 'group.md.html'
     group.write_text(group.read_text() + '2.  [node work_two](work_two.md.html)\n')
@@ -386,7 +387,7 @@ def test_v3_projection_binds_router_source_once_to_all_targets(tmp_path):
                                                '| work | END | choose | [Python](native.py) |\n'
                                                '| work_two | END | - | - |'))
 
-    view = project_view(load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path))
+    view = project_view(load_definition(entry, base_root=tmp_path, pack_root=tmp_path))
     routers = [ref for ref in view.references if ref.kind == 'router_source']
 
     assert len(routers) == 1
@@ -407,15 +408,15 @@ def test_v3_projection_binds_router_source_once_to_all_targets(tmp_path):
 def test_v3_replacement_validates_original_link_without_reading_it(tmp_path, original, monkeypatch):
     entry = nested_v3_graph(tmp_path, original=original)
     selected = (Replacement('group', Path('group.md.html'), 'base'),)
-    original_read = __import__('api_agent.workflows.stateful', fromlist=['_read_bounded'])._read_bounded
+    original_read = __import__('api_agent.workflows.native', fromlist=['_read_bounded'])._read_bounded
     def rejecting_original(path, root):
         if Path(path).name == 'outside.md.html':
             pytest.fail('unselected original was read')
         return original_read(path, root)
-    monkeypatch.setattr('api_agent.workflows.stateful._read_bounded', rejecting_original)
+    monkeypatch.setattr('api_agent.workflows.native._read_bounded', rejecting_original)
 
     with pytest.raises(LayoutError, match='declaration link'):
-        load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                  replacements=selected)
 
 
@@ -425,15 +426,15 @@ def test_v3_replacement_rejects_existing_symlink_alias_without_reading(tmp_path,
     (tmp_path / 'alias.md.html').symlink_to(outside)
     entry = nested_v3_graph(tmp_path, original='alias.md.html')
     selected = (Replacement('group', Path('group.md.html'), 'base'),)
-    original_read = __import__('api_agent.workflows.stateful', fromlist=['_read_bounded'])._read_bounded
+    original_read = __import__('api_agent.workflows.native', fromlist=['_read_bounded'])._read_bounded
     def rejecting_original(path, root):
         if Path(path) == outside:
             pytest.fail('unselected original bytes were read')
         return original_read(path, root)
-    monkeypatch.setattr('api_agent.workflows.stateful._read_bounded', rejecting_original)
+    monkeypatch.setattr('api_agent.workflows.native._read_bounded', rejecting_original)
 
     with pytest.raises(LayoutError, match='declaration link'):
-        load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                  replacements=selected)
 
 
@@ -442,7 +443,7 @@ def test_v3_replacement_reports_malformed_url_authority(tmp_path):
     selected = (Replacement('group', Path('group.md.html'), 'base'),)
 
     with pytest.raises(LayoutError, match='invalid declaration link'):
-        load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                  replacements=selected)
 
 
@@ -459,7 +460,7 @@ def test_v3_replacement_reports_original_resolution_failure(tmp_path, monkeypatc
     monkeypatch.setattr(Path, 'resolve', unavailable_original)
 
     with pytest.raises(LayoutError, match='invalid declaration link'):
-        load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                  replacements=selected)
 
 
@@ -467,7 +468,7 @@ def test_v3_replacement_accepts_valid_uri_encoded_missing_original(tmp_path):
     entry = nested_v3_graph(tmp_path, original='missing%20original.md.html')
     selected = (Replacement('group', Path('group.md.html'), 'base'),)
 
-    definition = load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+    definition = load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                           replacements=selected)
 
     assert definition.layout.steps[0].id == 'group'
@@ -478,7 +479,7 @@ def test_invalid_percent_rejection_depends_on_percent_syntax_guard(tmp_path, mon
     entry = nested_v3_graph(tmp_path, original='%ZZ.md.html')
     selected = (Replacement('group', Path('group.md.html'), 'base'),)
     with pytest.raises(LayoutError, match='declaration link'):
-        load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+        load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                  replacements=selected)
     import re
     original_search = re.search
@@ -487,18 +488,18 @@ def test_invalid_percent_rejection_depends_on_percent_syntax_guard(tmp_path, mon
             return None
         return original_search(pattern, value, flags)
     with monkeypatch.context() as mutation:
-        mutation.setattr('api_agent.workflows.stateful.re.search', without_percent_syntax_check)
-        assert load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+        mutation.setattr('api_agent.workflows.native.re.search', without_percent_syntax_check)
+        assert load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                         replacements=selected).graph_id == 'example'
 
 
 def test_explicit_pack_alias_preserves_one_owner_and_semantic_digest(tmp_path):
     entry = nested_v3_graph(tmp_path)
-    bare = project_view(load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+    bare = project_view(load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                                  entry_root='pack'))
     entry.write_bytes(wrap_document(entry.read_bytes(), root=True,
                                     asset_prefix='.private_resources/viewer/'))
-    presented = project_view(load_stateful_definition(entry, base_root=tmp_path, pack_root=tmp_path,
+    presented = project_view(load_definition(entry, base_root=tmp_path, pack_root=tmp_path,
                                                       entry_root='pack'))
 
     assert presented.definition_id != bare.definition_id
@@ -514,7 +515,7 @@ def test_crlf_root_can_wrap_without_executable_byte_change(tmp_path, version):
         loader = load_definition
     else:
         entry = nested_v3_graph(tmp_path)
-        loader = load_stateful_definition
+        loader = load_definition
     raw = entry.read_bytes().replace(b'\n', b'\r\n')
     entry.write_bytes(raw)
     before = project_view(loader(entry, base_root=tmp_path, pack_root=tmp_path))
@@ -538,7 +539,7 @@ def test_crlf_wrap_depends_on_shared_root_detection(tmp_path, monkeypatch):
     assert wrap_document(raw, root=True, asset_prefix='.private_resources/viewer/')
     with monkeypatch.context() as mutation:
         mutation.setattr('api_agent.workflows.document_format._is_root_document',
-                         lambda data: data.startswith(b'# Workflow v3\n'))
+                         lambda data: data.startswith(b'# Workflow\n'))
         with pytest.raises(LayoutError, match='root mismatch'):
             wrap_document(raw, root=True, asset_prefix='.private_resources/viewer/')
 
@@ -592,7 +593,7 @@ def test_projection_rejects_missing_selection_and_maps_explicit_edge_and_binding
 
 
 def test_saved_generated_block_maps_noncontiguous_physical_lines(tmp_path):
-    raw = b'# Node v2: work\n\n## Native\n'
+    raw = b'# Node: work\n\n## Native\n'
     body = (b'![Workflow diagram](.private_resources/diagrams/work.svg)\n\n'
             b'[Open standalone diagram](.private_resources/diagrams/work.svg)')
     saved = wrap_document(raw, root=False, asset_prefix='.private_resources/viewer/', generated=body)
@@ -600,38 +601,29 @@ def test_saved_generated_block_maps_noncontiguous_physical_lines(tmp_path):
 
     assert extracted.executable_bytes == raw
     assert extracted.generated == body
-    assert b'# Node v2: work\n\n<!-- workflow-generated-diagram-v2:start -->\n[![' in saved
+    assert b'# Node: work\n\n<!-- workflow-generated-diagram:start -->\n[![' in saved
     assert b'<details open>\n<summary>Diagram links</summary>' in saved
     assert extracted.line_map[1] > extracted.line_map[0] + 1
     for logical, physical in enumerate(extracted.line_map):
         assert raw.splitlines()[logical] == saved.splitlines()[physical - 1]
 
 
-def test_legacy_exact_v1_envelope_and_generated_suffix_still_admitted(tmp_path):
-    from api_agent.workflows import document_format as fmt
-    raw = b'# Workflow v2\n'
-    body = (b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
-            b'[Open standalone diagram](.private_resources/diagrams/flow.svg)')
-    saved = (fmt._HEAD_V1.replace(b'{assets}', b'.private_resources/viewer/')
-             + fmt._ROOT_FALLBACK_V1 + fmt._CARRIER_V1 + raw
-             + fmt._GENERATED_START + body + fmt._GENERATED_END)
-
-    extracted = extract_document(saved, path=tmp_path / 'flow.md.html')
-    validate_presentation_location(saved, path=tmp_path / 'flow.md.html', root=tmp_path)
-    assert extracted.executable_bytes == raw
-    assert extracted.generated == body
+def test_html_only_pre_release_envelope_is_not_admitted(tmp_path):
+    old = b'<!doctype html><html><plaintext>\n# Workflow\n'
+    with pytest.raises(LayoutError, match='presentation envelope'):
+        extract_document(old, path=tmp_path / 'flow.md.html')
 
 
 @pytest.mark.parametrize('change', [
     lambda raw: raw.replace(b'<details open>', b'<details>'),
     lambda raw: raw.replace(b'Diagram links', b'Other links'),
     lambda raw: raw.replace(b'](.private_resources/diagrams/work.svg)\n\n<details', b'](other.svg)\n\n<details'),
-    lambda raw: raw.replace(b'<!-- workflow-generated-diagram-v2:start -->', b'<!-- workflow-generated-diagram-v2:other -->'),
+    lambda raw: raw.replace(b'<!-- workflow-generated-diagram:start -->', b'<!-- workflow-generated-diagram:other -->'),
 ])
 def test_new_generated_envelope_is_exact(tmp_path, change):
     body = (b'![Workflow diagram](.private_resources/diagrams/work.svg)\n\n'
             b'[Open standalone diagram](.private_resources/diagrams/work.svg)')
-    saved = wrap_document(b'# Node v2: work\n', root=False,
+    saved = wrap_document(b'# Node: work\n', root=False,
                           asset_prefix='.private_resources/viewer/', generated=body)
     with pytest.raises(LayoutError, match='generated diagram'):
         extract_document(change(saved), path=tmp_path / 'work.md.html')
@@ -642,16 +634,16 @@ def test_generated_format_rejects_incomplete_heading_and_duplicate_legacy(tmp_pa
     body = (b'![Workflow diagram](.private_resources/diagrams/work.svg)\n\n'
             b'[Open standalone diagram](.private_resources/diagrams/work.svg)')
     with pytest.raises(LayoutError, match='complete heading'):
-        wrap_document(b'# Node v2: work', root=False,
+        wrap_document(b'# Node: work', root=False,
                       asset_prefix='.private_resources/viewer/', generated=body)
-    valid = wrap_document(b'# Node v2: work\n', root=False,
+    valid = wrap_document(b'# Node: work\n', root=False,
                           asset_prefix='.private_resources/viewer/', generated=body)
-    with pytest.raises(LayoutError, match='duplicate'):
-        extract_document(valid + fmt._GENERATED_START + body + fmt._GENERATED_END,
+    with pytest.raises(LayoutError, match='generated diagram'):
+        extract_document(valid + fmt._NEW_START + body + fmt._NEW_END,
                          path=tmp_path / 'work.md.html')
     with pytest.raises(LayoutError, match='generated diagram'):
-        extract_document(b'# Node v2: work\n## Generated Diagram v1\n' + body
-                         + fmt._GENERATED_END, path=tmp_path / 'work.md.html')
+        extract_document(b'# Node: work\n## Generated Diagram v1\n' + body
+                         + b'<!-- workflow-generated-diagram-v1:end -->\n', path=tmp_path / 'work.md.html')
 
 
 @pytest.mark.parametrize('prefix', [b'<!doctype html>',
@@ -662,8 +654,8 @@ def test_missing_or_unowned_stylesheet_rejects_envelope(tmp_path, prefix):
 
 
 def test_fenced_new_generated_markers_remain_executable(tmp_path):
-    raw = (b'# Node v2: work\n\n```text\n<!-- workflow-generated-diagram-v2:start -->\n'
-           b'<details open>\n<!-- workflow-generated-diagram-v2:end -->\n```\n')
+    raw = (b'# Node: work\n\n```text\n<!-- workflow-generated-diagram:start -->\n'
+           b'<details open>\n<!-- workflow-generated-diagram:end -->\n```\n')
     saved = wrap_document(raw, root=False, asset_prefix='.private_resources/viewer/')
     assert extract_document(saved, path=tmp_path / 'work.md.html').executable_bytes == raw
 
@@ -672,9 +664,9 @@ def test_markdown_bootstrap_has_exact_safe_style_hashes_and_hidden_carrier(tmp_p
     import base64
     import hashlib
     import re
-    saved = wrap_document(b'# Workflow v3\n', root=True,
+    saved = wrap_document(b'# Workflow\n', root=True,
                           asset_prefix='.private_resources/viewer/')
-    prefix = saved.split(b'# Workflow v3')[0]
+    prefix = saved.split(b'# Workflow')[0]
     styles = re.findall(rb'style="([^"]+)"', prefix)
 
     assert saved.startswith(b'<!-- -*- mode: markdown -*- -->\n<!--\n')
@@ -697,7 +689,7 @@ def test_markdown_bootstrap_has_exact_safe_style_hashes_and_hidden_carrier(tmp_p
 ])
 def test_generated_links_bind_owner_with_or_without_browser_envelope(tmp_path, envelope, generated):
     from api_agent.workflows import document_format as fmt
-    saved = wrap_document(b'# Workflow v2\n', root=True,
+    saved = wrap_document(b'# Workflow\n', root=True,
                           asset_prefix='.private_resources/viewer/', generated=generated)
     if not envelope:
         saved = saved.split(fmt._CARRIER, 1)[1]
@@ -710,7 +702,7 @@ def test_bare_generated_links_allow_owned_destination(tmp_path):
     generated = (b'![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n'
                  b'[Open standalone diagram](.private_resources/diagrams/flow.svg)\n\n'
                  b'- [work](nodes/work.md.html)')
-    saved = wrap_document(b'# Workflow v2\n', root=True,
+    saved = wrap_document(b'# Workflow\n', root=True,
                           asset_prefix='.private_resources/viewer/', generated=generated).split(fmt._CARRIER, 1)[1]
     validate_presentation_location(saved, path=tmp_path / 'flow.md.html', root=tmp_path)
 
@@ -721,7 +713,7 @@ def test_repository_markdown_hides_fallback_for_quoted_flow_paths(tmp_path, flow
     from html import unescape
     from markdown_it import MarkdownIt
     from api_agent.workflows.document_format import _view_command
-    source = b'# LangGraph flow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n'
+    source = b'# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n'
 
     saved = wrap_document(source, root=True, asset_prefix='.private_resources/viewer/', flow_path=flow_path)
     rendered = MarkdownIt('commonmark', {'html': True}).render(saved.decode())
@@ -730,16 +722,17 @@ def test_repository_markdown_hides_fallback_for_quoted_flow_paths(tmp_path, flow
     assert '[workflow-source]' not in rendered
     assert 'Viewing this file' not in rendered
     assert 'workflow-fallback' not in rendered
-    assert '<h1>LangGraph flow</h1>' in rendered
+    assert '<h1>Workflow</h1>' in rendered
     assert _view_command(flow_path) in unescape(saved.decode().split('<pre>', 1)[1].split('</pre>', 1)[0])
     assert extract_document(saved, path=tmp_path / 'flow.md.html').executable_bytes == source
 
 
-def test_legacy_literal_quote_envelope_remains_readable(tmp_path):
-    source = b'# LangGraph flow\n'
+def test_legacy_literal_quote_envelope_is_rejected(tmp_path):
+    source = b'# Workflow\n'
     saved = wrap_document(source, root=True, asset_prefix='.private_resources/viewer/',
                           flow_path='demo/simple/flow.md.html')
     legacy = saved.replace(b'&quot;', b'"')
 
     assert legacy != saved
-    assert extract_document(legacy, path=tmp_path / 'flow.md.html').executable_bytes == source
+    with pytest.raises(LayoutError, match='envelope'):
+        extract_document(legacy, path=tmp_path / 'flow.md.html')

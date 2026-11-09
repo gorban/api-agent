@@ -245,7 +245,7 @@ contents never establish their own admission.
 
 ## Stateful application adapters
 
-A v3 workflow can explicitly admit its application adapter alongside the state
+A workflow can explicitly admit its application adapter alongside the state
 schema and node bindings. Ordinary Run local requires this binding for a
 stateful graph; workflow-only admission does not invent an HTTP adapter.
 

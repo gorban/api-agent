@@ -5,7 +5,7 @@ from pathlib import Path
 from .execution import diagram_layout
 from .layout import LayoutError
 from .definition import _read_bounded, load_definition
-from .stateful import StatefulDefinition, diagram_stateful, load_stateful_definition
+from .native import TypedDefinition, diagram_state
 from .resources import bundled_root
 
 
@@ -50,16 +50,10 @@ def main(argv=None):
                 selected_entry_root = 'base'
             selected_roots = dict(base_root=base, pack_root=args.pack_root or selected_pack_root,
                                   entry_root=selected_entry_root)
-            owner = selected_roots[selected_entry_root + '_root']
-            from .document_format import canonical_executable_bytes
-            heading = canonical_executable_bytes(_read_bounded(path, owner), path=path).split(b'\n', 1)[0]
-            if heading == b'# Workflow v3':
-                definition = load_stateful_definition(path, **selected_roots)
-            else:
-                definition = load_definition(path, **selected_roots)
+            definition = load_definition(path, **selected_roots)
     except (LayoutError, ValueError, FileNotFoundError) as error:
         parser.exit(2, f'{error}\n')
-    print((diagram_stateful(definition) if isinstance(definition, StatefulDefinition)
+    print((diagram_state(definition) if isinstance(definition, TypedDefinition)
            else diagram_layout(definition.layout)) if args.command == 'diagram'
           else f'Valid workflow: {definition.graph_id} ({definition.definition_id})',
           end='\n' if args.command == 'validate' else '')

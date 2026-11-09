@@ -271,9 +271,9 @@ def project_composition(tmp_path):
     library = tmp_path / 'library'
     library.mkdir()
     (library / 'pyproject.toml').write_text('[project]\ndependencies=["library-admitted>=1"]\n')
-    (library / 'flow.md.html').write_text('# Workflow v3\n')
+    (library / 'flow.md.html').write_text('# Workflow\n')
     first = pack(tmp_path, 'first', manifest='''[workflow]
-version=2
+version = 1
 root="base"
 entry="flow.md.html"
 [workflow.library]

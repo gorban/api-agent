@@ -1,11 +1,11 @@
 # Markdown workflow proof of concept
 
-The runtime loads versioned nested declarations from a selected `flow.md.html`,
+The runtime loads nested declarations from a selected `flow.md.html`,
 captures their resources, and compiles registered LangGraph execution. The
 [declaration grammar](prds/implementation_plan_b1b2.md) defines the inert source
 format and resource bounds. The root example is a single chat component with one LLM call;
 the permanent synthetic coverage fixture remains separate under
-`demo/contrived/`. Layout v1 remains for focused compatibility units. Each of two components owns
+`demo/contrived/`. Each of two components owns
 its producer, format check, guard and configurable pass budget. Fresh UUIDs
 determine the coverage cases supplied to the real model; the test validates its
 structured responses and executes the declared routes and retries.

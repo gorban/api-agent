@@ -11,12 +11,16 @@ from api_agent.workflows.__main__ import main
 from api_agent.workflows.contrived import guard, validate_format
 from api_agent.workflows.execution import NodeContext
 
+from binding_contract_support import compiler_fixture
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def runtime_layout():
-    layout = load_layout(ROOT / 'demo/contrived/layout.md', base_root=ROOT, pack_root=ROOT / 'demo')
+def runtime_layout(tmp_path):
+    from binding_contract_support import contract_graph, mutable_layout
+    entry = contract_graph(tmp_path)
+    layout = mutable_layout(load_layout(entry, base_root=tmp_path, pack_root=tmp_path))
     return replace(layout, steps=tuple(replace(step, source=Path(__file__).resolve()) if step.kind == 'node' else step for step in layout.steps))
 
 
@@ -33,26 +37,24 @@ def produce(inputs, context):
 
 
 def workflow(layout, producer=produce, **kwargs):
-    return Workflow(layout, {'produce': NodeFunction(producer), 'validate_format': NodeFunction(local_format), 'guard': NodeFunction(local_guard)},
+    return compiler_fixture(layout, {'produce': NodeFunction(producer), 'validate_format': NodeFunction(local_format), 'guard': NodeFunction(local_guard)},
                     kwargs.pop('conditions', {'skip_second': lambda values: True}), **kwargs)
 
 
-def test_reporting_requires_definition_before_native_node_runs(runtime_layout, monkeypatch):
+def test_engine_requires_admitted_definition_before_native_node_runs(runtime_layout):
     reached = []
     def forbidden(inputs, context):
         reached.append(True)
         return produce(inputs, context)
-    graph = workflow(runtime_layout, forbidden)
-    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING', '1')
-    with pytest.raises(WorkflowError, match='admitted workflow definition'):
-        asyncio.run(graph.arun({'user_input': 'plain'}))
+    with pytest.raises(LayoutError, match='admitted workflow definition'):
+        Workflow(runtime_layout, {'produce': NodeFunction(forbidden)})
     assert reached == []
 
 
 @pytest.mark.parametrize('entry', [None, NodeFunction(None), NodeFunction(produce, 'unknown')])
 def test_registry_contract_rejects_invalid_entry(runtime_layout, entry):
     with pytest.raises(LayoutError, match='registered node function'):
-        Workflow(runtime_layout, {'produce': entry})
+        compiler_fixture(runtime_layout, {'produce': entry})
 
 
 @pytest.mark.parametrize('function', [guard, len])
@@ -78,7 +80,7 @@ def test_registry_accepts_distinct_paths_to_same_source(runtime_layout, tmp_path
         if step.kind == 'node' else step for step in runtime_layout.steps))
     registry = {row['Registry']: NodeFunction(namespace['node']) for row in layout.tables['Functions']}
 
-    compiled = Workflow(layout, registry, {'skip_second': lambda values: True})
+    compiled = compiler_fixture(layout, registry, {'skip_second': lambda values: True})
 
     assert source != alias and source.samefile(alias)
     assert compiled.registry == registry
@@ -179,7 +181,7 @@ def test_retry_cannot_bind_stale_skipped_output(runtime_layout):
     runtime_layout.tables['Functions'][2]['Input schema'] = {'type': 'object'}
     def reject(inputs, context):
         return {'accepted': False, 'feedback': {'reason': 'again'}}
-    compiled = Workflow(runtime_layout, {'produce': NodeFunction(retry_producer), 'validate_format': NodeFunction(local_format), 'guard': NodeFunction(reject)},
+    compiled = compiler_fixture(runtime_layout, {'produce': NodeFunction(retry_producer), 'validate_format': NodeFunction(local_format), 'guard': NodeFunction(reject)},
                         {'skip_second': lambda values: True, 'second_pass': lambda values: values['first_draft']['ready']})
     with pytest.raises(WorkflowError, match='Missing required binding for first_guard.draft'):
         asyncio.run(compiled.arun({'user_input': 'x'}))
@@ -411,7 +413,7 @@ def test_nested_components_reset_independent_passes_and_restore_parent_feedback(
     runtime_layout.tables['Bindings'].append({'Node': 'outer_guard', 'Input': 'draft', 'From': 'first_draft', 'Field': '*', 'Default': '-'})
     runtime_layout.tables['Bindings'].append({'Node': 'outer_guard', 'Input': 'format', 'From': 'first_format', 'Field': '*', 'Default': '-'})
     runtime_layout.tables['Edges'] = [{'From': 'outer', 'To': 'END', 'When': 'always'}]
-    compiled = Workflow(runtime_layout, {'produce': NodeFunction(nested_produce), 'validate_format': NodeFunction(local_format),
+    compiled = compiler_fixture(runtime_layout, {'produce': NodeFunction(nested_produce), 'validate_format': NodeFunction(local_format),
                                         'guard': NodeFunction(local_guard), 'outer_guard': NodeFunction(outer_guard)})
     result = asyncio.run(compiled.arun({'user_input': 'x'}))
     assert [ancestry for ancestry, _, _ in seen] == [

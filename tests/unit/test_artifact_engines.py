@@ -18,7 +18,8 @@ from api_agent.workflows.execution import Workflow
 from api_agent.workflows.identity import declaration_identity, workflow_identity
 from api_agent.workflows.journal import WorkflowJournal, projection, validate_journal
 from api_agent.workflows.model import LayoutError
-from api_agent.workflows.stateful import load_stateful_catalog, load_stateful_definition
+from api_agent.workflows.native import (load_native_bindings)
+from api_agent.workflows.definition import (load_definition)
 
 
 def run(coroutine):
@@ -26,15 +27,15 @@ def run(coroutine):
 
 
 def source_v3(root=QUALIFICATION):
-    definition = load_stateful_definition(root / 'flow.md.html', base_root=root, pack_root=root)
-    return definition, load_stateful_catalog(definition)
+    definition = load_definition(root / 'flow.md.html', base_root=root, pack_root=root)
+    return definition, load_native_bindings(definition)
 
 
 def test_v3_compiled_workflow_matches_the_parsed_workflow_result(v3_built):
     compiled = load_built(v3_built).workflow(reducers={'messages': add_messages})
     definition, catalog = source_v3()
-    from api_agent.workflows.stateful import StatefulWorkflow
-    parsed = StatefulWorkflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    from api_agent.workflows.execution import (Workflow)
+    parsed = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
 
     expected = run(parsed.arun(dict(V3_INITIAL), thread_id='t'))
     actual = run(compiled.arun(dict(V3_INITIAL), thread_id='t'))
@@ -69,7 +70,7 @@ def test_v3_workflow_rejects_a_catalog_for_other_timeouts(rich_built):
 
 def test_v3_engine_records_compiled_plan_provenance(v3_built, monkeypatch):
     workflow = load_built(v3_built).workflow(reducers={'messages': add_messages})
-    monkeypatch.setattr('api_agent.workflows.stateful.recording_enabled', lambda: True)
+    monkeypatch.setattr('api_agent.workflows.execution.recording_enabled', lambda: True)
 
     assert run(workflow.arun(dict(V3_INITIAL), thread_id='t'))['trail'] == ['intake', 'work:0', 'work:1', 'finish']
 

@@ -8,7 +8,7 @@
   const state = carrier ? (carrier[renderedDocument] ||= {}) : {};
   if (state.document) return;
   if (!carrier || !window.marked || !window.DOMPurify ||
-      (document.querySelector('meta[name="workflow-view"]')?.content === "v2" && !window.markedGfmHeadingId)) {
+      (document.querySelector('meta[name="workflow-view"]')?.content === "v1" && !window.markedGfmHeadingId)) {
     const fallback = document.getElementById("workflow-fallback");
     const diagnostic = fallback || state.diagnostic || document.createElement("section");
     state.diagnostic = diagnostic;
@@ -32,11 +32,11 @@
   const segmentV2 = "(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+";
   const pathV2 = `(?:\\.\\./)*(?:${segmentV2}/)*${segmentV2}`;
   const blockV2 = new RegExp(
-    `<!-- workflow-generated-diagram-v2:start -->\\n` +
+    `<!-- workflow-generated-diagram:start -->\\n` +
     `\\[!\\[Workflow diagram\\]\\((${pathV2}\\.svg)\\)\\]\\(\\1\\)\\n\\n` +
     `<details open>\\n<summary>Diagram links</summary>\\n\\n` +
     `\\[Open standalone diagram\\]\\(\\1\\)(?:\\n\\n- \\[([a-z][a-z0-9_]{0,63})\\]\\((?:${pathV2}\\.md\\.html|#node-\\2)\\)(?:\\n- \\[([a-z][a-z0-9_]{0,63})\\]\\((?:${pathV2}\\.md\\.html|#node-\\3)\\))*)?` +
-    `\\n\\n</details>\\n<!-- workflow-generated-diagram-v2:end -->`, "g");
+    `\\n\\n</details>\\n<!-- workflow-generated-diagram:end -->`, "g");
   let tokenOffset = 0;
   const codeRanges = [];
   for (const token of markdown.lexer(source)) {

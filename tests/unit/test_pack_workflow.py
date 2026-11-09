@@ -15,8 +15,8 @@ def pack(tmp_path, declaration=''):
     selected = base / 'demo'
     selected.mkdir(parents=True)
     (selected / 'cfg.toml').write_text('version=1\n')
-    (base / 'flow.md.html').write_text('# Workflow v2\n')
-    (selected / 'flow.md.html').write_text('# Workflow v2\n')
+    (base / 'flow.md.html').write_text('# Workflow\n')
+    (selected / 'flow.md.html').write_text('# Workflow\n')
     (selected / 'pack.toml').write_text('version=1\nid="demo"\nowner=".."\nconfig="cfg.toml"\n' + declaration)
     return base, selected
 
@@ -39,28 +39,28 @@ def test_missing_inherited_application_entry_fails_before_binding(tmp_path):
 
 
 def test_declared_root_is_explicit_and_independent_of_cwd(tmp_path, monkeypatch):
-    base, selected = pack(tmp_path, '[workflow]\nversion=2\nroot="pack"\nentry="flow.md.html"\n')
+    base, selected = pack(tmp_path, '[workflow]\nversion = 1\nroot="pack"\nentry="flow.md.html"\n')
     monkeypatch.chdir(tmp_path)
     assert load_launch_context(base).workflow_entry == selected / 'flow.md.html'
 
 
 @pytest.mark.parametrize('declaration', [
-    'workflow="invalid"', 'workflow={version=1,root="pack",entry="flow.md.html"}',
+    'workflow="invalid"', 'workflow={version=2,root="pack",entry="flow.md.html"}',
     'workflow={version=true,root="pack",entry="flow.md.html"}',
-    'workflow={version=2,entry="flow.md.html"}',
-    'workflow={version=2,root="pack",entry="flow.md.html",extra=true}',
-    'workflow={version=2,root="pack",entry="/tmp/flow.md.html"}',
-    'workflow={version=2,root="pack",entry="missing.md.html"}',
-    'workflow={version=2,root="pack",entry="cfg.toml"}',
-    'workflow={version=2,root="unknown",entry="flow.md.html"}',
-    'workflow={version=2,root=[],entry="flow.md.html"}',
-    'workflow={version=2,root=1,entry="flow.md.html"}',
-    'workflow={version=2,root="pack",entry="../flow.md.html"}',
-    'workflow={version=2,root="pack",entry="flow.md.html",replacements="bad"}',
-    'workflow={version=2,root="pack",entry="flow.md.html",replacements=[{target_id="x",entry="flow.md.html"}]}',
-    'workflow={version=2,root="pack",entry="flow.md.html",replacements=[{target_id="x",entry="flow.md.html",root_id=[]}]}',
-    'workflow={version=2,root="pack",entry="flow.md.html",replacements=[{target_id="x",entry="flow.md.html",root_id=1}]}',
-    'workflow={version=2,root="pack",entry="flow.md.html",replacements=[{target_id="x",entry="flow.md.html",root_id="pack"},{target_id="x",entry="flow.md.html",root_id="base"}]}',
+    'workflow={version=1,entry="flow.md.html"}',
+    'workflow={version=1,root="pack",entry="flow.md.html",extra=true}',
+    'workflow={version=1,root="pack",entry="/tmp/flow.md.html"}',
+    'workflow={version=1,root="pack",entry="missing.md.html"}',
+    'workflow={version=1,root="pack",entry="cfg.toml"}',
+    'workflow={version=1,root="unknown",entry="flow.md.html"}',
+    'workflow={version=1,root=[],entry="flow.md.html"}',
+    'workflow={version=1,root=1,entry="flow.md.html"}',
+    'workflow={version=1,root="pack",entry="../flow.md.html"}',
+    'workflow={version=1,root="pack",entry="flow.md.html",replacements="bad"}',
+    'workflow={version=1,root="pack",entry="flow.md.html",replacements=[{target_id="x",entry="flow.md.html"}]}',
+    'workflow={version=1,root="pack",entry="flow.md.html",replacements=[{target_id="x",entry="flow.md.html",root_id=[]}]}',
+    'workflow={version=1,root="pack",entry="flow.md.html",replacements=[{target_id="x",entry="flow.md.html",root_id=1}]}',
+    'workflow={version=1,root="pack",entry="flow.md.html",replacements=[{target_id="x",entry="flow.md.html",root_id="pack"},{target_id="x",entry="flow.md.html",root_id="base"}]}',
 ])
 def test_invalid_workflow_rejected_before_loading_functions(tmp_path, declaration):
     base, _ = pack(tmp_path, declaration + '\n')
@@ -68,7 +68,7 @@ def test_invalid_workflow_rejected_before_loading_functions(tmp_path, declaratio
         load_launch_context(base)
 
 
-_ARTIFACT_ENTRY = '[workflow]\nversion=2\nroot="pack"\nentry="flow.md.html"\n'
+_ARTIFACT_ENTRY = '[workflow]\nversion = 1\nroot="pack"\nentry="flow.md.html"\n'
 
 
 def artifact_pack(tmp_path, artifact):
@@ -147,7 +147,7 @@ def test_local_selected_definition_uses_source_when_checked_in_artifact_is_unrea
 
 
 def test_symlink_outside_declared_root_is_rejected(tmp_path):
-    base, selected = pack(tmp_path, '[workflow]\nversion=2\nroot="pack"\nentry="linked.md.html"\n')
+    base, selected = pack(tmp_path, '[workflow]\nversion = 1\nroot="pack"\nentry="linked.md.html"\n')
     outside = tmp_path / 'outside.md.html'
     outside.write_text('not an artifact')
     (selected / 'linked.md.html').symlink_to(outside)
@@ -161,12 +161,12 @@ def test_external_pack_can_explicitly_select_base_graph(tmp_path):
     external.mkdir()
     (external / 'cfg.toml').write_text('version=1\n')
     (external / 'pack.toml').write_text('version=1\nid="external"\nconfig="cfg.toml"\n'
-                                        '[workflow]\nversion=2\nroot="base"\nentry="flow.md.html"\n')
+                                        '[workflow]\nversion = 1\nroot="base"\nentry="flow.md.html"\n')
     assert load_launch_context(base, external).workflow_entry == base / 'flow.md.html'
 
 
 def test_replacement_paths_are_root_scoped_and_ordered(tmp_path):
-    base, selected = pack(tmp_path, '[workflow]\nversion=2\nroot="base"\nentry="flow.md.html"\n'
+    base, selected = pack(tmp_path, '[workflow]\nversion = 1\nroot="base"\nentry="flow.md.html"\n'
                                'replacements=[{target_id="first",entry="flow.md.html",root_id="pack"},'
                                '{target_id="second",entry="flow.md.html",root_id="base"}]\n')
     assert load_launch_context(base).workflow_replacements == (
@@ -186,7 +186,7 @@ def test_manifest_replacement_reaches_selected_definition(tmp_path):
     (pack_root / 'cfg.toml').write_text('version=1\n')
     (pack_root / 'pack.toml').write_text(
         'version=1\nid="selected"\nconfig="cfg.toml"\n'
-        '[workflow]\nversion=2\nroot="base"\nentry="flow.md.html"\n'
+        '[workflow]\nversion = 1\nroot="base"\nentry="flow.md.html"\n'
         'replacements=[{target_id="inspect",entry="workflows/alternate.md.html",root_id="pack"}]\n')
     context = load_launch_context(base, pack_root)
 
@@ -210,7 +210,7 @@ def test_pack_graph_identity_is_stable_when_pack_moves_beside_base(tmp_path):
     (nested / 'cfg.toml').write_text('version=1\n')
     (nested / 'pack.toml').write_text(
         'version=1\nid="selected"\nconfig="cfg.toml"\n'
-        '[workflow]\nversion=2\nroot="pack"\nentry="flow.md.html"\n')
+        '[workflow]\nversion = 1\nroot="pack"\nentry="flow.md.html"\n')
     sibling = tmp_path / 'selected'
     shutil.copytree(nested, sibling)
 
@@ -231,7 +231,7 @@ def test_supplied_definition_must_keep_declared_entry_owner(tmp_path):
     (nested / 'cfg.toml').write_text('version=1\n')
     (nested / 'pack.toml').write_text(
         'version=1\nid="selected"\nconfig="cfg.toml"\n'
-        '[workflow]\nversion=2\nroot="pack"\nentry="flow.md.html"\n')
+        '[workflow]\nversion = 1\nroot="pack"\nentry="flow.md.html"\n')
     context = load_launch_context(base, nested)
     from api_agent.workflows.definition import load_definition
     wrong_owner = load_definition(nested / 'flow.md.html', base_root=base,
@@ -250,7 +250,7 @@ def test_cli_explicit_entry_root_preserves_pack_owner(tmp_path, capsys):
     (pack_root / 'cfg.toml').write_text('version=1\n')
     (pack_root / 'pack.toml').write_text(
         'version=1\nid="selected"\nconfig="cfg.toml"\n'
-        '[workflow]\nversion=2\nroot="pack"\nentry="flow.md.html"\n')
+        '[workflow]\nversion = 1\nroot="pack"\nentry="flow.md.html"\n')
     from api_agent.workflows.__main__ import main
 
     assert main(['validate', '--entry', str(entry), '--base-root', str(base),
@@ -272,7 +272,7 @@ def test_cli_selected_pack_applies_ordered_manifest_replacement(tmp_path, capsys
     (pack_root / 'cfg.toml').write_text('version=1\n')
     (pack_root / 'pack.toml').write_text(
         'version=1\nid="selected"\nconfig="cfg.toml"\n'
-        '[workflow]\nversion=2\nroot="base"\nentry="flow.md.html"\n'
+        '[workflow]\nversion = 1\nroot="base"\nentry="flow.md.html"\n'
         'replacements=[{target_id="inspect",entry="workflows/alternate.md.html",root_id="pack"}]\n')
     context = load_launch_context(base, pack_root)
     selected = load_selected_definition(context)

@@ -154,7 +154,7 @@ def test_catalog_owner_is_preserved_or_rejected(tmp_path, catalog_count):
 def workflow(root):
     (root / 'flow.md.html').write_text((BASE / 'flow.md.html').read_text())
     with (root / 'pack.toml').open('a') as stream:
-        stream.write('[workflow]\nversion=2\nroot="base"\nentry="flow.md.html"\n')
+        stream.write('[workflow]\nversion = 1\nroot="base"\nentry="flow.md.html"\n')
 
 
 def test_workflow_owner_inherits_and_explicit_replacement_uses_existing_compiler(tmp_path):
@@ -337,9 +337,9 @@ def test_explicit_view_selection_keeps_inherited_workflow_pack_root(tmp_path):
     first = pack(tmp_path, 'first')
     second = pack(tmp_path, 'second')
     with (first / 'pack.toml').open('a') as stream:
-        stream.write('[workflow]\nversion=2\nroot="pack"\nentry="selected.md.html"\n')
-    (first / 'selected.md.html').write_text('# Workflow v3\n')
-    (first / 'other.md.html').write_text('# Workflow v3\n')
+        stream.write('[workflow]\nversion = 1\nroot="pack"\nentry="selected.md.html"\n')
+    (first / 'selected.md.html').write_text('# Workflow\n')
+    (first / 'other.md.html').write_text('# Workflow\n')
     context = load_launch_context(BASE, [first, second])
     assert _view_context(context, first / 'selected.md.html') == context
     other = _view_context(context, first / 'other.md.html')

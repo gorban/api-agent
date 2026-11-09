@@ -30,7 +30,7 @@ def _pack(tmp_path):
     (pack / 'config.toml').write_text('version=1\n')
     (pack / 'pack.toml').write_text(
         'version=1\nid="compiled"\nconfig="config.toml"\n'
-        '[workflow]\nversion=2\nroot="pack"\nentry="flow.md.html"\n'
+        '[workflow]\nversion = 1\nroot="pack"\nentry="flow.md.html"\n'
         '[workflow.artifact]\n'
         'plan=".private_resources/plans/artifact_qualification.json"\n'
         'graph_id="artifact_qualification"\n'

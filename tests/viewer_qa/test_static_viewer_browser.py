@@ -33,7 +33,7 @@ def static_view(tmp_path):
              "![Extra prefix](../../.private_resources/diagrams/flow.svg)\n\n"
              "![Absolute](/outside.svg)\n\n"
              "![Scheme](file:///outside.svg)\n\n")
-    root_source = ("# Workflow v2\n" + notes + "## Héllo *world*!\n\n## Héllo *world*!\n\n"
+    root_source = ("# Workflow\n" + notes + "## Héllo *world*!\n\n## Héllo *world*!\n\n"
                    "## 中文\n\n```text\n## Not a heading\n```\n").encode()
     root_generated = (b"![Workflow diagram](.private_resources/diagrams/flow.svg)\n\n"
                       b"[Open standalone diagram](.private_resources/diagrams/flow.svg)\n\n"
@@ -43,7 +43,7 @@ def static_view(tmp_path):
     nested_generated = (b"![Workflow diagram](../../.private_resources/diagrams/workflows/components/agent.svg)\n\n"
                         b"[Open standalone diagram](../../.private_resources/diagrams/workflows/components/agent.svg)\n\n"
                         b"- [llm_call](#node-llm_call)")
-    nested = wrap_document(b"# Component v2: agent\n\n## Node: llm_call\n", root=False,
+    nested = wrap_document(b"# Component: agent\n\n## Node: llm_call\n", root=False,
                            asset_prefix="../../.private_resources/viewer/", generated=nested_generated)
     (owner / "workflows/components/agent.md.html").write_bytes(nested)
     (tmp_path / "outside.svg").write_text(
@@ -388,7 +388,7 @@ def test_missing_optional_structure_is_safe(static_view, change):
 
     document = static_view / "flow.md.html"
     source = document.read_text()
-    source = source.replace("# Workflow v2", "Workflow v2", 1) if change == "no-title" else source.replace("<!-- workflow-generated-diagram-v2:start -->", "<!-- ordinary -->", 1)
+    source = source.replace("# Workflow", "Workflow v2", 1) if change == "no-title" else source.replace("<!-- workflow-generated-diagram:start -->", "<!-- ordinary -->", 1)
     document.write_text(source)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -468,7 +468,7 @@ def test_heading_ids_title_and_initial_fragment(view_url):
             page = browser.new_page()
             page.goto(view_url("flow.md.html") + "#héllo-world-1")
             page.locator("main").wait_for()
-            assert page.title() == "Workflow v2"
+            assert page.title() == "Workflow"
             assert page.locator("main h2").evaluate_all("items => items.map(item => item.id)") == [
                 "notes", "héllo-world", "héllo-world-1", "中文"]
             assert page.locator("main pre").inner_text() == "## Not a heading\n"
@@ -482,7 +482,7 @@ def test_tool_fragments_land_on_the_declared_scope_and_port(static_view, view_ur
     from playwright.sync_api import sync_playwright
     from api_agent.workflows.document_format import wrap_document
 
-    root = b'''# Workflow v2
+    root = b'''# Workflow
 
 ## Graph ID
 
@@ -500,7 +500,7 @@ def test_tool_fragments_land_on_the_declared_scope_and_port(static_view, view_ur
 | primary | [shared](shared.toml) |
 | secondary | [shared](shared.toml) |
 '''
-    component = b'''# Component v2: branch
+    component = b'''# Component: branch
 
 ## Tools
 
@@ -617,9 +617,9 @@ def test_generated_component_svg_links_target_each_inline_scope(static_view, vie
     (root / 'native.py').write_text('def work(inputs, context): return {}\ndef other(inputs, context): return {}\n')
     (root / 'schema.json').write_text('{"type":"object"}')
     (root / 'shared.toml').write_text('version = 1\n')
-    (root / 'flow.md.html').write_text('# Workflow v2\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
+    (root / 'flow.md.html').write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| example |\n\n'
         '## Flow\n\n1.  [component branch](branch.md.html)\n')
-    component = ('# Component v2: branch\n\n## Flow\n\n1.  [node work](#node-work)\n'
+    component = ('# Component: branch\n\n## Flow\n\n1.  [node work](#node-work)\n'
         '2.  [node other](#node-other)\n\n## Components\n\n| ID | Max passes | Guard |\n'
         '| --- | --- | --- |\n| branch | 1 | - |\n\n## Tools\n\n| Port | Instance |\n'
         '| --- | --- |\n| primary | [shared](shared.toml) |\n')
@@ -780,24 +780,6 @@ def test_rendering_retains_exact_carrier_and_sanitizes_html(static_view, view_ur
             browser.close()
 
 
-def test_legacy_v1_carrier_stays_hidden_and_safe(static_view, view_url):
-    from api_agent.workflows.document_format import _CARRIER_V1, _HEAD_V1, _ROOT_FALLBACK_V1
-    from playwright.sync_api import sync_playwright
-
-    document = static_view / "flow.md.html"
-    document.write_bytes(_HEAD_V1.replace(b"{assets}", b".private_resources/viewer/") +
-                         _ROOT_FALLBACK_V1 + _CARRIER_V1 + b"# Legacy workflow\n\n## Notes\n")
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        try:
-            page = browser.new_page()
-            page.goto(view_url("flow.md.html"))
-            page.locator("main").wait_for()
-            assert page.title() == "Legacy workflow"
-            assert not page.locator("plaintext").is_visible()
-            assert page.locator("#workflow-fallback").count() == 0
-        finally:
-            browser.close()
 
 
 def test_nested_missing_dependency_shows_readable_diagnostic(static_view, view_url):
@@ -1121,9 +1103,9 @@ def test_viewer_keeps_global_markdown_parser_independent(view_url, browser_name)
         try:
             page = browser.new_page()
             page.goto(view_url('flow.md.html'))
-            page.locator('main #workflow-v2').wait_for()
+            page.locator('main #workflow').wait_for()
 
             assert page.evaluate("window.marked.parse('# Unrelated content')") == '<h1>Unrelated content</h1>\n'
-            assert page.locator('main #workflow-v2').inner_text() == 'Workflow v2'
+            assert page.locator('main #workflow').inner_text() == 'Workflow'
         finally:
             browser.close()

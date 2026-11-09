@@ -199,34 +199,3 @@ async def inspect(inputs, context):
     result = await Workflow(definition, {'inspect':NodeFunction(function,'llm')}, services={'llm':provider}).arun({})
     assert result['inspect'] == {'seen':True}
     assert provider.requests[0].payload.generation.display_summary is True
-
-
-def test_legacy_layout_parser_accepts_optional_summary_column(tmp_path):
-    from api_agent.workflows.layout import load_layout
-    entry = response_graph(tmp_path)
-    definition = admit(entry)
-    # V1 and V2 share response semantics; this exercises V1's own table parser.
-    layout = tmp_path / 'layout.md'
-    layout.write_text('''# LangGraph Layout v1
-
-## Flow
-
-1.  [node inspect](native.py)
-
-## Components
-
-## Functions
-
-| ID | Registry | Input | Output | Response schema | Output mode | Fallback | Display summary |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| inspect | inspect | [input](schemas/input.json) | [output](schemas/output.json) | [response](schemas/response.json) | structured | allow | auto |
-
-## Bindings
-
-## Edges
-
-## Prompts
-
-## Timeouts
-''')
-    assert load_layout(layout, base_root=tmp_path, pack_root=tmp_path).tables['Functions'][0]['Display summary'] == 'auto'

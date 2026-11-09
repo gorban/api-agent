@@ -279,13 +279,13 @@ def _wire_types():
     from api_agent.config.resolve import ConfigResult, ResolvedValue
     from api_agent.workflows.definition import (WorkflowDefinition, Replacement, Resource,
                                                 InlinePromptRef, ToolUsage)
-    from api_agent.workflows.stateful import StatefulDefinition
+    from api_agent.workflows.native import (TypedDefinition)
     from api_agent.workflows.layout import Layout, Step
     from api_agent.runtime.infrastructure_contract import (CapturedAsset, Activation, Readiness,
         EndpointOutput, Seed, InfrastructureService)
     from .admission import FactoryAdmission
     classes = (ToolPlan, SelectedTool, OperationSelection, ConfigSchema, FieldDeclaration, ConfigResult, ResolvedValue,
-               WorkflowDefinition, StatefulDefinition, Replacement, Resource, InlinePromptRef,
+               WorkflowDefinition, TypedDefinition, Replacement, Resource, InlinePromptRef,
                ToolUsage, Layout, Step, CapturedAsset, Activation, Readiness, EndpointOutput,
                Seed, InfrastructureService, FactoryAdmission)
     return {item.__name__: item for item in classes}
