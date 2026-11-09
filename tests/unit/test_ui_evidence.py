@@ -2315,8 +2315,12 @@ def test_owned_capture_rejects_debugger_or_raster_failure_without_raw_fallback(f
                     if method == 'Debugger.disable':
                         disabled = True
                     if method == 'Debugger.getScriptSource' and failure == 'resume_admission':
+                        # Wait for the event, not a loop tick: the capture's own
+                        # listener was registered first and has run by then.
+                        resumed = asyncio.get_running_loop().create_future()
+                        session.once('Debugger.resumed', lambda _: resumed.done() or resumed.set_result(None))
                         await send('Debugger.resume')
-                        await asyncio.sleep(0)
+                        await asyncio.wait_for(resumed, 3)
                     if method == 'Debugger.disable' and failure == 'cleanup_reload':
                         await page.reload()
                     if method == 'Page.getFrameTree' and raster_finished and failure == 'mask_navigation':
