@@ -22,6 +22,18 @@ def isolated_native_login_gate(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture
+def isolated_renderer_cache(tmp_path, monkeypatch):
+    """Selected views look up the prepared renderer cache, never the user's."""
+    home = tmp_path / 'renderer-home'
+    jar = home / '.cache/api-agent/plantuml/plantuml-mit-1.2026.9.jar'
+    jar.parent.mkdir(parents=True)
+    jar.write_bytes(b'unused renderer')
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.delenv('API_AGENT_PLANTUML_JAR', raising=False)
+    return jar
+
+
 @pytest.fixture(autouse=True)
 def isolated_recording_history(tmp_path_factory, monkeypatch):
     from api_agent.testing import cost_history
