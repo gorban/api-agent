@@ -1,4 +1,5 @@
-FROM api-agent-runtime:local
+ARG BASE_IMAGE=api-agent-runtime:local
+FROM ${BASE_IMAGE}
 USER root
 COPY qualification/deterministic_llm.py /opt/api-agent/providers/deterministic_llm.py
 COPY qualification/simple_chat.json /opt/api-agent/plans/simple_chat.json

@@ -68,6 +68,17 @@ The canonical regeneration command is:
 python -m api_agent.workflows.artifact_plans regenerate --root .
 ```
 
+The production image qualifier's `qualification/simple_chat.json` is not a
+resource-pack plan. A unit test requires it to equal a fresh compile of the
+root workflow; regenerate it with:
+
+```bash
+uv run python -c "from pathlib import Path; from api_agent.workflows.artifact_compile import compile_plan; \
+root = Path('.').resolve(); Path('qualification/simple_chat.json').write_bytes(compile_plan( \
+root / 'flow.md.html', base_root=root, pack_root=root, entry_root='base', \
+wheels=[root / 'demo/.private_resources/wheels/api_agent-0.1.0-py3-none-any.whl']))"
+```
+
 Use `python -m api_agent.workflows.artifact_plans check --root .` for the
 same freshness check CI and pre-commit run.
 
