@@ -14,6 +14,7 @@ from api_agent.workflows.viewer_render import RenderError
 from test_viewer_configuration import seed_renderer_declaration
 
 ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.usefixtures('isolated_renderer_cache')
 
 
 def context(root):

@@ -9,6 +9,8 @@ from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.sessions import InspectionOwner
 from api_agent.runtime import view_flow as viewer
@@ -16,6 +18,7 @@ from api_agent.workflows import viewer_projection, viewer_render
 from api_agent.workflows.viewer_render import ViewBundle, ViewFile, ViewRoute, ViewSource
 
 ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.usefixtures('isolated_renderer_cache')
 
 
 def test_selected_view_uses_original_page_and_retries_browser_cleanup(tmp_path, monkeypatch):

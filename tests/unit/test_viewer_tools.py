@@ -172,8 +172,14 @@ def test_capture_stops_descendant_after_launcher_exits(tmp_path, inherit_pipes):
                                                  seconds=5, output_limit=1024)
             assert (code, out, err) == (0, b'', b'')
         pid = int(pid_file.read_text())
-        state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True,
-                               text=True, timeout=2).stdout.strip()
+        # SIGKILL to the group is asynchronous; a loaded host may still report R briefly.
+        stopped_by = time.monotonic() + 2
+        while True:
+            state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True,
+                                   text=True, timeout=2).stdout.strip()
+            if not state or state.startswith('Z') or time.monotonic() >= stopped_by:
+                break
+            time.sleep(.02)
         assert not state or state.startswith('Z')
     finally:
         if pid_file.exists():
