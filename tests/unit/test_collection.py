@@ -276,6 +276,18 @@ def test_collector_implicit_roots_keep_unique_effective_repository_labels(tmp_pa
     assert collection.repository_label(context(base, owner), other) == ('pack' if base_name == owner_name else other.name)
 
 
+def test_executing_source_checkout_is_canonical_under_any_directory_name(tmp_path, monkeypatch):
+    from api_agent.testing import collection
+    checkout = tmp_path / 'src_repo'; checkout.mkdir()
+    unrelated = tmp_path / 'unrelated'; unrelated.mkdir()
+    monkeypatch.setattr(collection, '__file__', str(checkout / 'src/api_agent/testing/collection.py'))
+    assert collection.repository_label(context(checkout), checkout) == 'api-agent'
+    assert collection.repository_label(context(unrelated), unrelated) == 'unrelated'
+    same = tmp_path / 'owner' / 'api-agent'; same.mkdir(parents=True)
+    assert collection.repository_label(context(checkout, same), checkout) == 'base'
+    assert collection.repository_label(context(checkout, same), same) == 'pack'
+
+
 def test_cancellation_arriving_during_spawn_disposes_before_exchange(tmp_path, monkeypatch):
     import os
     import sys
