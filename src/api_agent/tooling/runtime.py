@@ -9,6 +9,7 @@ from api_agent.providers.control import finish_cleanup
 from api_agent.workflows.tool_gate import ToolGate, ToolGateError, VerifiedCall
 from api_agent.providers.tools import PreparedCall
 from api_agent.providers.progress import component_timeout
+from .operations import FIXED_OPERATIONS, OPERATIONS_INTERFACE
 
 
 class BorrowedTool:
@@ -43,6 +44,10 @@ class BorrowedTool:
 
     async def invoke(self, prepared):
         return await self._run(lambda: self.view.invoke(prepared))
+
+    async def call(self, operation, arguments):
+        """Invoke one named operation on an operations@1 view."""
+        return await self._run(lambda: self.view.invoke(operation, arguments))
 
     async def _close_owned(self):
         from api_agent.providers.sessions import _drain
@@ -110,9 +115,30 @@ class WorkflowTools:
         return self.runtime.borrow_tool(self.instance(scope_kind=scope_kind, scope=scope, port=port))
 
     def gate(self, *, scope_kind, scope, port, invocation_id, timeout=30):
-        return ToolGate(self.for_port(scope_kind=scope_kind, scope=scope, port=port),
-                        invocation_id=invocation_id, timeout=timeout, tool_alias=port,
-                        tool_instance=self.instance(scope_kind=scope_kind, scope=scope, port=port))
+        instance = self.instance(scope_kind=scope_kind, scope=scope, port=port)
+        borrowed = self.for_port(scope_kind=scope_kind, scope=scope, port=port)
+        tool = next(item for item in self.runtime.tool_plan.tools if item.id == instance)
+        if tool.interface == OPERATIONS_INTERFACE:
+            return OperationsGate(borrowed, tool.operations, timeout=timeout, tool_alias=port,
+                                  tool_instance=instance)
+        return ToolGate(borrowed, invocation_id=invocation_id, timeout=timeout, tool_alias=port,
+                        tool_instance=instance)
+
+
+class OperationsGate:
+    """One borrowed operations@1 view; the implementation's declared effects bound its calls."""
+    def __init__(self, owner, operations, *, timeout=30, tool_alias=None, tool_instance=None):
+        self.owner, self.operations, self.timeout = owner, operations, timeout
+        self.tool_alias, self.tool_instance = tool_alias, tool_instance
+
+    async def invoke(self, operation, arguments):
+        if operation not in self.operations:
+            raise ContractError('Tool operation is not declared by its implementation')
+        async with component_timeout('Tool execution', self.timeout):
+            if self.operations[operation] == 'write':
+                from api_agent.workflows.execution import mark_active_effect
+                mark_active_effect()
+            return await self.owner.call(operation, arguments)
 
 
 # Invocation state follows async task context, never an executor or operation owner.
@@ -183,8 +209,16 @@ class ToolInvocation:
                 port=use.port, invocation_id=self.id)
         return instance, self.gates[instance]
 
-    async def dispatch(self, use, operation, *args, **kwargs):
+    async def dispatch(self, use, operation, /, *args, **kwargs):
         instance, base = self.gate(use)
+        if isinstance(base, OperationsGate):
+            if args:
+                raise ContractError('Tool operations accept keyword arguments only')
+            if base.operations.get(operation) == 'write':
+                self.effects.append(use.scope)
+            return await base.invoke(operation, kwargs)
+        if operation not in FIXED_OPERATIONS:
+            raise ContractError('Tool operation is not supported by the selected interface')
         # Each selected instance has one borrowed view, while each preparation
         # retains its own existing ToolGate state until invocation disposal.
         calls = self.calls.setdefault(instance, {})

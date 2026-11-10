@@ -1,0 +1,126 @@
+"""Nodes reach only the implementation-declared operations they list themselves."""
+import pytest
+
+from api_agent.api.application import Runtime
+from api_agent.providers.contracts import ContractError
+from api_agent.tooling.runtime import invocation_tools, node_tools
+from api_agent.workflows.execution import NodeContext, _node_effect_owner
+from tool_operations_support import GRAMMARS, build, compose
+
+
+@pytest.fixture(params=GRAMMARS)
+def grammar(request):
+    return request.param
+
+
+async def started(tmp_path, grammar, **kwargs):
+    events = []
+    plan = compose(tmp_path, build(tmp_path, grammar, **kwargs))
+    runtime = Runtime('demo', tool_plan=plan, services={'events': events})
+    await runtime.astart()
+    return runtime, plan.definitions[0], events
+
+
+@pytest.mark.asyncio
+async def test_declared_operations_dispatch_to_the_owner(tmp_path, grammar):
+    runtime, definition, events = await started(tmp_path, grammar)
+    try:
+        async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}) as invocation:
+            reader = node_tools('reader')['lookup']
+            assert await reader.introspect() == {'operation': 'introspect', 'arguments': {}}
+            assert (await reader.query(text='{ a }', limit=2))['arguments'] == {'text': '{ a }', 'limit': 2}
+            assert (await node_tools('writer')['store'].mutate(id=7))['operation'] == 'mutate'
+            assert invocation.effects == ['writer']
+    finally:
+        await runtime.aclose()
+    assert events == [('introspect', {}), ('query', {'text': '{ a }', 'limit': 2}),
+                      ('mutate', {'id': 7}), ('close',)]
+
+
+@pytest.mark.asyncio
+async def test_only_write_operations_mark_the_active_node_as_effectful(tmp_path, grammar):
+    runtime, definition, _ = await started(tmp_path, grammar)
+    try:
+        async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}):
+            for node, port, operation, effects in (('reader', 'lookup', 'query', []),
+                                                   ('writer', 'store', 'mutate', [True])):
+                context = NodeContext(node, (), (), {})
+                with _node_effect_owner(context):
+                    await getattr(node_tools(node)[port], operation)()
+                assert context._effects == effects
+    finally:
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_nodes_cannot_reach_undeclared_ports_operations_or_other_nodes(tmp_path, grammar):
+    runtime, definition, events = await started(tmp_path, grammar)
+    try:
+        async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}) as invocation:
+            reader, writer = node_tools('reader'), node_tools('writer')
+            assert list(reader) == ['lookup'] and list(writer) == ['store']
+            with pytest.raises(ContractError, match='port is not declared'):
+                reader['absent']
+            with pytest.raises(ContractError, match='port is not declared'):
+                reader['store']
+            with pytest.raises(ContractError, match='port is not declared'):
+                writer['lookup']
+            with pytest.raises(ContractError, match='port is not declared'):
+                node_tools('unrelated')['lookup']
+            # Declared by the implementation, but not listed on this node.
+            with pytest.raises(ContractError, match='operation is not declared'):
+                reader['lookup'].mutate
+            with pytest.raises(ContractError, match='operation is not declared'):
+                writer['store'].query
+            # Not declared by the implementation at all, including the fixed vocabulary.
+            for name in ('explode', 'describe', 'prepare', 'verify', 'execute', 'invoke'):
+                with pytest.raises(ContractError, match='operation is not declared'):
+                    getattr(reader['lookup'], name)
+            assert invocation.effects == []
+    finally:
+        await runtime.aclose()
+    assert events == [('close',)]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rechecks_the_implementation_even_if_a_node_lists_a_name(tmp_path, grammar):
+    runtime, definition, events = await started(tmp_path, grammar)
+    forged = definition.tool_usages[0].__class__(
+        'reader', 'lookup', definition.tool_usages[0].instance, 'node',
+        definition.tool_usages[0].declaration, 1, ('introspect', 'explode'))
+    try:
+        async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}) as invocation:
+            with pytest.raises(ContractError, match='not declared by its implementation'):
+                await invocation.dispatch(forged, 'explode')
+            with pytest.raises(ContractError, match='keyword arguments only'):
+                await invocation.dispatch(forged, 'introspect', {'positional': True})
+            with pytest.raises(ContractError, match='keyword arguments only'):
+                await node_tools('reader')['lookup'].introspect({'positional': True})
+    finally:
+        await runtime.aclose()
+    assert events == [('close',)]
+
+
+@pytest.mark.asyncio
+async def test_argument_names_may_shadow_dispatch_parameters(tmp_path, grammar):
+    runtime, definition, events = await started(tmp_path, grammar)
+    try:
+        async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}):
+            await node_tools('reader')['lookup'].query(use='a', operation='b')
+    finally:
+        await runtime.aclose()
+    assert events[0] == ('query', {'use': 'a', 'operation': 'b'})
+
+
+@pytest.mark.asyncio
+async def test_view_is_closed_with_the_invocation(tmp_path, grammar):
+    runtime, definition, events = await started(tmp_path, grammar)
+    try:
+        async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}):
+            retained = node_tools('reader')['lookup']
+            await retained.introspect()
+        with pytest.raises(ContractError, match='closed'):
+            await retained.introspect()
+    finally:
+        await runtime.aclose()
+    assert [event[0] for event in events] == ['introspect', 'close']
