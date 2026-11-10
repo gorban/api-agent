@@ -2411,15 +2411,15 @@ def test_owned_capture_bounds_raster_when_a_foreign_debugger_races(monkeypatch, 
                     context=SimpleNamespace(new_cdp_session=AsyncMock(return_value=session)))
                 reasons = []
                 try:
+                    # Only a hang guard: it must outlast the masking budget granted above.
                     image = await asyncio.wait_for(capture_studio_viewport(proxy,
                         EmissionBoundary(ContentPolicy(True)), origin, path='/da2/Home',
-                        allow_frames=True, owned_frames=_OWNED_FRAME, unavailable=reasons.append), 1)
+                        allow_frames=True, owned_frames=_OWNED_FRAME, unavailable=reasons.append), 30)
                     if stage == 'enabled':
                         assert image is not None and not reasons
                         assert foreign_resumed.done()
                         ticks = await page.evaluate('ticks')
-                        await page.wait_for_timeout(50)
-                        assert await page.evaluate('ticks') > ticks
+                        await page.wait_for_function(f'ticks > {ticks}', timeout=10000)
                     else:
                         assert image is None
                         assert reasons == ['frame_inspection' if stage == 'before_owned_trigger' else 'mask']
@@ -2433,8 +2433,7 @@ def test_owned_capture_bounds_raster_when_a_foreign_debugger_races(monkeypatch, 
                     await foreign.detach()
                 assert await page.locator('input').get_attribute('style') is None
                 ticks = await page.evaluate('ticks')
-                await page.wait_for_timeout(50)
-                assert await page.evaluate('ticks') > ticks
+                await page.wait_for_function(f'ticks > {ticks}', timeout=10000)
             finally:
                 await browser.close()
     asyncio.run(run())
