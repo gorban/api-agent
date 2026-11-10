@@ -10,7 +10,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
 from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID
-from .predicates import PredicateError, parse_predicate, predicate_fields
+from .predicates import PredicateError, backward_bound, parse_predicate, predicate_fields
 from . import session
 
 
@@ -104,6 +104,7 @@ def _validate(layout, resource_bytes=None):
         if children[-1] != guard.id:
             layout.error('Guard must be the final directly owned step', row['line'])
     validate_limit_rows(layout, pass_sources)
+    limit_keys = {row['Key'] for row in layout.tables.get('Limits', ())}
     bound = {key: set() for key in functions}
     ordered = [item.id for item in layout.steps]
     for row in layout.tables['Bindings']:
@@ -125,6 +126,9 @@ def _validate(layout, resource_bytes=None):
             except (ValueError, ValidationError) as error:
                 layout.error(str(error), row['line'])
     for key, row in functions.items():
+        if 'attempt' in row['Output schema'].get('properties', {}):
+            raise LayoutError(f'{row.get("_owner", layout.path)}:{row["line"]}: Output schema declares '
+                              'reserved field attempt; <step>.attempt is the engine start counter')
         if not set(row['Input schema'].get('required', ())) <= bound[key]:
             layout.error('required inputs must have declared bindings', row['line'])
     invalid = session.problem(layout.tables)
@@ -139,18 +143,22 @@ def _validate(layout, resource_bytes=None):
             layout.error('guard node may only declare always to END', row['line'])
         if source not in steps or (target != 'END' and (target not in steps or steps[target].parent != steps[source].parent)):
             layout.error('edges must connect siblings or their END', row['line'])
-        if target != 'END' and ordered.index(target) <= ordered.index(source):
-            layout.error('verification loops belong to bounded components; edges must advance', row['line'])
         identity = source, row['When']
         if identity in seen:
             layout.error('duplicate edge condition', row['line'])
         seen.add(identity)
         edge_groups.setdefault(source, []).append(row)
+        predicate = None
         if row['When'] not in ('always', 'otherwise') and _ID.fullmatch(row['When']) is None:
             try:
-                parse_predicate(row['When'], predicate_fields(layout, source))
+                predicate = parse_predicate(row['When'], predicate_fields(layout, source))
             except PredicateError as error:
                 layout.error(str(error), row['line'])
+        if (target != 'END' and ordered.index(target) <= ordered.index(source)
+                and (predicate is None or backward_bound(predicate, target, limit_keys) is None)):
+            layout.error(f'backward edge to {target} requires a bounded When: a conjunction (and) containing '
+                         f'{target}.attempt < LIMIT or {target}.attempt <= LIMIT for a declared Limits key; '
+                         'other edges must advance', row['line'])
     for rows in edge_groups.values():
         whens = {row['When'] for row in rows}
         if ('always' in whens and len(rows) > 1) or ('otherwise' in whens and 'always' in whens):

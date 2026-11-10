@@ -32,8 +32,8 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
-from .predicates import (component_controller, component_decision, native_condition_id, parse_predicate,
-                         predicate_fields, state_predicate_fields)
+from .predicates import (backward_bound, component_controller, component_decision, native_condition_id,
+                         parse_predicate, predicate_fields, state_predicate_fields)
 
 
 _PROMPT_SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
@@ -322,6 +322,11 @@ def _latest_turn_value(writers, values, field):
     return False, None
 
 
+def _started(starts, step_id):
+    """Count one more start of ``step_id`` in this turn, for ``<step>.attempt`` conditions."""
+    return {**starts, step_id: starts.get(step_id, 0) + 1}
+
+
 class _State(TypedDict):
     values: dict
     ancestry: tuple
@@ -330,6 +335,7 @@ class _State(TypedDict):
     prompts: dict
     visit_id: str | None
     attempt_id: str | None
+    starts: dict
 
 
 
@@ -433,7 +439,22 @@ class Workflow:
                 self._predicates[row['From'], when] = parse_predicate(when, predicate_fields(layout, row['From']))
             except ValueError as error:
                 layout.error(str(error), row['line'])
+        self._recursion_limit = self._loop_recursion_limit(layout)
         self.schema = _State
+
+    def _loop_recursion_limit(self, layout):
+        """Supersteps one graph run may need: every step once, plus each bounded loop's re-entries.
+
+        An edge bounded by ``target.attempt < LIMIT`` re-enters at most LIMIT times (one more
+        for ``<=``), and a re-entry can re-run every step of the graph.
+        """
+        order = [step.id for step in layout.steps]
+        reentries = 0
+        for row in layout.tables['Edges']:
+            if row['To'] != 'END' and order.index(row['To']) <= order.index(row['From']):
+                key, inclusive = backward_bound(self._predicates[row['From'], row['When']], row['To'], self.limit_values)
+                reentries += self.limit_values[key] + inclusive
+        return len(order) * (1 + reentries) + 1
 
 
     def _init_state(self, definition, *, catalog, reducers, services=None, journal=None, checkpointer=None,
@@ -588,7 +609,7 @@ class Workflow:
                                             {target: END if target == 'END' else target})
             else:
                 def route(state, edges=edges, step=step):
-                    matches = [row for row in edges if row['When'] not in ('always', 'otherwise') and self._condition(row['When'], state['values'], source=step.id, ancestry=state['ancestry'])]
+                    matches = [row for row in edges if row['When'] not in ('always', 'otherwise') and self._condition(row['When'], state['values'], source=step.id, ancestry=state['ancestry'], visits=state['starts'])]
                     fallback = [row for row in edges if row['When'] in ('always', 'otherwise')]
                     choices = matches or fallback
                     if len(choices) != 1:
@@ -640,11 +661,11 @@ class Workflow:
             raise TimeoutError('Workflow component deadline expired')
 
 
-    def _condition(self, identifier, values, *, source=None, ancestry=()):
+    def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None):
         if (source, identifier) in self._predicates:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
-            result = predicate.evaluate(values, attempt=attempt, max_passes=maximum,
+            result = predicate.evaluate(values, attempt=attempt, max_passes=maximum, visits=visits,
                                         constants={**self.pass_constants, **self.limit_values})
         else:
             result = self.conditions[identifier](deepcopy(values))
@@ -663,7 +684,7 @@ class Workflow:
             original_previous = state['previous']
             original_attempt_id = state['attempt_id']
             descendants = {item.id for item in self.layout.steps if self._owned_by(item, step.id)}
-            current = dict(state)
+            current = dict(state, starts=_started(state['starts'], step.id))
             feedback = {}
             async with self._scope(step.id, kind='component', component=step.id, attempt=1,
                                    attempt_id=state.get('attempt_id'), max_passes=maximum) as budget:
@@ -681,7 +702,7 @@ class Workflow:
                                attempt_id=attempt_id)
                 self._event('attempt', scope_id=budget.id, component=step.id, attempt=attempt,
                             attempt_id=attempt_id, max_passes=maximum)
-                current = await graph.ainvoke(current, {'recursion_limit': len(self.layout.steps) + 1})
+                current = await graph.ainvoke(current, {'recursion_limit': self._recursion_limit})
                 attempt = frame.attempt
                 if not controller['accepted']:
                     return dict(current, ancestry=self._repair_ancestry(original_ancestry), feedback=original_feedback,
@@ -800,7 +821,7 @@ class Workflow:
             return dict(state, values={**values, step.id: deepcopy(result)}, visit_id=budget.id)
         async def timed(state):
             frame = next((item for item in reversed(_REPAIRS.get()) if item.workflow is self), None)
-            current = dict(state)
+            current = dict(state, starts=_started(state['starts'], step.id))
             correction_attempt = 0
             while True:
                 if frame is not None:
@@ -1461,8 +1482,8 @@ class Workflow:
                 self._turn_state.get()['session'] = session
             prompts = self._prompt_texts()
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
-                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None),
-                {'recursion_limit': len(self.layout.steps) + 1})
+                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}),
+                {'recursion_limit': self._recursion_limit})
             if self._session is not None:
                 committed.append(self._merge_session(session, result['values']))
             return result['values']
