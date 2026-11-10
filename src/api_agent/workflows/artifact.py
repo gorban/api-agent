@@ -536,6 +536,9 @@ class CompiledStateDefinition(_Compiled):
     application_binding: tuple | None = None
     imports: tuple = ()
     declaration_entry: PurePosixPath | None = None
+    # Compiled plans reject both declarations, so a compiled graph has none.
+    limits: tuple = ()
+    functions: tuple = ()
 
     def load_catalog(self, *, packaged_proof=None, config=None):
         from .model import NativeCatalog
