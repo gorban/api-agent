@@ -335,8 +335,7 @@ reads or writes a session field.
 
 A binding `| finish | extra | TURN | extra | "none" |` reads output property
 `extra` from whichever node most recently completed in the current turn with that
-property in its output, whether or not it is an earlier flow step of a particular
-node. It suits a shared step reached from several branches, which should read a
+property in its output. It suits a shared step reached from several branches, which should read a
 value whichever predecessor produced it. The value is the newest by completion
 order, so a node that ran later overrides an earlier writer; a node that did not
 run, or whose output omits the property, writes nothing. If no completed node has
