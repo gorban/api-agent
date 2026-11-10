@@ -1,4 +1,4 @@
-<!-- api-agent-companion-v1 sha256:a2d76661f50bb51ec99085305fc138abe2f164472ad4525e65bbf78270a02470 -->
+<!-- api-agent-companion-v1 sha256:beb371ad13ed850df75358a13ef7d77b82527bbafe51d759a3e5b53640720ae6 -->
 # Workflow diagram: review
 
 ![Workflow diagram](review.svg)
@@ -9,7 +9,5 @@
 
 ## Navigation
 
-- [artifact_qualification](flow.md)
-- [intake](intake.md)
 - [work](work.md)
 - [finish](finish.md)

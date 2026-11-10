@@ -16,7 +16,7 @@ import pytest
 
 from api_agent.workflows.viewer_render import (
     PlantUMLRenderer, RenderError, ViewBundle, ViewFile, _navigation,
-    _companion, _companion_route, _projection_source, _route,
+    _companion, _companion_route, _diagram_targets, _projection_source, _route,
     _svg_route, check_view_bundle, validate_svg,
     verify_bundle_proof, build_view_bundle,
 )
@@ -411,17 +411,36 @@ def test_nested_node_diagram_omits_repeated_context_and_budget():
 def test_navigation_uses_portable_relative_links():
     projection, document = _projection()
 
-    navigation = _navigation(projection, document)
+    navigation = _navigation(projection, document, targets=_diagram_targets(projection, document))
 
     assert navigation.startswith(b"![Workflow diagram](.private_resources/diagrams/flow.svg)")
     assert b"[Open standalone diagram](.private_resources/diagrams/flow.svg)" in navigation
     assert b"- [task](workflows/components/task.md.html)" in navigation
 
 
+def test_navigation_lists_only_documents_the_diagram_links():
+    projection, document = _projection()
+    hidden = SimpleNamespace(logical_path="base/workflows/components/hidden.md.html", stable_id="hidden")
+    nested = SimpleNamespace(id="hidden", kind="node", parent="task", owner_path=document.logical_path,
+                             declaration_path=hidden.logical_path)
+    projection = SimpleNamespace(**{**vars(projection), "documents": (*projection.documents, hidden),
+                                    "steps": (*projection.steps, nested)})
+    task = projection.documents[1]
+
+    overview = _navigation(projection, document, targets=_diagram_targets(projection, document))
+    detail = _navigation(projection, task, targets=_diagram_targets(projection, task))
+    companion = _companion(projection, task, targets=_diagram_targets(projection, task))
+
+    assert b"- [task](workflows/components/task.md.html)" in overview
+    assert b"hidden" not in overview
+    assert b"- [" not in detail
+    assert b"## Navigation" not in companion
+
+
 def test_companion_markdown_links_resolve_to_declared_targets():
     projection, document = _projection()
 
-    body = _companion(projection, document).decode()
+    body = _companion(projection, document, targets=_diagram_targets(projection, document)).decode()
     folder = posixpath.dirname(_companion_route(document.logical_path))
     targets = {posixpath.normpath(posixpath.join(folder, link))
                for link in re.findall(r"\]\(([^)]+)\)", body)}

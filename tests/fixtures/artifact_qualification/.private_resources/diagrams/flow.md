@@ -1,4 +1,4 @@
-<!-- api-agent-companion-v1 sha256:eac55a39d32c05d8a835bec78c34feeed49d0b5480b0d40f72f57a1bef3aa3e4 -->
+<!-- api-agent-companion-v1 sha256:db7aee50b05fe94c0292653d921b2935aafb89f9c2e9a3363b974510d0db097e -->
 # Workflow diagram: artifact_qualification
 
 ![Workflow diagram](flow.svg)
@@ -11,5 +11,3 @@
 
 - [intake](intake.md)
 - [review](review.md)
-- [work](work.md)
-- [finish](finish.md)

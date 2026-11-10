@@ -1,4 +1,4 @@
-<!-- api-agent-companion-v1 sha256:15a7f729dacbd0f7c2929c6306b3fa2fd2bfda291388becf00bba778f811be7c -->
+<!-- api-agent-companion-v1 sha256:815e0950c0f64ae9bc36507800cd4a370c8b1a12b4e165b070943c1ddeee95b9 -->
 # Workflow diagram: second
 
 ![Workflow diagram](second.svg)
@@ -6,8 +6,3 @@
 [Open standalone diagram](second.svg)
 
 [Source declaration](../../../../../contrived/workflows/components/second.md.html)
-
-## Navigation
-
-- [contrived_qualification](../../flow.md)
-- [first](first.md)

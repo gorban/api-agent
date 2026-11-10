@@ -269,6 +269,16 @@ def _markdown_id(value: object) -> str:
 
 
 def _projection_source(projection: object, document: object, *, repositories: Mapping[str, RepositoryIdentity] | None = None) -> tuple[bytes, frozenset[str]]:
+    source, links, _ = _diagram(projection, document, repositories=repositories)
+    return source, links
+
+
+def _diagram_targets(projection: object, document: object) -> frozenset[tuple[str, str]]:
+    """Declaration paths and fragments that the document's diagram links to."""
+    return _diagram(projection, document)[2]
+
+
+def _diagram(projection: object, document: object, *, repositories: Mapping[str, RepositoryIdentity] | None = None) -> tuple[bytes, frozenset[str], frozenset[tuple[str, str]]]:
     all_steps = {step.id: step for step in projection.steps}
     if document.logical_path == projection.entry_path or getattr(document, 'executable_bytes', b'').startswith(b'# Workflow\n'):
         owner = "GRAPH"
@@ -292,6 +302,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
     aliases = {step.id: "n" + str(index) for index, step in enumerate(steps)}
     admitted = {_route(item.logical_path) for item in projection.documents}
     links: set[str] = set()
+    targets: set[tuple[str, str]] = set()
     lines = ["@startuml", "top to bottom direction", "skinparam shadowing false",
              "skinparam defaultFontName sans-serif", "skinparam svgLinkTarget _top"]
     children = {}
@@ -327,6 +338,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
         if fragment:
             href += '#' + quote(fragment, safe='-._~')
         links.add(href)
+        targets.add((step.declaration_path, fragment))
         return href
 
     reference_sources = _reference_sources(projection)
@@ -406,6 +418,7 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
                     raise RenderError('missing workflow repository identity')
                 href = repositories[root_owner].link(relative)
             links.add(href)
+            targets.add((binding.declaration_path, ''))
         else:
             href = step_href(scope_step)
         source_alias = aliases[consumer.id] if operations else None if graph_scope else aliases.get(binding.scope)
@@ -535,20 +548,22 @@ def _projection_source(projection: object, document: object, *, repositories: Ma
     data = ("\n".join(lines) + "\n").encode()
     if len(data) > _MAX_INPUT:
         raise RenderError("diagram exceeds input limit")
-    return data, frozenset(links)
+    return data, frozenset(links), frozenset(targets)
 
 
-def _navigation(projection: object, document: object) -> bytes:
+def _navigation(projection: object, document: object, *, targets: frozenset[tuple[str, str]]) -> bytes:
     source = _route(document.logical_path)
     svg = _svg_route(document.logical_path)
     relative_svg = posixpath.relpath(svg, posixpath.dirname(source))
     rows = [f"![Workflow diagram]({relative_svg})", f"[Open standalone diagram]({relative_svg})"]
     owner = PurePosixPath(document.logical_path).parts[0]
     for step in projection.steps:
-        if step.declaration_path == document.logical_path and getattr(step, 'declaration_fragment', ''):
-            rows.append(f"- [{_markdown_id(step.id)}](#{quote(step.declaration_fragment, safe='-._~')})")
+        fragment = getattr(step, 'declaration_fragment', '')
+        if step.declaration_path == document.logical_path and fragment and (step.declaration_path, fragment) in targets:
+            rows.append(f"- [{_markdown_id(step.id)}](#{quote(fragment, safe='-._~')})")
+    linked = {path for path, _ in targets}
     for target in projection.documents:
-        if target.logical_path == document.logical_path:
+        if target.logical_path == document.logical_path or target.logical_path not in linked:
             continue
         if PurePosixPath(target.logical_path).parts[0] != owner:
             continue
@@ -668,7 +683,8 @@ def _annotate_hosted_resources(projection: object, document: object,
     return re.sub(rb"(?<!!)\[([^\]\r\n]+)\]\(([^)\r\n]+)\)", replace_link, data)
 
 
-def _companion(projection: object, document: object, *, hosted_selected: bool = False) -> bytes:
+def _companion(projection: object, document: object, *, targets: frozenset[tuple[str, str]],
+               hosted_selected: bool = False) -> bytes:
     route = _companion_route(document.logical_path)
     folder = posixpath.dirname(route)
     svg = posixpath.relpath(_svg_route(document.logical_path), folder)
@@ -678,8 +694,9 @@ def _companion(projection: object, document: object, *, hosted_selected: bool = 
              f"[Open standalone diagram]({svg})", "",
              f"[Source declaration]({declaration})"]
     owner = PurePosixPath(document.logical_path).parts[0]
+    linked = {path for path, _ in targets}
     peers = [item for item in projection.documents
-             if item.logical_path != document.logical_path and
+             if item.logical_path != document.logical_path and item.logical_path in linked and
              (hosted_selected or PurePosixPath(item.logical_path).parts[0] == owner)]
     if peers:
         lines.extend(("", "## Navigation", ""))
@@ -1135,7 +1152,7 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
     for document in published:
         if budget.remaining is not None and budget.remaining <= 0:
             raise RenderError("workflow view generation timed out")
-        source, links = _projection_source(projection, document, repositories=repositories)
+        source, links, targets = _diagram(projection, document, repositories=repositories)
         script_roots = ({owner: Path("/r") / owner for owner in roots} if hosted_selected else roots)
         script = _navigation_script(document.logical_path, script_roots, repositories,
                                     admission_roots=roots)
@@ -1166,7 +1183,7 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
             svg = declaration + separator + marker + body
         files.append(ViewFile(svg_path, "image/svg+xml", svg))
         files.append(ViewFile(_companion_route(document.logical_path), "text/markdown; charset=utf-8",
-                              _companion(projection, document, hosted_selected=hosted_selected)))
+                              _companion(projection, document, targets=targets, hosted_selected=hosted_selected)))
         depth = len(PurePosixPath(document.logical_path).parts) - 2
         prefix = "../" * depth + ".private_resources/viewer/"
         executable = (_hosted_declaration(projection, document) if hosted_selected
@@ -1176,7 +1193,7 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
         flow_path = '/'.join(part for part in
                              (repository.path_prefix if repository else '', relative) if part)
         presented = wrap_document(executable, root=_is_root_document(executable),
-                                  asset_prefix=prefix, generated=_navigation(projection, document),
+                                  asset_prefix=prefix, generated=_navigation(projection, document, targets=targets),
                                   flow_path=flow_path)
         files.append(ViewFile(_route(document.logical_path), "text/html; charset=utf-8", presented))
     entry = _route(projection.entry_path)
