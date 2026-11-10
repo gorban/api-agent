@@ -383,10 +383,14 @@ A root `## Session` table declares fields that survive across user turns:
 - `Source` is `node.output_field`. The node must exist and its `Output` schema
   must declare that property. Several rows may name the same field; rows for one
   field must use the same `Merge`.
-- `Merge` is `replace` or `append`. `replace` keeps the value of the last source
-  to run in flow order. `append` requires an array and extends the stored array;
-  every source that produced output appends, in flow order. A source whose node
-  did not run, or whose output omits an optional property, writes nothing.
+- `Merge` is `replace` or `append`, applied to completed node runs in completion
+  order. `replace` keeps the value from the last completed run of any of the field's
+  sources. `append` requires an array and extends the stored array with the value
+  from every completed run of every source, so a node that looped twice appends
+  twice. A run of one node applies its rows in declaration order. A source whose node
+  did not run, or whose output omits an optional property, writes nothing. A run
+  discarded by a rejected guarded pass, with everything else that pass produced,
+  does not count.
 
 A binding `| reply | history | SESSION | history | [] |` reads the field as it
 stood at the start of the turn; values written earlier in the same turn come from

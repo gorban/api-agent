@@ -84,13 +84,18 @@ def problem(tables):
     return None
 
 
-def writes(rows, order, values):
-    """Yield ``(row, value)`` for each source that produced output, in execution order.
+def writes(rows, runs):
+    """Yield ``(row, value)`` for each completed run of a source node, in completion order.
 
-    ``order`` maps node IDs to flow positions; rows of one node keep declaration order.
+    ``runs`` lists ``(node, output)`` for every run that completed and was not discarded
+    by a rejected guarded pass; a node that looped appears once per run. A run's rows keep
+    declaration order, and a run whose output omits the field writes nothing.
     """
-    for row in sorted(rows, key=lambda item: order[source_parts(item['Source'])[0]]):
+    by_node = {}
+    for row in rows:
         node, name = source_parts(row['Source'])
-        output = values.get(node)
-        if output is not None and name in output:
-            yield row, output[name]
+        by_node.setdefault(node, []).append((row, name))
+    for node, output in runs:
+        for row, name in by_node.get(node, ()):
+            if name in output:
+                yield row, output[name]
