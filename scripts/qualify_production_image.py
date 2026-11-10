@@ -213,7 +213,7 @@ def _wait_ready_external(port):
         time.sleep(.25)
 
 
-def _runtime_qualification(root, evidence, *, tag, shutdown_bound=None, trace_endpoint=None):
+def _runtime_qualification(root, evidence, *, tag, base_image=None, shutdown_bound=None, trace_endpoint=None):
     """Exercise the published API from a host client through Docker port forwarding."""
     bounds = timeouts()
     if shutdown_bound is None:
@@ -222,9 +222,25 @@ def _runtime_qualification(root, evidence, *, tag, shutdown_bound=None, trace_en
     name = 'api-agent-qualification-' + uuid.uuid4().hex
     # The image runs as its own unprivileged user; a private 0700 mount is not its.
     state.chmod(0o777)
-    _run('docker', 'build', '--no-cache', '-f', 'Dockerfile.qualification',
-         '--build-arg', f'BASE_IMAGE={tag}:local', '--tag', image, '.',
-         cwd=root)
+    # Dockerfile FROM needs a named reference; a raw local image ID is parsed
+    # as a registry name by BuildKit. Bind a private temporary tag to the ID.
+    base_tag = None
+    try:
+        if base_image is not None:
+            base_tag = 'api-agent-qualification-base:' + uuid.uuid4().hex
+            _run('docker', 'tag', base_image, base_tag)
+            actual = _run('docker', 'image', 'inspect', base_tag, '--format', '{{.Id}}').stdout.strip()
+            if actual != base_image:
+                raise RuntimeError('qualification base image tag differs from captured image ID')
+        _run('docker', 'build', '--no-cache', '-f', 'Dockerfile.qualification',
+             '--build-arg', f'BASE_IMAGE={base_tag or tag + ":local"}', '--tag', image, '.',
+             cwd=root)
+    finally:
+        if base_tag is not None:
+            try:
+                _run('docker', 'image', 'rm', base_tag)
+            except subprocess.CalledProcessError:
+                pass
     environment = (
         'API_AGENT_PRODUCTION_PLAN=/opt/api-agent/plans/simple_chat.json',
         'API_AGENT_LLM_PROVIDER=/opt/api-agent/providers/deterministic_llm.py:create',
@@ -320,11 +336,11 @@ def qualify(root, evidence, *, tag='api-agent-runtime'):
     base_tag = tag + ':local'
     _run('docker', 'build', '--no-cache', '--tag', base_tag, '.', cwd=root)
     inspect = json.loads(_run('docker', 'image', 'inspect', base_tag).stdout)[0]
-    digest = inspect['RepoDigests'][0] if inspect.get('RepoDigests') else inspect['Id']
+    digest = inspect['Id']
     commit = _run('git', 'rev-parse', 'HEAD', cwd=root).stdout.strip()
     (evidence / 'image-digest.txt').write_text(f'image={digest}\ncommit={commit}\n')
     archive = evidence / 'image.tar'
-    _run('docker', 'save', '--output', str(archive), base_tag)
+    _run('docker', 'save', '--output', str(archive), digest)
     layer_hits = {}
     with tempfile.TemporaryDirectory(prefix='v2-image-inspect-') as temporary:
         temporary = Path(temporary)
@@ -335,7 +351,7 @@ def qualify(root, evidence, *, tag='api-agent-runtime'):
             hits = forbidden_members(temporary / layer)
             if hits:
                 layer_hits[layer] = hits
-        container = _run('docker', 'create', base_tag).stdout.strip()
+        container = _run('docker', 'create', digest).stdout.strip()
         try:
             flattened = evidence / 'flattened.tar'
             with flattened.open('wb') as output:
@@ -355,7 +371,7 @@ def qualify(root, evidence, *, tag='api-agent-runtime'):
     }, sort_keys=True, indent=2) + '\n')
     if layer_hits or flattened_hits:
         raise RuntimeError('production image contains forbidden content')
-    python_inventory = _run('docker', 'run', '--rm', '--entrypoint', 'python', base_tag,
+    python_inventory = _run('docker', 'run', '--rm', '--entrypoint', 'python', digest,
                      '-c', 'import csv,importlib.metadata,json; rows=[]\n'
                      'for d in importlib.metadata.distributions():\n'
                      ' m=d.metadata; licenses=[m.get("License-Expression"),m.get("License")]'
@@ -364,7 +380,7 @@ def qualify(root, evidence, *, tag='api-agent-runtime'):
                      '"licenses":[v for v in licenses if v] or ["unknown"],'
                      '"record_hashes":[r[1] for r in csv.reader((d.read_text("RECORD") or "").splitlines()) if len(r)>1 and r[1]]})\n'
                      'print(json.dumps(sorted(rows,key=lambda row:row["name"].lower())))').stdout
-    os_inventory = _run('docker', 'run', '--rm', '--entrypoint', 'python', base_tag,
+    os_inventory = _run('docker', 'run', '--rm', '--entrypoint', 'python', digest,
                         '-c', 'import json,pathlib,re,subprocess\n'
                         'rows=[]\n'
                         'packages=subprocess.run(["dpkg-query","-W","-f=${binary:Package}\\t${Version}\\n"],check=True,text=True,capture_output=True).stdout.splitlines()\n'
@@ -382,8 +398,8 @@ def qualify(root, evidence, *, tag='api-agent-runtime'):
         'Exact-image Python dist-info METADATA License-Expression/License/classifiers and RECORD hashes; '
         'Debian dpkg status package/version inventory with copyright License fields where available. '
         'Unknown licenses are explicit.\\n')
-    runtime = _runtime_qualification(root, evidence, tag=tag)
-    telemetry = _runtime_qualification(root, evidence, tag=tag, trace_endpoint='http://127.0.0.1:1/v1/traces')
+    runtime = _runtime_qualification(root, evidence, tag=tag, base_image=digest)
+    telemetry = _runtime_qualification(root, evidence, tag=tag, base_image=digest, trace_endpoint='http://127.0.0.1:1/v1/traces')
     (evidence / 'runtime-scenarios.json').write_text(
         json.dumps({'runtime': runtime, 'failing_telemetry': telemetry}, sort_keys=True, indent=2) + '\n')
     return report

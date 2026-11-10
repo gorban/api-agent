@@ -378,16 +378,16 @@ def test_non_authorization_main_documents_are_blocked(software, url):
 
 
 @pytest.mark.parametrize('url,allowed', [
-    ('https://us.stage.id.identity.example.test/oauth/authorize', True),
-    ('https://eu.stage.id.identity.example.test/oauth/authorize', False),
-    ('https://us.stage.id.identity.example.test.evil.test/oauth/authorize', False),
-    ('http://us.stage.id.identity.example.test/oauth/authorize', False),
-    ('https://us.stage.id.identity.example.test:444/oauth/authorize', False)])
+    ('https://us.login.example.test/oauth/authorize', True),
+    ('https://eu.login.example.test/oauth/authorize', False),
+    ('https://us.login.example.test.evil.test/oauth/authorize', False),
+    ('http://us.login.example.test/oauth/authorize', False),
+    ('https://us.login.example.test:444/oauth/authorize', False)])
 def test_navigation_handoffs_require_explicit_exact_origin(software, url, allowed):
     original, channel = software
     owner = SoftwarePasskey(original.session, original.credential,
-        trusted_origin='https://stage.id.identity.example.test',
-        navigation_origins=('https://us.stage.id.identity.example.test',))
+        trusted_origin='https://login.example.test',
+        navigation_origins=('https://us.login.example.test',))
     owner.channel = channel
     asyncio.run(owner._navigation({'requestId': 'handoff', 'request': {'url': url}}))
     assert channel.send.call_args.args[0] == ('Fetch.continueRequest' if allowed else 'Fetch.failRequest')

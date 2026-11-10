@@ -13,7 +13,7 @@ entry = "demo/simple/flow.md.html"
 [workflow.artifact]
 plan = ".private_resources/plans/useful_api_demo.json"
 graph_id = "useful_api_demo"
-wheels = [".private_resources/wheels/api_agent-0.1.0-py3-none-any.whl"]
+wheels = [".private_resources/wheels/api_agent_demo_bindings-0.1.0-py3-none-any.whl"]
 
 [infrastructure]
 version = 1
