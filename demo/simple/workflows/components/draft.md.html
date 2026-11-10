@@ -38,15 +38,15 @@
 
 ## Components
 
-| ID | Max passes | Guard |
-| --- | --- | --- |
-| draft | [WORKFLOW_MAX_PASSES](../../cfg/config.toml) | review |
+| Max passes | Guard |
+| --- | --- |
+| [WORKFLOW_MAX_PASSES](../../cfg/config.toml) | review |
 
 ## Timeouts
 
-| Owner | Source | Key |
-| --- | --- | --- |
-| draft | [configuration](../../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
+| Source | Key |
+| --- | --- |
+| [configuration](../../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
 
 ## Node: plan
 
@@ -64,9 +64,9 @@
 
 ### Functions
 
-| ID | Registry | Input | Output | Response schema | Output mode | Fallback |
-| --- | --- | --- | --- | --- | --- | --- |
-| plan | plan | [input](../../schemas/plan_input.json) | [output](../../schemas/plan_output.json) | [response](../../schemas/plan_output.json) | structured | allow |
+| Input | Output | Response schema | Output mode | Fallback |
+| --- | --- | --- | --- | --- |
+| [input](../../schemas/plan_input.json) | [output](../../schemas/plan_output.json) | [response](../../schemas/plan_output.json) | structured | allow |
 
 ## Node: review
 
@@ -84,6 +84,6 @@
 
 ### Functions
 
-| ID | Registry | Input | Output | Response schema | Output mode | Fallback |
-| --- | --- | --- | --- | --- | --- | --- |
-| review | review | [input](../../schemas/review_input.json) | [output](../../schemas/review_output.json) | [response](../../schemas/review_response.json) | structured | allow |
+| Input | Output | Response schema | Output mode | Fallback |
+| --- | --- | --- | --- | --- |
+| [input](../../schemas/review_input.json) | [output](../../schemas/review_output.json) | [response](../../schemas/review_response.json) | structured | allow |
