@@ -8,8 +8,10 @@ common platform/free font fallbacks, so its appearance may vary by system.
 The linked SVG sits directly under each document heading. Expanded **Diagram links**
 remain visible in repository Markdown, where an SVG image cannot expose its own
 node links; successful local file or loopback rendering omits that extra list.
-Companion Markdown under `.private_resources/diagrams/` provides another repository
-navigation path. When scripts are unavailable, only the root shows launcher guidance;
+The list names only declarations that the diagram itself links, so a node's
+detail diagram lists no peers. Companion Markdown under
+`.private_resources/diagrams/` provides another repository navigation path with
+the same link set. When scripts are unavailable, only the root shows launcher guidance;
 the inert declaration carrier remains hidden.
 
 Click a linked diagram to open a fitted overlay in both saved files and managed

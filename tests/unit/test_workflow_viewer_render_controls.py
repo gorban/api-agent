@@ -233,7 +233,8 @@ def test_hosted_bundle_annotates_captured_resources_without_source_write():
     assert b"[output](../contracts/llm_call_output.json)" in hosted
     assert pages["r/base/workflows/contracts/llm_call_input.json"] == (
         root / "workflows/contracts/llm_call_input.json").read_bytes()
-    assert b"../../flow.md.html" in hosted
+    assert b"../../flow.md.html" not in hosted
+    assert b"(workflows/components/agent.md.html)" in pages["r/base/flow.md.html"]
     assert (flow.read_bytes(), nested.read_bytes()) == before
 
 
@@ -410,7 +411,7 @@ def test_bundle_requires_entry_document_even_when_projection_has_no_documents():
 def test_companion_without_peer_documents_has_no_navigation():
     document = SimpleNamespace(logical_path="base/flow.md.html", stable_id="root")
     projection = SimpleNamespace(documents=(document,))
-    body = viewer_render._companion(projection, document)
+    body = viewer_render._companion(projection, document, targets=frozenset())
     assert b"## Navigation" not in body
     assert b"[Source declaration]" in body
 
