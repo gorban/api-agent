@@ -61,50 +61,7 @@ def _validate(layout, resource_bytes=None):
         if len(set(ids)) != len(ids) or set(ids) != {key for key, item in steps.items() if item.kind == kind}:
             layout.error(f'{section} must declare each matching step exactly once')
     functions = {row['ID']: row for row in layout.tables['Functions']}
-    for row in layout.tables['Functions']:
-        try:
-            if 'Display summary' in row:
-                summary = row['Display summary']
-                if summary not in ('-', 'native', 'auto', 'explanation'):
-                    raise ValueError('invalid node display summary policy')
-                if summary != '-' and (row['Output mode'] == '-' or summary != 'native' and row['Response schema'] == '-'):
-                    raise ValueError('generated node summaries require a JSON response schema')
-            if _ID.fullmatch(row['Registry']) is None:
-                raise ValueError('invalid function registry ID')
-            for column in ('Input', 'Output'):
-                schema = (_decode_json(resource_bytes[row[column]].decode('utf-8'))
-                          if resource_bytes is not None else _json(row[column]))
-                if _has_unsupported_dialect(schema):
-                    raise ValueError('Workflows support only JSON Schema draft 2020-12')
-                Draft202012Validator.check_schema(schema)
-                if schema.get('type') != 'object' or _has_reference(schema):
-                    raise ValueError('schemas must be object contracts without remote references')
-                row[column + ' schema'] = schema
-            if 'Output mode' in row:
-                mode, fallback, response = (row[key] for key in ('Output mode', 'Fallback', 'Response schema'))
-                if mode == '-':
-                    if (fallback, response) != ('-', '-'):
-                        raise ValueError('deterministic response columns must all be -')
-                else:
-                    if mode not in ('structured', 'json', 'prompted_json', 'text') or fallback not in ('allow', 'reject'):
-                        raise ValueError('invalid response output mode or fallback')
-                    if (mode == 'text') != (response == '-'):
-                        raise ValueError('JSON modes require Response schema; text requires -')
-                    if response != '-':
-                        schema = (_decode_json(resource_bytes[response].decode('utf-8'))
-                                  if resource_bytes is not None else _json(response))
-                        if _has_unsupported_dialect(schema):
-                            raise ValueError('Workflows support only JSON Schema draft 2020-12')
-                        Draft202012Validator.check_schema(schema)
-                        from api_agent.providers.rich_inference import response_schema
-                        from api_agent.providers.contracts import ContractError
-                        try:
-                            response_schema(json.dumps(schema))
-                        except ContractError as error:
-                            raise ValueError('invalid generated-response schema') from error
-                        row['Response schema value'] = schema
-        except (OSError, ValueError, AttributeError, SchemaError) as error:
-            layout.error(str(error), row['line'])
+    validate_function_rows(layout.tables['Functions'], resource_bytes, layout.error)
     pass_sources = {}
     for row in layout.tables['Components']:
         if 'max_passes_link' in row:
@@ -200,6 +157,60 @@ def _validate(layout, resource_bytes=None):
         if row['Owner'] not in {'GRAPH', *steps} or row['Owner'] in seen or _ID.fullmatch(row['Key'].lower()) is None:
             layout.error('unknown or duplicate timeout owner/key', row['line'])
         seen.add(row['Owner'])
+
+
+def validate_function_rows(rows, resource_bytes, reject):
+    """Check each Functions row: schemas, response columns and display summary.
+
+    ``rows`` carry captured schema locations in ``Input``/``Output``/``Response schema``;
+    ``resource_bytes`` maps them to admitted bytes (``None`` reads the paths). Parsed
+    schemas are stored back on each row. ``reject(message, line)`` must raise.
+    Shared by the binding grammar and typed nodes.
+    """
+    for row in rows:
+        try:
+            if 'Display summary' in row:
+                summary = row['Display summary']
+                if summary not in ('-', 'native', 'auto', 'explanation'):
+                    raise ValueError('invalid node display summary policy')
+                if summary != '-' and (row['Output mode'] == '-' or summary != 'native' and row['Response schema'] == '-'):
+                    raise ValueError('generated node summaries require a JSON response schema')
+            if _ID.fullmatch(row['Registry']) is None:
+                raise ValueError('invalid function registry ID')
+            for column in ('Input', 'Output'):
+                schema = (_decode_json(resource_bytes[row[column]].decode('utf-8'))
+                          if resource_bytes is not None else _json(row[column]))
+                if _has_unsupported_dialect(schema):
+                    raise ValueError('Workflows support only JSON Schema draft 2020-12')
+                Draft202012Validator.check_schema(schema)
+                if schema.get('type') != 'object' or _has_reference(schema):
+                    raise ValueError('schemas must be object contracts without remote references')
+                row[column + ' schema'] = schema
+            if 'Output mode' in row:
+                mode, fallback, response = (row[key] for key in ('Output mode', 'Fallback', 'Response schema'))
+                if mode == '-':
+                    if (fallback, response) != ('-', '-'):
+                        raise ValueError('deterministic response columns must all be -')
+                else:
+                    if mode not in ('structured', 'json', 'prompted_json', 'text') or fallback not in ('allow', 'reject'):
+                        raise ValueError('invalid response output mode or fallback')
+                    if (mode == 'text') != (response == '-'):
+                        raise ValueError('JSON modes require Response schema; text requires -')
+                    if response != '-':
+                        schema = (_decode_json(resource_bytes[response].decode('utf-8'))
+                                  if resource_bytes is not None else _json(response))
+                        if _has_unsupported_dialect(schema):
+                            raise ValueError('Workflows support only JSON Schema draft 2020-12')
+                        Draft202012Validator.check_schema(schema)
+                        from api_agent.providers.rich_inference import response_schema
+                        from api_agent.providers.contracts import ContractError
+                        try:
+                            response_schema(json.dumps(schema))
+                        except ContractError as error:
+                            raise ValueError('invalid generated-response schema') from error
+                        row['Response schema value'] = schema
+        except (OSError, ValueError, AttributeError, SchemaError) as error:
+            reject(str(error), row['line'])
 
 
 def _has_unsupported_dialect(schema):
