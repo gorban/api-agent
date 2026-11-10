@@ -609,7 +609,7 @@ class Workflow:
                                             {target: END if target == 'END' else target})
             else:
                 def route(state, edges=edges, step=step):
-                    matches = [row for row in edges if row['When'] not in ('always', 'otherwise') and self._condition(row['When'], state['values'], source=step.id, ancestry=state['ancestry'], visits=state['starts'])]
+                    matches = [row for row in edges if row['When'] not in ('always', 'otherwise') and self._condition(row['When'], state['values'], source=step.id, ancestry=state['ancestry'], visits=state.get('starts'))]
                     fallback = [row for row in edges if row['When'] in ('always', 'otherwise')]
                     choices = matches or fallback
                     if len(choices) != 1:
@@ -684,7 +684,7 @@ class Workflow:
             original_previous = state['previous']
             original_attempt_id = state['attempt_id']
             descendants = {item.id for item in self.layout.steps if self._owned_by(item, step.id)}
-            current = dict(state, starts=_started(state['starts'], step.id))
+            current = dict(state, starts=_started(state.get('starts', {}), step.id))
             feedback = {}
             async with self._scope(step.id, kind='component', component=step.id, attempt=1,
                                    attempt_id=state.get('attempt_id'), max_passes=maximum) as budget:
@@ -821,7 +821,7 @@ class Workflow:
             return dict(state, values={**values, step.id: deepcopy(result)}, visit_id=budget.id)
         async def timed(state):
             frame = next((item for item in reversed(_REPAIRS.get()) if item.workflow is self), None)
-            current = dict(state, starts=_started(state['starts'], step.id))
+            current = dict(state, starts=_started(state.get('starts', {}), step.id))
             correction_attempt = 0
             while True:
                 if frame is not None:
