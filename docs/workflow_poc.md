@@ -95,14 +95,73 @@ blocking replay of dispatched effects.
 
 ## Declared prompts and resource-pack slots
 
-Typed (State-declared) nodes declare their prompts beside their native binding,
-so the template text is part of the admitted declaration. `{{slot}}`
-placeholders name root `Prompt Slots` callables, which typically read a
-resource the selected pack supplies through a `<resource_pack>/` link. The
-[prompted demo](../demo/prompted/flow.md.html) frames one node differently for
-its `fleet` and `construction` packs and adds a follow-up prompt only after the
-first turn; `tests/integration/test_prompted_demo.py` runs it under both packs
-with a controlled model service.
+A prompt is ordinary text (an inline `## Prompt:` block or a linked `.md`/`.txt`
+file) that may contain `{{slot_name}}` placeholders. It carries no code and the
+workflow declares no slot table: the selected resource pack supplies the text.
+A pack lists its slots in its `pack.toml`, each mapping a slot name to a
+pack-relative `.md` or `.txt` file:
+
+```toml
+[prompt_slots]
+persona = "prompts/persona.md"
+rules = "prompts/rules.md"
+```
+
+The same workflow runs under different packs by selecting a different pack root.
+Rules:
+
+- Slot names are lowercase identifiers (`[a-z][a-z0-9_]{0,63}`); anything else in
+  braces, such as `{{ spaced }}` or `{{Upper}}`, is ordinary text.
+- Admission reads `<pack root>/pack.toml` only when a prompt uses a slot. A used
+  slot the pack does not supply is a load error naming the slot and the `Prompts`
+  row (`node.md.html:26: prompt uses slot closing that the selected resource pack
+  does not supply`). A supplied slot no prompt uses is allowed and is not captured.
+- Each used slot file is captured as a `prompt` resource, so its bytes (and the
+  slot-to-file mapping) join the workflow identity, the viewer projection and the
+  compiled plan. Slot files must be UTF-8.
+- Slot text is the file's text without its single final line break, so a trailing
+  newline added by an editor does not land mid-sentence. Filling is one pass over
+  each prompt's own text at delivery to the node (`context.prompts`); supplied
+  text is never rescanned, so a `{{...}}` inside slot text stays literal.
+- Write `\{{name}}` for a literal `{{name}}`: a backslash directly before a
+  placeholder is consumed and the placeholder is not filled or required.
+- Only the pack that owns the workflow supplies slots, including when packs are
+  composed. A compiled plan embeds the filled-in slot texts and does not read the
+  pack at run time.
+- The viewer's `prompts` references list the slot names they use, and each use
+  adds a `prompt_slot` reference to the pack-supplied file.
+
+[`tests/fixtures/prompt_slots`](../tests/fixtures/prompt_slots) holds one workflow
+and two packs (`fleet`, `construction`);
+`tests/unit/test_binding_prompt_slots.py` runs the workflow under both with a
+controlled model service.
+
+Typed (State-declared) workflows still use the earlier `## Prompt Slots` table of
+Python callables (see the [prompted demo](../demo/prompted/flow.md.html)); it is
+kept only until the typed grammar is retired.
+
+## Declaring the application
+
+A binding-grammar root declaration may name the factory that builds its runtime
+application with the same table the typed grammar uses:
+
+```markdown
+## Application
+
+| Registry | Source |
+| --- | --- |
+| create_application | [Python](<resource_pack>/application.py) |
+```
+
+One row names a Python identifier and a `.py` source (a relative link or a
+`<resource_pack>/` link). The source is captured as a `native_source` resource, so
+its bytes join the workflow identity, the viewer references and the compiled plan
+(which needs the source in a wheel, like any native source). The factory contract
+is the [stateful application adapter](resource-packs.md#stateful-application-adapters)
+contract: `create_application(definition, *, config)` returns an object retaining
+that `definition` with `complete`, `timeouts` and `requires_api`. When the section
+is present `selected_application` uses it; without it the bundled chat and
+useful-demo applications are selected as before.
 
 ## Typed node Functions
 

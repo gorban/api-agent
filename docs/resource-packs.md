@@ -52,6 +52,23 @@ Provider selectors use a `file.py:factory` location. Relative nested selections
 respect the declaring owner. Discovery reads declarations without importing
 factories, and rejects inconsistent/cyclic selection changes before execution.
 
+## Prompt slots
+
+A pack can supply the text of `{{slot}}` placeholders in its workflow's prompts
+with a `[prompt_slots]` table in `pack.toml`, mapping each slot name to a
+pack-relative `.md` or `.txt` file:
+
+```toml
+[prompt_slots]
+persona = "prompts/persona.md"
+```
+
+The manifest check rejects invalid names, non-relative or escaping paths, other
+suffixes and missing files. The workflow loader captures only the files its
+prompts use, so their text is part of the workflow identity; a used slot the
+pack omits is a load error. Slot syntax, escaping and compiled-plan behavior are
+in [declared prompts and resource-pack slots](workflow_poc.md#declared-prompts-and-resource-pack-slots).
+
 ## Replaceable responsibilities
 
 - LLM providers own authentication, sessions, inference and usage normalization. Their completion transports follow the [shared recovery contract](architecture/provider_contracts_v1.md#bounded-completion-recovery), including normalized HTTP evidence and disabled nested SDK retries.
@@ -275,7 +292,9 @@ contents never establish their own admission.
 
 A workflow can explicitly admit its application adapter alongside the state
 schema and node bindings. Ordinary Run local requires this binding for a
-stateful graph; workflow-only admission does not invent an HTTP adapter.
+stateful graph; workflow-only admission does not invent an HTTP adapter. The
+binding grammar accepts the same `## Application` section; when it is absent the
+bundled chat and demo applications are selected as before.
 
 ```markdown
 ## Application
