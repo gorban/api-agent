@@ -31,6 +31,14 @@ production dependency composition.
 resources and replacements, so a freshly compiled plan has the same definition
 identity as its declaration mode counterpart.
 
+A binding-grammar plan adds two optional top-level sections only when its
+workflow uses the feature, so other plans keep their bytes: `application_binding`
+(the declared `## Application` registry and a bound native source) and
+`prompt_slots` (each used slot name and the logical path of its pack-supplied
+`prompt` resource). Slot paths join `definition_id`; the loader requires every
+slot to name a UTF-8 prompt resource and the slot set to equal the placeholders
+the plan's prompts use.
+
 ## Canonical encoding and order
 
 The compiler emits identity-free mappings, including selected declarations,
