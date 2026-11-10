@@ -521,7 +521,7 @@ def test_compatibility_rejects_malformed_direct_identity(compatibility_engine, i
     engine.direct['ID'] = identifier
     with pytest.raises(PrerequisiteError, match='Cannot verify'):
         identify(engine)
-    assert engine.routes == ['/info', '/containers/json?all=1', '/version']
+    assert engine.routes == ['/info', '/containers/json?all=1&limit=32', '/version']
 
 
 def test_engine_binding_retries_inventory_changed_by_concurrent_startup(engine):
@@ -554,3 +554,113 @@ def test_inventory_disagreement_remains_bounded_and_actionable(engine):
         identify(engine)
 
     assert len(snapshots) == 3
+
+
+def test_paged_inventory_accepts_full_evidence_over_body_limit(engine):
+    from urllib.parse import parse_qs, urlsplit
+
+    identifiers = [f'{number:064x}' for number in range(356)]
+    engine.cli_ids = identifiers
+    routes = []
+    original_connection = engine.connection
+
+    class PagedConnection(original_connection):
+        def getresponse(self):
+            if self.route == '/info':
+                return super().getresponse()
+            routes.append(self.route)
+            query = parse_qs(urlsplit(self.route).query)
+            if query.get('limit') != ['32']:
+                body = b' ' * (1024 * 1024 + 1)
+            else:
+                cursor = json.loads(query['filters'][0])['before'][0] if 'filters' in query else None
+                start = identifiers.index(cursor) + 1 if cursor else 0
+                body = json.dumps([{'Id': item, 'payload': 'x' * 3000}
+                                   for item in identifiers[start:start + 32]]).encode()
+            return SimpleNamespace(status=200, read=lambda limit: body[:limit], close=lambda: None)
+
+    engine.connection = PagedConnection
+    assert identify(engine)
+    assert len(routes) == 12
+    assert all(len(parse_qs(urlsplit(route).query).get('limit', [])) == 1 for route in routes)
+
+
+@pytest.fixture
+def paged_engine(engine):
+    from urllib.parse import parse_qs, urlsplit
+
+    engine.values = [f'{number:064x}' for number in range(64)]
+    engine.cli_ids = list(engine.values)
+    engine.pages = []
+    engine.page_override = None
+    original_connection = engine.connection
+
+    class PagedConnection(original_connection):
+        def getresponse(self):
+            if self.route == '/info':
+                return super().getresponse()
+            query = parse_qs(urlsplit(self.route).query)
+            assert query['all'] == ['1'] and query['limit'] == ['32']
+            cursor = json.loads(query['filters'][0])['before'][0] if 'filters' in query else None
+            engine.pages.append(cursor)
+            start = engine.values.index(cursor) + 1 if cursor else 0
+            page = [{'Id': value} for value in engine.values[start:start + 32]]
+            if engine.page_override:
+                page = engine.page_override(cursor, page)
+            body = json.dumps(page).encode()
+            return SimpleNamespace(status=200, read=lambda limit: body[:limit], close=lambda: None)
+
+    engine.connection = PagedConnection
+    return engine
+
+
+@pytest.mark.parametrize('count', [64, 4096])
+def test_exact_multiple_inventory_requires_empty_terminal_page(paged_engine, count):
+    paged_engine.values = [f'{number:064x}' for number in range(count)]
+    paged_engine.cli_ids = list(paged_engine.values)
+    assert identify(paged_engine)
+    assert len(paged_engine.pages) == count // 32 + 1
+    assert paged_engine.pages[-1] == paged_engine.values[-1]
+
+
+@pytest.mark.parametrize('fault', ['ignored-cursor', 'duplicate', 'overlong', 'non-list',
+    'non-dict', 'missing-id', 'invalid-id', 'oversized-body'])
+def test_paged_inventory_rejects_invalid_page(paged_engine, fault):
+    def corrupt(cursor, page):
+        if fault == 'ignored-cursor' and cursor:
+            return [{'Id': value} for value in paged_engine.values[:32]]
+        if fault == 'duplicate' and cursor:
+            return [{'Id': paged_engine.values[0]}] + page[1:]
+        if cursor:
+            return page
+        return {'overlong': page + [{'Id': 'f' * 64}], 'non-list': {}, 'non-dict': [None],
+                'missing-id': [{}], 'invalid-id': [{'Id': 3}],
+                'oversized-body': [{'Id': paged_engine.values[0], 'padding': 'x' * (1024 * 1024)}]}.get(fault, page)
+    paged_engine.page_override = corrupt
+    with pytest.raises(PrerequisiteError, match='Cannot verify'):
+        identify(paged_engine)
+    if fault in ('ignored-cursor', 'duplicate'):
+        assert len(paged_engine.pages) == 2
+
+
+def test_paged_inventory_refuses_more_than_4096(paged_engine):
+    paged_engine.values = [f'{number:064x}' for number in range(4097)]
+    paged_engine.cli_ids = list(paged_engine.values[:4096])
+    with pytest.raises(PrerequisiteError, match='Cannot verify'):
+        identify(paged_engine)
+    assert len(paged_engine.pages) == 129
+
+
+def test_paged_inventory_refuses_oversized_cli_without_retry(paged_engine):
+    paged_engine.cli_ids = [f'{number:064x}' for number in range(4097)]
+    with pytest.raises(PrerequisiteError, match='Cannot verify'):
+        identify(paged_engine)
+    assert len(paged_engine.pages) == 3
+
+
+def test_paged_inventory_retries_complete_snapshot_on_late_mismatch(paged_engine):
+    paged_engine.cli_ids.pop()
+    with pytest.raises(PrerequisiteError, match='three bounded snapshots'):
+        identify(paged_engine)
+    assert len(paged_engine.pages) == 9
+    assert paged_engine.pages[::3] == [None, None, None]

@@ -9,6 +9,7 @@ import socket
 import stat
 import sys
 import time
+from urllib.parse import urlencode
 
 from .compose import controlled_engine_environment
 from .prerequisites import PrerequisiteError, PrerequisiteCancelled, run_command
@@ -133,7 +134,31 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
                     client.close()
         with report_timeout_sync('Reporting engine identity', 5) as budget:
             direct = get('/info')
-            containers = get('/containers/json?all=1')
+            def inventory():
+                identifiers = []
+                seen = set()
+                cursor = None
+                # At most 128 full pages are admitted; the next must be empty.
+                while True:
+                    query = {'all': '1', 'limit': '32'}
+                    if cursor is not None:
+                        query['filters'] = json.dumps({'before': [cursor]}, separators=(',', ':'))
+                    page = get('/containers/json?' + urlencode(query))
+                    if not isinstance(page, list) or len(page) > 32:
+                        raise ValueError()
+                    for item in page:
+                        if not isinstance(item, dict):
+                            raise ValueError()
+                        value = item['Id']
+                        if (not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value)
+                                or value in seen or len(identifiers) >= 4096):
+                            raise ValueError()
+                        identifiers.append(value)
+                        seen.add(value)
+                    if len(page) < 32:
+                        return identifiers
+                    cursor = identifiers[-1]
+            direct_ids = inventory()
             def command(arguments):
                 return runner((executable, *arguments), environment=environment, directory=physical.parent,
                               deadline=time.monotonic() + budget.remaining, cancelled=cancelled,
@@ -156,8 +181,8 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
                 compatibility = version is not None and version == podman_version(cli_version)
             attempt = 0
             while True:
-                direct_ids = [item['Id'] for item in containers]
-                if (any(not re.fullmatch('[0-9a-f]{64}', value) for value in identifiers + direct_ids)
+                if (len(identifiers) > 4096
+                        or any(not re.fullmatch('[0-9a-f]{64}', value) for value in identifiers + direct_ids)
                         or len(set(identifiers)) != len(identifiers) or len(set(direct_ids)) != len(direct_ids)):
                     raise ValueError()
                 if sorted(identifiers) == sorted(direct_ids):
@@ -167,7 +192,7 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
                     raise PrerequisiteError('Cannot verify shared reporting engine identity; no service was adopted. '
                         'CLI and socket container inventories did not agree after three bounded snapshots; '
                         'retry after container startup/cleanup settles and check the selected engine/context.')
-                containers = get('/containers/json?all=1')
+                direct_ids = inventory()
                 identifiers = command(('ps', '-a', '--no-trunc', '--format', '{{.ID}}')).split()
         engine_id = direct['ID']
         if not isinstance(engine_id, str) or not re.fullmatch('[A-Za-z0-9:-]{1,128}', engine_id):
