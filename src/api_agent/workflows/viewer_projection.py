@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .definition import InlinePromptRef
 from .document_format import canonical_executable_bytes
+from .session import source_parts
 
 
 @dataclass(frozen=True)
@@ -245,6 +246,12 @@ def project_view(definition) -> ViewerProjection:
             references.append(ViewerReference('binding', logical(owner), row.get('_owner_id', owner_by_path.get(owner)), row['line'],
                                               '', '', tuple(sorted((key, str(value)) for key, value in row.items()
                                                                    if key not in ('line', '_owner')))))
+            if row['From'] == 'SESSION':
+                references.append(ViewerReference('session', logical(owner), row['Node'], row['line'], '', '',
+                                                  (('access', 'read'), ('field', row['Field']))))
+        for row in definition.layout.tables.get('Session', ()):
+            references.append(ViewerReference('session', logical(declaration_entry), source_parts(row['Source'])[0],
+                                              row['line'], '', '', (('access', 'write'), ('field', row['Field']))))
         for row in definition.layout.tables['Components']:
             if 'max_passes_link' in row:
                 add_reference('pass_limit', row.get('_owner', declaration_entry), row['ID'],
