@@ -1558,15 +1558,47 @@ def finish(state, context):
     assert result['pending'] is True
 
 
-def test_stateful_declared_local_import_must_be_captured_before_execution(fixture_graph):
+def test_stateful_local_import_closure_is_admitted_without_declaration(fixture_graph):
     root, entry = fixture_graph
     _write(root, 'src/omitted/__init__.py', '')
-    _write(root, 'src/omitted/helper.py', 'def count(value):\n    return value + 1\n')
+    _write(root, 'src/omitted/helper.py', 'from .inner import step\n\ndef count(value):\n    return step(value)\n')
+    _write(root, 'src/omitted/inner.py', 'def step(value):\n    return value + 1\n')
     source = root / 'native.py'
-    source.write_text('from omitted.helper import count\n' + source.read_text())
+    source.write_text('from omitted.helper import count\n' + source.read_text().replace(
+        "'visits': state['visits'] + 1}", "'visits': count(state['visits'])}"))
     definition = load_definition(entry, base_root=root, pack_root=root)
-    with pytest.raises(LayoutError, match='must be declared'):
-        load_native_bindings(definition)
+    assert list(definition.native_dependencies) == ['omitted', 'omitted.helper', 'omitted.inner']
+    assert {item.kind for item in definition.resources if item.logical_path.startswith('base/src/omitted/')} == {
+        'native_dependency'}
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='closure'))
+    assert result['visits'] == 1
+    entry.write_text(entry.read_text() + '''
+## Native Dependencies
+
+| Module | Source |
+| --- | --- |
+| omitted.helper | [Python](src/omitted/inner.py) |
+''')
+    with pytest.raises(LayoutError, match='dependency source does not match module'):
+        load_definition(entry, base_root=root, pack_root=root)
+
+
+def test_declared_dependency_must_be_the_module_the_import_resolves(fixture_graph):
+    root, entry = fixture_graph
+    _write(root, 'twin.py', 'VALUE = 1\n')
+    _write(root, 'src/twin.py', 'VALUE = 2\n')
+    source = root / 'native.py'
+    source.write_text('import twin\n' + source.read_text())
+    entry.write_text(entry.read_text() + '''
+## Native Dependencies
+
+| Module | Source |
+| --- | --- |
+| twin | [Python](src/twin.py) |
+''')
+    with pytest.raises(LayoutError, match='native dependency twin resolves to another source'):
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_admitted_resource_bytes_not_mutable(fixture_graph):
@@ -1792,9 +1824,8 @@ def test_stateful_invalid_relative_import_rejected_before_native_exec(fixture_gr
     root, entry = fixture_graph
     source = root / 'native.py'
     source.write_text('from ..unavailable import helper\n' + source.read_text())
-    definition = load_definition(entry, base_root=root, pack_root=root)
     with pytest.raises(LayoutError, match='relative native import leaves package'):
-        load_native_bindings(definition)
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_graph_cancellation_closes_scope_and_releases_thread(fixture_graph):
@@ -1851,9 +1882,8 @@ def test_stateful_relative_import_without_package_is_explicitly_rejected(fixture
     source = root / 'native.py'
     source.write_text('from . import helper\n' + source.read_text())
     _write(root, 'helper.py', 'def helper():\n    return 1\n')
-    definition = load_definition(entry, base_root=root, pack_root=root)
-    with pytest.raises(LayoutError, match='local native import must be declared'):
-        load_native_bindings(definition)
+    with pytest.raises(LayoutError, match='relative native import leaves package'):
+        load_definition(entry, base_root=root, pack_root=root)
 
 
 def test_stateful_scope_end_survives_component_cleanup_failure(fixture_graph):
