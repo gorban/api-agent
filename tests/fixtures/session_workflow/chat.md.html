@@ -1,0 +1,50 @@
+# Workflow
+
+## Graph ID
+
+| ID |
+| --- |
+| session_chat |
+
+## Flow
+
+1.  [node reply](reply.md.html)
+2.  [component refine](refine.md.html)
+
+## Components
+
+| ID | Max passes | Guard |
+| --- | --- | --- |
+| refine | 2 | check |
+
+## Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| reply | reply | [reply_input](schemas/reply_input.json) | [reply_output](schemas/reply_output.json) |
+| draft | draft | [draft_input](schemas/draft_input.json) | [draft_output](schemas/draft_output.json) |
+| check | check | [check_input](schemas/check_input.json) | [check_output](schemas/check_output.json) |
+
+## Bindings
+
+| Node | Input | From | Field | Default |
+| --- | --- | --- | --- | --- |
+| reply | message | START | message | - |
+| reply | history | SESSION | history | [] |
+| reply | lines | SESSION | draft_lines | [] |
+| reply | last | SESSION | last_text | "" |
+| draft | message | START | message | - |
+| draft | attempt | ATTEMPT | value | - |
+| draft | known_topic | SESSION | topic | "none" |
+| check | draft | draft | * | - |
+| check | attempt | ATTEMPT | value | - |
+
+## Session
+
+| Field | Source | Merge |
+| --- | --- | --- |
+| history | reply.messages | append |
+| topic | reply.topic | replace |
+| draft_lines | draft.lines | append |
+| last_text | reply.reply | replace |
+| last_text | draft.text | replace |

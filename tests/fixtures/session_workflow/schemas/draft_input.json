@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "message": {"type": "string"},
+    "attempt": {"type": "integer"},
+    "known_topic": {"type": "string"}
+  },
+  "required": ["message", "attempt", "known_topic"],
+  "additionalProperties": false
+}

@@ -124,6 +124,8 @@ class _Snapshot:
                     if name == 'Components' and row.get('max_passes_key') is not None:
                         row.pop('Max passes')
                     normalized[name].append(self.row(row))
+            if 'Session' in tables:
+                normalized['Session'] = [self.row(row) for row in tables['Session']]
             result['tables'] = normalized
         else:
             result.update(state=[d.schema_name, self.logical(d.schema_source)],

@@ -14,7 +14,7 @@ from typing import ClassVar
 from urllib.parse import unquote, urlsplit
 from weakref import WeakKeyDictionary
 
-from .layout import _COLUMNS, _RESPONSE_COLUMNS, _SUMMARY_COLUMNS, _ID, _MD, _validate
+from .layout import _COLUMNS, _RESPONSE_COLUMNS, _SESSION_COLUMNS, _SUMMARY_COLUMNS, _ID, _MD, _validate
 from .model import (InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage,
                     declares_source, freeze as _freeze, _MAX_SNAPSHOT_BYTES)
 from .document_format import extract_document, validate_presentation_location
@@ -462,7 +462,7 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
         return capture(path, kind, root_id)
     capture(entry, 'declaration', entry_root)
     _, root_sections = _sections(entry, captured[entry][1])
-    allowed = {'Graph ID', 'Flow', 'Tools', *_COLUMNS, 'Notes'}
+    allowed = {'Graph ID', 'Flow', 'Tools', 'Session', *_COLUMNS, 'Notes'}
     if set(root_sections) - allowed or 'Graph ID' not in root_sections or 'Flow' not in root_sections:
         raise LayoutError(f'{entry}:1: unknown or missing root section')
     identity = _table(entry, root_sections['Graph ID'], ('ID',))
@@ -549,6 +549,8 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
     tables = {name: [] for name in _COLUMNS}
     for name in _COLUMNS:
         tables[name].extend(_table(entry, root_sections.get(name, []), _COLUMNS[name]))
+    if 'Session' in root_sections:
+        tables['Session'] = _table(entry, root_sections['Session'], _SESSION_COLUMNS)
     native = {}
     inline_prompts = {}
     for step in resolved:
