@@ -162,13 +162,13 @@ def load(entry):
     return load_definition(entry, base_root=entry.parent, pack_root=entry.parent)
 
 
-def build(entry, config=None, **services):
+def build(entry, config=None, checkpointer=None, **services):
     """Load ``entry`` and return (workflow, native namespace, definition)."""
     definition = load(entry)
     native = load_native_catalog(definition, entry.parent / 'native.py')
     registry = {name: NodeFunction(native[name]) for name in OUTPUTS if name in native
                 and any(row['ID'] == name for row in definition.layout.tables['Functions'])}
-    return Workflow(definition, registry, config=config, services=services), native, definition
+    return Workflow(definition, registry, config=config, services=services, checkpointer=checkpointer), native, definition
 
 
 def run(entry, update=None, config=None, **services):

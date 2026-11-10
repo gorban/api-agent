@@ -721,9 +721,11 @@ class Workflow:
                     return await passes(frame, current, budget, original_ancestry, original_feedback, original_previous, original_attempt_id, descendants)
         async def passes(frame, current, budget, original_ancestry, original_feedback, original_previous, original_attempt_id, descendants):
             feedback = {}
+            runs = self._turn_state.get()['runs']
             while frame.attempt <= maximum:
                 attempt = frame.attempt
                 attempt_id = str(uuid4())
+                pass_start = len(runs)
                 previous = {key: value for key, value in current['values'].items() if key in descendants} if frame.guard_attempt > 1 else {}
                 current = dict(current, values={key: value for key, value in current['values'].items() if key not in descendants},
                                previous=previous, ancestry=(*original_ancestry, (step.id, attempt, maximum)), feedback=feedback,
@@ -747,6 +749,7 @@ class Workflow:
                 if frame.effect:
                     raise WorkflowError('Component correction cannot replay dispatched effects')
                 feedback = await self._safe_feedback(guard.feedback)
+                del runs[pass_start:]
                 frame.attempt += 1
                 frame.guard_attempt += 1
             raise WorkflowError(f'Component {step.id} exhausted {maximum} passes')
@@ -843,10 +846,12 @@ class Workflow:
                 plain_fields=plain_fields.get('output', ...))
             self._event('node', scope_id=budget.id, node=step.id, component=step.parent, attempt=context.attempt,
                         elapsed=time.monotonic() - started, kind=function.kind)
-            writers = self._turn_state.get()['writers']
+            turn_state = self._turn_state.get()
             for name in result:
-                writers.setdefault(name, []).append(step.id)
-            return dict(state, values={**values, step.id: deepcopy(result)}, visit_id=budget.id)
+                turn_state['writers'].setdefault(name, []).append(step.id)
+            output = deepcopy(result)
+            turn_state['runs'].append((step.id, output))
+            return dict(state, values={**values, step.id: output}, visit_id=budget.id)
         async def timed(state):
             frame = next((item for item in reversed(_REPAIRS.get()) if item.workflow is self), None)
             current = dict(state, starts=_started(state.get('starts', {}), step.id))
@@ -1445,7 +1450,7 @@ class Workflow:
         from .inference_history import InferenceHistory
         history = InferenceHistory()
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
-                                                  'contexts': {}, 'budgets': {}, 'writers': {}})
+                                                  'contexts': {}, 'budgets': {}, 'writers': {}, 'runs': []})
         completed = False
         try:
             selected_journal = self._journal.get()
@@ -1526,14 +1531,13 @@ class Workflow:
                 feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}),
                 {'recursion_limit': self._recursion_limit})
             if commit is not None:
-                commit.merged = self._merge_session(session, result['values'])
+                commit.merged = self._merge_session(session, self._turn_state.get()['runs'])
             return result['values']
 
-    def _merge_session(self, session, values):
-        """Fold this turn's accepted node outputs into a copy of the start-of-turn session."""
-        order = {step.id: index for index, step in enumerate(self.layout.steps)}
+    def _merge_session(self, session, runs):
+        """Fold this turn's completed node runs into a copy of the start-of-turn session."""
         merged = deepcopy(session)
-        for row, value in session_contract.writes(self.session_rows, order, values):
+        for row, value in session_contract.writes(self.session_rows, runs):
             if row['Merge'] == 'replace':
                 merged[row['Field']] = deepcopy(value)
             elif type(value) is list:
