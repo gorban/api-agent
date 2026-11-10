@@ -1,0 +1,93 @@
+.workflow-flow-modal {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #17202a;
+  font: 14px/1.4 system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.workflow-flow-modal::backdrop { background: rgba(30, 35, 42, .65); }
+
+.workflow-flow-stage {
+  position: absolute;
+  inset: 64px 16px 16px;
+  display: flex;
+  overflow: auto;
+}
+
+.workflow-flow-canvas {
+  position: relative;
+  flex: none;
+  margin: auto;
+  background: white;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .35);
+}
+
+.workflow-flow-canvas iframe {
+  position: absolute;
+  inset: 0 auto auto 0;
+  border: 0;
+  display: block;
+  transform-origin: top left;
+  background: white;
+}
+
+.workflow-flow-controls {
+  position: absolute;
+  top: 12px;
+  right: 20px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workflow-flow-controls button,
+.workflow-flow-controls output {
+  min-width: 40px;
+  min-height: 40px;
+  border: 1px solid #aeb7c2;
+  border-radius: 6px;
+  background: white;
+  color: #17202a;
+  font: 16px/1 system-ui, sans-serif;
+  text-align: center;
+}
+
+.workflow-flow-controls button { cursor: pointer; }
+.workflow-flow-controls button:hover { background: #eaf0f7; }
+.workflow-flow-controls button:disabled { opacity: .45; cursor: default; }
+.workflow-flow-controls button:focus-visible,
+.workflow-flow-status a:focus-visible { outline: 3px solid #0969da; outline-offset: 2px; }
+.workflow-flow-controls output { display: grid; place-items: center; min-width: 64px; }
+
+.workflow-flow-status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  max-width: min(80vw, 480px);
+  margin: 0;
+  padding: 16px 20px;
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .2);
+}
+
+.workflow-flow-status a { display: block; margin-top: 8px; color: #0969da; }
+
+@media (max-width: 320px) {
+  .workflow-flow-controls { right: 8px; left: 8px; gap: 4px; justify-content: center; }
+  .workflow-flow-controls button,
+  .workflow-flow-controls output { min-width: 32px; min-height: 36px; }
+  .workflow-flow-controls output { min-width: 48px; }
+  .workflow-flow-stage { top: 56px; }
+}

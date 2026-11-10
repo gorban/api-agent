@@ -492,13 +492,13 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                *(row['Source'] for row in edges if row['Source'] is not None),
                *(row['Source'] for row in slots),
                *((application_binding[1],) if application_binding is not None else ())]
-    scanned = set()
+    scanned, resolved = set(), {}
     while pending:
         path = pending.pop()
         if path in scanned:
             continue
         scanned.add(path)
-        for module, local in _local_imports(path, contents[path], roots):
+        for module, local in _local_imports(path, contents[path], roots, resolved):
             if module == 'api_agent' or module.startswith('api_agent.'):
                 continue
             if module in dependencies:
@@ -562,16 +562,19 @@ def _module_for_path(path, roots):
     return '.'.join(parts)
 
 
-def _local_imports(path, data, roots):
-    """Yield (module, file) for each repository-local module a native source imports."""
+def _local_imports(path, data, roots, resolved=None):
+    """Yield (module, file) for each repository-local module a native source imports.
+
+    ``resolved`` memoizes module lookups for one admission or catalog load.
+    """
+    resolved = {} if resolved is None else resolved
     def local_module_path(module):
-        parts = Path(*module.split('.'))
-        for root in roots.values():
-            for base in (root, root / 'src'):
-                for candidate in ((base / parts).with_suffix('.py'), base / parts / '__init__.py'):
-                    if candidate.is_file():
-                        return candidate.resolve()
-        return None
+        if module not in resolved:
+            parts = Path(*module.split('.'))
+            resolved[module] = next((candidate.resolve() for root in roots.values() for base in (root, root / 'src')
+                                     for candidate in ((base / parts).with_suffix('.py'), base / parts / '__init__.py')
+                                     if candidate.is_file()), None)
+        return resolved[module]
     trusted_host = Path(__file__).resolve().parents[1]
     tree = ast.parse(data, filename=str(path))
     for node in ast.walk(tree):
@@ -616,8 +619,9 @@ def load_native_bindings(definition, *, packaged_proof=None, config=None):
                *(row['Source'] for row in getattr(definition, 'prompt_slots', ()))}
     if definition.application_binding is not None:
         sources.add(definition.application_binding[1])
+    resolved = {}
     for path in (*definition.helper_sources, *sources, *definition.native_dependencies.values()):
-        for module, local in _local_imports(path, definition.contents[path], definition.roots):
+        for module, local in _local_imports(path, definition.contents[path], definition.roots, resolved):
             if definition.native_dependencies.get(module) != local:
                 raise LayoutError(f'{path}:1: local native import must be declared as a dependency')
     # Reserve every declared name before native execution, including imports

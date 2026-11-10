@@ -1,6 +1,7 @@
 """Versioned workflow declarations with an immutable resource snapshot."""
 
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from hashlib import sha256
 import json
 import os
@@ -157,6 +158,19 @@ def load_native_catalog(definition: WorkflowDefinition, source: Path, *, reporti
 
 
 def _declaration_parts(path, data):
+    """Parse once per admitted document; results are read-only and keyed by exact bytes."""
+    return _cached_declaration_parts(str(path), bytes(data))
+
+
+@lru_cache(maxsize=256)
+def _cached_declaration_parts(path_text, data):
+    title, sections, nodes = _parse_declaration_parts(Path(path_text), data)
+    def frozen(mapping):
+        return MappingProxyType({key: tuple(body) for key, body in mapping.items()})
+    return title, frozen(sections), MappingProxyType({key: frozen(body) for key, body in nodes.items()})
+
+
+def _parse_declaration_parts(path, data):
     """Parse physical headings once, retaining scoped node sections and lines."""
     extracted = extract_document(data, path=path)
     text = extracted.executable_bytes.decode('utf-8')

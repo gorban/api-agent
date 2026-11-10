@@ -3,6 +3,7 @@ service_name = "api-agent"
 id = "demo"
 owner = ".."
 config = "simple/cfg/config.toml"
+production = ["simple"]
 
 [workflow]
 version = 1
