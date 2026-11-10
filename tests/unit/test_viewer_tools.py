@@ -272,10 +272,17 @@ def test_checker_command_descendants_are_reaped(tmp_path, mode):
                                               seconds=5, output_limit=1024)
             assert code == (7 if mode == 'error' else 0)
         assert pid_file.exists() and child_file.exists()
+        # SIGKILL is delivered asynchronously; a killed process stays runnable until it is
+        # scheduled to exit. The bound stays well below the descendant's own 60s lifetime.
+        deadline = time.monotonic() + 30
         for file in (pid_file, child_file):
-            state = subprocess.run(['ps', '-o', 'stat=', '-p', file.read_text()],
-                                   capture_output=True, text=True, timeout=2).stdout.strip()
-            assert not state or state.startswith('Z')
+            while True:
+                state = subprocess.run(['ps', '-o', 'stat=', '-p', file.read_text()],
+                                       capture_output=True, text=True, timeout=10).stdout.strip()
+                if not state or state.startswith('Z'):
+                    break
+                assert time.monotonic() < deadline, state
+                time.sleep(.05)
     finally:
         for file in (pid_file, child_file):
             if file.exists():
