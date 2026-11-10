@@ -167,7 +167,7 @@ def test_requirement_validation_precedes_owner_acquisition(tmp_path, monkeypatch
 def test_default_owner_uses_single_validated_requirement_plan(tmp_path, monkeypatch, requires_api):
     context, test, config = fixture(tmp_path)
     context.pack_root = context.owner_root
-    plan = SimpleNamespace(validate=Mock(), requires_pack_api=requires_api,
+    plan = SimpleNamespace(validate=Mock(), requires_pack_api=requires_api, workspace_kinds=frozenset(),
         provider_kinds=frozenset({'llm','api','upstream','access'} if requires_api else {'llm'}))
     planner, factory = Mock(return_value=plan), Mock(return_value=owner([]))
     monkeypatch.setattr(launched, 'plan_integration_requirements', planner)
@@ -179,3 +179,41 @@ def test_default_owner_uses_single_validated_requirement_plan(tmp_path, monkeypa
     plan.validate.assert_called_once_with(context, config)
     expected = {'llm', 'api', 'upstream', 'access'} if requires_api else {'llm'}
     assert factory.call_args.kwargs['provider_kinds'] == frozenset(expected)
+
+
+def test_recorded_launch_prepares_declared_workspaces_once_before_any_worker(tmp_path, monkeypatch):
+    context, test, config = fixture(tmp_path)
+    order = []
+    prepare = Mock(side_effect=lambda *args, **kwargs: order.append('workspaces'))
+    monkeypatch.setattr(launched, 'prepare_selected_workspaces', prepare)
+    monkeypatch.setattr(launched, 'plan_integration_requirements', lambda tests: SimpleNamespace(
+        validate=Mock(), requires_pack_api=False, workspace_kinds=frozenset({'ui'}), provider_kinds=frozenset({'llm'})))
+    def runner(*args, **hooks):
+        order.append('workers')
+        return fake_runner()(*args, **hooks)
+    launched.run_launched_integration(context, [test], config, accepted=True,
+        prerequisites=owner([]), storage=Storage(), runner=runner)
+    assert order == ['workspaces', 'workers']
+    prepare.assert_called_once()
+    assert prepare.call_args.args == (context, config, frozenset({'ui'}))
+    assert prepare.call_args.kwargs['cancellation'] is not None
+
+
+def test_unrecorded_launch_prepares_declared_workspaces_before_workers(tmp_path, monkeypatch):
+    from api_agent.testing import integration
+    from api_agent.testing.collection import TestIdentity
+    test = TestIdentity('owner::test.py::test_one', 'owner', 'test.py', 'test.py::test_one')
+    context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
+    order = []
+    monkeypatch.setattr(launched, 'prepare_selected_workspaces',
+                        lambda *args, **kwargs: order.append(('workspaces', args[2], kwargs['cancellation'])))
+    monkeypatch.setattr(launched, 'plan_integration_requirements', lambda tests: SimpleNamespace(
+        validate=Mock(), workspace_kinds=frozenset({'ui'})))
+    def execute(*args, **kwargs):
+        order.append('workers')
+        return SimpleNamespace(exit_code=0, tests=(), cancelled=False, inspections=())
+    monkeypatch.setattr(integration, 'run_integration_tests', execute)
+    cancelled = object()
+    launched.run_launched_integration(context, (test,), {'SKIP_ALLURE_REPORTING': True, 'TUI_MODE': 'integration'},
+        accepted=True, cancel_event=cancelled)
+    assert order == [('workspaces', frozenset({'ui'}), cancelled), 'workers']

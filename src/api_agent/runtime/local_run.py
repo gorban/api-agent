@@ -265,6 +265,10 @@ class LocalRunOwner:
             self._startup_stage('configuration')
             await asyncio.sleep(0)
             self._config = self.resolve()
+            if not (self._config.errors or self._config.missing):
+                # A cold dependency install outlasts the preparation budget below.
+                from api_agent.runtime.workspace_preparation import aprepare_selected_workspaces
+                await aprepare_selected_workspaces(self.context, self._config.values, frozenset({'ui'}))
             async with component_timeout('Local application preparation', 120):
                 if self._config.errors or self._config.missing:
                     raise ValueError('invalid_runtime_configuration')

@@ -1,5 +1,6 @@
 """Normal integration plans have no calibration-maintenance dependency."""
 from types import SimpleNamespace
+import pytest
 from unittest.mock import Mock
 from api_agent.testing.requirements import plan_integration_requirements
 
@@ -19,3 +20,12 @@ def test_pack_dependency_remains_explicit(monkeypatch):
     assert plan.requires_pack_api
     plan.validate(context, config)
     validate.assert_called_once_with(context, config)
+
+
+@pytest.mark.parametrize('tag, expected', [
+    ('requires_ui_session', {'ui'}), ('requires_owned_ui_session', {'ui'}), ('requires_pack_api', set())])
+def test_ui_tests_prepare_workspaces_without_changing_provider_kinds(tag, expected):
+    plan = plan_integration_requirements([SimpleNamespace(tags={tag})])
+    assert plan.workspace_kinds == frozenset(expected)
+    assert ('ui' in plan.provider_kinds) is (tag == 'requires_ui_session')
+    assert plan_integration_requirements([SimpleNamespace(tags=frozenset())]).workspace_kinds == frozenset()
