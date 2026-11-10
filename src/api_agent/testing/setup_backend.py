@@ -524,6 +524,9 @@ class SetupBackend(CleanupLeaseOwner):
             if self.closed:
                 self.pending = False
                 return
+            if self.loop is None and self._thread_error is not None and self.thread is not None:
+                # A thread that could not create its loop signals before it exits.
+                self.thread.join(timeout=self.cleanup_timeout)
             if self.loop is None and (self.thread is None or not self.thread.is_alive()):
                 self.closed = True
                 self.pending = False
