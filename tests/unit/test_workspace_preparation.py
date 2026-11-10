@@ -113,3 +113,17 @@ def test_local_run_skips_workspace_preparation_for_invalid_configuration(tmp_pat
     monkeypatch.setattr(preparation, 'aprepare_selected_workspaces', prepare)
     with pytest.raises(ValueError, match='invalid_runtime_configuration'):
         asyncio.run(owner.start())
+
+
+def test_resolved_path_values_select_the_workspace(provider, monkeypatch, tmp_path):
+    from api_agent.config import load_shared_schema
+    from api_agent.config.resolve import convert_value
+    context, values = provider
+    values['WORKSPACE_DIR'] = convert_value(load_shared_schema().fields['UI_SOURCE_DIR'], 'workspace',
+                                            external=False, anchors={'owner_root': tmp_path})
+    calls = []
+    monkeypatch.setattr('api_agent.runtime.node_workspace.ensure_node_workspace',
+                        lambda root, **options: calls.append(root))
+    assert preparation.prepare_selected_workspaces(context, values, frozenset({'ui'})) == (
+        (tmp_path / 'workspace').resolve(),)
+    assert calls == [(tmp_path / 'workspace').resolve()]
