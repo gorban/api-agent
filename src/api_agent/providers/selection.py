@@ -4,6 +4,10 @@ import re
 from .catalog import catalog_to_wire
 from .contracts import ProviderAccessError
 
+# Wall-clock bound against catastrophic backtracking. Ordinary identifiers match
+# in microseconds; the margin keeps a loaded host from rejecting valid models.
+MATCH_BUDGET_SECONDS = 0.25
+
 
 def compile_pattern(value):
     if type(value) is not str or not value or len(value) > 2048:
@@ -27,7 +31,7 @@ class ModelSelectionPolicy:
     @staticmethod
     def _matches(pattern, identifier):
         try:
-            return pattern.fullmatch(identifier, timeout=0.02) is not None
+            return pattern.fullmatch(identifier, timeout=MATCH_BUDGET_SECONDS) is not None
         except TimeoutError:
             raise ProviderAccessError('invalid_request', 'Model selection regular expression exceeded its match budget.') from None
 
