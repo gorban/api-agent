@@ -1,6 +1,6 @@
 """Resolve declared workflow budgets without importing source admission."""
 from types import MappingProxyType
-from .model import LayoutError
+from .model import LayoutError, MAX_COMPONENT_PASSES
 import tomllib
 
 def resolve_timeouts(layout, config, definition=None):
@@ -68,3 +68,26 @@ def resolve_state_timeouts(definition, config=None):
         values[row['Owner']] = value
         keys[row['Owner']] = row['Key']
     return MappingProxyType(values), MappingProxyType(keys)
+
+
+def resolve_state_limits(definition, config=None):
+    """Validate declared integer limits and resolve their effective values."""
+    from api_agent.config.declarations import schema_from_dict
+    config = config or {}
+    values = {}
+    for row in definition.limits:
+        where = f'{row.get("_owner", definition.entry)}:{row["line"]}'
+        try:
+            declaration = schema_from_dict(tomllib.loads(definition.contents[row['Source']].decode('utf-8')))
+        except (UnicodeError, ValueError) as error:
+            raise LayoutError(f'{where}: invalid limit declaration: {error}') from error
+        field = declaration.fields.get(row['Key'])
+        if field is None or field.type != 'int':
+            raise LayoutError(f'{where}: limit key must name an integer configuration field')
+        if type(field.default) is not int:
+            raise LayoutError(f'{where}: limit requires a declared integer default')
+        value = config.get(row['Key'], field.default)
+        if type(value) is not int or not 1 <= value <= MAX_COMPONENT_PASSES:
+            raise LayoutError(f'{where}: limit must be an integer from 1 to {MAX_COMPONENT_PASSES}')
+        values[row['Key']] = value
+    return MappingProxyType(values)

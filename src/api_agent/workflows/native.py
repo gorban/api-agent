@@ -17,9 +17,10 @@ from typing import ClassVar
 from urllib.parse import unquote, urlsplit
 
 
+from .configuration import resolve_state_limits as _validated_limits
 from .configuration import resolve_state_timeouts as _validated_timeouts
 from .execution import _source_manifest
-from .predicates import PredicateError, parse_predicate
+from .predicates import PredicateError, condition_constants, parse_predicate
 from .model import (NativeCatalog, Layout, LayoutError, Replacement, Resource, Step, ToolUsage, freeze as _freeze,
                     _ID, _MAX_SNAPSHOT_BYTES)
 
@@ -33,6 +34,9 @@ def _read_bounded(path, root):
 _LINK = re.compile(r'\[[^\]\n]+\]\(([^()\n]+)\)\Z')
 _PY_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
 _SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
+_LIMIT_KEY = re.compile(r'[A-Z][A-Z0-9_]{0,63}\Z')
+_TIMEOUT_COLUMNS = ('Owner', 'Source', 'Key')
+_EXPIRY_COLUMNS = (*_TIMEOUT_COLUMNS, 'Expired', 'Expirations')
 _LOADED_DEPENDENCIES = {}
 
 
@@ -109,6 +113,7 @@ class TypedDefinition:
     prompts: tuple = ()
     prompt_slots: tuple = ()
     functions: tuple = ()
+    limits: tuple = ()
 
     def verify_sources(self):
         for path, admitted in self.contents.items():
@@ -146,7 +151,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     contents = {entry: read(entry)}
     _, sections = _sections(entry, contents[entry])
     required = {'Graph ID', 'State', 'Flow', 'Edges'}
-    if not required <= set(sections) or set(sections) - required - {'Native Sources', 'Native Dependencies', 'Native Dependency Manifests', 'Resources', 'Timeouts', 'Tools', 'Application', 'Prompt Slots'}:
+    if not required <= set(sections) or set(sections) - required - {'Native Sources', 'Native Dependencies', 'Native Dependency Manifests', 'Resources', 'Timeouts', 'Limits', 'Tools', 'Application', 'Prompt Slots'}:
         raise LayoutError(f'{entry}:1: missing required section')
     identity = _shared_table(entry, sections['Graph ID'], ('ID',))
     state = _shared_table(entry, sections['State'], ('Registry', 'Source'))
@@ -273,6 +278,8 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     declaration_fragments = {}
     inline_references = {}
     component_edges = {}
+    scoped_tables = []
+    used_constants = []
     prompts = []
     functions = []
     def capture_functions(declaration, identifier, binding, body):
@@ -318,7 +325,8 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                 raise LayoutError(f'{declaration}:{row["line"]}: invalid prompt declaration')
             if row['When'] != 'always':
                 try:
-                    parse_predicate(row['When'], None)
+                    used_constants.append((declaration, row['line'],
+                                           condition_constants(parse_predicate(row['When'], None))))
                 except PredicateError as error:
                     raise LayoutError(f'{declaration}:{row["line"]}: {error}') from None
             if row['File'].startswith('@'):
@@ -411,8 +419,9 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
             selected_declarations[identifier] = (owner, number, declaration)
             capture_tools(declaration, kind, identifier, child)
             if kind == 'component':
-                if set(child) - {'Tools', 'Edges', 'Notes'} != {'Flow'}:
+                if set(child) - {'Tools', 'Edges', 'Notes', 'Timeouts', 'Limits'} != {'Flow'}:
                     raise LayoutError(f'{declaration}:1: component requires only Flow')
+                scoped_tables.append((identifier, declaration, child))
                 if 'Edges' in child:
                     component_edges[identifier] = (declaration, child['Edges'])
                 visit(declaration, child['Flow'], identifier, depth + 1)
@@ -466,7 +475,8 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
             raise LayoutError(f'{declaration}:{row["line"]}: static edge source must be -')
         if 'When' in row and row['When'] not in ('always', 'otherwise'):
             try:
-                parse_predicate(row['When'], None)
+                used_constants.append((declaration, row['line'],
+                                       condition_constants(parse_predicate(row['When'], None))))
             except PredicateError as error:
                 raise LayoutError(f'{declaration}:{row["line"]}: {error}') from None
         edges.append(dict(row, Source=None if row['Router'] == '-' else source(dict(row, _owner=declaration))))
@@ -489,21 +499,59 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
         entering = [row for row in edges if row['From'] == 'START' and parents[row['To']] == owner_id]
         if entering:
             edge_set(entering)
-    timeouts = []
-    if 'Timeouts' in sections:
-        for row in _shared_table(entry, sections['Timeouts'], ('Owner', 'Source', 'Key')):
-            if (row['Owner'] not in {'GRAPH', *parents} or row['Owner'] in {item['Owner'] for item in timeouts}
+    timeouts, limits = [], []
+    def configuration(declaration, row, noun):
+        path = linked(dict(row, _owner=declaration))
+        if path.suffix != '.toml':
+            raise LayoutError(f'{declaration}:{row["line"]}: {noun} source must be TOML')
+        if path not in contents:
+            contents[path] = read(path)
+        if path in kinds and kinds[path] != 'configuration':
+            raise LayoutError(f'{declaration}:{row["line"]}: {noun} source has conflicting kind')
+        kinds[path] = 'configuration'
+        return path
+    def capture_timeouts(declaration, owner_id, body):
+        header = next((value for _, value in body if value.strip()), '')
+        expiring = tuple(part.strip() for part in header.strip().strip('|').split('|')) == _EXPIRY_COLUMNS
+        # The graph names any owner; a component names itself or a direct child.
+        owners = ({'GRAPH', *parents} if owner_id is None else
+                  {owner_id, *(name for name, parent in parents.items() if parent == owner_id)})
+        for row in _shared_table(declaration, body, _EXPIRY_COLUMNS if expiring else _TIMEOUT_COLUMNS):
+            if (row['Owner'] not in owners or row['Owner'] in {item['Owner'] for item in timeouts}
                     or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', row['Key'])):
-                raise LayoutError(f'{entry}:{row["line"]}: invalid timeout owner or key')
-            path = linked(row)
-            if path.suffix != '.toml':
-                raise LayoutError(f'{entry}:{row["line"]}: timeout source must be TOML')
-            if path not in contents:
-                contents[path] = read(path)
-            if path in kinds and kinds[path] != 'configuration':
-                raise LayoutError(f'{entry}:{row["line"]}: timeout source has conflicting kind')
-            kinds[path] = 'configuration'
-            timeouts.append(dict(row, Source=path))
+                raise LayoutError(f'{declaration}:{row["line"]}: invalid timeout owner or key')
+            expiry = {}
+            expired, expirations = row.pop('Expired', '-'), row.pop('Expirations', '-')
+            if (expired == '-') != (expirations == '-'):
+                raise LayoutError(f'{declaration}:{row["line"]}: expiry columns must both name State fields or both be -')
+            if expired != '-':
+                if row['Owner'] == 'GRAPH':
+                    raise LayoutError(f'{declaration}:{row["line"]}: expiry routing requires a node or component owner')
+                if not (_PY_ID.fullmatch(expired) and _PY_ID.fullmatch(expirations)):
+                    raise LayoutError(f'{declaration}:{row["line"]}: invalid expiry field name')
+                if expired == expirations:
+                    raise LayoutError(f'{declaration}:{row["line"]}: expiry fields must differ')
+                expiry = dict(Expired=expired, Expirations=expirations)
+            path = configuration(declaration, row, 'timeout')
+            timeouts.append(dict(row, Source=path, **expiry, **({} if owner_id is None else {'_owner': declaration})))
+    def capture_limits(declaration, owner_id, body):
+        for row in _shared_table(declaration, body, ('Key', 'Source')):
+            if not _LIMIT_KEY.fullmatch(row['Key']):
+                raise LayoutError(f'{declaration}:{row["line"]}: invalid limit key')
+            if row['Key'] in {item['Key'] for item in limits}:
+                raise LayoutError(f'{declaration}:{row["line"]}: duplicate limit key')
+            limits.append(dict(row, Source=configuration(declaration, row, 'limit'),
+                               **({} if owner_id is None else {'_owner': declaration, '_owner_id': owner_id})))
+    for table, capture in (('Timeouts', capture_timeouts), ('Limits', capture_limits)):
+        if table in sections:
+            capture(entry, None, sections[table])
+        for owner_id, declaration, child in scoped_tables:
+            if table in child:
+                capture(declaration, owner_id, child[table])
+    for declaration, line, names in used_constants:
+        undeclared = sorted(names - {item['Key'] for item in limits})
+        if undeclared:
+            raise LayoutError(f'{declaration}:{line}: condition uses undeclared constant {undeclared[0]}')
     slots = []
     for row in _shared_table(entry, sections.get('Prompt Slots', []), ('Slot', 'Registry', 'Source')):
         if (not _ID.fullmatch(row['Slot']) or not _PY_ID.fullmatch(row['Registry'])
@@ -570,8 +618,10 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                                     MappingProxyType(contents), definition_id, layout,
                                     MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages), application_binding,
                                     prompts=tuple(_freeze(row) for row in prompts), prompt_slots=tuple(_freeze(row) for row in slots),
-                                    functions=tuple(_freeze(row) for row in functions))
+                                    functions=tuple(_freeze(row) for row in functions),
+                                    limits=tuple(_freeze(row) for row in limits))
     _validated_timeouts(definition)
+    _validated_limits(definition)
     return definition
 
 
@@ -637,6 +687,7 @@ def load_native_bindings(definition, *, packaged_proof=None, config=None):
     """Execute only the selected, still admitted native sources."""
     definition.verify_sources()
     timeout_values, timeout_keys = _validated_timeouts(definition, config)
+    _validated_limits(definition, config)
     if recording_enabled():
         _source_manifest(definition, packaged_proof)
     result = {}

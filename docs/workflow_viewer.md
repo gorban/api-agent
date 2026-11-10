@@ -22,6 +22,13 @@ A node's `Functions` row, in either grammar, adds linked `Input:`, `Output:` and
 Browsers lacking the required overlay APIs keep ordinary standalone SVG navigation.
 The shared enhancement uses local packaged assets and needs no additional service.
 
+Configuration-backed budgets appear as linked boxes in the diagram of the document
+that declares them, for both declaration grammars. A timeout shows as
+`Timeout: KEY` beside its owner, and a graph-level timeout appears in the root
+diagram. A typed `## Limits` entry shows as `Configuration: KEY` in the diagram of
+the root or component document that declares it. Each box links to the
+configuration source.
+
 Direct file opening shows the last generated diagram. It does not check whether
 declarations have changed since generation. The commands below check freshness.
 
