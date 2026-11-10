@@ -48,6 +48,8 @@ class Engine:
         self.image_inspections = {}
         self.volume_labels = None
         self.networks = set()
+        # Queried only for a bind source carrying Docker Desktop's VM prefix.
+        self.operating_system = None
 
     def add(self, name, *, fingerprint=None, image=None, image_id=None, running=True, foreign=False, profile=None):
         self.counter += 1
@@ -92,6 +94,8 @@ class Engine:
                 'com.docker.compose.network': 'default'}}])
         if command[1] == 'ps': return '\n'.join(self.records)
         if command[1] == 'inspect': return json.dumps([self.records[item] for item in command[2:]])
+        if command[1:] == ('info', '--format', '{{json .OperatingSystem}}') and self.operating_system is not None:
+            return json.dumps(self.operating_system)
         if command[1:3] == ('image', 'inspect'):
             image_locator = command[3]
             if image_locator in self.image_inspections:
@@ -248,6 +252,22 @@ def test_jaeger_adoption_rejects_untrusted_storage(setup, damage, tmp_path):
     with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
         manager.acquire()
     assert not any('up' in command for command, _ in engine.commands)
+
+
+@pytest.mark.parametrize('operating_system, adopted', [('Docker Desktop', True), ('Ubuntu 24.04 LTS', False)])
+def test_jaeger_storage_maps_only_docker_desktop_vm_bind_sources(setup, operating_system, adopted):
+    create, engine, clock, _, _ = setup
+    manager = create()
+    identifier = engine.add('jaeger')
+    bind = engine.records[identifier]['Mounts'][0]
+    bind['Source'] = '/host_mnt' + bind['Source']
+    engine.operating_system = operating_system
+    if adopted:
+        manager.verify_jaeger_storage(identifier, clock.now() + 30)
+    else:
+        with pytest.raises(p.PrerequisiteError, match='storage'):
+            manager.verify_jaeger_storage(identifier, clock.now() + 30)
+    assert sum(command[1] == 'info' for command, _ in engine.commands) == 1
 
 
 def test_jaeger_storage_verification_rejects_mismatched_inspect_identity(setup):

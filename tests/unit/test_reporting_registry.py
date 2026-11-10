@@ -140,6 +140,21 @@ def test_retained_localstack_reuses_exact_object(storage, stopped, legacy_three_
     assert path.read_bytes() == saved_record
 
 
+def test_retained_localstack_is_reused_from_docker_desktop_vm_bind_sources(storage):
+    original = storage.create()
+    identifier, = original.acquire().container_ids
+    original.release(retain=True)
+    hook = storage.engine.records[identifier]['Mounts'][0]
+    hook['Source'] = '/host_mnt' + hook['Source']
+    storage.engine.operating_system = 'Docker Desktop'
+
+    joined = storage.create()
+    lease = joined.acquire()
+
+    assert lease.container_ids == (identifier,)
+    joined.release(retain=True)
+
+
 @pytest.mark.parametrize('during_cleanup', [False, True])
 def test_malformed_registered_retained_compose_is_wrapped_without_losing_owner(storage, during_cleanup):
     original = storage.create()
