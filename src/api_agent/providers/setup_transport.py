@@ -33,6 +33,8 @@ _EVIDENCE_ITEMS = 100000
 _MAX_EVIDENCE_ROWS = 128
 _MAX_SETUP_PEERS = 128
 _MAX_EVIDENCE_TRANSFERS = 1
+_EVIDENCE_PUBLISH_SECONDS = 1.0
+_RAW_EVIDENCE_PUBLISH_SECONDS = 5.0
 _PREPARE_CANCEL = threading.local()
 _BINDING = {'version', 'operation_id', 'selected_identity', 'worker_id', 'attempt'}
 _COMPONENT = {'id', 'name', 'timeout', 'elapsed', 'active', 'parent_id'}
@@ -1215,7 +1217,8 @@ class SetupServer(_Owner):
                         else:
                             pending_phases.update((('request', None), ('response', None)))
                         allowance = (min(30.0, self._request_timeout) if frame.get('background') is True else
-                                     min(5.0 if collector.get('retain_raw') is True else 1.0, self._request_timeout / 4,
+                                     min(_RAW_EVIDENCE_PUBLISH_SECONDS if collector.get('retain_raw') is True else _EVIDENCE_PUBLISH_SECONDS,
+                                         self._request_timeout / 4,
                                          remaining / 4 if remaining is not None else self._request_timeout / 4))
                         try:
                             async with asyncio.timeout(max(0.001, allowance)):
