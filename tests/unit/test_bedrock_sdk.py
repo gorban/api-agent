@@ -349,9 +349,9 @@ async def test_stream_can_close_from_another_task(auth, fake_process):
 @pytest.mark.asyncio
 async def test_total_stream_budget_includes_consumer_delay(auth, fake_process):
     fake_process[0]['frames'] = [{'event': {}}, {'event': {}}]
-    stream = sdk.SDKTransport(timeout=.01).stream('completions_stream', {}, auth=auth)
+    stream = sdk.SDKTransport(timeout=1).stream('completions_stream', {}, auth=auth)
     await anext(stream)
-    await asyncio.sleep(.02)
+    await asyncio.sleep(1.5)
     with pytest.raises(TimeoutError):
         await anext(stream)
 
