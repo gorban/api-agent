@@ -20,6 +20,7 @@ from threading import Lock
 from langgraph.checkpoint.memory import InMemorySaver
 from .model import LayoutError
 from .model import NativeCatalog
+from . import session as session_contract
 from .configuration import resolve_timeouts, resolve_component_passes, resolve_state_limits, resolve_state_timeouts
 from api_agent.runtime.tasks import settle
 from api_agent.providers.progress import bind_timeout_budget
@@ -294,6 +295,19 @@ class NodeContext:
         return self._repair_limit[1] if self._repair_limit else self.ancestry[-1][2] if self.ancestry else 1
 
 
+class _SessionState(TypedDict):
+    session: dict
+
+
+def _thaw(value):
+    """Copy an admitted frozen declaration value back to plain JSON containers."""
+    if isinstance(value, (dict, MappingProxyType)):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw(item) for item in value]
+    return value
+
+
 class _State(TypedDict):
     values: dict
     ancestry: tuple
@@ -348,9 +362,11 @@ class Workflow:
                              journal=journal, checkpointer=checkpointer, config=config)
             self.layout = layout.layout
             self.component_passes = {}
+            self.session_rows = ()
         else:
-            if catalog is not None or reducers or checkpointer is not None:
-                raise LayoutError('Checkpoint state requires a declared State contract')
+            sessions = bool(layout.layout.tables.get('Session'))
+            if catalog is not None or reducers or (checkpointer is not None and not sessions):
+                raise LayoutError('Checkpoint state requires a declared State or Session contract')
             self._init_bindings(layout, registry or {}, conditions, config=config, services=services)
         self._request = ContextVar('workflow_request', default=None)
         self._services = ContextVar('workflow_services', default=self.services)
@@ -363,6 +379,7 @@ class Workflow:
         self._parents = {step.id: step.parent for step in self.layout.steps}
         saver = (checkpointer if checkpointer is not None else InMemorySaver()) if self.typed_state else False
         self.graph = self._compile(None, checkpointer=saver)
+        self._session = self._compile_session(checkpointer) if self.session_rows else None
 
     def _init_bindings(self, layout, registry, conditions=None, *, config=None, services=None):
         self.definition = layout
@@ -372,6 +389,7 @@ class Workflow:
         self.config, self.services = config or {}, services or {}
         self._predicates = {}
         self.functions = {row['ID']: row for row in layout.tables['Functions']}
+        self.session_rows = tuple(layout.tables.get('Session', ()))
         self.components = {row['ID']: row for row in layout.tables['Components']}
         self.timeouts, self.timeout_keys = resolve_timeouts(layout, self.config, self.definition)
         self.limit_values = MappingProxyType({})
@@ -461,6 +479,13 @@ class Workflow:
             except ValueError as error:
                 raise LayoutError(f'{definition.entry}:{row["line"]}: {error}') from None
         self.schema = schema
+    def _compile_session(self, checkpointer):
+        """A one-node graph whose only job is to checkpoint ``session`` per thread."""
+        graph = StateGraph(_SessionState)
+        graph.add_node('commit', lambda state: {})
+        graph.add_edge(START, 'commit')
+        return graph.compile(checkpointer=checkpointer if checkpointer is not None else InMemorySaver())
+
     def _run_services(self):
         return self._services.get()
 
@@ -703,7 +728,8 @@ class Workflow:
                 source = binding['From']
                 sources = {'START': values['START'], 'PREVIOUS': state['previous'].get(step.id, {}),
                            'FEEDBACK': state['feedback'], 'ATTEMPT': {'value': context.attempt},
-                           'MAX_PASSES': {'value': context.max_passes}}
+                           'MAX_PASSES': {'value': context.max_passes},
+                           'SESSION': self._turn_state.get().get('session', {})}
                 payload = sources.get(source, values.get(source, {}))
                 available = (source in ('START', 'ATTEMPT', 'MAX_PASSES')
                              or (source == 'PREVIOUS' and step.id in state['previous'])
@@ -714,7 +740,9 @@ class Workflow:
                 elif binding['Field'] in payload:
                     inputs[binding['Input']] = deepcopy(payload[binding['Field']])
                 elif 'default_value' in binding:
-                    inputs[binding['Input']] = deepcopy(binding['default_value'])
+                    inputs[binding['Input']] = _thaw(binding['default_value'])
+                elif source == 'SESSION':
+                    raise WorkflowError(f'Missing required session field {binding["Field"]} for {step.id}.{binding["Input"]}')
                 else:
                     raise WorkflowError(f'Missing required binding for {step.id}.{binding["Input"]}')
             self._validate(row['Input schema'], inputs, step.id, 'input')
@@ -1269,7 +1297,8 @@ class Workflow:
 
 
     @asynccontextmanager
-    async def _turn(self, thread_id, request, services, journal, turn_id=None, turn_kind='initial'):
+    async def _turn(self, thread_id, request, services, journal, turn_id=None, turn_kind='initial',
+                    on_success=None):
         from .run_context import canonical_uuid, current_execution_context, current_turn_id, execution_context, turn
         if turn_id is not None:
             canonical_uuid(turn_id)
@@ -1355,6 +1384,8 @@ class Workflow:
                     from api_agent.tooling.runtime import invocation_tools
                     async with invocation_tools(self.definition, selected_services), self._scope_graph(budget):
                         yield
+            if on_success is not None:
+                await on_success()
         finally:
             if automatic_observations is not None:
                 automatic_observations.close()
@@ -1379,18 +1410,45 @@ class Workflow:
             canonical_uuid(turn_id)
         if self.typed_state and (type(thread_id) is not str or not thread_id or type(update) is not dict):
             raise ValueError('thread_id and partial state update are required')
-        if not self.typed_state and thread_id is not None:
-            raise WorkflowError('Conversation checkpoints require a declared State contract')
-        async with self._turn(thread_id or str(uuid4()), request, services, journal, turn_id, turn_kind):
+        if self._session is not None and (type(thread_id) is not str or not thread_id):
+            raise ValueError('thread_id is required for a workflow with a Session')
+        if not self.typed_state and self._session is None and thread_id is not None:
+            raise WorkflowError('Conversation checkpoints require a declared State or Session contract')
+        config = {'configurable': {'thread_id': thread_id}}
+        committed = []
+        async def persist():
+            await self._session.ainvoke({'session': committed[0]}, config)
+        async with self._turn(thread_id or str(uuid4()), request, services, journal, turn_id, turn_kind,
+                              on_success=persist if self._session is not None else None):
             if self.typed_state:
-                return await self.graph.ainvoke(update, {'configurable': {'thread_id': thread_id}})
+                return await self.graph.ainvoke(update, config)
             self._validate({'type': 'object'}, update, 'START', 'input')
+            session = {}
+            if self._session is not None:
+                snapshot = await self._session.aget_state(config)
+                session = deepcopy(snapshot.values.get('session', {}))
+                self._turn_state.get()['session'] = session
             prompts = {path: self.definition.contents[path].decode('utf-8')
                        for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
                 feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None),
                 {'recursion_limit': len(self.layout.steps) + 1})
+            if self._session is not None:
+                committed.append(self._merge_session(session, result['values']))
             return result['values']
+
+    def _merge_session(self, session, values):
+        """Fold this turn's accepted node outputs into a copy of the start-of-turn session."""
+        order = {step.id: index for index, step in enumerate(self.layout.steps)}
+        merged = deepcopy(session)
+        for row, value in session_contract.writes(self.session_rows, order, values):
+            if row['Merge'] == 'replace':
+                merged[row['Field']] = deepcopy(value)
+            elif type(value) is list:
+                merged[row['Field']] = [*merged.get(row['Field'], ()), *deepcopy(value)]
+            else:
+                raise WorkflowError(f'Session field {row["Field"]} appends an array but {row["Source"]} is not one')
+        return merged
 
 
 

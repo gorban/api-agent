@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "message": {"type": "string"},
+    "history": {"type": "array"},
+    "lines": {"type": "array", "items": {"type": "string"}},
+    "last": {"type": "string"}
+  },
+  "required": ["message", "history", "lines", "last"],
+  "additionalProperties": false
+}

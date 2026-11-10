@@ -11,6 +11,7 @@ from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
 from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID
 from .predicates import PredicateError, parse_predicate, predicate_fields
+from . import session
 
 
 _COLUMNS = {
@@ -21,6 +22,7 @@ _COLUMNS = {
     'Prompts': ('Node', 'File', 'When'),
     'Timeouts': ('Owner', 'Source', 'Key'),
 }
+_SESSION_COLUMNS = ('Field', 'Source', 'Merge')
 _RESPONSE_COLUMNS = (*_COLUMNS['Functions'], 'Response schema', 'Output mode', 'Fallback')
 _SUMMARY_COLUMNS = (*_RESPONSE_COLUMNS, 'Display summary')
 
@@ -109,7 +111,7 @@ def _validate(layout, resource_bytes=None):
         bound[target].add(field)
         if not row['Field'] or (source in ('ATTEMPT', 'MAX_PASSES') and row['Field'] != 'value'):
             layout.error('invalid binding source field', row['line'])
-        if source not in ('START', 'PREVIOUS', 'FEEDBACK', 'ATTEMPT', 'MAX_PASSES'):
+        if source not in ('START', 'PREVIOUS', 'FEEDBACK', 'ATTEMPT', 'MAX_PASSES', 'SESSION'):
             if source not in functions or ordered.index(source) >= ordered.index(target):
                 layout.error('binding source must be an earlier node', row['line'])
             if row['Field'] != '*' and row['Field'] not in functions[source]['Output schema'].get('properties', {}):
@@ -123,6 +125,9 @@ def _validate(layout, resource_bytes=None):
     for key, row in functions.items():
         if not set(row['Input schema'].get('required', ())) <= bound[key]:
             layout.error('required inputs must have declared bindings', row['line'])
+    invalid = session.problem(layout.tables)
+    if invalid is not None:
+        layout.error(*invalid)
     seen = set()
     edge_groups = {}
     for row in layout.tables['Edges']:

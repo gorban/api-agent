@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "draft": {"type": "object"},
+    "attempt": {"type": "integer"}
+  },
+  "required": ["draft", "attempt"],
+  "additionalProperties": false
+}

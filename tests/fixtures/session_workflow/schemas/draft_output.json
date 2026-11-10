@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "text": {"type": "string"},
+    "lines": {"type": "array", "items": {"type": "string"}},
+    "saw_topic": {"type": "string"}
+  },
+  "required": ["text", "lines", "saw_topic"],
+  "additionalProperties": false
+}

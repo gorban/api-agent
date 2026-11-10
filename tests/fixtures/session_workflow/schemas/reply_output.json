@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "reply": {"type": "string"},
+    "messages": {"type": "array", "items": {"type": "object"}},
+    "topic": {"type": "string"},
+    "seen": {"type": "object"}
+  },
+  "required": ["reply", "messages", "topic", "seen"],
+  "additionalProperties": false
+}
