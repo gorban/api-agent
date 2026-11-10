@@ -1,6 +1,7 @@
 """Prove overlap below the shared IPC connection, with synthetic inference only."""
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import httpx
@@ -22,6 +23,10 @@ def test_six_application_requests_overlap_one_backend_owner(monkeypatch):
     monkeypatch.setattr('api_agent.testing.inference_content.publish_content',
         lambda evidence, identifier: content.append((evidence,identifier)))
     async def scenario():
+        # Six blocked leases hold default-executor threads while the server on
+        # this loop needs another to project their evidence; the default pool
+        # is sized from the host CPU count.
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=16))
         entered=asyncio.Event()
         class Owner:
             def __init__(self):
