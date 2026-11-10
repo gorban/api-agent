@@ -794,6 +794,11 @@ def test_watchdog_failure_fail_stops_operation_and_retains_cleanup(monkeypatch, 
     from api_agent.api import chat_lifecycle
     async def exercise():
         engine = registry()
+        # The lease must not lapse before the injected watchdog failure.
+        engine.expiry = 30
+        if not resistant:
+            # Only a resistant operation must outlast disposal; a cooperative one is given real time.
+            engine.cleanup_timeout = 30
         original = chat_lifecycle.report_timeout
         entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         @asynccontextmanager
@@ -837,6 +842,7 @@ def test_watchdog_failure_fail_stops_operation_and_retains_cleanup(monkeypatch, 
             assert isinstance(turn._watch_error, RuntimeError) if phase != 'cancel' else turn._monitor.cancelled()
         finally:
             release.set()
+            engine.cleanup_timeout = 30
             await engine.aclose()
     asyncio.run(exercise())
 
