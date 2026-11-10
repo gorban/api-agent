@@ -132,12 +132,15 @@ def copy_tree(source, target):
     return target
 
 
-def build_rich_v3(directory, *, flow_extra=RICH_FLOW_EXTRA, helper=b'HELPER = "helper"\n'):
+def build_rich_v3(directory, *, flow_extra=RICH_FLOW_EXTRA, helper=b'HELPER = "helper"\n', review_extra=''):
     """A v3 graph with a declared data resource, native dependency, timeout and tool port."""
     root = copy_tree(QUALIFICATION, directory / 'tree')
     (root / 'notes.txt').write_bytes(b'notes\n')
     (root / 'instance.toml').write_bytes(b'id = "sample/primary"\n')
-    (root / 'limits.toml').write_bytes(b'version = 1\n[fields.GRAPH_LIMIT]\ntype = "float"\ndefault = 5.5\n')
+    (root / 'limits.toml').write_bytes(b'version = 1\n[fields.GRAPH_LIMIT]\ntype = "float"\ndefault = 5.5\n'
+                                       + (b'[fields.REVIEW_LIMIT]\ntype = "float"\ndefault = 2.5\n' if review_extra else b''))
+    review = root / 'review.md.html'
+    review.write_text(review.read_text() + review_extra)
     (root / 'src/aq_bindings/helper.py').write_bytes(helper)
     flow = root / 'flow.md.html'
     flow.write_text(flow.read_text() + flow_extra)

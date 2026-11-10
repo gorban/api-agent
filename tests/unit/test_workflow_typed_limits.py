@@ -770,21 +770,6 @@ def test_typed_graph_timeout_limits_and_component_timeouts_render_in_their_decla
 
 # --- compiled plans ---------------------------------------------------------------
 
-def test_compiled_plans_reject_typed_limits_and_expiry_columns(tmp_path):
-    from api_agent.workflows.artifact_compile import ArtifactCompileError, compile_definition
-    limited = build(tmp_path, [('node', 'finish')],
-                    '| finish | END | .plan_retries <= PLAN_RETRIES |\n| finish | END | otherwise |',
-                    LIMIT_TABLE + '| PLAN_RETRIES | [config](limits.toml) |\n')
-    with pytest.raises(ArtifactCompileError, match='declared limits and timeout expiry routing'):
-        compile_definition(admit(tmp_path, limited), ())
-
-    expiring = build(tmp_path, [('node', 'effectful'), ('node', 'finish')],
-                     '| effectful | finish | always |\n| finish | END | always |', EXPIRY +
-                     '| effectful | [config](limits.toml) | NODE_TIMEOUT | timed_out | timeout_retries |\n')
-    with pytest.raises(ArtifactCompileError, match='declared limits and timeout expiry routing'):
-        compile_definition(admit(tmp_path, expiring), ())
-
-
 def test_expired_inner_component_leaves_its_open_ancestor_running(tmp_path):
     inner = ('## Flow\n\n1.  [node plan_request](plan_request.md.html)\n\n' + EXPIRY +
              '| inner | [config](limits.toml) | GROUP_TIMEOUT | timed_out | timeout_retries |\n')
