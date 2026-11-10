@@ -35,3 +35,19 @@ def test_diagrams_show_a_session_note_on_the_reading_and_writing_node(tmp_path):
     assert _label('Session read: topic') in component
     assert _label('Session read: draft_lines') in root
     assert _label('Session write: draft_lines') not in root
+
+
+def test_diagram_notes_which_nodes_read_turn_values(tmp_path):
+    from test_workflow_turn import FIXTURE
+    projection = project_view(load_session(session_entry(
+        tmp_path, fixture=FIXTURE, flow='turn_chat.md.html')))
+
+    reads = {(ref.owner_id, dict(ref.attributes)['field'])
+             for ref in projection.references if ref.kind == 'turn'}
+
+    assert reads == {('path_a', 'topic'), ('path_b', 'topic'), ('draft', 'topic'), ('draft', 'hint'),
+                     ('draft', 'scratch'), ('finish', 'topic'), ('finish', 'extra'),
+                     ('finish', 'scratch'), ('finish', 'hint')}
+    assert _label('Turn read: topic') in diagram(projection, 'turn_chat.md.html')
+    assert _label('Turn read: scratch') in diagram(projection, 'refine.md.html')
+    assert _label('Session read: last_extra') in diagram(projection, 'turn_chat.md.html')

@@ -246,8 +246,8 @@ def project_view(definition) -> ViewerProjection:
             references.append(ViewerReference('binding', logical(owner), row.get('_owner_id', owner_by_path.get(owner)), row['line'],
                                               '', '', tuple(sorted((key, str(value)) for key, value in row.items()
                                                                    if key not in ('line', '_owner')))))
-            if row['From'] == 'SESSION':
-                references.append(ViewerReference('session', logical(owner), row['Node'], row['line'], '', '',
+            if row['From'] in ('SESSION', 'TURN'):
+                references.append(ViewerReference(row['From'].lower(), logical(owner), row['Node'], row['line'], '', '',
                                                   (('access', 'read'), ('field', row['Field']))))
         for row in definition.layout.tables.get('Session', ()):
             references.append(ViewerReference('session', logical(declaration_entry), source_parts(row['Source'])[0],

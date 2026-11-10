@@ -289,7 +289,7 @@ A binding grammar `## Bindings` row, `| Node | Input | From | Field | Default |`
 names where one node input comes from. `From` is `START` (the turn's input
 object), an earlier node ID, or a reserved source: `PREVIOUS` (the node's output
 from the last accepted pass), `FEEDBACK` (the guard's feedback), `ATTEMPT` and
-`MAX_PASSES` (`Field` is `value`), or `SESSION`. A `Default` other than `-`
+`MAX_PASSES` (`Field` is `value`), `SESSION` or `TURN`. A `Default` other than `-`
 supplies a JSON value when the source has no such field; `-` makes it required.
 
 A root `## Session` table declares fields that survive across user turns:
@@ -330,6 +330,34 @@ persist beyond the process; the default is in-memory. A workflow without
 `thread_id` alone, so use a distinct checkpointer per workflow. The table is part
 of the declaration identity and compiled plans, and diagrams mark each node that
 reads or writes a session field.
+
+### Per-turn values with `TURN`
+
+A binding `| finish | extra | TURN | extra | "none" |` reads output property
+`extra` from whichever node most recently completed in the current turn with that
+property in its output, whether or not it is an earlier flow step of a particular
+node. It suits a shared step reached from several branches, which should read a
+value whichever predecessor produced it. The value is the newest by completion
+order, so a node that ran later overrides an earlier writer; a node that did not
+run, or whose output omits the property, writes nothing. If no completed node has
+written the field, `Default` applies, and `-` fails with
+`Missing required turn value FIELD for node.input`.
+
+Loading requires at least one node `Output` schema to declare `FIELD`, rejects `*`,
+and checks that every declaring node's property type can satisfy the input schema
+where both declare a `type`. Declaring nodes need not be earlier in the flow, so
+the check does not constrain ordering.
+
+Guarded components: the engine clears a component's node outputs when a new pass
+starts, and TURN follows that. A value written only in a rejected pass is not
+visible to any node in the next pass, nor after the component; if an earlier node
+outside the component also wrote the field, that earlier value is what TURN returns
+again. Use `PREVIOUS` and `FEEDBACK` to read prior-pass data deliberately.
+
+TURN never sees an earlier turn; use `## Session` for that. The tracker is a
+per-turn map from field to the nodes that wrote it, in completion order, resolved
+against the node outputs that currently exist, so a node that runs again
+contributes its latest output.
 
 ## Typed execution timeouts
 

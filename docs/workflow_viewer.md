@@ -23,7 +23,8 @@ Browsers lacking the required overlay APIs keep ordinary standalone SVG navigati
 The shared enhancement uses local packaged assets and needs no additional service.
 
 A node that reads a `SESSION` binding or writes a declared `## Session` field shows
-an unlinked `Session read: FIELD` or `Session write: FIELD` box beside it, in the
+an unlinked `Session read: FIELD` or `Session write: FIELD` box beside it (a `TURN`
+binding shows `Turn read: FIELD`), in the
 diagram of the document that owns the node.
 
 Configuration-backed budgets appear as linked boxes in the diagram of the document
