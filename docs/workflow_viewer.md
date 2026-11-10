@@ -30,8 +30,9 @@ diagram of the document that owns the node.
 Configuration-backed budgets appear as linked boxes in the diagram of the document
 that declares them, for both declaration grammars. A timeout shows as
 `Timeout: KEY` beside its owner, and a graph-level timeout appears in the root
-diagram. A typed `## Limits` entry shows as `Configuration: KEY` in the diagram of
-the root or component document that declares it. Each box links to the
+diagram. A `## Limits` entry, in either grammar, shows as `Configuration: KEY` in the diagram
+of the root, component or node document that declares it, and the edge label of a
+bounded backward edge names the limit. Each box links to the
 configuration source.
 
 Direct file opening shows the last generated diagram. It does not check whether
