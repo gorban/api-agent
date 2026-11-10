@@ -28,8 +28,8 @@ def setting_row(table, name):
     return next(i for i, row in enumerate(table.ordered_rows) if row.key.value == name)
 
 
-async def confirm_full_unit(pilot, app):
-    deadline = asyncio.get_running_loop().time() + 10
+async def confirm_full_unit(pilot, app, timeout=10):
+    deadline = asyncio.get_running_loop().time() + timeout
     while True:
         assert asyncio.get_running_loop().time() < deadline, 'Full unit confirmation did not appear'
         dialog = app.screen
@@ -47,7 +47,7 @@ async def confirm_full_unit(pilot, app):
         assert asyncio.get_running_loop().time() < deadline, 'Full unit confirmation input did not gain focus'
         await pilot.pause(.02)
     await pilot.press('y', 'enter')
-    deadline = asyncio.get_running_loop().time() + 10
+    deadline = asyncio.get_running_loop().time() + timeout
     while app.screen is dialog:
         assert asyncio.get_running_loop().time() < deadline, 'Full unit confirmation did not close'
         await pilot.pause(.02)
