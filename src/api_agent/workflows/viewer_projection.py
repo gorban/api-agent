@@ -182,6 +182,11 @@ def project_view(definition) -> ViewerProjection:
                                           resource.sha256, tuple(sorted((str(k), str(v)) for k, v in attrs.items()))))
 
     declaration_entry = definition.declaration_entry or definition.entry
+
+    def add_limit_references():
+        for row in definition.limits:
+            add_reference('limit', row.get('_owner', declaration_entry), row.get('_owner_id'),
+                          row['line'], row['Source'], key=row['Key'])
     if hasattr(definition, 'nodes'):
         add_reference('state_schema', declaration_entry, None, 1, definition.schema_source,
                       registry=definition.schema_name)
@@ -217,9 +222,7 @@ def project_view(definition) -> ViewerProjection:
                 if row.get(field, '-') != '-':
                     add_reference('functions', row['_owner'], row['ID'], row['line'], row[field],
                                   field=field, **_reference_attributes(row, field))
-        for row in definition.limits:
-            add_reference('limit', row.get('_owner', declaration_entry), row.get('_owner_id'),
-                          row['line'], row['Source'], key=row['Key'])
+        add_limit_references()
         for identifier, resource in definition.declared_resources.items():
             references.append(ViewerReference(resource.kind, logical(declaration_entry), identifier, 1,
                                               resource.logical_path, resource.sha256, ()))
@@ -267,6 +270,7 @@ def project_view(definition) -> ViewerProjection:
             if 'max_passes_link' in row:
                 add_reference('pass_limit', row.get('_owner', declaration_entry), row['ID'],
                               row['line'], row['max_passes_link'], key=row['max_passes_key'])
+        add_limit_references()
     controllers = ()
     if not hasattr(definition, 'nodes'):
         from .predicates import component_controller
