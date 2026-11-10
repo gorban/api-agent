@@ -19,6 +19,7 @@ import re
 from types import MappingProxyType
 from typing import ClassVar
 
+from . import session
 from .model import InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage
 
 PLAN_FORMAT = 'api-agent-workflow-plan'
@@ -336,6 +337,18 @@ def _row(value, length, name):
     return value
 
 
+def _check_session(tables):
+    """Apply the declaration-time Session contract to the decoded rows."""
+    rows = tables.get('Session', ())
+    if not all(isinstance(row, MappingProxyType) and set(row) == {'Field', 'Source', 'Merge', 'line'}
+               and all(type(row[key]) is str for key in ('Field', 'Source', 'Merge'))
+               and type(row['line']) is int for row in rows):
+        raise ValueError('invalid session row')
+    invalid = session.problem(tables)
+    if invalid is not None:
+        raise ValueError(f'invalid session: {invalid[0]}')
+
+
 def _decode_plan(value, typed):
     resources, contents = _decode_resources(value['resources'])
     graph_id, entry_root = value['graph_id'], value['entry_root']
@@ -372,8 +385,11 @@ def _decode_plan(value, typed):
         steps.append(Step(row['id'], row['kind'], row['parent'], _virtual(row['source']), row['line']))
     tables, files = _decode(encoded_layout['tables']), _decode(encoded_layout['files'])
     expected_tables = {'Components', 'Functions', 'Bindings', 'Edges', 'Prompts', 'Timeouts'} if not typed else {'Edges'}
-    if not isinstance(tables, MappingProxyType) or set(tables) != expected_tables:
+    optional = set() if typed else {'Session'}
+    if not isinstance(tables, MappingProxyType) or set(tables) - optional != expected_tables:
         raise ValueError('invalid layout tables')
+    if not typed:
+        _check_session(tables)
     decoded = dict(
         graph_id=graph_id, entry=entry, entry_root=entry_root,
         imports=imports, declaration_entry=declaration_entry,
@@ -500,9 +516,10 @@ class CompiledDefinition(_Compiled):
         return {row['Registry']: NodeFunction(self.callables[row['ID']], row['Kind'])
                 for row in self.layout.tables['Functions']}
 
-    def workflow(self, *, conditions=None, config=None, services=None):
+    def workflow(self, *, conditions=None, config=None, services=None, checkpointer=None):
         from .execution import Workflow
-        return Workflow(self, self.registry(), conditions, config=config, services=services)
+        return Workflow(self, self.registry(), conditions, config=config, services=services,
+                        checkpointer=checkpointer)
 
 
 @dataclass(frozen=True)
