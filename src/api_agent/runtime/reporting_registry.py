@@ -99,7 +99,7 @@ def _retained_assets(manager, record, directory, deadline, cancelled, *, cleanup
             raise ValueError()
         hook, = [mount for mount in inspected['Mounts']
                  if mount['Destination'] == '/etc/localstack/init/ready.d/10-api-agent-s3.sh']
-        source = Path(hook['Source'])
+        source = manager._host_bind_source(hook['Source'], deadline, cleanup=cleanup)
         if not source.is_absolute() or '..' in source.parts:
             raise ValueError()
         parent = _directory(source.parent)

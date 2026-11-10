@@ -36,6 +36,7 @@ class Engine:
         self.readiness = True
         self.seed_readiness = True
         self.networks = set()
+        self.operating_system = None
 
     def run(self, command, **kwargs):
         self.calls.append((command, kwargs))
@@ -53,6 +54,8 @@ class Engine:
                 'com.docker.compose.network': 'default'}}])
         if command[1] == 'ps': return '\n'.join(self.records)
         if command[1] == 'inspect': return json.dumps([self.records[key] for key in command[2:]])
+        if command[1:] == ('info', '--format', '{{json .OperatingSystem}}') and self.operating_system is not None:
+            return json.dumps(self.operating_system)
         if command[1:3] == ('image', 'inspect'):
             return json.dumps([{'Id': 'sha256:' + '1' * 64, 'RepoDigests': [command[3]]}])
         if command[1:3] == ('volume', 'inspect'):
@@ -178,6 +181,22 @@ def test_reuse_checks_seed_without_restart(synthetic):
 
     assert len([call for call, _ in engine.calls if 'up' in call]) == before
     assert all(item['State']['Running'] for item in engine.records.values())
+
+
+def test_retained_storage_adopts_docker_desktop_vm_bind_sources(synthetic):
+    manager, engine, _, _, _ = synthetic
+    manager.acquire()
+    manager.release(retain=True)
+    record = next(iter(engine.records.values()))
+    record['Mounts'][0]['Source'] = '/host_mnt' + record['Mounts'][0]['Source']
+    engine.operating_system = 'Docker Desktop'
+
+    retained = set(engine.records)
+
+    lease = manager.acquire()
+
+    assert set(lease.reused_ids) == retained and lease.owned_ids == ()
+    manager.release(retain=True)
 
 
 @pytest.mark.parametrize('damage', ['bytes', 'writable', 'foreign_path', 'missing_mount', 'wrong_volume'])

@@ -928,7 +928,7 @@ class PrerequisiteManager:
                 asset_key = next((key for key in specification.asset_digests
                     if template.startswith('${' + key + ':?')), None)
                 if asset_key is not None:
-                    path = Path(actual['Source'])
+                    path = self._host_bind_source(actual['Source'], deadline, cleanup=cleanup)
                     if (actual['Type'] != 'bind' or actual.get('RW') is not False
                             or not path.is_relative_to(self.directory)):
                         raise ValueError()
@@ -966,6 +966,19 @@ class PrerequisiteManager:
         except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
             raise PrerequisiteError('Prerequisite storage or captured assets could not be verified.') from error
 
+    def _host_bind_source(self, source, deadline, *, cleanup=False):
+        """The host path an inspected bind names.
+
+        Docker Desktop reports binds as its VM mounts them, under /host_mnt. Only
+        that engine's prefix is removed; on any other engine the path is literal.
+        """
+        path = Path(source)
+        if not path.is_relative_to('/host_mnt'):
+            return path
+        reported = json.loads(self._command((self.plan.command[0], 'info', '--format', '{{json .OperatingSystem}}'),
+                                            deadline, cleanup=cleanup))
+        return Path('/', *path.parts[2:]) if reported == 'Docker Desktop' else path
+
     def verify_reporting_storage(self, identifier, directory, deadline, *, cleanup=False):
         """Verify the retained controlled bind and named volume before adoption."""
         from .reporting_metadata import _directory
@@ -976,7 +989,7 @@ class PrerequisiteManager:
                 raise ValueError()
             mounts = record['Mounts']
             hook, = [item for item in mounts if item['Destination'] == '/etc/localstack/init/ready.d/10-api-agent-s3.sh']
-            source = Path(hook['Source'])
+            source = self._host_bind_source(hook['Source'], deadline, cleanup=cleanup)
             parent = _directory(source.parent)
             if hook['Type'] != 'bind' or hook.get('RW') is not False or not parent.is_relative_to(directory):
                 raise ValueError()
@@ -1018,7 +1031,7 @@ class PrerequisiteManager:
                     or {item['Destination'] for item in mounts} != {'/etc/jaeger/config.json', '/tmp'}):
                 raise ValueError()
             bind, = [item for item in mounts if item['Destination'] == '/etc/jaeger/config.json']
-            source = Path(bind['Source'])
+            source = self._host_bind_source(bind['Source'], deadline, cleanup=cleanup)
             parent = source.parent
             if (bind['Type'] != 'bind' or bind.get('RW') is not False
                     or source.name != 'jaeger-config.json' or not parent.is_relative_to(self.directory)):
