@@ -12,6 +12,7 @@ _SCALAR_TYPES = frozenset(('string', 'integer', 'number', 'boolean', 'null'))
 _CONTEXT = {'attempt': {'type': 'integer'}, 'max_passes': {'type': 'integer'}}
 _SOURCE = '__route_source__'
 _CONSTANTS = '__route_constants__'
+_VISITS = '__route_visits__'
 _COMPARISONS = frozenset(('==', '!=', '<', '<=', '>', '>='))
 
 
@@ -28,10 +29,13 @@ class Predicate:
     text: str
     tree: ast.Expression
     source_owners: Mapping
+    steps: frozenset = frozenset()
 
-    def evaluate(self, values, *, attempt=1, max_passes=1, constants=None):
+    def evaluate(self, values, *, attempt=1, max_passes=1, constants=None, visits=None):
+        """``visits`` maps a step ID to its start count; an unstarted step reads 0."""
+        counters = {step: (visits or {}).get(step, 0) for step in self.steps}
         return _evaluate(self.tree.body, values, self.source_owners,
-                         {'attempt': attempt, 'max_passes': max_passes}, constants or {})
+                         {'attempt': attempt, 'max_passes': max_passes}, constants or {}, counters)
 
 
 def _normalize(text):
@@ -43,7 +47,7 @@ def _normalize(text):
     result = []
     previous = None
     for token in tokens:
-        if token.type == tokenize.NAME and unicodedata.normalize('NFKC', token.string) in (_SOURCE, _CONSTANTS):
+        if token.type == tokenize.NAME and unicodedata.normalize('NFKC', token.string) in (_SOURCE, _CONSTANTS, _VISITS):
             raise PredicateError('reserved condition name')
         if token.type == tokenize.OP and token.string == '.' and previous in (
                 None, 'not', 'and', 'or', '(', *_COMPARISONS):
@@ -91,9 +95,12 @@ def parse_predicate(text, fields):
         raise PredicateError('condition exceeds 40 syntax nodes')
     source_owners = {} if fields is None else fields.get(_SOURCE, {}).get('owners', {})
     constants = {} if fields is None else fields.get(_CONSTANTS, {})
+    steps = frozenset() if fields is None else frozenset(fields.get(_VISITS, ()))
 
     def contract(node):
         owner, path = _reference(node)
+        if path == ('attempt',) and owner in steps:
+            return {'type': 'integer'}
         if owner == _SOURCE and fields is not None:
             owner = source_owners.get(path)
             if owner is None:
@@ -147,22 +154,22 @@ def parse_predicate(text, fields):
             check_value(node, boolean=True)
 
     check(tree.body)
-    return Predicate(text, tree, source_owners)
+    return Predicate(text, tree, source_owners, steps)
 
 
-def _evaluate(node, values, owners, context, constants):
+def _evaluate(node, values, owners, context, constants, counters):
     if isinstance(node, ast.BoolOp):
-        results = (_evaluate(item, values, owners, context, constants) for item in node.values)
+        results = (_evaluate(item, values, owners, context, constants, counters) for item in node.values)
         return all(results) if isinstance(node.op, ast.And) else any(results)
     if isinstance(node, ast.UnaryOp):
-        return not _evaluate(node.operand, values, owners, context, constants)
+        return not _evaluate(node.operand, values, owners, context, constants, counters)
     if not isinstance(node, ast.Compare):
-        result = _value(node, values, owners, context, constants)
+        result = _value(node, values, owners, context, constants, counters)
         if type(result) is not bool:
             raise PredicateError('condition Boolean field has invalid value')
         return result
-    left = _value(node.left, values, owners, context, constants)
-    right = _value(node.comparators[0], values, owners, context, constants)
+    left = _value(node.left, values, owners, context, constants, counters)
+    right = _value(node.comparators[0], values, owners, context, constants, counters)
     operator = node.ops[0]
     numeric = type(left) in (int, float) and type(right) in (int, float)
     if isinstance(operator, (ast.Eq, ast.NotEq)):
@@ -175,10 +182,12 @@ def _evaluate(node, values, owners, context, constants):
             left > right if isinstance(operator, ast.Gt) else left >= right)
 
 
-def _value(node, values, owners, context, constants):
+def _value(node, values, owners, context, constants, counters):
     if isinstance(node, ast.Constant):
         return node.value
     owner, path = _reference(node)
+    if path == ('attempt',) and owner in counters:
+        return counters[owner]
     if owner in context and not path:
         return context[owner]
     if not path and owner in constants:
@@ -261,9 +270,31 @@ def predicate_fields(layout, source):
                           for row in layout.tables.get('Components', ())
                           if 'max_passes_key' in row and in_component(row['ID'])}
     # A Limits row is visible to the edges of the document that declares it.
+    fields[_VISITS] = {step.id: {'type': 'integer'} for step in layout.steps}
     fields[_CONSTANTS].update({row['Key']: {'type': 'integer'} for row in layout.tables.get('Limits', ())
                                if row.get('_owner_id') is None or in_component(row['_owner_id'])})
     return fields
+
+
+def backward_bound(predicate, target, limits):
+    """Find ``<target>.attempt < LIMIT`` (or ``<=``) among a condition's top-level conjuncts.
+
+    ``limits`` names the declared Limits keys. Returns ``(key, inclusive)`` for the first
+    such comparison, or ``None`` when the condition does not bound re-entering ``target``.
+    """
+    def conjuncts(node):
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            for value in node.values:
+                yield from conjuncts(value)
+        else:
+            yield node
+    for node in conjuncts(predicate.tree.body):
+        if (isinstance(node, ast.Compare) and isinstance(node.ops[0], (ast.Lt, ast.LtE))
+                and isinstance(node.left, ast.Attribute) and node.left.attr == 'attempt'
+                and isinstance(node.left.value, ast.Name) and node.left.value.id == target
+                and isinstance(node.comparators[0], ast.Name) and node.comparators[0].id in limits):
+            return node.comparators[0].id, isinstance(node.ops[0], ast.LtE)
+    return None
 
 
 def condition_constants(predicate):
