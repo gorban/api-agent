@@ -36,15 +36,15 @@
 
 ## Components
 
-| ID | Max passes | Guard |
-| --- | --- | --- |
-| agent | 1 | - |
+| Max passes | Guard |
+| --- | --- |
+| 1 | - |
 
 ## Timeouts
 
-| Owner | Source | Key |
-| --- | --- | --- |
-| agent | [configuration](../../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
+| Source | Key |
+| --- | --- |
+| [configuration](../../cfg/config.toml) | WORKFLOW_COMPONENT_TIMEOUT_SECONDS |
 
 ## Notes
 
@@ -62,6 +62,6 @@ component. The Components table declares the pass limit.
 
 ### Functions
 
-| ID | Registry | Input | Output |
-| --- | --- | --- | --- |
-| llm_call | llm_call | [input](../contracts/llm_call_input.json) | [output](../contracts/llm_call_output.json) |
+| Input | Output |
+| --- | --- |
+| [input](../contracts/llm_call_input.json) | [output](../contracts/llm_call_output.json) |
