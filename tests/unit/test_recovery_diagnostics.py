@@ -119,7 +119,11 @@ class ProbeApp(ApiAgentApp):
         self.call_after_refresh(self.show_probe)
     def show_probe(self):
         self.push_screen(ManagerRecoveryScreen(Channel(self)))
-        self.call_after_refresh(lambda: (root / 'ready').write_text(type(self._driver).__name__))
+        self.call_after_refresh(self.publish_ready)
+    def publish_ready(self):
+        # The parent polls for the name; publish it whole so a slow host never reads it empty.
+        (root / 'ready.tmp').write_text(type(self._driver).__name__)
+        os.replace(root / 'ready.tmp', root / 'ready')
 app = fixture(root)
 app.__class__ = ProbeApp
 app.run(mouse=False)
