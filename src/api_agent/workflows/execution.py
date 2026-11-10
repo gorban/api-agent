@@ -256,10 +256,20 @@ class NodeContext:
         resolver = self.services.get('tools')
         if resolver is None:
             raise WorkflowError('Workflow has no admitted tool bindings')
+        from api_agent.providers.contracts import ContractError
+        from api_agent.tooling.operations import OPERATIONS_INTERFACE
+        runtime, instance = getattr(resolver, 'runtime', None), getattr(resolver, 'instance', None)
+        if runtime is not None and instance is not None:
+            selected = instance(scope_kind='node', scope=self.node_id, port=port)
+            if any(item.id == selected and item.interface == OPERATIONS_INTERFACE
+                   for item in runtime.tool_plan.tools):
+                raise ContractError('Implementation-declared operations are reached through context.tools[port]')
         borrowed = resolver.for_port(scope_kind='node', scope=self.node_id, port=port)
         context = self
         class EffectTool:
             def __getattr__(self, name):
+                if name in ('call', 'view', 'owner'):
+                    raise ContractError(f'Tool attribute {name} is not available to nodes')
                 return getattr(borrowed, name)
             async def invoke(self, prepared):
                 context.mark_effect()
