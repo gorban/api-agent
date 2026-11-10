@@ -65,8 +65,10 @@ persona = "prompts/persona.md"
 
 The manifest check rejects invalid names, non-relative or escaping paths, other
 suffixes and missing files. The workflow loader captures only the files its
-prompts use, so their text is part of the workflow identity; a used slot the
-pack omits is a load error. Slot syntax, escaping and compiled-plan behavior are
+prompts use, so their text is part of the workflow identity. A product pack that
+selects a library workflow overrides the library's slots: each slot comes from the
+pack root first, then the library (base) root's `pack.toml`; a slot neither
+supplies is a load error listing both. Slot syntax, escaping and compiled-plan behavior are
 in [declared prompts and resource-pack slots](workflow_poc.md#declared-prompts-and-resource-pack-slots).
 
 ## Replaceable responsibilities

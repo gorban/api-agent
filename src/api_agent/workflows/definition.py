@@ -707,21 +707,29 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
                     row[column] = virtual
                 else:
                     row[column] = link(owner, value, kind)
+    # The selecting pack's slots win over the library root's: the same order in which a
+    # replacement from the pack root overrides what the base root declares.
+    consulted = [('pack', roots['pack'])] + ([('base', roots['base'])] if roots['base'] != roots['pack'] else [])
+    manifests = {}
     slot_files = {}
-    supplied = None
     for row in tables['Prompts']:
         for slot in used_slots(captured[row['File']][1]):
-            if supplied is None:
-                supplied = _pack_slots(roots['pack'])
-            if slot not in supplied:
-                raise LayoutError(f'{row.get("_owner", entry)}:{row["line"]}: prompt uses slot {slot} '
-                                  'that the selected resource pack does not supply')
-            if slot not in slot_files:
-                path = slot_files[slot] = capture(roots['pack'] / supplied[slot], 'prompt', 'pack')
-                try:
-                    slot_text(captured[path][1])
-                except UnicodeError:
-                    raise LayoutError(f'{path}:1: prompt slot text must be UTF-8') from None
+            if slot in slot_files:
+                continue
+            for root_id, root in consulted:
+                if root_id not in manifests:
+                    manifests[root_id] = _pack_slots(root)
+                if slot in manifests[root_id]:
+                    break
+            else:
+                raise LayoutError(f'{row.get("_owner", entry)}:{row["line"]}: prompt uses slot {slot} that no '
+                                  'consulted resource pack supplies; consulted: '
+                                  + ', '.join(f'{root_id} {root}' for root_id, root in consulted))
+            path = slot_files[slot] = capture(root / manifests[root_id][slot], 'prompt', root_id)
+            try:
+                slot_text(captured[path][1])
+            except UnicodeError:
+                raise LayoutError(f'{path}:1: prompt slot text must be UTF-8') from None
     layout = Layout(entry, tuple(execution_steps), tables, tuple(sorted(captured, key=str)))
     _validate(layout, {path: data for path, (_, data) in captured.items()})
     layout = Layout(entry, layout.steps, _freeze(tables), layout.files)
