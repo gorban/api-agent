@@ -104,7 +104,9 @@ def test_recorded_default_inference_counts_usage_and_keeps_selected_auth(tmp_pat
     events, console = [], []
     result = run_recorded_integration(context,selected,config,accepted=True,storage=SimpleNamespace(persist=lambda d,m:None),on_event=events.append, usage_output=console.append)
     expected = 'passed' if status == 200 and not failure_usage else 'failed'
-    assert result.persisted and [test.status for test in result.execution.tests] == [expected,expected]
+    assert result.persisted
+    assert [test.status for test in result.execution.tests] == [expected,expected], [
+        (test.status, test.traceback) for test in result.execution.tests]
     assert result.exit_code == (0 if expected == 'passed' else 1)
     assert reads == [('synthetic-vault','selected-entry')]
     assert sum(request.method == 'POST' for request in requests)==2
