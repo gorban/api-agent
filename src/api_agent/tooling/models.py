@@ -101,11 +101,12 @@ class SelectedTool:
     nonempty_inputs: tuple[str, ...] = ()
     executables: object = field(default_factory=dict)
     executable_assets: object = field(default_factory=dict, repr=False)
+    operations: object = field(default_factory=dict)
 
     def __post_init__(self):
         for name in ('bindings', 'local_values', 'pending', 'service_bindings',
                      'service_capabilities', 'infrastructure', 'configured_values',
-                     'value_sources', 'derived_from', 'executables', 'executable_assets'):
+                     'value_sources', 'derived_from', 'executables', 'executable_assets', 'operations'):
             object.__setattr__(self, name, freeze(getattr(self, name)))
         object.__setattr__(self, 'prerequisite_roots', tuple(self.prerequisite_roots))
         object.__setattr__(self, 'nonempty_inputs', tuple(self.nonempty_inputs))

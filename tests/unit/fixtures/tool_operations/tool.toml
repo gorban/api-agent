@@ -1,0 +1,12 @@
+version = 1
+interface = "operations@1"
+factory = "factory.py:create_tool"
+
+[operations.introspect]
+effect = "read"
+
+[operations.query]
+effect = "read"
+
+[operations.mutate]
+effect = "write"
