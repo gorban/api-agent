@@ -124,3 +124,28 @@ async def test_view_is_closed_with_the_invocation(tmp_path, grammar):
     finally:
         await runtime.aclose()
     assert [event[0] for event in events] == ['introspect', 'close']
+
+
+@pytest.mark.asyncio
+async def test_the_earlier_tool_resolver_cannot_reach_implementation_declared_operations(tmp_path, grammar):
+    runtime, definition, events = await started(tmp_path, grammar)
+    try:
+        async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}) as invocation:
+            context = NodeContext('writer', (), (), {'tools': runtime.tools_for(definition)})
+            with pytest.raises(ContractError, match=r'context\.tools\[port\]'):
+                context.tool('store')
+            assert invocation.effects == []
+    finally:
+        await runtime.aclose()
+    assert ('mutate', {'id': 7}) not in events
+
+
+def test_the_earlier_tool_resolver_does_not_expose_the_raw_borrowed_tool():
+    borrowed = type('Borrowed', (), {'description': 'kept', 'call': None, 'view': None, 'owner': None})()
+    context = NodeContext('read', (), (), {'tools': type('Resolver', (), {'for_port': lambda self, **kwargs: borrowed})()})
+    tool = context.tool('primary')
+
+    assert tool.description == 'kept'
+    for name in ('call', 'view', 'owner'):
+        with pytest.raises(ContractError, match='not available'):
+            getattr(tool, name)
