@@ -132,11 +132,36 @@ def test_result_is_retained_and_owner_scoped():
     asyncio.run(exercise())
 
 
-def test_heartbeat_renews_only_lease_and_expiry_drains_operation():
+def test_heartbeat_renews_only_lease_and_expiry_drains_operation(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from api_agent.api import chat_lifecycle
+    # Only the lease reads this clock; the monitor still re-evaluates it on real loop timers.
+    now = [0.0]
+    monkeypatch.setattr(chat_lifecycle, 'time', SimpleNamespace(monotonic=lambda: now[0]))
     async def exercise():
         engine = registry()
+        # Disposal of the cooperative operation is not under test.
+        engine.cleanup_timeout = 30
+        original = chat_lifecycle.report_timeout
+        leases, armed = [], asyncio.Event()
+        @asynccontextmanager
+        async def observed_scope(name, timeout):
+            if name == 'Chat heartbeat lease':
+                leases.append((now[0], timeout))
+                armed.set()
+            async with original(name, timeout) as budget:
+                yield budget
+        monkeypatch.setattr(chat_lifecycle, 'report_timeout', observed_scope)
+        async def lease_armed_at(moment):
+            while True:
+                delays = [delay for at, delay in leases if at == moment]
+                if delays:
+                    return delays[0]
+                armed.clear()
+                await asyncio.wait_for(armed.wait(), EVENTUAL)
         entered, drained = asyncio.Event(), asyncio.Event()
-        context = OperationContext('request', time.monotonic() + 3)
+        context = OperationContext('request', time.monotonic() + 300)
         deadline = context.deadline
         async def invoke(context):
             entered.set()
@@ -146,11 +171,15 @@ def test_heartbeat_renews_only_lease_and_expiry_drains_operation():
                 drained.set()
         turn = engine.start('owner', 'session', invoke, context=context)
         await entered.wait()
-        await asyncio.sleep(.025)
+        assert await lease_armed_at(0.0) == engine.expiry
+        now[0] = .025
         assert engine.heartbeat('owner', 'session') == 'running'
-        await asyncio.sleep(.025)
-        assert not turn.done.is_set()
+        assert await lease_armed_at(.025) == engine.expiry
+        now[0] = .05
+        assert 0 < await lease_armed_at(.05) < engine.expiry
+        assert not turn.done.is_set() and turn.state == 'running'
         assert context.deadline == deadline
+        now[0] = .025 + 2 * engine.expiry
         await asyncio.wait_for(turn.done.wait(), EVENTUAL)
         assert turn.state == 'cancelled' and drained.is_set()
         assert not context.retained_tasks
