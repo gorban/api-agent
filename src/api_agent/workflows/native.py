@@ -108,6 +108,7 @@ class TypedDefinition:
     declaration_entry: Path | None = None
     prompts: tuple = ()
     prompt_slots: tuple = ()
+    functions: tuple = ()
 
     def verify_sources(self):
         for path, admitted in self.contents.items():
@@ -126,6 +127,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     from api_agent.config.source_reads import resolve_path
     from .definition import _declaration_parts, _inline_selection, _sections, _table as _shared_table, _tool_operations
     from .document_format import validate_presentation_location
+    from .layout import validate_function_rows
     entry = resolve_path(entry)
     roots = {'base': resolve_path(base_root), 'pack': resolve_path(pack_root)}
     captured_sizes = {}
@@ -272,6 +274,29 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     inline_references = {}
     component_edges = {}
     prompts = []
+    functions = []
+    def capture_functions(declaration, identifier, binding, body):
+        # Same Functions columns, schema links and checks as the binding grammar.
+        rows = _shared_table(declaration, body, ('ID', 'Registry', 'Input', 'Output'))
+        if len(rows) != 1 or rows[0]['ID'] != identifier or rows[0]['Registry'] != binding['Registry']:
+            raise LayoutError(f'{declaration}:1: Native registry and Functions must match')
+        row = dict(rows[0], Kind=binding['Kind'], _owner=declaration, _owner_id=identifier)
+        if 'Output mode' in row and (binding['Kind'] == 'deterministic') != (row['Output mode'] == '-'):
+            raise LayoutError(f'{declaration}:{row["line"]}: response declaration must match native node kind')
+        for column in ('Input', 'Output', 'Response schema'):
+            if row.get(column, '-') == '-':
+                continue
+            target = linked(dict(row, Source=row[column]))
+            if target not in contents:
+                contents[target] = read(target)
+            if kinds.get(target, 'schema') != 'schema':
+                raise LayoutError(f'{declaration}:{row["line"]}: schema has conflicting resource kind')
+            kinds[target] = 'schema'
+            row[column] = target
+        def reject(message, line):
+            raise LayoutError(f'{declaration}:{line}: {message}')
+        validate_function_rows([row], contents, reject)
+        functions.append(row)
     def capture_prompts(declaration, identifier, sections):
         inline = {}
         for name, body in sections.items():
@@ -392,12 +417,14 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                     component_edges[identifier] = (declaration, child['Edges'])
                 visit(declaration, child['Flow'], identifier, depth + 1)
             else:
-                if set(child) - {'Tools', 'Prompts'} - {key for key in child if key.startswith('Prompt: ')} != {'Native'}:
+                if set(child) - {'Tools', 'Prompts', 'Functions'} - {key for key in child if key.startswith('Prompt: ')} != {'Native'}:
                     raise LayoutError(f'{declaration}:1: node requires only Native')
                 capture_prompts(declaration, identifier, child)
                 binding = _shared_table(declaration, child['Native'], ('Registry', 'Kind', 'Source'))
                 if len(binding) != 1 or not _ID.fullmatch(binding[0]['Registry']) or binding[0]['Kind'] not in ('deterministic', 'llm'):
                     raise LayoutError(f'{declaration}:1: invalid native binding')
+                if 'Functions' in child:
+                    capture_functions(declaration, identifier, binding[0], child['Functions'])
                 nodes.append(dict(ID=identifier, Registry=binding[0]['Registry'], Kind=binding[0]['Kind'],
                                   Source=source(dict(binding[0], line=binding[0]['line'], _owner=declaration)),
                                   _owner_id=identifier, line=binding[0]['line']))
@@ -542,7 +569,8 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                                     tuple(_freeze(row) for row in nodes), tuple(_freeze(row) for row in edges),
                                     MappingProxyType(contents), definition_id, layout,
                                     MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages), application_binding,
-                                    prompts=tuple(_freeze(row) for row in prompts), prompt_slots=tuple(_freeze(row) for row in slots))
+                                    prompts=tuple(_freeze(row) for row in prompts), prompt_slots=tuple(_freeze(row) for row in slots),
+                                    functions=tuple(_freeze(row) for row in functions))
     _validated_timeouts(definition)
     return definition
 

@@ -92,6 +92,12 @@ class ViewerProjection:
     tool_bindings: tuple[ViewerToolBinding, ...] = ()
 
 
+def _reference_attributes(row, field):
+    """The string-valued declaration cells that annotate one linked table field."""
+    return {key: value for key, value in row.items()
+            if key not in ('line', '_owner', field) and isinstance(value, str)}
+
+
 def project_view(definition) -> ViewerProjection:
     """Use admitted bytes only; do not refresh, import, or execute the graph."""
     if definition is None or definition.selected_declarations is None:
@@ -202,6 +208,11 @@ def project_view(definition) -> ViewerProjection:
                           router=router, targets=','.join(row['To'] for row in routes))
         for row in definition.timeouts:
             add_reference('timeout', declaration_entry, row['Owner'], row['line'], row['Source'], key=row['Key'])
+        for row in getattr(definition, 'functions', ()):
+            for field in ('Input', 'Output', 'Response schema'):
+                if row.get(field, '-') != '-':
+                    add_reference('functions', row['_owner'], row['ID'], row['line'], row[field],
+                                  field=field, **_reference_attributes(row, field))
         for identifier, resource in definition.declared_resources.items():
             references.append(ViewerReference(resource.kind, logical(declaration_entry), identifier, 1,
                                               resource.logical_path, resource.sha256, ()))
@@ -215,8 +226,7 @@ def project_view(definition) -> ViewerProjection:
                     target = row.get(field)
                     if target is None or target == '-':
                         continue
-                    attrs = {key: value for key, value in row.items()
-                             if key not in ('line', '_owner', field) and isinstance(value, str)}
+                    attrs = _reference_attributes(row, field)
                     if name == 'Functions':
                         owner_id = row['ID']
                     elif name == 'Timeouts':
