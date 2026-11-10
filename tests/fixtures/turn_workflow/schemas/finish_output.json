@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string"
+    },
+    "saw_extra": {
+      "type": "string"
+    },
+    "saw_scratch": {
+      "type": "string"
+    },
+    "saw_hint": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "answer",
+    "saw_extra",
+    "saw_scratch",
+    "saw_hint"
+  ],
+  "additionalProperties": false
+}

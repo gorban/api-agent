@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "previous": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "message",
+    "previous"
+  ],
+  "additionalProperties": false
+}

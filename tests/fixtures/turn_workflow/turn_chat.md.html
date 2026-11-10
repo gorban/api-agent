@@ -1,0 +1,64 @@
+# Workflow
+
+## Graph ID
+
+| ID |
+| --- |
+| turn_chat |
+
+## Flow
+
+1.  [node intake](intake.md.html)
+2.  [node path_a](path_a.md.html)
+3.  [node path_b](path_b.md.html)
+4.  [component refine](refine.md.html)
+5.  [node finish](finish.md.html)
+
+## Components
+
+| ID | Max passes | Guard |
+| --- | --- | --- |
+| refine | 2 | check |
+
+## Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| intake | intake | [intake_input](schemas/intake_input.json) | [intake_output](schemas/intake_output.json) |
+| path_a | path_a | [path_a_input](schemas/path_a_input.json) | [path_a_output](schemas/path_a_output.json) |
+| path_b | path_b | [path_b_input](schemas/path_b_input.json) | [path_b_output](schemas/path_b_output.json) |
+| draft | draft | [draft_input](schemas/draft_input.json) | [draft_output](schemas/draft_output.json) |
+| check | check | [check_input](schemas/check_input.json) | [check_output](schemas/check_output.json) |
+| finish | finish | [finish_input](schemas/finish_input.json) | [finish_output](schemas/finish_output.json) |
+
+## Bindings
+
+| Node | Input | From | Field | Default |
+| --- | --- | --- | --- | --- |
+| intake | message | START | message | - |
+| intake | previous | SESSION | last_extra | "" |
+| path_a | topic | TURN | topic | - |
+| path_b | topic | TURN | topic | - |
+| draft | attempt | ATTEMPT | value | - |
+| draft | topic | TURN | topic | - |
+| draft | hint | TURN | hint | "none" |
+| draft | scratch | TURN | scratch | "none" |
+| check | attempt | ATTEMPT | value | - |
+| finish | topic | TURN | topic | - |
+| finish | extra | TURN | extra | "none" |
+| finish | scratch | TURN | scratch | "none" |
+| finish | hint | TURN | hint | "none" |
+
+## Edges
+
+| From | To | When |
+| --- | --- | --- |
+| intake | path_b | intake["route"] == "b" |
+| intake | path_a | otherwise |
+| path_a | refine | always |
+
+## Session
+
+| Field | Source | Merge |
+| --- | --- | --- |
+| last_extra | finish.saw_extra | replace |

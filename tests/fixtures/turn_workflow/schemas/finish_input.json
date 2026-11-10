@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "topic": {
+      "type": "string"
+    },
+    "extra": {
+      "type": "string"
+    },
+    "scratch": {
+      "type": "string"
+    },
+    "hint": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "topic",
+    "extra",
+    "scratch",
+    "hint"
+  ],
+  "additionalProperties": false
+}

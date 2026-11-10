@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "attempt": {
+      "type": "integer"
+    },
+    "topic": {
+      "type": "string"
+    },
+    "hint": {
+      "type": "string"
+    },
+    "scratch": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "attempt",
+    "topic",
+    "hint",
+    "scratch"
+  ],
+  "additionalProperties": false
+}

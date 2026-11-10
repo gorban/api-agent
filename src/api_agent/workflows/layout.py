@@ -111,7 +111,7 @@ def _validate(layout, resource_bytes=None):
         bound[target].add(field)
         if not row['Field'] or (source in ('ATTEMPT', 'MAX_PASSES') and row['Field'] != 'value'):
             layout.error('invalid binding source field', row['line'])
-        if source not in ('START', 'PREVIOUS', 'FEEDBACK', 'ATTEMPT', 'MAX_PASSES', 'SESSION'):
+        if source not in ('START', 'PREVIOUS', 'FEEDBACK', 'ATTEMPT', 'MAX_PASSES', 'SESSION', 'TURN'):
             if source not in functions or ordered.index(source) >= ordered.index(target):
                 layout.error('binding source must be an earlier node', row['line'])
             if row['Field'] != '*' and row['Field'] not in functions[source]['Output schema'].get('properties', {}):

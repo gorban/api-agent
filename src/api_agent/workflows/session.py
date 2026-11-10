@@ -1,4 +1,4 @@
-"""Declared cross-turn session fields for the binding grammar.
+"""Declared session fields and per-turn value bindings for the binding grammar.
 
 Parser-free, so source admission and compiled-plan loading share one contract.
 """
@@ -27,10 +27,10 @@ def _overlap(left, right):
 
 
 def problem(tables):
-    """Return ``(message, line)`` for the first invalid Session row or SESSION binding.
+    """Return ``(message, line)`` for the first invalid Session row or SESSION/TURN binding.
 
-    ``None`` means the Session table and every SESSION binding are consistent with
-    the declared node schemas. Types are compared only where both sides declare one.
+    ``None`` means the Session table and every SESSION and TURN binding are consistent
+    with the declared node schemas. Types are compared only where both sides declare one.
     """
     rows = tables.get('Session')
     functions = {row['ID']: row for row in tables['Functions']}
@@ -63,13 +63,24 @@ def problem(tables):
             value = {'array'}
         declared.setdefault(field, []).append(value)
     for row in tables['Bindings']:
-        if row['From'] != 'SESSION':
+        if row['From'] not in ('SESSION', 'TURN'):
             continue
-        if row['Field'] not in declared:
+        turn = row['From'] == 'TURN'
+        field = row['Field']
+        if turn:
+            if field == '*':
+                return 'TURN requires a named field', row['line']
+            produced = [_types(function['Output schema']['properties'][field])
+                        for function in functions.values() if field in function['Output schema'].get('properties', {})]
+            if not produced:
+                return 'no node declares turn field', row['line']
+        elif field not in declared:
             return 'undeclared session field', row['line']
+        else:
+            produced = declared[field]
         target = _types(functions[row['Node']]['Input schema']['properties'][row['Input']])
-        if not all(_overlap(value, target) for value in declared[row['Field']]):
-            return 'session value type does not match the input schema', row['line']
+        if not all(_overlap(value, target) for value in produced):
+            return f'{"turn" if turn else "session"} value type does not match the input schema', row['line']
     return None
 
 
