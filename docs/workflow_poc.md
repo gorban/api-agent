@@ -397,8 +397,15 @@ value type can satisfy the input schema. `SESSION` does not take `*`.
 
 `Workflow.arun(update, thread_id=...)` requires a non-empty string `thread_id`
 when a workflow declares `## Session`. The session is loaded from the checkpointer
-at turn start and written back only after the whole turn succeeds, so a failed or
-cancelled turn leaves it unchanged. Only the accepted pass of a guarded component
+at turn start and written back only when the turn's final outcome is passed. A turn
+that raises, times out, is cancelled, or ends with an explicit `partial`, `failure`,
+`cancelled` or `unknown` execution outcome leaves it unchanged. The write happens
+inside the graph scope, under the graph timeout and before the journal is finalized
+and published, so a slow or failing store fails the turn and is journaled as such.
+If finalizing or publishing the journal then fails, the start-of-turn session is
+written back before the error propagates, while the thread is still held. That
+restore is a second write rather than a transaction: if it also fails, the stored
+session is the failed turn's. Only the accepted pass of a guarded component
 contributes: outputs from rejected passes are discarded before the turn ends.
 Pass `checkpointer=` to `Workflow` (or a compiled definition's `workflow()`) to
 persist beyond the process; the default is in-memory. A workflow without
