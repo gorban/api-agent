@@ -74,9 +74,9 @@ default = 1.0
 [fields.NO_DEFAULT]
 type = "int"
 
-[fields.ZERO]
+[fields.NEGATIVE]
 type = "int"
-default = 0
+default = -1
 
 [fields.NODE_TIMEOUT]
 type = "float"
@@ -209,6 +209,19 @@ def test_root_limit_becomes_a_predicate_constant_resolved_from_configuration(tmp
     assert configured['plan_retries'] == 6
 
 
+
+def test_a_zero_limit_disables_the_retry_it_bounds(tmp_path):
+    entry = build(tmp_path, [('node', 'loop'), ('node', 'plan_request'), ('node', 'finish')],
+                  '''| loop | loop | .next_step == "plan_request" and .plan_retries <= PLAN_RETRIES |
+| loop | plan_request | otherwise |
+| plan_request | finish | always |
+| finish | END | always |''',
+                  LIMIT_TABLE + '| PLAN_RETRIES | [config](limits.toml) |\n')
+    result, workflow = run(tmp_path, entry, {'timeout_retries': 1}, config={'PLAN_RETRIES': 0})
+
+    assert workflow.limit_values == {'PLAN_RETRIES': 0}
+    assert result['plan_retries'] == 1
+
 def test_component_declares_limits_and_prompt_conditions_use_them(tmp_path):
     component = '''## Flow
 
@@ -242,7 +255,7 @@ def test_component_declares_limits_and_prompt_conditions_use_them(tmp_path):
     ('| MISSING | [config](limits.toml) |', 'limit key must name an integer configuration field'),
     ('| RATIO | [config](limits.toml) |', 'limit key must name an integer configuration field'),
     ('| NO_DEFAULT | [config](limits.toml) |', 'limit requires a declared integer default'),
-    ('| ZERO | [config](limits.toml) |', 'limit must be an integer from 1 to 99'),
+    ('| NEGATIVE | [config](limits.toml) |', 'limit must be an integer from 0 to 99'),
 ])
 def test_limit_admission_rejects_invalid_rows(tmp_path, table, message):
     entry = build(tmp_path, [('node', 'finish')], '| finish | END | always |', LIMIT_TABLE + table + '\n')
@@ -270,7 +283,7 @@ def test_limit_key_must_be_unique_across_root_and_component(tmp_path):
         admit(tmp_path, entry)
 
 
-@pytest.mark.parametrize('config', [{'PLAN_RETRIES': 0}, {'PLAN_RETRIES': 100}, {'PLAN_RETRIES': 1.5},
+@pytest.mark.parametrize('config', [{'PLAN_RETRIES': -1}, {'PLAN_RETRIES': 100}, {'PLAN_RETRIES': 1.5},
                                     {'PLAN_RETRIES': True}])
 def test_configured_limit_value_is_validated_before_native_effects(tmp_path, config):
     entry = build(tmp_path, [('node', 'finish')], '| finish | END | .plan_retries <= PLAN_RETRIES |\n'
@@ -279,7 +292,7 @@ def test_configured_limit_value_is_validated_before_native_effects(tmp_path, con
     write(tmp_path, 'native.py', f'from pathlib import Path\nPath({str(marker)!r}).write_text("x")\n' + NATIVE)
     definition = admit(tmp_path, entry)
 
-    with pytest.raises(LayoutError, match='limit must be an integer from 1 to 99'):
+    with pytest.raises(LayoutError, match='limit must be an integer from 0 to 99'):
         load_native_bindings(definition, config=config)
     assert not marker.exists()
 

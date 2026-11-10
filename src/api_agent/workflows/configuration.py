@@ -87,7 +87,7 @@ def resolve_state_limits(definition, config=None):
         if type(field.default) is not int:
             raise LayoutError(f'{where}: limit requires a declared integer default')
         value = config.get(row['Key'], field.default)
-        if type(value) is not int or not 1 <= value <= MAX_COMPONENT_PASSES:
-            raise LayoutError(f'{where}: limit must be an integer from 1 to {MAX_COMPONENT_PASSES}')
+        if type(value) is not int or not 0 <= value <= MAX_COMPONENT_PASSES:
+            raise LayoutError(f'{where}: limit must be an integer from 0 to {MAX_COMPONENT_PASSES}')
         values[row['Key']] = value
     return MappingProxyType(values)
