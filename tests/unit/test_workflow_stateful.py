@@ -1276,6 +1276,19 @@ def test_typed_condition_sets_are_validated_at_admission(fixture_graph, group_ed
         load_definition(entry, base_root=root, pack_root=root)
 
 
+def test_typed_conditions_may_share_a_target_with_distinct_reasons(fixture_graph):
+    root, entry = fixture_graph
+    _conditional(root, entry, _WHEN_GROUP.replace(
+        '| intake | END | otherwise |', '| intake | END | .visits == 3 |\n| intake | intake | otherwise |').replace(
+        '| intake | finish | .visits == 1 |', '| intake | finish | .visits == 1 |\n| intake | END | .visits == 2 |'))
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    assert [row['When'] for row in definition.edges if row['From'] == 'intake' and row['To'] == 'END'] == [
+        '.visits == 2', '.visits == 3']
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='shared'))
+    assert (result['visits'], result['pending']) == (1, True)
+
+
 def test_typed_conditions_must_select_exactly_one_route(fixture_graph):
     from api_agent.workflows.execution import WorkflowError
     root, entry = fixture_graph

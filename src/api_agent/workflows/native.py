@@ -399,7 +399,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                       or ('always' in whens and len(whens) > 1)
                       or ('always' not in whens and whens.count('otherwise') != 1)):
             raise LayoutError(f'{entry}:{outgoing[-1]["line"]}: conditional edges require one otherwise fallback; always must stand alone')
-        if len({row['To'] for row in outgoing}) != len(outgoing):
+        if not whens and len({row['To'] for row in outgoing}) != len(outgoing):
             raise LayoutError(f'{entry}:1: duplicate or mixed route source')
     for name in parents:
         outgoing = [row for row in edges if row['From'] == name]
