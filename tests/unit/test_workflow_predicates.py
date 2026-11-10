@@ -475,3 +475,27 @@ def test_compiled_format_rejection_exhausts_declared_passes():
     assert [request['attempt'] for request in requests] == [1, 2]
     assert [event['accepted'] for event in events if event['event'] == 'guard'] == [False, False]
     assert next(event for event in events if event['event'] == 'scope_end' and event['owner'] == 'first')['outcome'] == 'failed'
+
+
+def test_condition_lines_split_only_top_level_alternatives():
+    from api_agent.workflows.predicates import condition_lines
+    assert condition_lines('.step == "a" or .step == "b or c"') == ['.step == "a"', 'or .step == "b or c"']
+    assert condition_lines('(.a or .b) and .c') == ['(.a or .b) and .c']
+    assert condition_lines('otherwise') == ['otherwise']
+    assert condition_lines('(.a or .b') == ['(.a or .b']
+    assert condition_lines('(.a or .b') == ['(.a or .b']
+
+
+def test_diagram_breaks_long_conditions_at_alternatives():
+    from types import SimpleNamespace
+    from api_agent.workflows.viewer_render import _projection_source
+    document = SimpleNamespace(logical_path='base/flow.md.html', stable_id='graph')
+    child = SimpleNamespace(logical_path='base/task.md.html', stable_id='task')
+    step = SimpleNamespace(id='task', kind='node', parent=None, owner_path=document.logical_path,
+                           declaration_path=child.logical_path)
+    edges = (SimpleNamespace(owner='GRAPH', source='START', target='task', condition='always'),
+             SimpleNamespace(owner='GRAPH', source='task', target='END', condition='.x == "a" or .x == "b"'))
+    projection = SimpleNamespace(entry_path=document.logical_path, documents=(document, child),
+                                 steps=(step,), edges=edges, references=(), resources=())
+    source, _ = _projection_source(projection, document)
+    assert b' : &#46;x &#61;&#61; &#34;a&#34;\\nor &#46;x &#61;&#61; &#34;b&#34;\n' in source

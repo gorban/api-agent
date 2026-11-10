@@ -510,8 +510,8 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
         source, source_boundary = endpoint(edge.source, edge.owner)
         target, target_boundary = endpoint(edge.target, edge.owner)
         boundary = edge.owner != owner or source_boundary or target_boundary
-        from .predicates import edge_label
-        label = _label(edge_label(edge.condition or 'route'))
+        from .predicates import condition_lines, edge_label
+        label = '\\n'.join(_label(line) for line in condition_lines(edge_label(edge.condition or 'route')))
         if (active_controller is not None and active_controller.accepted
                 and edge.owner == owner and edge.source == active_controller.guard
                 and edge.target == 'END'):
