@@ -6,11 +6,12 @@ from contextlib import asynccontextmanager, contextmanager
 from contextlib import nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import inspect
 import json
 import logging
 import os
+import re
 import time
 from typing import Annotated, TypedDict, get_args, get_origin, get_type_hints
 from typing_extensions import is_typeddict
@@ -31,6 +32,9 @@ from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
 from .predicates import (component_controller, component_decision, native_condition_id, parse_predicate,
                          predicate_fields, state_predicate_fields)
+
+
+_PROMPT_SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
 
 
 class WorkflowError(RuntimeError):
@@ -207,6 +211,7 @@ class NodeContext:
     _effects: list = field(default_factory=list, repr=False, compare=False)
     request: object = None
     resources: object = None
+    prompt_texts: object = field(default_factory=lambda: MappingProxyType({}))
     _tools: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -420,7 +425,7 @@ class Workflow:
             key: annotation_schema(hint) for key, hint in hints.items()}}
         fields = state_predicate_fields(self.capture_schema['properties'])
         self._state_predicates = {}
-        for row in definition.edges:
+        for row in (*definition.edges, *getattr(definition, 'prompts', ())):
             when = row.get('When', 'always')
             if when in ('always', 'otherwise') or when in self._state_predicates:
                 continue
@@ -851,6 +856,9 @@ class Workflow:
             services = self._turn_state.get()['llm_history'].services(self._services.get(), row['ID'])
             context = NodeContext(row['ID'], (), (), services, request=self._request.get(),
                                   resources=self.definition.declared_resources, visit_id=budget.id)
+            texts = self._node_prompts(row['ID'], state, context)
+            if texts:
+                context = replace(context, prompts=tuple(texts.values()), prompt_texts=MappingProxyType(texts))
             from .attribution import bind_workflow_visit
             journal = self._journal.get()
             captures = (self._services.get().get('plain_io_contracts') or {}).get(row['ID'], {})
@@ -993,6 +1001,23 @@ class Workflow:
             return target
         return route
 
+
+    def _node_prompts(self, node, state, context):
+        """Selected declared prompts for one typed node, with every slot filled."""
+        values, texts, filled = {'state': dict(state)}, {}, {}
+        slots = {row['Slot']: row for row in getattr(self.definition, 'prompt_slots', ())}
+        def fill(match):
+            name = match.group(1)
+            if name not in filled:
+                value = self._binding(slots[name]['Source'], slots[name]['Registry'])(state, context)
+                if type(value) is not str:
+                    raise WorkflowError(f'Prompt slot {name} must return text')
+                filled[name] = value
+            return filled[name]
+        for row in getattr(self.definition, 'prompts', ()):
+            if row['Node'] == node and (row['When'] == 'always' or self._state_predicates[row['When']].evaluate(values)):
+                texts[row['Prompt']] = _PROMPT_SLOT.sub(fill, row['Text'])
+        return texts
 
     def _conditional_route(self, source, edges, parent):
         async def route(state):

@@ -1289,6 +1289,120 @@ def test_typed_conditions_may_share_a_target_with_distinct_reasons(fixture_graph
     assert (result['visits'], result['pending']) == (1, True)
 
 
+_PROMPTED_INTAKE = '''# Node: intake
+
+## Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| intake | deterministic | [Python](native.py) |
+
+## Prompts
+
+| Node | File | When |
+| --- | --- | --- |
+| intake | @intake_prompt | always |
+| intake | [prompt](prompts/extra.md) | .pending |
+
+## Prompt: intake_prompt
+
+```text
+Hello {{greeting}} and {{greeting}}.
+```
+'''
+_SLOTS = '''
+## Prompt Slots
+
+| Slot | Registry | Source |
+| --- | --- | --- |
+| greeting | greeting | [Python](native.py) |
+'''
+
+
+def _prompted(root, entry, intake=_PROMPTED_INTAKE, slots=_SLOTS):
+    native = root / 'native.py'
+    native.write_text(native.read_text().replace(
+        "def intake(state, context):\n",
+        "SEEN = []\nCALLS = []\n\ndef greeting(state, context):\n"
+        "    CALLS.append(context.node_id)\n    return 'visitor' + str(state['visits'])\n\n"
+        "def intake(state, context):\n    SEEN.append((context.prompts, dict(context.prompt_texts)))\n"))
+    _write(root, 'prompts/extra.md', 'Also {{greeting}}.\n')
+    _write(root, 'intake.md.html', intake)
+    entry.write_text(entry.read_text() + slots)
+
+
+def test_typed_nodes_receive_selected_prompts_with_declared_slots(fixture_graph):
+    root, entry = fixture_graph
+    _prompted(root, entry)
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    catalog = load_native_bindings(definition)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages})
+    asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='prompted'))
+    asyncio.run(workflow.arun({'messages': []}, thread_id='prompted'))
+    namespace = catalog.namespaces[(root / 'native.py').resolve()]
+    assert namespace['SEEN'] == [
+        (('Hello visitor0 and visitor0.\n',), {'intake_prompt': 'Hello visitor0 and visitor0.\n'}),
+        (('Hello visitor1 and visitor1.\n', 'Also visitor1.\n'),
+         {'intake_prompt': 'Hello visitor1 and visitor1.\n', 'extra': 'Also visitor1.\n'}),
+    ]
+    assert namespace['CALLS'] == ['intake', 'intake']
+    assert any(item.kind == 'prompt' and item.logical_path.endswith('prompts/extra.md') for item in definition.resources)
+    from api_agent.workflows.artifact_compile import ArtifactCompileError, compile_definition
+    with pytest.raises(ArtifactCompileError, match='typed-node prompts'):
+        compile_definition(definition, [])
+
+
+@pytest.mark.parametrize(('change', 'message'), [
+    (lambda intake, slots: (intake, ''), 'undeclared slot'),
+    (lambda intake, slots: (intake.replace('| intake | @intake_prompt |', '| intake | @missing |'), slots),
+     'unknown inline prompt'),
+    (lambda intake, slots: (intake.replace('| intake | @intake_prompt | always |\n', ''), slots),
+     'unreferenced inline prompt'),
+    (lambda intake, slots: (intake.replace('```text', '```'), slots), 'invalid inline prompt'),
+    (lambda intake, slots: (intake.replace('(prompts/extra.md)', '(native.py)'), slots), 'Markdown or text'),
+    (lambda intake, slots: (intake.replace('| intake | @intake_prompt |', '| finish | @intake_prompt |'), slots),
+     'invalid prompt declaration'),
+    (lambda intake, slots: (intake.replace('| .pending |', '| otherwise |'), slots), 'invalid prompt declaration'),
+    (lambda intake, slots: (intake.replace('| .pending |', '| .pending === |'), slots), 'invalid condition syntax'),
+    (lambda intake, slots: (intake.replace('(prompts/extra.md) | .pending', '(prompts/extra.md) | .pending |\n| intake | [again](prompts/extra.md) | always'), slots),
+     'duplicate node prompt'),
+    (lambda intake, slots: (intake, slots + '| greeting | greeting | [Python](native.py) |\n'), 'duplicate prompt slot'),
+])
+def test_typed_prompt_declarations_are_validated_at_admission(fixture_graph, change, message):
+    root, entry = fixture_graph
+    intake, slots = change(_PROMPTED_INTAKE, _SLOTS)
+    _prompted(root, entry, intake, slots)
+    with pytest.raises(LayoutError, match=message):
+        load_definition(entry, base_root=root, pack_root=root)
+
+
+def test_typed_prompt_file_keeps_one_resource_kind(fixture_graph):
+    root, entry = fixture_graph
+    _prompted(root, entry)
+    entry.write_text(entry.read_text().replace('\n## Prompt Slots', '''
+## Resources
+
+| ID | Kind | Source |
+| --- | --- | --- |
+| extra | data | [text](prompts/extra.md) |
+
+## Prompt Slots'''))
+    with pytest.raises(LayoutError, match='conflicting resource kind'):
+        load_definition(entry, base_root=root, pack_root=root)
+
+
+def test_typed_prompt_slots_must_return_text(fixture_graph):
+    from api_agent.workflows.execution import WorkflowError
+    root, entry = fixture_graph
+    _prompted(root, entry)
+    native = root / 'native.py'
+    native.write_text(native.read_text().replace("return 'visitor' + str(state['visits'])", "return state['visits']"))
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+    with pytest.raises(WorkflowError, match='greeting must return text'):
+        asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='numeric'))
+
+
 def test_typed_conditions_must_select_exactly_one_route(fixture_graph):
     from api_agent.workflows.execution import WorkflowError
     root, entry = fixture_graph

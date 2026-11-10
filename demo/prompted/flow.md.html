@@ -1,0 +1,85 @@
+<!-- -*- mode: markdown -*- -->
+<!--
+
+
+
+
+
+  Open this file in a browser to view the workflow.
+  For managed viewing, follow Getting started in README.md, then run the launcher.
+./launch.sh --view-flow "demo/prompted/flow.md.html"
+
+
+
+
+
+-->
+
+
+<meta charset="utf-8">
+<meta name="workflow-view" content="v1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-hashes' 'sha256-oh7Gx0FkcA1mNom2ETU41Zi2LVeZci7ocogSJroEPis=' 'sha256-tG8slQ0asE6MlAE2csEakfk6pO1QfspgSsr25hj415E='; img-src 'self'; frame-src 'self'; connect-src 'none'">
+
+[workflow-hidden-text]: <html style="font-size:0">
+[workflow-styles]: <link rel="stylesheet" href="../../.private_resources/viewer/viewer.css">
+[workflow-markdown]: <script defer src="../../.private_resources/viewer/marked.js"> "</script>"
+[workflow-headings]: <script defer src="../../.private_resources/viewer/heading-id.js"> "</script>"
+[workflow-sanitize]: <script defer src="../../.private_resources/viewer/dompurify.js"> "</script>"
+[workflow-viewer]: <script defer src="../../.private_resources/viewer/viewer.js"> "</script>"
+[workflow-modal-styles]: <link rel="stylesheet" href="../../.private_resources/viewer/flow-modal.css">
+[workflow-modal-script]: <script defer src="../../.private_resources/viewer/flow-modal.js"> "</script>"
+
+[workflow-help]: <section id="workflow-fallback" style="font:16px/1.6 system-ui,sans-serif"> "
+    <h2>Viewing this file</h2><p>Follow Getting started in README.md, then run from the repository root:</p>
+    <pre>./launch.sh --view-flow &quot;demo/prompted/flow.md.html&quot;</pre></section>"
+[workflow-source]: <plaintext id="workflow-source" hidden>
+
+# Workflow
+
+<!-- workflow-generated-diagram:start -->
+[![Workflow diagram](../../.private_resources/diagrams/demo/prompted/flow.svg)](../../.private_resources/diagrams/demo/prompted/flow.svg)
+
+<details open>
+<summary>Diagram links</summary>
+
+[Open standalone diagram](../../.private_resources/diagrams/demo/prompted/flow.svg)
+
+- [assistant](workflows/assistant.md.html)
+
+</details>
+<!-- workflow-generated-diagram:end -->
+
+## Graph ID
+
+| ID |
+| --- |
+| prompted_demo |
+
+## State
+
+| Registry | Source |
+| --- | --- |
+| PromptedState | [Python](native.py) |
+
+## Flow
+
+1.  [component assistant](workflows/assistant.md.html)
+
+## Edges
+
+| From | To | When |
+| --- | --- | --- |
+| assistant | END | always |
+
+## Resources
+
+| ID | Kind | Source |
+| --- | --- | --- |
+| profile | configuration | [TOML](<resource_pack>/profile.toml) |
+
+## Prompt Slots
+
+| Slot | Registry | Source |
+| --- | --- | --- |
+| assistant_descriptor | assistant_descriptor | [Python](native.py) |
+| domain_rules | domain_rules | [Python](native.py) |
