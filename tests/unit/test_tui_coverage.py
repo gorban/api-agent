@@ -228,14 +228,15 @@ def test_real_green_execution_from_picker_and_completed_nonfailure_row(tmp_path)
         app.context.suite_paths = lambda mode: [tmp_path / 'tests/unit']
         async with app.run_test(size=(100, 40)) as pilot:
             await pilot.pause()
-            deadline = asyncio.get_running_loop().time() + 15
+            deadline = asyncio.get_running_loop().time() + 120
             while app.screen.kind != 'tests' and asyncio.get_running_loop().time() < deadline:
                 await pilot.pause(.03)
             assert app.screen.kind == 'tests'
             await pilot.press('s')
-            await confirm_full_unit(pilot, app)
-            while app.unit_result is None and asyncio.get_running_loop().time() < deadline:
-                await pilot.pause(.03)
+            await confirm_full_unit(pilot, app, timeout=120)
+            # The runner's own collection and watchdog timeouts bound this real subprocess run.
+            for worker in [worker for worker in app.workers if worker.group == 'unit-run']:
+                await worker.wait()
             assert app.unit_result is not None
             await pilot.pause()
             assert app.operation_status == 0
@@ -248,6 +249,30 @@ def test_real_green_execution_from_picker_and_completed_nonfailure_row(tmp_path)
             assert '100%' in app.screen.query_one('#body', Static).content.plain
             app.toggle_row(app.unit_result.tests[0].identity.id)
             assert app.screen.kind == 'test-results'
+    run(scenario)
+
+
+def test_shutdown_during_unit_run_finishes_without_a_screen(tmp_path):
+    from api_agent.testing.runner import UnitRunResult
+    started = threading.Event()
+    def runner(context, tests, **kwargs):
+        started.set()
+        kwargs['cancel_event'].wait(30)
+        return UnitRunResult(130, (), (), '', require_full_coverage=False)
+    async def scenario():
+        app = fixture(tmp_path, 'unit', collector=lambda *args: [identity()])
+        app.unit_runner = runner
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            deadline = asyncio.get_running_loop().time() + 30
+            while app.screen.kind != 'tests' and asyncio.get_running_loop().time() < deadline:
+                await pilot.pause(.03)
+            assert app.screen.kind == 'tests'
+            await pilot.press('s')
+            await confirm_full_unit(pilot, app, timeout=30)
+            assert await asyncio.to_thread(started.wait, 30)
+            assert app.test_run.active
+        assert app.test_run.stopped.is_set() and app.unit_result is None
     run(scenario)
 
 

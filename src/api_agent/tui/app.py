@@ -1858,7 +1858,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if (self.unit_result is not None and self.screen_stack and isinstance(self.screen, WorkbenchScreen)
                 and self.screen.kind == 'test-results'):
             self.show_unit_results()
-        self.refresh_bindings()
+        if self.screen_stack:
+            self.refresh_bindings()
 
     async def _run_integrations(self):
         self.finished_test_results.clear()
