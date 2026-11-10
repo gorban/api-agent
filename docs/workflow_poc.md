@@ -283,6 +283,54 @@ final pass; persistent truth failure exhausts the component. These tests publish
 structural evidence. The permanent contrived model fixture retains strict guards
 on every pass. Unit replay is `tests/unit/test_controlled_workflow_preferences.py`.
 
+## Binding sources and session state
+
+A binding grammar `## Bindings` row, `| Node | Input | From | Field | Default |`,
+names where one node input comes from. `From` is `START` (the turn's input
+object), an earlier node ID, or a reserved source: `PREVIOUS` (the node's output
+from the last accepted pass), `FEEDBACK` (the guard's feedback), `ATTEMPT` and
+`MAX_PASSES` (`Field` is `value`), or `SESSION`. A `Default` other than `-`
+supplies a JSON value when the source has no such field; `-` makes it required.
+
+A root `## Session` table declares fields that survive across user turns:
+
+```markdown
+## Session
+
+| Field | Source | Merge |
+| --- | --- | --- |
+| history | reply.messages | append |
+| topic | reply.topic | replace |
+```
+
+- `Field` is a session field name (a Python identifier).
+- `Source` is `node.output_field`. The node must exist and its `Output` schema
+  must declare that property. Several rows may name the same field; rows for one
+  field must use the same `Merge`.
+- `Merge` is `replace` or `append`. `replace` keeps the value of the last source
+  to run in flow order. `append` requires an array and extends the stored array;
+  every source that produced output appends, in flow order. A source whose node
+  did not run, or whose output omits an optional property, writes nothing.
+
+A binding `| reply | history | SESSION | history | [] |` reads the field as it
+stood at the start of the turn; values written earlier in the same turn come from
+the writing node's ordinary binding. A missing field uses `Default`, and a `-`
+default fails the node with a missing-session-field error. Loading checks that the
+field is declared and, where both sides declare a JSON `type`, that the session
+value type can satisfy the input schema. `SESSION` does not take `*`.
+
+`Workflow.arun(update, thread_id=...)` requires a non-empty string `thread_id`
+when a workflow declares `## Session`. The session is loaded from the checkpointer
+at turn start and written back only after the whole turn succeeds, so a failed or
+cancelled turn leaves it unchanged. Only the accepted pass of a guarded component
+contributes: outputs from rejected passes are discarded before the turn ends.
+Pass `checkpointer=` to `Workflow` (or a compiled definition's `workflow()`) to
+persist beyond the process; the default is in-memory. A workflow without
+`## Session` still rejects `thread_id` and `checkpointer`. Sessions are keyed by
+`thread_id` alone, so use a distinct checkpointer per workflow. The table is part
+of the declaration identity and compiled plans, and diagrams mark each node that
+reads or writes a session field.
+
 ## Typed execution timeouts
 
 The permanent qualification layout links graph, component and node timeouts to
