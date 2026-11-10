@@ -369,8 +369,9 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
     }
     return null;
   };
-  const originalReason = verifyOriginal();
-  if (originalReason) throw originalReason;
+  // The first inspection invokes verifyOriginal before any pixels are taken.
+  // Avoid repeating the full paint audit here; the baseline and both the
+  // pre- and post-screenshot inspections remain authoritative.
   // Keep clipped intersections keyed by original nodes. Capture planning must
   // never add DOM whose presence could activate authored selectors.
   for (const node of contentRoots) masks.set(node, maskBox(node));
