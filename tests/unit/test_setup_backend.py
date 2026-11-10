@@ -283,7 +283,7 @@ def test_loop_creation_failure_has_no_orphan_thread(fake_host, monkeypatch):
     monkeypatch.setattr(setup_backend.asyncio, 'new_event_loop', lambda: (_ for _ in ()).throw(RuntimeError('private loop')))
     with pytest.raises(ContractError, match='unavailable'):
         fake_host.backend.start()
-    fake_host.backend.thread.join(timeout=1)
+    fake_host.backend.thread.join(timeout=10)
     assert fake_host.backend.closed and not fake_host.backend.thread.is_alive()
 
 

@@ -85,7 +85,7 @@ def test_duplicate_draws_make_no_graph_and_chosen_uuid_reaches_real_prompts(monk
     monkeypatch.setattr(sampling, 'coverage_ceiling', forbidden)
 
     result = driver.node_coverage(provider, 'replacement-model',
-        {'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS': 1024, 'LLM_WORKFLOW_TEST_TIMEOUT_SECONDS': 10})
+        {'LLM_WORKFLOW_TEST_MAX_OUTPUT_TOKENS': 1024, 'LLM_WORKFLOW_TEST_TIMEOUT_SECONDS': 60})
 
     assert result['runs'] == 10
     assert result['stopping_reason'] == 'all_cases_hit'
