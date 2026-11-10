@@ -154,20 +154,23 @@ def test_transport_errors_safe(error):
 
 
 def test_nested_deadline_progress_and_cleanup():
-    closed=[]; progress=[]
+    closed=[]; progress=[]; streamed=[]
+    # Lazy imports on the first attempt must not consume the deadline before dispatch.
+    run(httpx.Response(200,json=result()))
     class Stream(httpx.AsyncByteStream):
         async def __aiter__(self):
-            await asyncio.sleep(1)
+            streamed.append(True)
+            await asyncio.Event().wait()
             yield b'{}'
         async def aclose(self): closed.append(True)
     async def execute():
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda sent:httpx.Response(200,stream=Stream()))) as client:
             with progress_sink(progress.append):
-                async with report_timeout('outer',.01):
+                async with report_timeout('outer',1):
                     await module.complete_text(client=client,base_url=BASE,access_token=TOKEN,subscription=False,api_mode='responses',request=request())
     with pytest.raises(ProviderAccessError) as caught: asyncio.run(execute())
-    assert caught.value.kind=='deadline' and closed==[True]
-    assert any(row.name=='GPT text inference' and row.timeout<=.01 for row in progress)
+    assert caught.value.kind=='deadline' and streamed==[True] and closed==[True]
+    assert any(row.name=='GPT text inference' and row.timeout<=1 for row in progress)
 
 
 def test_invalid_unicode_rejected_without_echo():
