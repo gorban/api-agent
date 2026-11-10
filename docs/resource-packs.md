@@ -277,8 +277,9 @@ selected callback; it does not interpret arbitrary model text as an application
 envelope. The callback is also available to the selected UI composition through
 the `workflow_application` service.
 
-An owner-specific native closure can be declared through captured TOML rather
-than dynamic imports:
+Admission derives the static import closure of every admitted native source,
+including the selected owner's application module. A module that is loaded only
+dynamically (for example by file path) can be added through captured TOML:
 
 ```markdown
 ## Native Dependency Manifests
