@@ -287,6 +287,20 @@ def test_loop_creation_failure_has_no_orphan_thread(fake_host, monkeypatch):
     assert fake_host.backend.closed and not fake_host.backend.thread.is_alive()
 
 
+def test_failed_loop_thread_still_exiting_is_joined_before_close_is_decided(fake_host, monkeypatch):
+    import threading, time
+    class LingeringReady(threading.Event):
+        def set(self):
+            super().set()
+            if threading.current_thread().name == 'api-agent-setup-backend':
+                time.sleep(.2)
+    monkeypatch.setattr(setup_backend.asyncio, 'new_event_loop', lambda: (_ for _ in ()).throw(RuntimeError('private loop')))
+    fake_host.backend._ready = LingeringReady()
+    with pytest.raises(ContractError, match='unavailable'):
+        fake_host.backend.start()
+    assert fake_host.backend.closed and not fake_host.backend.thread.is_alive()
+
+
 def test_interrupted_thread_join_retains_disposal_ack_until_retry(fake_host, monkeypatch):
     backend = fake_host.backend
     backend.start()
