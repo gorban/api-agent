@@ -183,7 +183,7 @@ def _value(node, values, owners, context, constants):
         return context[owner]
     if not path and owner in constants:
         value = constants[owner]
-        if type(value) is not int or not 1 <= value <= 99:
+        if type(value) is not int or not 0 <= value <= 99:
             raise PredicateError(f'condition constant {owner} has invalid value')
         return value
     if owner == _SOURCE:
