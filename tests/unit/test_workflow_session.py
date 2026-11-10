@@ -1,11 +1,14 @@
 """Declared session state: load-time contracts, cross-turn reads and turn-scoped commits."""
 import asyncio
+import json
 
 from langgraph.checkpoint.memory import InMemorySaver
 import pytest
 
 from api_agent.workflows import LayoutError, WorkflowError
+from api_agent.workflows.execution import _thaw
 from api_agent.workflows.identity import declaration_identity
+from api_agent.workflows.model import freeze
 
 from session_workflow_support import load_session, session_entry, session_workflow, turn
 
@@ -235,3 +238,39 @@ def test_session_table_changes_workflow_identity(tmp_path):
                                   ('| last_text | reply.reply | replace |\n', ''))):
         changed = declaration_identity(load_session(session_entry(tmp_path / f'edit{index}', edit)))
         assert changed != base
+
+
+def untyped(root, schema, *properties):
+    """Drop the declared ``type`` of schema properties so they cannot be checked statically."""
+    path = root / 'schemas' / schema
+    data = json.loads(path.read_text())
+    for name in properties:
+        data['properties'][name] = {}
+    path.write_text(json.dumps(data))
+
+
+def test_untyped_schema_properties_are_not_statically_compared(tmp_path):
+    entry = session_entry(tmp_path)
+    untyped(tmp_path, 'reply_output.json', 'topic', 'messages')
+    untyped(tmp_path, 'draft_input.json', 'known_topic')
+
+    assert turn(session_workflow(entry), 'hello')['reply']['topic'] == 'hello'
+
+
+def test_append_of_a_value_that_is_not_an_array_fails_the_turn(tmp_path):
+    entry = session_entry(tmp_path)
+    untyped(tmp_path, 'reply_output.json', 'messages')
+    nodes = tmp_path / 'src' / 'aq_session' / 'nodes.py'
+    nodes.write_text(nodes.read_text().replace("'messages': [{'role': 'user', 'text': message}, {'role': 'assistant', 'text': text}]",
+                                               "'messages': 'not an array'"))
+    workflow = session_workflow(entry)
+
+    with pytest.raises(WorkflowError, match='appends an array'):
+        turn(workflow, 'hello')
+
+
+def test_frozen_default_values_become_plain_json_containers():
+    value = _thaw(freeze({'a': [1, {'b': [2]}], 'c': 'x'}))
+
+    assert value == {'a': [1, {'b': [2]}], 'c': 'x'}
+    assert type(value) is dict and type(value['a']) is list and type(value['a'][1]) is dict
