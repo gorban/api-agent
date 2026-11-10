@@ -376,11 +376,11 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
                 lines.append(f'{prior_schema_alias} -[hidden]down-> {alias}')
             prior_schema_alias = alias
         for reference in projection.references:
-            if reference.kind == 'session' and reference.owner_id == step.id:
+            if reference.kind in ('session', 'turn') and reference.owner_id == step.id:
                 attrs = dict(reference.attributes)
                 alias = f'session{reference_index}'
                 reference_index += 1
-                lines.append(f'rectangle "{_label(f'Session {attrs["access"]}: {attrs["field"]}')}" as {alias}')
+                lines.append(f'rectangle "{_label(f'{reference.kind.title()} {attrs["access"]}: {attrs["field"]}')}" as {alias}')
                 lines.append(f'{aliases[step.id]} .. {alias}')
     tool_bindings = getattr(projection, 'tool_bindings', ())
     tool_resources = {resource.logical_path: resource for resource in projection.resources}
