@@ -202,6 +202,23 @@ def edge_label(when):
     return when
 
 
+def condition_lines(when):
+    """Split a condition before each top-level `or` for display; text is unchanged."""
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(when).readline))
+    except (tokenize.TokenError, IndentationError):
+        return [when]
+    starts, depth = [0], 0
+    for token in tokens:
+        if token.type == tokenize.OP and token.string in '([{':
+            depth += 1
+        elif token.type == tokenize.OP and token.string in ')]}':
+            depth -= 1
+        elif token.type == tokenize.NAME and token.string == 'or' and depth == 0:
+            starts.append(token.start[1])
+    return [when[start:end].strip() for start, end in zip(starts, [*starts[1:], len(when)])]
+
+
 def predicate_fields(layout, source):
     """Output fields visible at a routing source, with unique source-relative paths."""
     functions = {row['ID']: row for row in layout.tables['Functions']}
