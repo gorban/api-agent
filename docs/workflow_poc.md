@@ -27,6 +27,35 @@ to the caller, use an explicitly owned mutable result carrier, as the bundled
 application does with `result_store`. Give concurrent operations separate result
 carriers; nested service objects are borrowed, not deep-copied.
 
+## Implied owner columns
+
+A table inside a node or component declaration may leave out the column that
+names its owner, because the enclosing document already does:
+
+| Document | Table | Optional column |
+| --- | --- | --- |
+| Node (`# Node:` or inline `## Node:`) | `Functions` | `ID`, and `Registry` (defaults to the node ID) |
+| Node | `Bindings`, `Prompts` | `Node` |
+| Node | `Timeouts` | `Owner` |
+| Component | `Components` | `ID` |
+| Component | `Timeouts` | `Owner` |
+
+```markdown
+### Functions
+
+| Input | Output |
+| --- | --- |
+| [input](schemas/plan_input.json) | [output](schemas/plan_output.json) |
+```
+
+The loader inserts the omitted cells before any validation, so the shortened and
+explicit forms yield the same rows, declaration digest and compiled-plan tables.
+Only the declaration file's own bytes (and therefore `definition_id`) differ.
+A column that is present must name the enclosing node or component. Root tables
+and a component's `Bindings`/`Prompts` rows, which name descendant nodes, still
+require their owner column. `Registry` is optional only when the column is
+omitted; `-` is not a default marker.
+
 ## Ordered LLM retry histories
 
 Both parsed-flow executors retain ordered history for `LLMRequest` calls through
