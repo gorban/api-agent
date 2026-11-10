@@ -131,6 +131,9 @@ class _Snapshot:
                           dependencies=self.value(d.native_dependencies),
                           declared_resources={key: r.logical_path for key, r in d.declared_resources.items()},
                           timeouts=[self.row(row) for row in d.timeouts])
+            if getattr(d, 'functions', ()):
+                # Schema bytes are resources; the rows add each node's contract columns and parsed schemas.
+                result['functions'] = [self.row(row) for row in d.functions]
         return result
 
 

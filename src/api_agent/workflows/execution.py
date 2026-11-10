@@ -423,6 +423,12 @@ class Workflow:
         from .capture import annotation_schema
         self.capture_schema = {'type': 'object', 'properties': {
             key: annotation_schema(hint) for key, hint in hints.items()}}
+        self._typed_functions = {row['ID']: row for row in getattr(definition, 'functions', ())}
+        for row in self._typed_functions.values():
+            unknown = {name for column in ('Input schema', 'Output schema')
+                       for name in row[column].get('properties', {})} - set(hints)
+            if unknown:
+                raise LayoutError(f'{definition.entry}:{row["line"]}: Functions schema names no State field: {min(unknown)}')
         fields = state_predicate_fields(self.capture_schema['properties'])
         self._state_predicates = {}
         for row in (*definition.edges, *getattr(definition, 'prompts', ())):
@@ -711,19 +717,7 @@ class Workflow:
                         if context._dispatched():
                             context.mark_effect()
             self._check_deadline(budget)
-            try:
-                self._validate(row['Output schema'], result, step.id, 'output')
-            except _SchemaRejection as invalid:
-                try:
-                    encoded = json.dumps(result, allow_nan=False)
-                    json_value = json.loads(encoded)
-                except (ValueError, TypeError):
-                    raise invalid
-                if row.get('Output mode', '-') == '-' or json_value != result:
-                    raise
-                facts = _schema_facts(row['Output schema'], result, invalid.errors)
-                from api_agent.telemetry.outcomes import inherit_failure
-                raise inherit_failure(CandidateCorrection({'reason': 'output_schema', 'errors': facts}, rejected=result), invalid) from None
+            self._validate_output(row, result, step.id)
             await capture_node(journal, self._capture_services(), visit_id=budget.id,
                 direction='output', values=result, schema=row['Output schema'],
                 plain_fields=plain_fields.get('output', ...))
@@ -778,6 +772,27 @@ class Workflow:
                                 attempt=frame.attempt, attempt_id=current['attempt_id'], max_passes=frame.maximum)
         return timed
 
+
+    @classmethod
+    def _validate_output(cls, row, result, node):
+        """Check a node result against its Output schema.
+
+        A violation in a node that declares an Output mode is a correction of the
+        current candidate; otherwise it is a plain schema failure.
+        """
+        try:
+            cls._validate(row['Output schema'], result, node, 'output')
+        except _SchemaRejection as invalid:
+            try:
+                encoded = json.dumps(result, allow_nan=False)
+                json_value = json.loads(encoded)
+            except (ValueError, TypeError):
+                raise invalid
+            if row.get('Output mode', '-') == '-' or json_value != result:
+                raise
+            facts = _schema_facts(row['Output schema'], result, invalid.errors)
+            from api_agent.telemetry.outcomes import inherit_failure
+            raise inherit_failure(CandidateCorrection({'reason': 'output_schema', 'errors': facts}, rejected=result), invalid) from None
 
     @staticmethod
     def _validate(schema, value, node, direction):
@@ -854,8 +869,13 @@ class Workflow:
         outcome = 'failed'
         try:
             services = self._turn_state.get()['llm_history'].services(self._services.get(), row['ID'])
+            function_row = self._typed_functions.get(row['ID'])
+            if function_row is not None and function_row.get('Display summary', '-') != '-':
+                from .node_summary import SummaryServices
+                services = SummaryServices(services, function_row['Display summary'])
             context = NodeContext(row['ID'], (), (), services, request=self._request.get(),
-                                  resources=self.definition.declared_resources, visit_id=budget.id)
+                                  resources=self.definition.declared_resources, visit_id=budget.id,
+                                  response_contract=function_row)
             texts = self._node_prompts(row['ID'], state, context)
             if texts:
                 context = replace(context, prompts=tuple(texts.values()), prompt_texts=MappingProxyType(texts))
@@ -879,6 +899,11 @@ class Workflow:
                 else:
                     await capture_node(journal, self._capture_services(), visit_id=visit_id,
                         direction=direction, values=values, schema={'type': 'object'} if projection is not None else self.capture_schema)
+            if function_row is not None:
+                # The Input schema validates the projection of State that the node declares it reads.
+                properties = function_row['Input schema'].get('properties', {})
+                self._validate(function_row['Input schema'], {name: state[name] for name in properties if name in state},
+                               row['ID'], 'input')
             await capture('input', state)
             with _node_effect_owner(context), bind_workflow_visit(journal, budget.id, capture_services=self._capture_services()):
                 try:
@@ -891,6 +916,8 @@ class Workflow:
                     await finalize()
             if type(result) is not dict or any(key not in self.schema.__annotations__ for key in result):
                 raise ValueError('node must return a partial state update')
+            if function_row is not None:
+                self._validate_output(function_row, result, row['ID'])
             await capture('output', result)
             outcome = self._scope_outcome('node', row['ID'], {**state, **result}, budget.id)
             self._event('node', scope_id=budget.id, node=row['ID'], visit_id=visit_id,
