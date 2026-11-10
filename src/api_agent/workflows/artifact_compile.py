@@ -155,7 +155,9 @@ def compile_definition(definition, wheels):
     if getattr(definition, 'schema_source', None) is not None:
         plan['state'] = {'application_binding': encode(definition.application_binding),
                          'helper_sources': [], 'native_dependencies': encode(definition.native_dependencies),
-                         'timeouts': encode(definition.timeouts), 'schema_name': definition.schema_name,
+                         'timeouts': encode([{key: value for key, value in row.items() if key != '_owner'}
+                                             for row in definition.timeouts]),
+                         'schema_name': definition.schema_name,
                          'schema_source': encode(definition.schema_source), 'nodes': encode(definition.nodes),
                          'edges': encode(definition.edges),
                          'declared_resources': {key: item.logical_path

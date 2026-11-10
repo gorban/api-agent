@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from artifact_acceptance_support import QUALIFICATION, build_wheel, install
-from artifact_unit_support import build_tool_v3, edited, load_built, v2_built, v3_built  # noqa: F401
+from artifact_unit_support import build_rich_v3, build_tool_v3, edited, load_built, v2_built, v3_built  # noqa: F401
 from api_agent.api.application import Runtime
 from api_agent.config.declarations import ConfigSchema
 from api_agent.runtime.resource_pack import LaunchContext
@@ -253,3 +253,11 @@ def test_local_selection_reloads_source_after_checked_in_artifact_changes(v3_bui
 
     assert second.origin == first.origin == 'source'
     assert second is not first
+
+
+def test_compiled_component_timeouts_load_and_resolve_by_owner(tmp_path):
+    built = build_rich_v3(tmp_path, review_extra='\n## Timeouts\n\n| Owner | Source | Key |\n| --- | --- | --- |\n'
+                                                  '| review | [config](limits.toml) | REVIEW_LIMIT |\n')
+    definition = load_built(built)
+    assert {row['Owner']: row['Key'] for row in definition.timeouts} == {'GRAPH': 'GRAPH_LIMIT',
+                                                                       'review': 'REVIEW_LIMIT'}
