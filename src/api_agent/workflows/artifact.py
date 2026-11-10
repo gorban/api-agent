@@ -7,7 +7,7 @@ provenance for traces and static freshness diagnostics, not runtime guards.
 """
 import base64
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.parser import BytesHeaderParser
 import hashlib
 import hmac
@@ -21,6 +21,7 @@ from typing import ClassVar
 
 from . import session
 from .model import InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage
+from .prompt_slots import slot_text, used_slots
 
 PLAN_FORMAT = 'api-agent-workflow-plan'
 PLAN_VERSION = 1
@@ -45,7 +46,7 @@ _TOP_KEYS = frozenset({
     'distributions', 'compiled_plan_identity',
 })
 # Present only in a binding-grammar plan that uses the feature, so other plans keep their bytes.
-_BINDING_KEYS = frozenset({'application_binding'})
+_BINDING_KEYS = frozenset({'application_binding', 'prompt_slots'})
 _STATE_KEYS = frozenset({
     'helper_sources', 'native_dependencies', 'timeouts', 'schema_name',
     'schema_source', 'nodes', 'edges', 'declared_resources', 'application_binding',
@@ -265,13 +266,16 @@ def _check_versions(value):
     return value['state'] is not None
 
 
-def _definition_id(version, graph_id, resources, replacements):
-    return hashlib.sha256(json.dumps({
+def _definition_id(version, graph_id, resources, replacements, slots=()):
+    identity = {
         'version': version, 'graph_id': graph_id,
         'resources': [(item.kind, item.logical_path, item.sha256) for item in resources],
         'replacements': [(item.target_id, item.root_id, Path(item.entry).as_posix())
                          for item in replacements],
-    }, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    }
+    if slots:
+        identity['prompt_slots'] = list(slots)
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 def _decode_resources(rows):
@@ -363,6 +367,24 @@ def _decode_application(encoded, resources):
     return binding
 
 
+def _decode_slots(value, resources, contents):
+    """Pack-supplied slot files: each names a prompt resource with UTF-8 text."""
+    if 'prompt_slots' not in value:
+        return MappingProxyType({})
+    slots = _decode(value['prompt_slots'])
+    prompts = {_virtual(item.logical_path) for item in resources
+               if item.kind == 'prompt' and not item.logical_path.startswith('inline/')}
+    if (not isinstance(slots, MappingProxyType) or not slots
+            or any(not _GRAPH_ID.fullmatch(name) or path not in prompts for name, path in slots.items())):
+        raise ValueError('invalid prompt slots')
+    for path in slots.values():
+        try:
+            slot_text(contents[path])
+        except UnicodeError:
+            raise ValueError('prompt slot text must be UTF-8') from None
+    return slots
+
+
 def _decode_plan(value, typed):
     resources, contents = _decode_resources(value['resources'])
     graph_id, entry_root = value['graph_id'], value['entry_root']
@@ -372,7 +394,9 @@ def _decode_plan(value, typed):
     if (type(graph_id) is not str or entry_root not in ('base', 'pack')
             or not all(type(item) is str for row in value['replacements'] for item in row)):
         raise ValueError('invalid identity')
-    definition_id = _definition_id(1, graph_id, resources, replacements)
+    slot_files = _decode_slots(value, resources, contents)
+    definition_id = _definition_id(1, graph_id, resources, replacements,
+                                   [(name, _logical(path)) for name, path in sorted(slot_files.items())])
     if definition_id != value['definition_id']:
         raise ArtifactRejected('definition_id does not match the plan resources')
     entry = _virtual(value['entry'])
@@ -441,6 +465,10 @@ def _decode_plan(value, typed):
         )
     else:
         decoded['application_binding'] = _decode_application(value.get('application_binding'), resources)
+        used = {slot for row in tables['Prompts'] for slot in used_slots(contents[row['File']])}
+        if used != set(slot_files):
+            raise ValueError('prompt slots differ from the slots the prompts use')
+        decoded['slot_files'] = slot_files
     distributions, bindings = _decode_bindings(value, resources)
     return decoded, distributions, bindings
 
@@ -520,6 +548,7 @@ class CompiledDefinition(_Compiled):
     imports: tuple = ()
     declaration_entry: PurePosixPath | None = None
     application_binding: tuple | None = None
+    slot_files: object = field(default_factory=lambda: MappingProxyType({}))
 
     def native_rejection(self, function, step):
         return None

@@ -79,7 +79,8 @@ def edited(plan, change):
         value['workflow_version'], value['graph_id'],
         [Resource(row['kind'], row['path'], None, row['sha256'], row['size'])
          for row in value['resources']],
-        [Replacement(target, Path(entry), root) for target, root, entry in value['replacements']])
+        [Replacement(target, Path(entry), root) for target, root, entry in value['replacements']],
+        [(name, path['$p']) for name, path in sorted(dict(value.get('prompt_slots', {'$m': []})['$m']).items())])
     value['compiled_plan_identity'] = compiled_plan_identity(value)
     return canonical_json(value)
 
