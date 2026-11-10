@@ -327,6 +327,34 @@ def _started(starts, step_id):
     return {**starts, step_id: starts.get(step_id, 0) + 1}
 
 
+class _SessionCommit:
+    """One turn's session write, and the means to take it back.
+
+    ``merged`` is set when the graph finishes. The write belongs to the graph scope,
+    so a slow or failing store fails the turn; ``restore`` undoes it if anything after the
+    scope (journal finalization, evidence publication) fails the same turn.
+    """
+
+    def __init__(self, session, config):
+        self.session, self.config = session, config
+        self.before, self.merged, self.saved = {}, None, False
+
+    async def load(self):
+        """The stored session as this turn starts, as a copy the turn may read from."""
+        snapshot = await self.session.aget_state(self.config)
+        self.before = deepcopy(snapshot.values.get('session', {}))
+        return deepcopy(self.before)
+
+    async def save(self):
+        await self.session.ainvoke({'session': self.merged}, self.config)
+        self.saved = True
+
+    async def restore(self):
+        if self.saved:
+            self.saved = False
+            await self.session.ainvoke({'session': self.before}, self.config)
+
+
 class _State(TypedDict):
     values: dict
     ancestry: tuple
@@ -1236,7 +1264,7 @@ class Workflow:
 
 
     @asynccontextmanager
-    async def _scope_graph(self, budget):
+    async def _scope_graph(self, budget, session=None):
         parent_id = current_structural_scope()
         with structural_scope(budget.id):
             started = time.monotonic()
@@ -1263,6 +1291,7 @@ class Workflow:
                 await capture_graph('output')
                 outcome = 'passed'
                 terminal = self._services.get().get('execution_outcome')
+                final = None
                 if terminal is not None:
                     from api_agent.telemetry.outcomes import ExecutionOutcome, report_outcome
                     final = terminal()
@@ -1272,6 +1301,9 @@ class Workflow:
                     outcome = {'success': 'passed', 'failure': 'failed',
                                'cancelled': 'cancelled', 'partial': 'partial',
                                'unknown': 'unknown'}[final.state.value]
+                if session is not None and outcome == 'passed':
+                    await session.save()
+                if final is not None:
                     report_outcome(final, runtime=getattr(self._journal.get(), 'trace', None))
                     current = self._journal.get()
                     if current is not None and hasattr(current, 'report_outcome'):
@@ -1342,7 +1374,7 @@ class Workflow:
 
     @asynccontextmanager
     async def _turn(self, thread_id, request, services, journal, turn_id=None, turn_kind='initial',
-                    on_success=None):
+                    session=None):
         from .run_context import canonical_uuid, current_execution_context, current_turn_id, execution_context, turn
         if turn_id is not None:
             canonical_uuid(turn_id)
@@ -1412,6 +1444,7 @@ class Workflow:
         history = InferenceHistory()
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
                                                   'contexts': {}, 'budgets': {}, 'writers': {}})
+        completed = False
         try:
             selected_journal = self._journal.get()
             active_turn = turn_id if turn_id is not None else (selected_journal.turn_id if selected_journal is not None else None)
@@ -1426,10 +1459,9 @@ class Workflow:
                     usage_context):
                 async with component_timeout('Workflow GRAPH', self.timeouts.get('GRAPH')) as budget:
                     from api_agent.tooling.runtime import invocation_tools
-                    async with invocation_tools(self.definition, selected_services), self._scope_graph(budget):
+                    async with invocation_tools(self.definition, selected_services), self._scope_graph(budget, session):
                         yield
-            if on_success is not None:
-                await on_success()
+            completed = True
         finally:
             if automatic_observations is not None:
                 automatic_observations.close()
@@ -1440,11 +1472,21 @@ class Workflow:
             self._capture_services_context.reset(capture_token)
             self._journal.reset(journal_token)
             self._turn_state.reset(state_token)
-            with self._thread_guard:
-                self._active_threads.remove(thread_id)
-            if recorded:
-                from .evidence import publish
-                publish(journal.finalize())
+            try:
+                if recorded:
+                    from .evidence import publish
+                    publish(journal.finalize())
+            except BaseException:
+                completed = False
+                raise
+            finally:
+                # Still holding the thread, so no other turn reads the value being taken back.
+                try:
+                    if session is not None and not completed:
+                        await session.restore()
+                finally:
+                    with self._thread_guard:
+                        self._active_threads.remove(thread_id)
 
 
     def _prompt_texts(self):
@@ -1467,25 +1509,22 @@ class Workflow:
         if not self.typed_state and self._session is None and thread_id is not None:
             raise WorkflowError('Conversation checkpoints require a declared State or Session contract')
         config = {'configurable': {'thread_id': thread_id}}
-        committed = []
-        async def persist():
-            await self._session.ainvoke({'session': committed[0]}, config)
+        commit = _SessionCommit(self._session, config) if self._session is not None else None
         async with self._turn(thread_id or str(uuid4()), request, services, journal, turn_id, turn_kind,
-                              on_success=persist if self._session is not None else None):
+                              session=commit):
             if self.typed_state:
                 return await self.graph.ainvoke(update, config)
             self._validate({'type': 'object'}, update, 'START', 'input')
             session = {}
-            if self._session is not None:
-                snapshot = await self._session.aget_state(config)
-                session = deepcopy(snapshot.values.get('session', {}))
+            if commit is not None:
+                session = await commit.load()
                 self._turn_state.get()['session'] = session
             prompts = self._prompt_texts()
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
                 feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}),
                 {'recursion_limit': self._recursion_limit})
-            if self._session is not None:
-                committed.append(self._merge_session(session, result['values']))
+            if commit is not None:
+                commit.merged = self._merge_session(session, result['values'])
             return result['values']
 
     def _merge_session(self, session, values):
