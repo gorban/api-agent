@@ -478,6 +478,38 @@ def _bundle_files(projections, *, roots, **kwargs):
     return tuple(files[path] for path in sorted(files))
 
 
+_SAVED_LINK = re.compile(r'\bhref="([^"]*)"')
+
+
+def check_saved_diagram_links(owners) -> None:
+    """Every repository link in a saved diagram names one of the owners' recorded
+    repositories with the branch placeholder and resolves to a file in that owner."""
+    from html import unescape
+    from urllib.parse import unquote
+    repositories = {}
+    for owner in owners:
+        recorded = read_repository_identity(owner)
+        if recorded is not None:
+            repositories[recorded[0].link_prefix] = Path(owner)
+    prefixes = sorted(repositories, key=len, reverse=True)
+    for owner in owners:
+        diagrams = Path(owner) / ".private_resources/diagrams"
+        if not diagrams.is_dir() or read_repository_identity(owner) is None:
+            continue
+        for svg in sorted(diagrams.rglob("*.svg")):
+            for raw in _SAVED_LINK.findall(svg.read_text(encoding="utf-8")):
+                link = unescape(raw)
+                if not link.startswith(("//", "http:", "https:")):
+                    continue
+                where = f"{svg.relative_to(owner).as_posix()}: {link}"
+                prefix = next((candidate for candidate in prefixes if link.startswith(candidate)), None)
+                if prefix is None:
+                    raise RenderError(f"diagram link does not use a recorded repository: {where}")
+                target = unquote(link[len(prefix):].split("#", 1)[0])
+                if not target or not (repositories[prefix] / target).is_file():
+                    raise RenderError(f"diagram link has a missing target: {where}")
+
+
 def check_views(root: Path) -> None:
     """Read-only check of every graph using its declared static owning roots."""
     root = Path(root).resolve()
@@ -492,6 +524,7 @@ def check_views(root: Path) -> None:
     files = _inventory_files(root, projections, contexts, lambda roots: _recorded_owner_inputs(roots, records),
                              verify=True, check_orphans=False)
     _check_inventory_files(files, root, owners)
+    check_saved_diagram_links(owners)
 
 
 def _checked_view_inventory(root: Path) -> dict[str, bytes]:
