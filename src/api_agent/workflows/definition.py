@@ -3,6 +3,7 @@
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
+from itertools import combinations
 import json
 import os
 from pathlib import Path
@@ -259,7 +260,12 @@ def _tool_operations(path, row, scope_kind):
     return operations
 
 
-def _table(path, body, columns):
+def _table(path, body, columns, implied=(), owner=None):
+    """Parse a fixed-column table.
+
+    ``implied`` maps columns a scoped document may leave out to their implied cells;
+    ``owner`` is ``(column, kind, id)`` when a present cell must name the enclosing owner.
+    """
     nonempty = [(line, value) for line, value in body if value.strip()]
     if not nonempty:
         return []
@@ -268,16 +274,21 @@ def _table(path, body, columns):
     tokens = _MD.parse('\n'.join(value for _, value in body))
     if not tokens or tokens[0].type != 'table_open' or tokens[-1].type != 'table_close' or sum(token.type == 'table_open' for token in tokens) != 1:
         raise LayoutError(f'{path}:{nonempty[0][0]}: expected one Markdown table')
+    header = tuple(part.strip() for part in nonempty[0][1].strip('|').split('|'))
     if columns == ('Port', 'Instance'):
-        header = tuple(part.strip() for part in nonempty[0][1].strip('|').split('|'))
         if header == ('Port', 'Instance', 'Operations'):
             columns = header
+    variants = (columns,)
     if columns == _COLUMNS['Functions']:
-        header = tuple(part.strip() for part in nonempty[0][1].strip('|').split('|'))
-        if header == _RESPONSE_COLUMNS:
-            columns = _RESPONSE_COLUMNS
-        if header == _SUMMARY_COLUMNS:
-            columns = _SUMMARY_COLUMNS
+        variants = (columns, _RESPONSE_COLUMNS, _SUMMARY_COLUMNS)
+    full = columns
+    for variant in variants:
+        omittable = [name for name in variant if name in implied]
+        for count in range(len(omittable) + 1):
+            for dropped in combinations(omittable, count):
+                shape = tuple(name for name in variant if name not in dropped)
+                if header == shape:
+                    full, columns = variant, shape
     def cells(item):
         number, value = item
         if not value.startswith('|') or not value.endswith('|'):
@@ -288,7 +299,29 @@ def _table(path, body, columns):
         return result
     if cells(nonempty[0]) != columns or any(not re.fullmatch(r':?-{3,}:?', part) for part in cells(nonempty[1])):
         raise LayoutError(f'{path}:{nonempty[0][0]}: unknown table columns')
-    return [dict(zip(columns, cells(item)), line=item[0]) for item in nonempty[2:]]
+    rows = []
+    for item in nonempty[2:]:
+        values = dict(zip(columns, cells(item)))
+        if owner is not None and owner[0] in values and values[owner[0]] != owner[2]:
+            raise LayoutError(f"{path}:{item[0]}: {owner[0]} must name the enclosing {owner[1]} '{owner[2]}'")
+        rows.append({name: values[name] if name in values else implied[name] for name in full} | {'line': item[0]})
+    return rows
+
+
+_OWNER_COLUMNS = {'Components': ('ID', 'component'), 'Functions': ('ID', 'node'), 'Bindings': ('Node', 'node'),
+                  'Prompts': ('Node', 'node'), 'Timeouts': ('Owner', None)}
+
+
+def _owner_columns(step, table):
+    """Cells a step's own document may omit from ``table``, and the owner a present cell must name."""
+    declared = _OWNER_COLUMNS.get(table)
+    if declared is None or declared[1] not in (None, step.kind):
+        return {}, None
+    column = declared[0]
+    implied = {column: step.id}
+    if table == 'Functions':
+        implied['Registry'] = step.id
+    return implied, (column, step.kind, step.id)
 
 
 def load_definition(entry, *, base_root, pack_root, replacements=(), entry_root=None):
@@ -531,7 +564,7 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
         elif 'Native' in sections:
             raise LayoutError(f'{step.source}:1: component cannot bind native source')
         for name in _COLUMNS:
-            rows = _table(step.source, sections.get(name, []), _COLUMNS[name])
+            rows = _table(step.source, sections.get(name, []), _COLUMNS[name], *_owner_columns(step, name))
             for row in rows:
                 row['_owner'] = step.source
                 row['_owner_id'] = step.id

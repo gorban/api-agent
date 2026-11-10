@@ -355,7 +355,7 @@ def test_root_admission_rejects_incompatible_structure(tmp_path, old, new, messa
     ('| inspect | deterministic |', '| inspect | tool |', 'unsupported native callable kind'),
     ('| inspect | deterministic |', '| other | deterministic |', 'Native registry'),
     ('## Functions', '## Unknown', 'unknown declaration section'),
-    ('| inspect | inspect | [input]', '| other | inspect | [input]', 'Native registry'),
+    ('| inspect | inspect | [input]', '| other | inspect | [input]', 'enclosing node'),
     ('@greeting', '@missing', 'unknown inline prompt'),
     ('```text', '```python', 'invalid inline prompt'),
 ])
