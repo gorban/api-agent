@@ -75,7 +75,7 @@ def resolve_state_limits(definition, config=None):
     from api_agent.config.declarations import schema_from_dict
     config = config or {}
     values = {}
-    for row in definition.limits:
+    for row in getattr(definition, 'limits', ()):
         where = f'{row.get("_owner", definition.entry)}:{row["line"]}'
         try:
             declaration = schema_from_dict(tomllib.loads(definition.contents[row['Source']].decode('utf-8')))

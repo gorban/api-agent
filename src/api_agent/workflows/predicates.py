@@ -260,6 +260,9 @@ def predicate_fields(layout, source):
     fields[_CONSTANTS] = {row['max_passes_key']: {'type': 'integer'}
                           for row in layout.tables.get('Components', ())
                           if 'max_passes_key' in row and in_component(row['ID'])}
+    # A Limits row is visible to the edges of the document that declares it.
+    fields[_CONSTANTS].update({row['Key']: {'type': 'integer'} for row in layout.tables.get('Limits', ())
+                               if row.get('_owner_id') is None or in_component(row['_owner_id'])})
     return fields
 
 
