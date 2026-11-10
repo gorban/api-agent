@@ -152,7 +152,10 @@ def compile_definition(definition, wheels):
                                'top_levels': list(wheel.top_levels),
                                'files': sorted([path, digest] for path, digest in wheel.files.items())}
                               for _, wheel in sorted(used.items())]}
-    if getattr(definition, 'schema_source', None) is not None:
+    typed = getattr(definition, 'schema_source', None) is not None
+    if not typed and getattr(definition, 'application_binding', None) is not None:
+        plan['application_binding'] = encode(definition.application_binding)
+    if typed:
         plan['state'] = {'application_binding': encode(definition.application_binding),
                          'helper_sources': [], 'native_dependencies': encode(definition.native_dependencies),
                          'timeouts': encode([{key: value for key, value in row.items() if key != '_owner'}

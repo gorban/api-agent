@@ -44,6 +44,8 @@ _TOP_KEYS = frozenset({
     'selected_declarations', 'declaration_fragments', 'tool_usages', 'bindings',
     'distributions', 'compiled_plan_identity',
 })
+# Present only in a binding-grammar plan that uses the feature, so other plans keep their bytes.
+_BINDING_KEYS = frozenset({'application_binding'})
 _STATE_KEYS = frozenset({
     'helper_sources', 'native_dependencies', 'timeouts', 'schema_name',
     'schema_source', 'nodes', 'edges', 'declared_resources', 'application_binding',
@@ -252,8 +254,8 @@ def _check_versions(value):
                                f"or runtime ABI {ints['runtime_abi']}")
     if ints['workflow_version'] != 1:
         raise ArtifactRejected(f"unsupported workflow version {ints['workflow_version']}")
-    expected = _TOP_KEYS
-    if set(value) != expected:
+    optional = set(value) - _TOP_KEYS
+    if not _TOP_KEYS <= set(value) or optional - _BINDING_KEYS or optional and value['state'] is not None:
         raise ArtifactRejected('plan has missing or unknown sections')
     identity = value.get('compiled_plan_identity')
     if type(identity) is not str or not _HEX.fullmatch(identity):
@@ -349,6 +351,18 @@ def _check_session(tables):
         raise ValueError(f'invalid session: {invalid[0]}')
 
 
+def _decode_application(encoded, resources):
+    """A declared application factory must name a Python source the plan binds."""
+    binding = _decode(encoded)
+    native_sources = {_virtual(item.logical_path) for item in resources if item.kind == 'native_source'}
+    if binding is not None and (
+            type(binding) is not tuple or len(binding) != 2
+            or type(binding[0]) is not str or not _REGISTRY.fullmatch(binding[0])
+            or binding[1] not in native_sources):
+        raise ValueError('invalid application binding')
+    return binding
+
+
 def _decode_plan(value, typed):
     resources, contents = _decode_resources(value['resources'])
     graph_id, entry_root = value['graph_id'], value['entry_root']
@@ -417,13 +431,7 @@ def _decode_plan(value, typed):
         by_logical = {item.logical_path: item for item in resources}
         if state['helper_sources']:
             raise ArtifactRejected('compiled plans do not support helper native sources')
-        application_binding = _decode(state['application_binding'])
-        native_sources = {_virtual(item.logical_path) for item in resources if item.kind == 'native_source'}
-        if application_binding is not None and (
-                type(application_binding) is not tuple or len(application_binding) != 2
-                or type(application_binding[0]) is not str or not _REGISTRY.fullmatch(application_binding[0])
-                or application_binding[1] not in native_sources):
-            raise ValueError('invalid application binding')
+        application_binding = _decode_application(state['application_binding'], resources)
         decoded.update(
             helper_sources=(), native_dependencies=_decode(state['native_dependencies']),
             timeouts=timeouts, schema_name=state['schema_name'], schema_source=_decode(state['schema_source']),
@@ -431,6 +439,8 @@ def _decode_plan(value, typed):
             declared_resources=MappingProxyType({key: by_logical[path]
                                                  for key, path in state['declared_resources'].items()}),
         )
+    else:
+        decoded['application_binding'] = _decode_application(value.get('application_binding'), resources)
     distributions, bindings = _decode_bindings(value, resources)
     return decoded, distributions, bindings
 
@@ -438,8 +448,10 @@ def _decode_plan(value, typed):
 def _demanded(typed, decoded):
     if not typed:
         steps = {step.id: step for step in decoded['layout'].steps}
-        return [(row['ID'], row['Registry'], steps[row['ID']].source)
-                for row in decoded['layout'].tables['Functions']]
+        application = decoded.get('application_binding')
+        return [*((row['ID'], row['Registry'], steps[row['ID']].source)
+                  for row in decoded['layout'].tables['Functions']),
+                *([(None, *application)] if application is not None else [])]
     return [(None, decoded['schema_name'], decoded['schema_source']),
             *((None, row['Registry'], row['Source']) for row in decoded['nodes']),
             *((None, row['Router'], row['Source']) for row in decoded['edges'] if row['Router'] != '-'),
@@ -507,9 +519,15 @@ class CompiledDefinition(_Compiled):
     callables: object = repr(False)
     imports: tuple = ()
     declaration_entry: PurePosixPath | None = None
+    application_binding: tuple | None = None
 
     def native_rejection(self, function, step):
         return None
+
+    def application_factory(self):
+        registry, source = self.application_binding
+        module = next(row['module'] for row in self.bindings if row['source'] == _logical(source))
+        return getattr(self.modules[module], registry)
 
     def registry(self):
         from .execution import NodeFunction
