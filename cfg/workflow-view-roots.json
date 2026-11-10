@@ -30,6 +30,11 @@
       "base_root": "tests/fixtures/artifact_qualification",
       "pack_root": "tests/fixtures/artifact_qualification",
       "entry_root": "base"
+    },
+    "demo/prompted/flow.md.html": {
+      "base_root": ".",
+      "pack_root": "demo/prompted/packs/fleet",
+      "entry_root": "base"
     }
   }
 }

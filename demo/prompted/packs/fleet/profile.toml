@@ -1,0 +1,2 @@
+assistant_descriptor = "fleet equipment management assistant"
+domain_rules = ["Report equipment by unit number.", "Prefer the most recent inspection."]

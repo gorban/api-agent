@@ -32,6 +32,7 @@ def _read_bounded(path, root):
 
 _LINK = re.compile(r'\[[^\]\n]+\]\(([^()\n]+)\)\Z')
 _PY_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
+_SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
 _LOADED_DEPENDENCIES = {}
 
 
@@ -105,6 +106,8 @@ class TypedDefinition:
     application_binding: tuple[str, Path] | None = None
     imports: tuple = ()
     declaration_entry: Path | None = None
+    prompts: tuple = ()
+    prompt_slots: tuple = ()
 
     def verify_sources(self):
         for path, admitted in self.contents.items():
@@ -141,7 +144,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     contents = {entry: read(entry)}
     _, sections = _sections(entry, contents[entry])
     required = {'Graph ID', 'State', 'Flow', 'Edges'}
-    if not required <= set(sections) or set(sections) - required - {'Native Sources', 'Native Dependencies', 'Native Dependency Manifests', 'Resources', 'Timeouts', 'Tools', 'Application'}:
+    if not required <= set(sections) or set(sections) - required - {'Native Sources', 'Native Dependencies', 'Native Dependency Manifests', 'Resources', 'Timeouts', 'Tools', 'Application', 'Prompt Slots'}:
         raise LayoutError(f'{entry}:1: missing required section')
     identity = _shared_table(entry, sections['Graph ID'], ('ID',))
     state = _shared_table(entry, sections['State'], ('Registry', 'Source'))
@@ -268,6 +271,51 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     declaration_fragments = {}
     inline_references = {}
     component_edges = {}
+    prompts = []
+    def capture_prompts(declaration, identifier, sections):
+        inline = {}
+        for name, body in sections.items():
+            if not name.startswith('Prompt: '):
+                continue
+            prompt_id, raw = name.removeprefix('Prompt: '), [value for _, value in body]
+            while raw and not raw[0].strip():
+                raw.pop(0)
+            while raw and not raw[-1].strip():
+                raw.pop()
+            if not _ID.fullmatch(prompt_id) or len(raw) < 2 or raw[0] != '```text' or raw[-1] != '```':
+                raise LayoutError(f'{declaration}:1: invalid inline prompt')
+            inline[prompt_id] = '\n'.join(raw[1:-1]) + '\n'
+        rows = _shared_table(declaration, sections.get('Prompts', []), ('Node', 'File', 'When'))
+        selected = []
+        for row in rows:
+            if row['Node'] != identifier or row['When'] == 'otherwise':
+                raise LayoutError(f'{declaration}:{row["line"]}: invalid prompt declaration')
+            if row['When'] != 'always':
+                try:
+                    parse_predicate(row['When'], None)
+                except PredicateError as error:
+                    raise LayoutError(f'{declaration}:{row["line"]}: {error}') from None
+            if row['File'].startswith('@'):
+                prompt_id = row['File'][1:]
+                if prompt_id not in inline:
+                    raise LayoutError(f'{declaration}:{row["line"]}: unknown inline prompt')
+                text = inline[prompt_id]
+            else:
+                path = linked(dict(row, Source=row['File'], _owner=declaration))
+                if path.suffix not in ('.md', '.txt'):
+                    raise LayoutError(f'{declaration}:{row["line"]}: prompt file must be Markdown or text')
+                if path not in contents:
+                    contents[path] = read(path)
+                if kinds.get(path, 'prompt') != 'prompt':
+                    raise LayoutError(f'{declaration}:{row["line"]}: prompt has conflicting resource kind')
+                kinds[path] = 'prompt'
+                prompt_id, text = path.stem, contents[path].decode('utf-8')
+            if prompt_id in selected:
+                raise LayoutError(f'{declaration}:{row["line"]}: duplicate node prompt')
+            selected.append(prompt_id)
+            prompts.append(dict(Node=identifier, Prompt=prompt_id, When=row['When'], Text=text, line=row['line']))
+        if set(inline) - {row['File'][1:] for row in rows if row['File'].startswith('@')}:
+            raise LayoutError(f'{declaration}:1: unreferenced inline prompt')
     def visit(owner, body, parent=None, depth=0):
         if depth > 64:
             raise LayoutError(f'{owner}:1: component nesting exceeds 64 levels')
@@ -343,8 +391,9 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                     component_edges[identifier] = (declaration, child['Edges'])
                 visit(declaration, child['Flow'], identifier, depth + 1)
             else:
-                if set(child) - {'Tools'} != {'Native'}:
+                if set(child) - {'Tools', 'Prompts'} - {key for key in child if key.startswith('Prompt: ')} != {'Native'}:
                     raise LayoutError(f'{declaration}:1: node requires only Native')
+                capture_prompts(declaration, identifier, child)
                 binding = _shared_table(declaration, child['Native'], ('Registry', 'Kind', 'Source'))
                 if len(binding) != 1 or not _ID.fullmatch(binding[0]['Registry']) or binding[0]['Kind'] not in ('deterministic', 'llm'):
                     raise LayoutError(f'{declaration}:1: invalid native binding')
@@ -427,6 +476,15 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                 raise LayoutError(f'{entry}:{row["line"]}: timeout source has conflicting kind')
             kinds[path] = 'configuration'
             timeouts.append(dict(row, Source=path))
+    slots = []
+    for row in _shared_table(entry, sections.get('Prompt Slots', []), ('Slot', 'Registry', 'Source')):
+        if (not _ID.fullmatch(row['Slot']) or not _PY_ID.fullmatch(row['Registry'])
+                or row['Slot'] in {item['Slot'] for item in slots}):
+            raise LayoutError(f'{entry}:{row["line"]}: invalid or duplicate prompt slot')
+        slots.append(dict(row, Source=source(row)))
+    for row in prompts:
+        if set(_SLOT.findall(row['Text'])) - {item['Slot'] for item in slots}:
+            raise LayoutError(f'{entry}:{row["line"]}: prompt uses an undeclared slot')
     resources = []
     for path, data in contents.items():
         root_id = max((key for key, root in roots.items() if path.is_relative_to(root)),
@@ -457,7 +515,8 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                                     state[0]['Registry'], state_source,
                                     tuple(_freeze(row) for row in nodes), tuple(_freeze(row) for row in edges),
                                     MappingProxyType(contents), definition_id, layout,
-                                    MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages), application_binding)
+                                    MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages), application_binding,
+                                    prompts=tuple(_freeze(row) for row in prompts), prompt_slots=tuple(_freeze(row) for row in slots))
     _validated_timeouts(definition)
     return definition
 
@@ -476,7 +535,8 @@ def load_native_bindings(definition, *, packaged_proof=None, config=None):
         _source_manifest(definition, packaged_proof)
     result = {}
     sources = {definition.schema_source, *(row['Source'] for row in definition.nodes),
-               *(row['Source'] for row in definition.edges if row['Source'] is not None)}
+               *(row['Source'] for row in definition.edges if row['Source'] is not None),
+               *(row['Source'] for row in getattr(definition, 'prompt_slots', ()))}
     if definition.application_binding is not None:
         sources.add(definition.application_binding[1])
     def local_module_path(module):

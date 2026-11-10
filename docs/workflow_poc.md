@@ -64,6 +64,17 @@ Existing guarded components also support [deterministic candidate repair](workfl
 within their declared pass/deadline budgets, preserving producer history and
 blocking replay of dispatched effects.
 
+## Declared prompts and resource-pack slots
+
+Typed (State-declared) nodes declare their prompts beside their native binding,
+so the template text is part of the admitted declaration. `{{slot}}`
+placeholders name root `Prompt Slots` callables, which typically read a
+resource the selected pack supplies through a `<resource_pack>/` link. The
+[prompted demo](../demo/prompted/flow.md.html) frames one node differently for
+its `fleet` and `construction` packs and adds a follow-up prompt only after the
+first turn; `tests/integration/test_prompted_demo.py` runs it under both packs
+with a controlled model service.
+
 ## Named tools and optional dependencies
 
 Workflows select named tool instances through linked Tools tables. Graph and

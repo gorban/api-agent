@@ -104,6 +104,8 @@ def compile_definition(definition, wheels):
     encode = _encoder(logical)
     if getattr(definition, 'helper_sources', ()):
         raise ArtifactCompileError('helper native sources cannot be compiled; declare dependencies')
+    if getattr(definition, 'prompts', ()) or getattr(definition, 'prompt_slots', ()):
+        raise ArtifactCompileError('compiled plans do not support declared typed-node prompts')
     installed = [read_wheel(path) for path in wheels]
     declared_modules = {logical(path): module
                         for module, path in getattr(definition, 'native_dependencies', {}).items()}

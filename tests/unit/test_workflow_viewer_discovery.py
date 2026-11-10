@@ -16,7 +16,7 @@ def entry(root, relative="flow.md.html", heading="# Workflow"):
 
 def test_repository_inventory_includes_permanent_and_integration_fixtures():
     root = Path(__file__).resolve().parents[2]
-    expected = {"flow.md.html", "demo/simple/flow.md.html", "demo/contrived/flow.md.html",
+    expected = {"flow.md.html", "demo/simple/flow.md.html", "demo/contrived/flow.md.html", "demo/prompted/flow.md.html",
                 "tests/fixtures/artifact_qualification/flow.md.html",
                 "tests/integration/fixtures/workflow_preferences/flow.md.html",
                 "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html",
@@ -27,6 +27,7 @@ def test_repository_inventory_includes_permanent_and_integration_fixtures():
         "simple_chat": "base/flow.md.html",
         "useful_api_demo": "base/demo/simple/flow.md.html",
         "contrived_qualification": "pack/contrived/flow.md.html",
+        "prompted_demo": "base/demo/prompted/flow.md.html",
         "artifact_qualification": "base/flow.md.html",
         "workflow_preferences": "base/flow.md.html",
         "independent_tools": "base/tests/integration/fixtures/tool_instances/independent/flow.md.html",
