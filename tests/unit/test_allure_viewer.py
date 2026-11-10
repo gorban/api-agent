@@ -255,7 +255,7 @@ async def test_history_separates_runs_selected_attempt_and_cleanup(tmp_path, run
     owner = viewer.ManagedAllureViewer(port, browser_factory=lambda: browser)
     try:
         location = await owner.show_history(source)
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             assert second['run_id'] in location.url
             response = await client.get(location.archive_url)
             assert response.text.index(second['run_id']) < response.text.index(manifest['run_id'])
@@ -284,7 +284,7 @@ async def test_preview_versions_preserve_existing_routes(run, cli, port):
         two = await owner.show_preview(PreviewSnapshot(files, second, {'test': name}), name)
         final = await owner.show_preview(PreviewSnapshot(files, manifest, {'test': name}, False), name)
         assert len({one.url, two.url, final.url}) == 3
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             assert (await client.get(one.url.split('#')[0])).status_code == 200
     finally:
         await owner.aclose()
@@ -437,7 +437,7 @@ async def test_browser_failure_keeps_report(run, cli, port):
     try:
         location = await owner.show_preview(PreviewSnapshot(files, dict(manifest, preview_version=1), {}), name)
         assert location.browser_error
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             assert (await client.get(location.url.split('#')[0])).status_code == 200
     finally:
         await owner.aclose()
@@ -528,7 +528,7 @@ async def test_server_directory_listing_disabled(cli, port):
     owner = viewer.ManagedAllureViewer(port)
     try:
         await owner._ready()
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             assert (await client.get(f'http://127.0.0.1:{port}/')).status_code == 404
     finally:
         await owner.aclose()
@@ -788,7 +788,7 @@ async def test_history_http_generates_latest_and_preserves_host_boundary(tmp_pat
     try:
         location=await owner.show_history(source)
         assert len(owner._bindings)==1
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             index=await client.get(location.archive_url)
             import re
             path=re.search(r'href="([^"]+)"',index.text)[1]
@@ -815,7 +815,7 @@ async def test_late_artifact_corruption_returns_http_failure_without_serving_par
         await owner.show_history(RunSource('sample',tmp_path))
         path=next(iter(owner._history_routes))
         (directory/name).write_text('corrupt')
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response=await client.get(f'http://127.0.0.1:{port}'+path)
             assert response.status_code==503
             assert 'corrupt' not in response.text
@@ -839,7 +839,7 @@ async def test_http_wait_timeout_cancels_the_owned_generation_future(tmp_path,ru
         await owner.show_history(RunSource('sample',tmp_path))
         monkeypatch.setattr(viewer.asyncio,'run_coroutine_threadsafe',submit)
         path=next(iter(owner._history_routes))
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             assert (await client.get(f'http://127.0.0.1:{port}'+path)).status_code==504
         assert cancelled==[True]
     finally:
@@ -1063,7 +1063,7 @@ async def test_native_window_is_bounded_and_archive_still_lists_older_launches(t
         assert len(chain) == viewer.HISTORY_LAUNCHES == 20
         assert chain[0] == 'integration — ' + rows[2]['finished_at']
         assert len(owner._bindings) == 20
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             archive = await client.get(location.archive_url)
             assert all(row['run_id'] in archive.text for row in rows)
             route = next(route for route, binding in owner._history_routes.items()

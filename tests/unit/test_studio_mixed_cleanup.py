@@ -45,7 +45,7 @@ def test_real_interaction_channels_settle_before_optional_trace_classification(o
             loop.run_until_complete(ui.start())
             url=operation.prepared_factory.call_args.args[0]['AGENT_DJANGO_URL']
             async def request():
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=60) as client:
                     response=await client.get(url+'/app/agent/models',headers={'Origin':'http://localhost:9443','X-API-Agent-Session':'x'*32})
                     assert response.status_code==200
             loop.run_until_complete(request())

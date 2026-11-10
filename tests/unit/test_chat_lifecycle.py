@@ -8,6 +8,10 @@ from api_agent.api.chat_lifecycle import ChatLifecycle
 from api_agent.providers.control import CleanupPendingError, OperationContext, OperationalError
 
 
+# Waits for an expected event; they bound only a hung test on a slow host.
+EVENTUAL = 5
+
+
 def registry(**options):
     return ChatLifecycle(heartbeat_interval=.01, expiry=.04, cleanup_timeout=.01, **options)
 
@@ -147,7 +151,7 @@ def test_heartbeat_renews_only_lease_and_expiry_drains_operation():
         await asyncio.sleep(.025)
         assert not turn.done.is_set()
         assert context.deadline == deadline
-        await asyncio.wait_for(turn.done.wait(), .2)
+        await asyncio.wait_for(turn.done.wait(), EVENTUAL)
         assert turn.state == 'cancelled' and drained.is_set()
         assert not context.retained_tasks
         await engine.aclose()
@@ -472,7 +476,7 @@ def test_shutdown_signals_cooperative_sibling_before_waiting_for_resistant_resou
         closing = asyncio.create_task(engine.aclose())
         await resistant_cancelled.wait()
         try:
-            await asyncio.wait_for(cooperative_disposed.wait(), .04)
+            await asyncio.wait_for(cooperative_disposed.wait(), EVENTUAL)
             assert resources == {'resistant'} and not closing.done()
         finally:
             release.set()
@@ -525,7 +529,7 @@ def test_receipt_created_during_invocation_cancellation_blocks_terminal_publicat
         await invoked.wait()
         control = (engine.cancel if stop == 'cancel' else engine.disconnect if stop == 'disconnect' else engine.wait)
         waiting = asyncio.create_task(control('owner', 'session'))
-        await asyncio.wait_for(disposing.wait(), .3)
+        await asyncio.wait_for(disposing.wait(), EVENTUAL)
         with pytest.raises(CleanupPendingError) as pending:
             await waiting
         assert turn.state == 'cleanup_pending' and not turn.done.is_set()
@@ -557,7 +561,7 @@ def test_lease_expiring_during_cleanup_keeps_an_ended_turns_outcome():
                             context=OperationContext('request', time.monotonic() + .02))
         await invoked.wait()
         waiting = asyncio.create_task(engine.wait('owner', 'session'))
-        await asyncio.wait_for(disposing.wait(), .3)
+        await asyncio.wait_for(disposing.wait(), EVENTUAL)
         with pytest.raises(CleanupPendingError) as pending:
             await waiting
         assert turn.task.done()
@@ -615,7 +619,7 @@ def test_retry_transfers_grouped_cleanup_duties_before_reusing_parent(mixed_fail
         with pytest.raises(CleanupPendingError) as pending:
             await engine.wait('owner', 'session')
         retrying = asyncio.create_task(pending.value.retry())
-        await asyncio.wait_for(blocked.wait(), .2)
+        await asyncio.wait_for(blocked.wait(), EVENTUAL)
         with pytest.raises(CleanupPendingError):
             await retrying
         assert calls == ['parent', 'first']
@@ -818,7 +822,7 @@ def test_watchdog_failure_fail_stops_operation_and_retains_cleanup(monkeypatch, 
         await entered.wait()
         if phase == 'exit':
             engine.heartbeat('owner', 'session')
-        await asyncio.wait_for(cancelled.wait(), .2)
+        await asyncio.wait_for(cancelled.wait(), EVENTUAL)
         try:
             if resistant:
                 with pytest.raises(CleanupPendingError):
@@ -862,7 +866,7 @@ def test_real_progress_heartbeat_allocation_fault_cannot_disable_lease(monkeypat
         monkeypatch.setattr(loop, 'create_task', reject_heartbeat)
         with progress_sink(observe):
             turn = engine.start('owner', 'session', invoke, context=OperationContext('request'))
-            await asyncio.wait_for(turn.done.wait(), .2)
+            await asyncio.wait_for(turn.done.wait(), EVENTUAL)
             assert turn.state == 'cancelled' and not turn.context.retained_tasks
             assert isinstance(turn._watch_error, RuntimeError)
             await engine.aclose()
@@ -909,7 +913,7 @@ def test_watchdog_fail_stop_survives_settlement_scheduler_rejection(monkeypatch)
         monkeypatch.setattr(engine, '_watch', watch)
         monkeypatch.setattr(loop, 'create_task', reject_first_settlement)
         turn = engine.start('owner', 'session', invoke, context=OperationContext('request'))
-        await asyncio.wait_for(turn.done.wait(), .2)
+        await asyncio.wait_for(turn.done.wait(), EVENTUAL)
         assert rejected == ['settlement']
         assert turn.state == 'cancelled' and not turn.context.retained_tasks
         assert isinstance(turn._watch_error, RuntimeError)

@@ -37,7 +37,7 @@ def test_normal_http_retained_manual_has_separate_graph_and_frozen_evidence(manu
             headers={'Origin':'http://localhost:9443','X-API-Agent-Session':'x'*32}
             async with agent_endpoint(retained,'sample','http://localhost:9443','x'*32,
                                       application=application,tracing=owner) as url:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=60) as client:
                     denied=await client.get(url+'/app/agent/models')
                     assert denied.status_code==403 and not owner._sessions
                     models=await client.get(url+'/app/agent/models',headers=headers)
@@ -156,7 +156,7 @@ def test_actual_native_http_transport_maps_safe_messages_and_structural_fields(m
             owner=StudioTraceOwner(settings.values,capture_sources(settings.values,settings.fields),retained)
             async with agent_endpoint(retained,'sample','http://localhost:9443','x'*32,
                                       application=application,tracing=owner) as url:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=60) as client:
                     result=await client.post(url+'/app/agent/chat',
                         headers={'Origin':'http://localhost:9443','X-API-Agent-Session':'x'*32},json={
                           'model':'sample','session_id':str(uuid4()),'messages':[{'role':'user','content':'visible transport prompt'}]})
