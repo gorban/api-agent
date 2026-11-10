@@ -10,6 +10,7 @@ import tomllib
 
 from api_agent.workflows.definition import _read_bounded
 from .models import ToolSelectionError
+from .operations import EFFECTS, OPERATIONS_INTERFACE, name_problem
 
 MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_CAPTURE_FILES = 4096
@@ -262,7 +263,7 @@ def instance_declaration(data):
 
 def implementation_declaration(data):
     required = {'version', 'interface', 'factory'}
-    _version(data, required, required | {'inputs', 'services', 'executables'}, 'tool implementation')
+    _version(data, required, required | {'inputs', 'services', 'executables', 'operations'}, 'tool implementation')
     if type(data['interface']) is not str or not _INTERFACE.fullmatch(data['interface']):
         raise ToolSelectionError('Tool implementation requires a versioned interface')
     if type(data['factory']) is not str:
@@ -279,4 +280,25 @@ def implementation_declaration(data):
             if type(row['nonempty']) is not bool or row.get('type') != 'str':
                 raise ToolSelectionError('Tool nonempty policy requires a boolean on a string input')
     string_map(data.get('services', {}), 'Tool service capabilities')
+    _operations(data)
     return data
+
+
+def _operations(data):
+    declared = data.get('operations')
+    if data['interface'] != OPERATIONS_INTERFACE:
+        if declared is not None:
+            raise ToolSelectionError('Only operations@1 implementations declare operations')
+        return
+    if type(declared) is not dict:
+        raise ToolSelectionError('Tool implementation requires an operations table')
+    if not declared:
+        raise ToolSelectionError('Tool implementation requires at least one operation')
+    for name, row in declared.items():
+        problem = name_problem(name)
+        if problem:
+            raise ToolSelectionError(f'Tool operation {name!r}: {problem}')
+        if type(row) is not dict:
+            raise ToolSelectionError(f'Tool operation {name} must be a table')
+        if set(row) != {'effect'} or row['effect'] not in EFFECTS:
+            raise ToolSelectionError(f'Tool operation {name} requires exactly effect = "read" or "write"')

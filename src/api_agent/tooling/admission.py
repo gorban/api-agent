@@ -28,6 +28,10 @@ class ToolDependencyMissing(ToolAdmissionError):
     pass
 
 
+_FACTORIES = {'verified-read@1': 'create_tool', 'operations@1': 'create_tool',
+              'tracing-provider@1': 'create_tracing_provider'}
+
+
 @dataclass(frozen=True)
 class FactoryAdmission:
     factory: str
@@ -363,7 +367,7 @@ def _check_factory_source(body, filename, factory_name='create_tool'):
         raise ToolAdmissionError('Tool factory cannot be rebound after its declaration')
     return tree
 
-def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path, *,
+def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path,
                          interface='verified-read@1') -> FactoryAdmission:
     """Capture the selected package, including sibling modules and initializers.
 
@@ -371,7 +375,7 @@ def capture_tool_factory(factory: Path, factory_name: str, owner_root: Path, *,
     are pinned and checked again before executing the captured package.
     """
     factory, owner_root = Path(factory).absolute(), Path(owner_root).absolute()
-    expected = {'verified-read@1': 'create_tool', 'tracing-provider@1': 'create_tracing_provider'}.get(interface)
+    expected = _FACTORIES.get(interface)
     if factory_name != expected or factory.suffix != '.py' or not factory.is_relative_to(owner_root):
         raise ToolAdmissionError('Invalid selected tool factory')
     package = factory.parent
@@ -452,9 +456,9 @@ def _identity(sources, dependencies, assets):
 
 
 def _check_admission(admission):
-    if not isinstance(admission, FactoryAdmission) or admission.interface not in {'verified-read@1', 'tracing-provider@1'}:
+    if not isinstance(admission, FactoryAdmission) or admission.interface not in _FACTORIES:
         raise ToolAdmissionError('Tool factory admission is required')
-    expected = {'verified-read@1': 'create_tool', 'tracing-provider@1': 'create_tracing_provider'}[admission.interface]
+    expected = _FACTORIES[admission.interface]
     if (admission.factory != expected or admission.entry not in admission.sources
             or admission.identity != _identity(admission.sources, admission.dependencies, admission.assets)):
         raise ToolAdmissionError('Tool executable admission identity changed')

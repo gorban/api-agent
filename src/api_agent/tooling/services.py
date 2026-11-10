@@ -134,7 +134,7 @@ def tool_configurations(plan, services, *, environments=None):
     if len(identities) != len(set(identities)) or any(identity not in identities for identity in plan.bindings.values()):
         raise ValueError('Selected tool identities or graph bindings conflict')
     for tool in plan.tools:
-        if tool.interface != 'verified-read@1' or tool.admission is None or tool.pending:
+        if tool.interface not in ('verified-read@1', 'operations@1') or tool.admission is None or tool.pending:
             raise ValueError('Selected tool admission or ready outputs are missing')
     plan = prepare_tool_plan(plan)
     for tool in plan.tools:

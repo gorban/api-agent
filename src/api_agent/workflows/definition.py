@@ -17,6 +17,7 @@ from .layout import _COLUMNS, _RESPONSE_COLUMNS, _SUMMARY_COLUMNS, _ID, _MD, _va
 from .model import (InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage,
                     declares_source, freeze as _freeze, _MAX_SNAPSHOT_BYTES)
 from .document_format import extract_document, validate_presentation_location
+from api_agent.tooling.operations import FIXED_OPERATIONS, name_problem
 
 
 @dataclass(frozen=True)
@@ -253,7 +254,7 @@ def _tool_operations(path, row, scope_kind):
         return ()
     operations = tuple(part.strip() for part in row['Operations'].split(','))
     if (scope_kind != 'node' or not operations or len(set(operations)) != len(operations)
-            or any(part not in ('describe', 'prepare', 'verify', 'execute') for part in operations)):
+            or any(part not in FIXED_OPERATIONS and name_problem(part) for part in operations)):
         raise LayoutError(f'{path}:{row["line"]}: invalid tool operations; declare node operations separated by commas')
     return operations
 

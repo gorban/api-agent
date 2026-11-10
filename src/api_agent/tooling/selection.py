@@ -11,6 +11,7 @@ from api_agent.config.resolve import _matches, convert_value, resolve_config
 from api_agent.runtime.resource_pack import load_selected_definition
 from api_agent.testing.workflow_selection import parse_catalog, selected_graphs
 from .declarations import Capture, instance_declaration, implementation_declaration
+from .operations import OPERATIONS_INTERFACE, check_use, declared_operations
 from .models import (SelectedTool, ToolCatalog, ToolPlan, ToolSelectionError,
                      operation_selection, freeze)
 
@@ -389,6 +390,11 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
             raise ToolSelectionError('Selected tool interface is incompatible')
         from .executables import capture_executables
         executables, executable_assets = capture_executables(capture, implementation, spec.get('executables'))
+        operations = declared_operations(spec)
+        for definition in definitions:
+            for use in definition.tool_usages:
+                if use.instance == path:
+                    check_use(use, data['interface'], operations, implementation)
         aliases = data.get('bindings', {})
         for slot, row in spec.get('inputs', {}).items():
             if slot not in aliases:
@@ -406,7 +412,8 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
         factory = capture.path(implementation, target)
         body = capture.read(factory)
         from .admission import capture_tool_factory
-        admission_key = (factory, factory_name, capture.owner(factory))
+        admission_key = (factory, factory_name, capture.owner(factory),
+                         *((OPERATIONS_INTERFACE,) if data['interface'] == OPERATIONS_INTERFACE else ()))
         if admission_key not in admissions:
             admissions[admission_key] = capture_tool_factory(*admission_key)
         admission = admissions[admission_key]
@@ -446,7 +453,8 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
             implementation_path=implementation, admission=admission,
             executables=executables, executable_assets=executable_assets,
             nonempty_inputs=tuple(slot for slot, row in spec.get('inputs', {}).items()
-                                  if row.get('nonempty', False))))
+                                  if row.get('nonempty', False)),
+            operations=operations))
     try:
         extension = schema_from_dict({'version': 1, 'fields': rows}, base_schema=base_schema)
     except ValueError:
