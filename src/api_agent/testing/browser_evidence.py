@@ -31,7 +31,7 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
     ``allow_masked_content`` opts in an owned provider policy to produce bounded
     masked pixels while content logging is off; the default remains no capture.
     The default ten-second page budget includes original-pixel safety audits
-    and restoration. Callers may explicitly select one through twenty seconds.
+    and restoration. Callers may explicitly select one through thirty seconds.
 
     ``submit((title, bytes, MIME))`` is synchronous, bounded and nonblocking;
     the caller binds it to the current test/attempt's immutable recording path.
@@ -42,7 +42,7 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
     exception messages become metadata. Returned tuples contain successful
     submissions only; the caller need not retain them.
     """
-    if type(capture_timeout_seconds) is not int or not 1 <= capture_timeout_seconds <= 20:
+    if type(capture_timeout_seconds) is not int or not 1 <= capture_timeout_seconds <= 30:
         raise ValueError('Invalid UI capture timeout')
     if boundary.policy.allow_content is not True and not allow_masked_content:
         return ()
