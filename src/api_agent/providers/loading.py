@@ -829,6 +829,10 @@ def _validate_tool(adapter):
             inspect.signature(hook).bind(*args)
         except (TypeError, ValueError):
             raise ProviderError('tool_callable_invalid') from None
+    _validate_start(adapter)
+
+
+def _validate_start(adapter):
     start = getattr(adapter, 'astart', None)
     if start is not None:
         if not inspect.iscoroutinefunction(start):
@@ -839,8 +843,24 @@ def _validate_tool(adapter):
             raise ProviderError('tool_callable_invalid') from None
 
 
+def _validate_operations_tool(adapter):
+    """Check an operations@1 owner: versioned, with async ``invoke`` and ``aclose``."""
+    if adapter is None or type(getattr(adapter, 'version', None)) is not int or adapter.version != 1:
+        raise ProviderError('tool_version_invalid')
+    for name, args in (('invoke', ('operation', {})), ('aclose', ())):
+        hook = getattr(adapter, name, None)
+        if not inspect.iscoroutinefunction(hook):
+            raise ProviderError('tool_callable_invalid')
+        try:
+            inspect.signature(hook).bind(*args)
+        except (TypeError, ValueError):
+            raise ProviderError('tool_callable_invalid') from None
+    _validate_start(adapter)
+
+
 async def aload_tool(admission, config, services):
-    return await aload_captured_provider(admission, config, services, validator=_validate_tool)
+    validator = _validate_operations_tool if admission.interface == 'operations@1' else _validate_tool
+    return await aload_captured_provider(admission, config, services, validator=validator)
 
 
 async def aload_captured_provider(admission, config, services, *, validator):

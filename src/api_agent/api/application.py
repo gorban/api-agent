@@ -105,15 +105,17 @@ class Runtime:
         if not self.ready or instance not in self.tool_owners:
             raise RuntimeLifecycleError('runtime_tool_unavailable')
         from api_agent.tooling.runtime import BorrowedTool
-        owner = self.tool_owners[instance].require_tool()
+        loaded = self.tool_owners[instance]
+        owner = loaded.require_tool()
         factory = getattr(owner, 'for_invocation', None)
         if factory is not None and (not callable(factory) or inspect.iscoroutinefunction(factory)):
             raise RuntimeLifecycleError('runtime_tool_view_invalid')
         view = factory() if factory is not None else owner
         borrowed = BorrowedTool(self, owner, view)
         self._tool_views.append(borrowed)
-        if any(not inspect.iscoroutinefunction(getattr(view, name, None))
-               for name in ('describe', 'validate', 'invoke', 'aclose')):
+        interface = getattr(getattr(loaded, 'admission', None), 'interface', None)
+        required = ('invoke', 'aclose') if interface == 'operations@1' else ('describe', 'validate', 'invoke', 'aclose')
+        if any(not inspect.iscoroutinefunction(getattr(view, name, None)) for name in required):
             raise RuntimeLifecycleError('runtime_tool_view_invalid')
         return borrowed
 
