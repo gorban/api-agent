@@ -45,7 +45,7 @@ def test_unguarded_component_rejects_any_budget_except_exactly_one(tmp_path, max
     shutil.copytree(ROOT / 'demo/simple', tmp_path / 'demo/simple')
     shutil.copyfile(ROOT / 'flow.md.html', tmp_path / 'flow.md.html')
     component = tmp_path / 'workflows/components/agent.md.html'
-    component.write_text(component.read_text().replace('| agent | 1 | - |', '| agent | ' + maximum + ' | - |'))
+    component.write_text(component.read_text().replace('| 1 | - |', '| ' + maximum + ' | - |'))
 
     with pytest.raises(LayoutError, match='positive integer|exactly one pass'):
         load_definition(tmp_path / 'flow.md.html', base_root=tmp_path, pack_root=tmp_path)
