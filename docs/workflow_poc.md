@@ -476,7 +476,7 @@ resource kind.
 
 `Key` is an uppercase identifier, unique across the whole graph, naming an integer
 field with a declared default. The effective value (`config.get(key, default)`)
-must be an integer from 1 to 99 and is checked before any native source runs.
+must be an integer from 0 to 99 and is checked before any native source runs.
 Declared keys become constants in typed `When` conditions, including prompt
 selection: `.next_step == "plan_request" and .plan_retries <= GRAPH_MAX_PLAN_RETRIES`.
 A condition that names an undeclared uppercase constant is rejected at load.
@@ -517,6 +517,63 @@ Calibration fingerprints also record the running Python version and installed
 `langgraph`, `langchain-core`, `jsonschema`, `markdown-it-py` and `httpx` versions.
 An explicit legacy calibration refresh binds its current dependencies; normal
 coverage does not require a pilot after dependency upgrades. These are public package versions, without environment paths.
+
+## Bounded loops in Bindings graphs
+
+A Bindings-grammar graph declares explicit retry and replan loops with `## Limits`,
+the `<step>.attempt` counter and backward `Edges` rows. Limits use the same table as
+above in the root, a component or a node document; the declaring document is the
+owner. A root limit is visible to every edge, and a component or node limit to edges
+whose source is that step or inside it. Keys are unique across the graph and may not
+repeat a component's linked `Max passes` key. The effective value is checked
+(integer 0 to 99, configuration override over the declared default) before any
+native source runs. A limit is an integer constant in `Edges` `When` conditions;
+Bindings `Prompts` rows still name registered conditions and cannot read limits.
+
+`<step_id>.attempt` evaluates to the number of times that node or component has
+started in the current turn: 0 before its first start, 1 after the first run. Counters
+reset every turn and count each start of a node (each pass of a guarded component starts
+its nodes again) or entry of a component. They are engine state, so an `Output` schema may not declare a top-level property named `attempt`; that is
+rejected at load. Bare `attempt` and `max_passes` keep their
+guarded-component meaning.
+
+An edge whose target is its source or earlier in Flow order (still a sibling) is allowed
+only when its `When` is a conjunction containing `<target>.attempt < LIMIT` or
+`<target>.attempt <= LIMIT`, where `LIMIT` is a declared limit key:
+
+```markdown
+## Limits
+
+| Key | Source |
+| --- | --- |
+| PLAN_PASSES | [config](cfg/config.toml) |
+
+## Edges
+
+| From | To | When |
+| --- | --- | --- |
+| verify | next | verify.accepted |
+| verify | draft | not verify.accepted and draft.attempt < PLAN_PASSES |
+| verify | failed | otherwise |
+```
+
+With `PLAN_PASSES` of 2, `draft` runs at most twice; the `failed` route is an ordinary
+edge. `<` allows LIMIT runs of the target and `<=` allows one more; a limit of 0 disables
+the loop. `always`, `otherwise`, registered condition names, literal bounds, `or`, negated
+or reversed comparisons are not bounds, and the edge is rejected with a located error.
+A bound refers to a limit key, never a literal, so the bound is visible configuration.
+
+Re-entering a step re-runs it with fresh bindings, and each run's output replaces the
+previous output in the turn's values, so later steps and conditions see the latest run.
+Outputs of steps downstream of the target remain until those steps run again. Counters
+span the whole turn: re-entering a component does not reset the counters of its
+children. The graph's recursion limit is derived from the declared edges (each bounded
+backward edge adds its limit value, plus one for `<=`, re-runs of every step), so a
+turn with the largest declared loops still terminates normally. Journals of loops list
+each visit as its own scope and edge and validate with the same strict route checks.
+Limit rows and backward edges are part of the workflow identity and of compiled
+plans, and the viewer shows each limit as `Configuration: KEY` in its declaring
+diagram.
 
 ## Installed declaration check
 
