@@ -108,7 +108,8 @@ def compile_definition(definition, wheels):
         raise ArtifactCompileError('compiled plans do not support declared typed-node prompts')
     if getattr(definition, 'functions', ()):
         raise ArtifactCompileError('compiled plans do not support declared typed-node Functions')
-    if getattr(definition, 'limits', ()) or any('Expired' in row for row in getattr(definition, 'timeouts', ())):
+    typed = getattr(definition, 'schema_source', None) is not None
+    if typed and definition.limits or any('Expired' in row for row in getattr(definition, 'timeouts', ())):
         raise ArtifactCompileError('compiled plans do not support declared limits and timeout expiry routing')
     installed = [read_wheel(path) for path in wheels]
     declared_modules = {logical(path): module
@@ -154,7 +155,6 @@ def compile_definition(definition, wheels):
                                'top_levels': list(wheel.top_levels),
                                'files': sorted([path, digest] for path, digest in wheel.files.items())}
                               for _, wheel in sorted(used.items())]}
-    typed = getattr(definition, 'schema_source', None) is not None
     if not typed and getattr(definition, 'application_binding', None) is not None:
         plan['application_binding'] = encode(definition.application_binding)
     if not typed and getattr(definition, 'slot_files', None):

@@ -37,6 +37,7 @@ _RECORD_HASH = re.compile(r'sha256=([A-Za-z0-9_-]{43})\Z')
 _MODULE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z')
 _VERSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+!-]*\Z')
 _NAME = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z')
+_LIMIT_KEY = re.compile(r'[A-Z][A-Z0-9_]{0,63}\Z')
 _REGISTRY = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
 _GRAPH_ID = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
 _TOP_KEYS = frozenset({
@@ -385,6 +386,15 @@ def _decode_slots(value, resources, contents):
     return slots
 
 
+def _limit_row(row, configured):
+    return (isinstance(row, MappingProxyType)
+            and set(row) in ({'Key', 'Source', 'line'}, {'Key', 'Source', 'line', '_owner', '_owner_id'})
+            and type(row['Key']) is str and _LIMIT_KEY.fullmatch(row['Key']) is not None
+            and row['Source'] in configured and type(row['line']) is int and row['line'] >= 1
+            and ('_owner' not in row or isinstance(row['_owner'], PurePosixPath)
+                 and type(row['_owner_id']) is str))
+
+
 def _decode_plan(value, typed):
     resources, contents = _decode_resources(value['resources'])
     graph_id, entry_root = value['graph_id'], value['entry_root']
@@ -423,11 +433,17 @@ def _decode_plan(value, typed):
         steps.append(Step(row['id'], row['kind'], row['parent'], _virtual(row['source']), row['line']))
     tables, files = _decode(encoded_layout['tables']), _decode(encoded_layout['files'])
     expected_tables = {'Components', 'Functions', 'Bindings', 'Edges', 'Prompts', 'Timeouts'} if not typed else {'Edges'}
-    optional = set() if typed else {'Session'}
+    # A graph without Session or Limits has no such table.
+    optional = set() if typed else {'Session', 'Limits'}
     if not isinstance(tables, MappingProxyType) or set(tables) - optional != expected_tables:
         raise ValueError('invalid layout tables')
     if not typed:
         _check_session(tables)
+    configured = {_virtual(item.logical_path) for item in resources if item.kind == 'configuration'}
+    limits = tables.get('Limits', ())
+    if not (type(limits) is tuple and all(_limit_row(row, configured) for row in limits)
+            and len({row['Key'] for row in limits}) == len(limits)):
+        raise ValueError('invalid limit rows')
     decoded = dict(
         graph_id=graph_id, entry=entry, entry_root=entry_root,
         imports=imports, declaration_entry=declaration_entry,
@@ -549,6 +565,10 @@ class CompiledDefinition(_Compiled):
     declaration_entry: PurePosixPath | None = None
     application_binding: tuple | None = None
     slot_files: object = field(default_factory=lambda: MappingProxyType({}))
+
+    @property
+    def limits(self):
+        return tuple(self.layout.tables.get('Limits', ()))
 
     def native_rejection(self, function, step):
         return None
