@@ -266,6 +266,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     selected_declarations = {}
     declaration_fragments = {}
     inline_references = {}
+    component_edges = {}
     def visit(owner, body, parent=None, depth=0):
         if depth > 64:
             raise LayoutError(f'{owner}:1: component nesting exceeds 64 levels')
@@ -335,8 +336,10 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
             selected_declarations[identifier] = (owner, number, declaration)
             capture_tools(declaration, kind, identifier, child)
             if kind == 'component':
-                if set(child) - {'Tools'} != {'Flow'}:
+                if set(child) - {'Tools', 'Edges', 'Notes'} != {'Flow'}:
                     raise LayoutError(f'{declaration}:1: component requires only Flow')
+                if 'Edges' in child:
+                    component_edges[identifier] = (declaration, child['Edges'])
                 visit(declaration, child['Flow'], identifier, depth + 1)
             else:
                 if set(child) - {'Tools'} != {'Native'}:
@@ -361,14 +364,21 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
         raise LayoutError(f'{entry}:1: unknown replacement target')
     edges = []
     parents = {name: parent for name, _, parent, _ in steps}
-    for row in _shared_table(entry, sections['Edges'], ('From', 'To', 'Router', 'Source')):
+    columns = ('From', 'To', 'Router', 'Source')
+    declared_edges = [(None, entry, row) for row in _shared_table(entry, sections['Edges'], columns)]
+    for owner_id, (declaration, body) in component_edges.items():
+        declared_edges.extend((owner_id, declaration, row) for row in _shared_table(declaration, body, columns))
+    for owner_id, declaration, row in declared_edges:
+        # A component that declares Edges owns every route from its direct children.
         if (row['From'] not in parents or row['To'] not in (*parents, 'END')
                 or (row['To'] != 'END' and parents[row['To']] != parents[row['From']])
-                or (row['Router'] != '-' and not _ID.fullmatch(row['Router']))):
-            raise LayoutError(f'{entry}:{row["line"]}: invalid edge declaration')
+                or (row['Router'] != '-' and not _ID.fullmatch(row['Router']))
+                or (owner_id is not None and parents[row['From']] != owner_id)
+                or (owner_id is None and parents[row['From']] in component_edges)):
+            raise LayoutError(f'{declaration}:{row["line"]}: invalid edge declaration')
         if row['Router'] == '-' and row['Source'] != '-':
-            raise LayoutError(f'{entry}:{row["line"]}: static edge source must be -')
-        edges.append(dict(row, Source=None if row['Router'] == '-' else source(row)))
+            raise LayoutError(f'{declaration}:{row["line"]}: static edge source must be -')
+        edges.append(dict(row, Source=None if row['Router'] == '-' else source(dict(row, _owner=declaration))))
     for name in parents:
         outgoing = [row for row in edges if row['From'] == name]
         if not outgoing or (len(outgoing) > 1 and any(row['Router'] == '-' for row in outgoing)) or len({row['Router'] for row in outgoing}) != 1:

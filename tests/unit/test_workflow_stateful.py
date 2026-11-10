@@ -1163,6 +1163,63 @@ something
         load_definition(entry, base_root=root, pack_root=root)
 
 
+def _grouped(root, entry, group_edges, root_edges='| group | END | - | - |\n'):
+    _write(root, 'parts/group.md.html', f'''# Component: group
+
+## Flow
+
+1.  [node intake](../intake.md.html)
+2.  [node finish](../finish.md.html)
+
+## Edges
+
+| From | To | Router | Source |
+| --- | --- | --- | --- |
+{group_edges}
+## Notes
+
+The group owns the routes between its children.
+''')
+    text = entry.read_text().replace(
+        '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
+        '1.  [component group](parts/group.md.html)')
+    entry.write_text(text[:text.index('| --- | --- | --- | --- |\n') + 26] + root_edges)
+
+
+_GROUP_EDGES = ('| intake | finish | choose | [Python](../native.py) |\n'
+                '| intake | END | choose | [Python](../native.py) |\n'
+                '| finish | END | - | - |\n')
+
+
+def test_component_declares_routes_for_its_direct_children(fixture_graph):
+    from api_agent.workflows.viewer_projection import project_view
+    root, entry = fixture_graph
+    _grouped(root, entry, _GROUP_EDGES)
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+
+    result = asyncio.run(workflow.arun({'messages': [HumanMessage(id='human', content='hello')],
+                                        'pending': False, 'visits': 0}, thread_id='grouped'))
+
+    assert (result['visits'], result['pending']) == (1, True)
+    assert {(row['From'], row['To']) for row in definition.edges} == {
+        ('group', 'END'), ('intake', 'finish'), ('intake', 'END'), ('finish', 'END')}
+    assert all(set(row) == {'From', 'To', 'Router', 'Source', 'line'} for row in definition.edges)
+    routers = [item for item in project_view(definition).references if item.kind == 'router_source']
+    assert [(item.owner_id, item.owner_path.rsplit('/', 1)[-1]) for item in routers] == [('intake', 'group.md.html')]
+
+
+@pytest.mark.parametrize(('group_edges', 'root_edges'), [
+    (_GROUP_EDGES, '| group | END | - | - |\n| finish | END | - | - |\n'),
+    (_GROUP_EDGES + '| group | END | - | - |\n', ''),
+])
+def test_component_routes_have_one_declaring_owner(fixture_graph, group_edges, root_edges):
+    root, entry = fixture_graph
+    _grouped(root, entry, group_edges, root_edges)
+    with pytest.raises(LayoutError, match='invalid edge declaration'):
+        load_definition(entry, base_root=root, pack_root=root)
+
+
 @pytest.mark.parametrize(('schema', 'settings', 'message'), [
     ('broken = [', {}, 'invalid timeout declaration'),
     ('version = 1\n[fields.LIMIT]\ntype = "str"\ndefault = "soon"\n', {}, 'timeout key must be numeric'),
