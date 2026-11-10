@@ -157,6 +157,13 @@ def test_grouped_brackets_color_and_clicks_preserve_other_footer():
             app.screen.set_focus(None)
             await pilot.pause()
             footer = app.query_one(search.GroupedUserFooter)
+            def laid_out():
+                widgets = [*footer.query(search._ShortcutKey), *footer.query('.user-cycle')]
+                return widgets and all(widget.region.width for widget in widgets)
+            # The footer recomposes after binding changes and lays out on a later refresh.
+            deadline = asyncio.get_running_loop().time() + 10
+            while not laid_out() and asyncio.get_running_loop().time() < deadline:
+                await pilot.pause(.02)
             brackets = list(footer.query(search._ShortcutKey))
             assert [widget.render().plain for widget in brackets] == ['[', ']']
             stock_style = footer.query_one(FooterKey).get_component_rich_style('footer-key--key')
