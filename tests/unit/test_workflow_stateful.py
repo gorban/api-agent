@@ -1584,6 +1584,21 @@ def test_stateful_local_import_closure_is_admitted_without_declaration(fixture_g
         load_definition(entry, base_root=root, pack_root=root)
 
 
+def test_imported_module_that_is_also_a_declared_source_is_captured_once(fixture_graph):
+    root, entry = fixture_graph
+    _write(root, 'helpers.py', "def choose(state, context):\n    return 'finish' if not state['pending'] else 'END'\n")
+    source = root / 'native.py'
+    source.write_text('import helpers\n' + source.read_text())
+    entry.write_text(entry.read_text().replace('| choose | [Python](native.py) |', '| choose | [Python](helpers.py) |'))
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    helpers = (root / 'helpers.py').resolve()
+    assert definition.native_dependencies['helpers'] == helpers
+    assert sum(1 for path in definition.contents if path == helpers) == 1
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='helpers'))
+    assert (result['visits'], result['pending']) == (1, True)
+
+
 def test_declared_dependency_must_be_the_module_the_import_resolves(fixture_graph):
     root, entry = fixture_graph
     _write(root, 'twin.py', 'VALUE = 1\n')
