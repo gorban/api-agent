@@ -1339,21 +1339,14 @@ def test_nx_viewport_withholds_border_image_outside_host():
                     '</style></head><body><div id="host"></div></body></html>'))
                 await page.goto(origin + '/da2/Home')
                 assert await page.evaluate("() => getComputedStyle(document.querySelector('#host')).borderImageSource.includes('url(')")
+                outside = {'x': 105, 'y': 25, 'width': 85, 'height': 85}
                 raw = await _painted_baseline(page)
-                outside = await page.evaluate('''async png => {
-                  const image=new Image(); image.src='data:image/png;base64,'+png;
-                  await image.decode(); const canvas=document.createElement('canvas');
-                  canvas.width=image.width; canvas.height=image.height;
-                  const ctx=canvas.getContext('2d'); ctx.drawImage(image,0,0);
-                  return [...ctx.getImageData(120,40,1,1).data].slice(0,3);
-                }''', base64.b64encode(raw).decode())
-                assert outside == [255, 0, 0]
+                assert (await _region_pixels(page, raw, outside))['red']
                 masked = await capture_studio_viewport(page,
                     EmissionBoundary(ContentPolicy(True), secrets=('secret-marker',)),
                     origin, path='/da2/Home', allow_frames=True)
                 assert masked is not None
-                assert not (await _region_pixels(page, masked,
-                    {'x': 105, 'y': 25, 'width': 85, 'height': 85}))['red']
+                assert not (await _region_pixels(page, masked, outside))['red']
             finally:
                 await browser.close()
     asyncio.run(run())
