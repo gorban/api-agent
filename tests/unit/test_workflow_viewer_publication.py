@@ -276,7 +276,8 @@ def test_missing_temporary_cleanup_is_harmless(anchored_stage):
 def test_unknown_temporary_restore_conflict_retains_both_files(anchored_stage, monkeypatch):
     root, stage, recovery, descriptor = anchored_stage
     temporary = root / stage.temporary
-    temporary.unlink()
+    # Keep the staged inode allocated so the replacement cannot reuse its number.
+    temporary.rename(root.parent / 'staged-original')
     temporary.write_bytes(b'unknown temporary')
     original = vb.os.link
 
