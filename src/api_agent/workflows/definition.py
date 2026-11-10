@@ -15,6 +15,7 @@ from typing import ClassVar
 from urllib.parse import unquote, urlsplit
 from weakref import WeakKeyDictionary
 
+from .configuration import resolve_state_limits
 from .layout import _COLUMNS, _RESPONSE_COLUMNS, _SESSION_COLUMNS, _SUMMARY_COLUMNS, _ID, _MD, _validate
 from .model import (InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage,
                     declares_source, freeze as _freeze, _MAX_SNAPSHOT_BYTES, _PY_ID)
@@ -48,6 +49,11 @@ class WorkflowDefinition:
         """Every admitted native source: node bindings and the declared application factory."""
         return (*(step.source for step in self.layout.steps if step.kind == 'node'),
                 *((self.application_binding[1],) if self.application_binding is not None else ()))
+
+    @property
+    def limits(self):
+        """Declared Limits rows, with the declaring document as their owner."""
+        return tuple(self.layout.tables.get('Limits', ()))
 
     def verify_native_sources(self):
         """Reject a source change before importing its admitted native binding."""
@@ -681,7 +687,7 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
                 raise LayoutError(f'{row.get("_owner", entry)}:{row["line"]}: invalid Max passes link')
             row['max_passes_key'] = match.group(1)
             row['max_passes_link'] = link(row.get('_owner', entry), value, 'configuration')
-    for name in ('Functions', 'Prompts', 'Timeouts'):
+    for name in ('Functions', 'Prompts', 'Timeouts', 'Limits'):
         for row in tables[name]:
             owner = row.get('_owner', entry)
             for column, kind in ((('Input', 'schema'), ('Output', 'schema'),
@@ -756,7 +762,9 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
     if slot_files:
         identity['prompt_slots'] = _slot_identity(slot_files, roots, resources)
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    return WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,
-                              layout, MappingProxyType({path: data for path, (_, data) in captured.items()}),
-                              MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages),
-                              application_binding=application_binding, slot_files=MappingProxyType(slot_files))
+    definition = WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,
+                                    layout, MappingProxyType({path: data for path, (_, data) in captured.items()}),
+                                    MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages),
+                                    application_binding=application_binding, slot_files=MappingProxyType(slot_files))
+    resolve_state_limits(definition)
+    return definition

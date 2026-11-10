@@ -21,6 +21,7 @@ _COLUMNS = {
     'Edges': ('From', 'To', 'When'),
     'Prompts': ('Node', 'File', 'When'),
     'Timeouts': ('Owner', 'Source', 'Key'),
+    'Limits': ('Key', 'Source'),
 }
 _SESSION_COLUMNS = ('Field', 'Source', 'Merge')
 _RESPONSE_COLUMNS = (*_COLUMNS['Functions'], 'Response schema', 'Output mode', 'Fallback')
@@ -102,6 +103,7 @@ def _validate(layout, resource_bytes=None):
         children = [item.id for item in layout.steps if item.parent == row['ID']]
         if children[-1] != guard.id:
             layout.error('Guard must be the final directly owned step', row['line'])
+    validate_limit_rows(layout, pass_sources)
     bound = {key: set() for key in functions}
     ordered = [item.id for item in layout.steps]
     for row in layout.tables['Bindings']:
@@ -162,6 +164,23 @@ def _validate(layout, resource_bytes=None):
         if row['Owner'] not in {'GRAPH', *steps} or row['Owner'] in seen or _ID.fullmatch(row['Key'].lower()) is None:
             layout.error('unknown or duplicate timeout owner/key', row['line'])
         seen.add(row['Owner'])
+
+
+def validate_limit_rows(layout, pass_sources):
+    """Check Limits keys and sources; values are resolved against configuration separately."""
+    seen = set()
+    for row in layout.tables.get('Limits', ()):
+        def reject(message, row=row):
+            raise LayoutError(f'{row.get("_owner", layout.path)}:{row["line"]}: {message}')
+        if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', row['Key']):
+            reject('invalid limit key')
+        if row['Key'] in seen:
+            reject('duplicate limit key')
+        if row['Key'] in pass_sources:
+            reject('limit key conflicts with a component Max passes key')
+        if row['Source'].suffix != '.toml':
+            reject('limit source must be TOML')
+        seen.add(row['Key'])
 
 
 def validate_function_rows(rows, resource_bytes, reject):

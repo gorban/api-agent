@@ -406,7 +406,7 @@ class Workflow:
         self.session_rows = tuple(layout.tables.get('Session', ()))
         self.components = {row['ID']: row for row in layout.tables['Components']}
         self.timeouts, self.timeout_keys = resolve_timeouts(layout, self.config, self.definition)
-        self.limit_values = MappingProxyType({})
+        self.limit_values = resolve_state_limits(self.definition, self.config)
         self.component_passes, self.pass_constants = resolve_component_passes(layout, self.config)
         steps = {step.id: step for step in layout.steps}
         self.definition.verify_sources()
@@ -645,7 +645,7 @@ class Workflow:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
             result = predicate.evaluate(values, attempt=attempt, max_passes=maximum,
-                                        constants=self.pass_constants)
+                                        constants={**self.pass_constants, **self.limit_values})
         else:
             result = self.conditions[identifier](deepcopy(values))
         if type(result) is not bool:

@@ -115,7 +115,9 @@ class _Snapshot:
             # Linked pass labels contain presentation syntax; the admitted key
             # and logical source carry the binding instead.
             normalized = {}
-            for name in ('Components', 'Functions', 'Bindings', 'Edges', 'Prompts', 'Timeouts'):
+            # Limits only enter when declared, so graphs without them keep their identity.
+            for name in ('Components', 'Functions', 'Bindings', 'Edges', 'Prompts', 'Timeouts',
+                         *(('Limits',) if getattr(d, 'limits', ()) else ())):
                 normalized[name] = []
                 for row in tables[name]:
                     row = dict(row)
@@ -183,7 +185,7 @@ def workflow_identity(definition, *, timeouts, component_passes, limits=None):
     limits = {} if limits is None else limits
     if (not isinstance(limits, Mapping)
             or set(limits) != {row['Key'] for row in getattr(definition, 'limits', ())}
-            or any(type(value) is not int or not 1 <= value <= MAX_COMPONENT_PASSES
+            or any(type(value) is not int or not 0 <= value <= MAX_COMPONENT_PASSES
                    for value in limits.values())):
         raise ValueError('Workflow limit coverage differs from declaration')
     declaration = declaration_identity(definition)

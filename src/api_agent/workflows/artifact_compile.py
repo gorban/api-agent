@@ -142,7 +142,9 @@ def compile_definition(definition, wheels):
             'layout': {'steps': [{'id': step.id, 'kind': step.kind, 'parent': step.parent,
                                   'source': logical(step.source), 'line': step.line}
                                  for step in definition.layout.steps],
-                       'tables': encode(definition.layout.tables), 'files': encode(definition.layout.files)},
+                       'tables': encode({name: rows for name, rows in definition.layout.tables.items()
+                                         if name != 'Limits' or rows}),
+                       'files': encode(definition.layout.files)},
             'selected_declarations': encode(definition.selected_declarations or {}),
             'declaration_fragments': encode(definition.declaration_fragments or {}),
             'tool_usages': [encode([use.scope, use.port, use.instance, use.scope_kind, use.declaration,
