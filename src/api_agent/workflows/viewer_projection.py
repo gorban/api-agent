@@ -207,12 +207,17 @@ def project_view(definition) -> ViewerProjection:
             add_reference('router_source', edge_declaration(owner_id), owner_id, routes[0]['line'], source,
                           router=router, targets=','.join(row['To'] for row in routes))
         for row in definition.timeouts:
-            add_reference('timeout', declaration_entry, row['Owner'], row['line'], row['Source'], key=row['Key'])
+            add_reference('timeout', row.get('_owner', declaration_entry),
+                          None if row['Owner'] == 'GRAPH' else row['Owner'],
+                          row['line'], row['Source'], key=row['Key'])
         for row in getattr(definition, 'functions', ()):
             for field in ('Input', 'Output', 'Response schema'):
                 if row.get(field, '-') != '-':
                     add_reference('functions', row['_owner'], row['ID'], row['line'], row[field],
                                   field=field, **_reference_attributes(row, field))
+        for row in definition.limits:
+            add_reference('limit', row.get('_owner', declaration_entry), row.get('_owner_id'),
+                          row['line'], row['Source'], key=row['Key'])
         for identifier, resource in definition.declared_resources.items():
             references.append(ViewerReference(resource.kind, logical(declaration_entry), identifier, 1,
                                               resource.logical_path, resource.sha256, ()))

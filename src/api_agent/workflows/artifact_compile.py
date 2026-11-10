@@ -108,6 +108,8 @@ def compile_definition(definition, wheels):
         raise ArtifactCompileError('compiled plans do not support declared typed-node prompts')
     if getattr(definition, 'functions', ()):
         raise ArtifactCompileError('compiled plans do not support declared typed-node Functions')
+    if getattr(definition, 'limits', ()) or any('Expired' in row for row in getattr(definition, 'timeouts', ())):
+        raise ArtifactCompileError('compiled plans do not support declared limits and timeout expiry routing')
     installed = [read_wheel(path) for path in wheels]
     declared_modules = {logical(path): module
                         for module, path in getattr(definition, 'native_dependencies', {}).items()}

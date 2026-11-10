@@ -263,8 +263,17 @@ def predicate_fields(layout, source):
     return fields
 
 
-def state_predicate_fields(properties):
-    """Typed-state fields visible to every route; `.field` reads the current state."""
+def condition_constants(predicate):
+    """Uppercase constant names a parsed condition reads, for declaration checks."""
+    return frozenset(node.id for node in ast.walk(predicate.tree)
+                     if isinstance(node, ast.Name) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', node.id))
+
+
+def state_predicate_fields(properties, constants=()):
+    """Typed-state fields visible to every route; `.field` reads the current state.
+
+    ``constants`` names the declared integer limits a condition may compare against.
+    """
     owners = {}
     def visit(rules, prefix=()):
         for key, rule in rules.items():
@@ -272,7 +281,8 @@ def state_predicate_fields(properties):
             if _exact_type(rule, 'object'):
                 visit(rule.get('properties', {}), (*prefix, key))
     visit(properties)
-    return {'state': properties, _SOURCE: {'owners': owners}}
+    return {'state': properties, _SOURCE: {'owners': owners},
+            _CONSTANTS: {key: {'type': 'integer'} for key in constants}}
 
 
 def component_controller(component, *, maximum=None):

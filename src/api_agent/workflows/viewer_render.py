@@ -200,7 +200,7 @@ def _reference_sources(projection: object) -> dict[str, bytes]:
     for reference in getattr(projection, 'references', ()):
         attrs = dict(reference.attributes)
         schema = reference.kind == 'functions' and attrs.get('field') in _SCHEMA_FIELDS
-        configuration = reference.kind in ('timeout', 'timeouts', 'pass_limit')
+        configuration = reference.kind in ('timeout', 'timeouts', 'pass_limit', 'limit')
         if not (schema or configuration):
             continue
         key = attrs.get('key') or attrs.get('Key') if configuration else None
@@ -465,6 +465,15 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
         lines.append(f'rectangle "Timeout: {_label(key)}" as {alias} [[{reference_href(reference)}]]')
         if reference.owner_id in aliases:
             lines.append(f'{aliases[reference.owner_id]} .. {alias}')
+
+    declared_limits = [ref for ref in projection.references
+                       if ref.kind == 'limit' and ref.owner_id == (None if owner == 'GRAPH' else owner)
+                       and _route(ref.target_path) in reference_sources]
+    for reference in declared_limits:
+        alias = f'limit{reference_index}'
+        reference_index += 1
+        lines.append(f'rectangle "Configuration: {_label(dict(reference.attributes)["key"])}" '
+                     f'as {alias} [[{reference_href(reference)}]]')
 
     if owner in controllers and controllers[owner].max_passes_key:
         pass_refs = [ref for ref in projection.references

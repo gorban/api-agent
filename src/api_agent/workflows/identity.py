@@ -76,6 +76,8 @@ class _Snapshot:
         selected = {}
         for row in timeout_rows:
             selected.setdefault(self.logical(row['Source']), set()).add(row['Key'])
+        for row in getattr(d, 'limits', ()):
+            selected.setdefault(self.logical(row['Source']), set()).add(row['Key'])
         for row in components:
             if row.get('max_passes_key') is not None:
                 selected.setdefault(self.logical(row['max_passes_link']), set()).add(row['max_passes_key'])
@@ -134,6 +136,8 @@ class _Snapshot:
             if getattr(d, 'functions', ()):
                 # Schema bytes are resources; the rows add each node's contract columns and parsed schemas.
                 result['functions'] = [self.row(row) for row in d.functions]
+            if d.limits:
+                result['limits'] = [self.row(row) for row in d.limits]
         return result
 
 
@@ -147,7 +151,7 @@ def declaration_identity(definition):
     return _digest('workflow-declaration-v1', _Snapshot(definition).declaration())
 
 
-def workflow_identity(definition, *, timeouts, component_passes):
+def workflow_identity(definition, *, timeouts, component_passes, limits=None):
     """Bind the declaration to complete, already resolved declared budgets."""
     bound = getattr(definition, 'schema_source', None) is None
     timeout_rows = definition.layout.tables['Timeouts'] if bound else definition.timeouts
@@ -170,8 +174,16 @@ def workflow_identity(definition, *, timeouts, component_passes):
                 or (row['Guard'] == '-' and value != 1)
                 or (row.get('max_passes_key') is None and value != int(row['Max passes']))):
             raise ValueError('Invalid workflow component pass budget')
+    limits = {} if limits is None else limits
+    if (not isinstance(limits, Mapping)
+            or set(limits) != {row['Key'] for row in getattr(definition, 'limits', ())}
+            or any(type(value) is not int or not 1 <= value <= MAX_COMPONENT_PASSES
+                   for value in limits.values())):
+        raise ValueError('Workflow limit coverage differs from declaration')
     declaration = declaration_identity(definition)
+    settings = dict(declaration_sha256=declaration, timeouts=dict(timeouts),
+                    component_passes=dict(component_passes))
+    if limits:
+        settings['limits'] = dict(limits)
     return dict(version=1, declaration_sha256=declaration,
-                settings_sha256=_digest('workflow-settings-v1', dict(
-                    declaration_sha256=declaration, timeouts=dict(timeouts),
-                    component_passes=dict(component_passes))))
+                settings_sha256=_digest('workflow-settings-v1', settings))

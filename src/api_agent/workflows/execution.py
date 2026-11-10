@@ -20,7 +20,7 @@ from threading import Lock
 from langgraph.checkpoint.memory import InMemorySaver
 from .model import LayoutError
 from .model import NativeCatalog
-from .configuration import resolve_timeouts, resolve_component_passes, resolve_state_timeouts
+from .configuration import resolve_timeouts, resolve_component_passes, resolve_state_limits, resolve_state_timeouts
 from api_agent.runtime.tasks import settle
 from api_agent.providers.progress import bind_timeout_budget
 from uuid import uuid4
@@ -364,6 +364,7 @@ class Workflow:
         self.functions = {row['ID']: row for row in layout.tables['Functions']}
         self.components = {row['ID']: row for row in layout.tables['Components']}
         self.timeouts, self.timeout_keys = resolve_timeouts(layout, self.config, self.definition)
+        self.limit_values = MappingProxyType({})
         self.component_passes, self.pass_constants = resolve_component_passes(layout, self.config)
         steps = {step.id: step for step in layout.steps}
         self.definition.verify_sources()
@@ -429,7 +430,17 @@ class Workflow:
                        for name in row[column].get('properties', {})} - set(hints)
             if unknown:
                 raise LayoutError(f'{definition.entry}:{row["line"]}: Functions schema names no State field: {min(unknown)}')
-        fields = state_predicate_fields(self.capture_schema['properties'])
+        self.limit_values = resolve_state_limits(definition, self.config)
+        self._expiry = {}
+        for row in definition.timeouts:
+            if 'Expired' in row:
+                where = f'{row.get("_owner", definition.entry)}:{row["line"]}'
+                for field, kind, article in ((row['Expired'], 'string', 'a string'),
+                                             (row['Expirations'], 'integer', 'an integer')):
+                    if self.capture_schema['properties'].get(field) != {'type': kind}:
+                        raise LayoutError(f'{where}: expiry field {field} must be {article} State field')
+                self._expiry[row['Owner']] = (row['Expired'], row['Expirations'])
+        fields = state_predicate_fields(self.capture_schema['properties'], self.limit_values)
         self._state_predicates = {}
         for row in (*definition.edges, *getattr(definition, 'prompts', ())):
             when = row.get('When', 'always')
@@ -464,6 +475,8 @@ class Workflow:
         for step in children:
             if step.kind == 'component':
                 node = self._compile(step.id) if self.typed_state else self._component(step)
+                if self.typed_state and step.id in self._expiry:
+                    node = self._expiring_component(step.id, node)
             elif self.typed_state:
                 row = next(row for row in self.definition.nodes if row['ID'] == step.id)
                 function = self._binding(row['Source'], row['Registry'])
@@ -849,12 +862,59 @@ class Workflow:
             turn = self._turn_state.get()
             parent_scope = (bind_timeout_budget(turn['open_components'][parent]['budget'])
                             if parent is not None else nullcontext())
-            with parent_scope, (structural_scope(turn['open_components'][parent]['budget'].id)
-                                if parent is not None else nullcontext()):
-                async with component_timeout('Workflow ' + row['ID'], self.timeouts.get(row['ID'])) as budget:
-                    with structural_scope(budget.id):
-                        return await self._run_node(row, function, state, budget)
+            turn['contexts'].pop(row['ID'], None)
+            held = []
+            try:
+                with parent_scope, (structural_scope(turn['open_components'][parent]['budget'].id)
+                                    if parent is not None else nullcontext()):
+                    async with component_timeout('Workflow ' + row['ID'], self.timeouts.get(row['ID'])) as budget:
+                        held.append(budget)
+                        with structural_scope(budget.id):
+                            return await self._run_node(row, function, state, budget)
+            except TimeoutError:
+                if not self._routes_expiry(row['ID'], held[0] if held else None, (row['ID'],)):
+                    raise
+                return self._expiry_update(row['ID'], state)
         return invoke
+
+    def _own_expiry(self, owner, budget):
+        """True only when the owner's own declared deadline, not an ancestor's, has passed."""
+        declared = self.timeouts.get(owner)
+        return (budget is not None and declared is not None and budget.timeout == declared
+                and time.monotonic() >= budget.deadline)
+
+    def _routes_expiry(self, owner, budget, nodes):
+        """Declared expiry routing applies to an own-deadline expiry without dispatched effects."""
+        contexts = self._turn_state.get()['contexts']
+        return (owner in self._expiry and self._own_expiry(owner, budget)
+                and not any(context._dispatched() for context in map(contexts.get, nodes) if context is not None))
+
+    def _expiry_update(self, owner, state):
+        expired, expirations = self._expiry[owner]
+        previous = state.get(expirations)
+        return {expired: owner, expirations: previous + 1 if type(previous) is int else 1}
+
+    def _descendants(self, owner):
+        return tuple(item.id for item in self.layout.steps if self._owned_by(item, owner))
+
+    def _expiring_component(self, owner, compiled):
+        nodes = self._descendants(owner)
+        async def run(state, config):
+            try:
+                return await compiled.ainvoke(state, config)
+            except TimeoutError:
+                turn = self._turn_state.get()
+                if not self._routes_expiry(owner, turn['budgets'].get(owner), nodes):
+                    raise
+                steps = {item.id: item for item in self.layout.steps}
+                for component in reversed(tuple(turn['open_components'])):
+                    if component == owner or self._owned_by(steps[component], owner):
+                        try:
+                            await self._complete_component(component, outcome='failed')
+                        except (Exception, asyncio.CancelledError):
+                            pass
+                return self._expiry_update(owner, state)
+        return run
 
 
     async def _run_node(self, row, function, state, budget):
@@ -867,6 +927,7 @@ class Workflow:
                     declared_timeout=self.timeouts.get(row['ID']), effective_timeout=budget.timeout,
                     timeout_key=self.timeout_keys.get(row['ID']))
         outcome = 'failed'
+        expired = False
         try:
             services = self._turn_state.get()['llm_history'].services(self._services.get(), row['ID'])
             function_row = self._typed_functions.get(row['ID'])
@@ -876,6 +937,7 @@ class Workflow:
             context = NodeContext(row['ID'], (), (), services, request=self._request.get(),
                                   resources=self.definition.declared_resources, visit_id=budget.id,
                                   response_contract=function_row)
+            self._turn_state.get()['contexts'][row['ID']] = context
             texts = self._node_prompts(row['ID'], state, context)
             if texts:
                 context = replace(context, prompts=tuple(texts.values()), prompt_texts=MappingProxyType(texts))
@@ -928,6 +990,10 @@ class Workflow:
             failed = report_failure(error, observations=self._journal.get(), scope_ids=(budget.id,),
                 deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
             outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
+            expired = self._routes_expiry(row['ID'], budget, (row['ID'],))
+            if expired:
+                self._event('node', scope_id=budget.id, node=row['ID'], visit_id=visit_id,
+                            elapsed=time.monotonic() - started, kind=row['Kind'], outcome='failed')
             raise
         finally:
             self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
@@ -935,7 +1001,8 @@ class Workflow:
                         elapsed=time.monotonic() - started, outcome=outcome,
                         started_ms=wall_started, stopped_ms=time.time() * 1000,
                         declared_timeout=self.timeouts.get(row['ID']), effective_timeout=budget.timeout,
-                        timeout_key=self.timeout_keys.get(row['ID']))
+                        timeout_key=self.timeout_keys.get(row['ID']),
+                        **({'reason': 'declared_timeout_expired'} if expired else {}))
             self._turn_state.get()['visits'][row['ID']] = visit_id
 
 
@@ -944,6 +1011,9 @@ class Workflow:
         owner_parent = self._parents[parent]
         parent_scope = (bind_timeout_budget(turn['open_components'][owner_parent]['budget'])
                         if owner_parent is not None else nullcontext())
+        for step in self.layout.steps:
+            if self._owned_by(step, parent):
+                turn['contexts'].pop(step.id, None)
         ready = asyncio.get_running_loop().create_future()
         finish = asyncio.get_running_loop().create_future()
         async def own():
@@ -961,8 +1031,10 @@ class Workflow:
                                         declared_timeout=self.timeouts.get(parent),
                                         effective_timeout=budget.timeout,
                                         timeout_key=self.timeout_keys.get(parent))
+                            turn['budgets'][parent] = budget
                             ready.set_result(budget)
                             outcome = 'failed'
+                            expired = False
                             try:
                                 outcome = await finish
                                 self._event('disposition', scope_id=budget.id, owner=parent,
@@ -972,6 +1044,7 @@ class Workflow:
                                 failed = report_failure(error, observations=self._journal.get(), scope_ids=(budget.id,),
                                     deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
                                 outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
+                                expired = self._routes_expiry(parent, budget, self._descendants(parent))
                                 raise
                             finally:
                                 self._event('scope_end', scope_id=budget.id, parent_id=budget.parent_id,
@@ -980,7 +1053,8 @@ class Workflow:
                                             started_ms=wall_started, stopped_ms=time.time() * 1000,
                                             declared_timeout=self.timeouts.get(parent),
                                             effective_timeout=budget.timeout,
-                                            timeout_key=self.timeout_keys.get(parent))
+                                            timeout_key=self.timeout_keys.get(parent),
+                                            **({'reason': 'declared_timeout_expired'} if expired else {}))
             except BaseException as error:
                 if not ready.done():
                     ready.set_exception(error)
@@ -1042,7 +1116,7 @@ class Workflow:
                 filled[name] = value
             return filled[name]
         for row in getattr(self.definition, 'prompts', ()):
-            if row['Node'] == node and (row['When'] == 'always' or self._state_predicates[row['When']].evaluate(values)):
+            if row['Node'] == node and (row['When'] == 'always' or self._state_predicates[row['When']].evaluate(values, constants=self.limit_values)):
                 texts[row['Prompt']] = _PROMPT_SLOT.sub(fill, row['Text'])
         return texts
 
@@ -1050,7 +1124,7 @@ class Workflow:
         async def route(state):
             values = {'state': dict(state)}
             matches = [edge for edge in edges if edge['When'] not in ('always', 'otherwise')
-                       and self._state_predicates[edge['When']].evaluate(values)]
+                       and self._state_predicates[edge['When']].evaluate(values, constants=self.limit_values)]
             choices = matches or [edge for edge in edges if edge['When'] in ('always', 'otherwise')]
             if len(choices) != 1:
                 raise WorkflowError('Routing requires exactly one matching condition or fallback')
@@ -1201,13 +1275,13 @@ class Workflow:
         if selected_journal is None and factory is not None and not recording_enabled():
             from .identity import workflow_identity
             selected_journal = automatic_observations = factory.create(self.definition, turn_id=turn_id,
-                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts, component_passes=self.component_passes), component_passes=self.component_passes)
+                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts, component_passes=self.component_passes, limits=self.limit_values), component_passes=self.component_passes)
         journal_turn = getattr(selected_journal, 'turn_id', None)
         if turn_id is not None and journal_turn is not None and turn_id != journal_turn:
             raise ValueError('explicit turn identity disagrees with the active journal')
         from .identity import workflow_identity
         if selected_journal is not None:
-            identity = workflow_identity(self.definition, timeouts=self.timeouts, component_passes=self.component_passes)
+            identity = workflow_identity(self.definition, timeouts=self.timeouts, component_passes=self.component_passes, limits=self.limit_values)
             if (getattr(selected_journal, 'semantic_identity', None) is not None
                     and selected_journal.semantic_identity != identity):
                 error_type = ValueError if self.typed_state else WorkflowError
@@ -1229,7 +1303,8 @@ class Workflow:
             from .journal import WorkflowJournal
             journal = WorkflowJournal(self.definition,
                 semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
-                                                    component_passes=self.component_passes),
+                                                    component_passes=self.component_passes,
+                                                    limits=self.limit_values),
                 component_passes=self.component_passes,
                 log_content=requested_log_content(self.config, selected_services),
                 source_manifest=source_manifest,
@@ -1252,7 +1327,8 @@ class Workflow:
         journal_token = self._journal.set(journal if recorded else selected_journal)
         from .inference_history import InferenceHistory
         history = InferenceHistory()
-        state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history})
+        state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
+                                                  'contexts': {}, 'budgets': {}})
         try:
             selected_journal = self._journal.get()
             active_turn = turn_id if turn_id is not None else (selected_journal.turn_id if selected_journal is not None else None)

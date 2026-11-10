@@ -277,6 +277,62 @@ maintenance includes resolved settings in its historical sampling fingerprint. U
 linked numeric declarations, nested clipping, invalid values before inference and
 swallowed cancellation; removing the post-call deadline check fails its test.
 
+### Typed limits, component timeouts and expiry routing
+
+A typed graph reuses the older grammar's configuration-backed budgets through
+three optional tables. Tables with a `Source` link must name a `.toml`
+configuration declaration; the same file may not also be declared as another
+resource kind.
+
+`## Limits` is allowed at the root and in a component declaration:
+
+```markdown
+## Limits
+
+| Key | Source |
+| --- | --- |
+| GRAPH_MAX_PLAN_RETRIES | [config](cfg/config.toml) |
+```
+
+`Key` is an uppercase identifier, unique across the whole graph, naming an integer
+field with a declared default. The effective value (`config.get(key, default)`)
+must be an integer from 1 to 99 and is checked before any native source runs.
+Declared keys become constants in typed `When` conditions, including prompt
+selection: `.next_step == "plan_request" and .plan_retries <= GRAPH_MAX_PLAN_RETRIES`.
+A condition that names an undeclared uppercase constant is rejected at load.
+Effective limit values are part of the workflow semantic identity. Compiled plans
+reject typed limits.
+
+`## Timeouts` is now also allowed in a component declaration. A component row's
+`Owner` must be that component or one of its direct children, and each owner has
+one row across the whole graph. Enforcement is the same nested scope budget used
+by root rows.
+
+A row may add two optional columns that route an expiry instead of failing the turn:
+
+```markdown
+## Timeouts
+
+| Owner | Source | Key | Expired | Expirations |
+| --- | --- | --- | --- | --- |
+| plan_request | [config](cfg/config.toml) | NODE_TIMEOUT_SECONDS | timed_out | timeout_retries |
+```
+
+`Expired` names a string State field and `Expirations` an integer State field
+(checked when the `Workflow` is built; `-` in both columns disables routing for a
+row, and `GRAPH` cannot route). When the node or component's own declared deadline
+passes, the runtime ends that owner with the partial update
+`{Expired: owner, Expirations: previous + 1}` and continues through the owner's
+ordinary `When` edges, for example
+`plan_request | plan_request | .timed_out == "plan_request" and .timeout_retries <= GRAPH_MAX_NODE_TIMEOUT_RETRIES`
+with a fallback to an error node. A successful completion does not clear the
+fields; packs clear them in their own node outputs. An ancestor's deadline, a
+`TimeoutError` raised inside the node, and an owner that already dispatched a tool
+or other effect still fail the turn. A routed expiry is recorded as a failed scope
+end with `reason: declared_timeout_expired`. For a component, descendant work in
+the expired pass is discarded and its open nested scopes are closed as failed.
+Compiled plans reject expiry columns.
+
 Calibration fingerprints also record the running Python version and installed
 `langgraph`, `langchain-core`, `jsonschema`, `markdown-it-py` and `httpx` versions.
 An explicit legacy calibration refresh binds its current dependencies; normal
