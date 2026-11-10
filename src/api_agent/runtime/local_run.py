@@ -266,15 +266,19 @@ class LocalRunOwner:
             await asyncio.sleep(0)
             self._config = self.resolve()
             if not (self._config.errors or self._config.missing):
-                # A cold dependency install outlasts the preparation budget below.
+                # Cold dependency, frontend and renderer installs carry their own
+                # budgets, which outlast the preparation budget below.
                 from api_agent.runtime.workspace_preparation import aprepare_selected_workspaces
                 await aprepare_selected_workspaces(self.context, self._config.values, frozenset({'ui'}))
-            async with component_timeout('Local application preparation', 120):
-                if self._config.errors or self._config.missing:
-                    raise ValueError('invalid_runtime_configuration')
                 if self.prepare_view is _prepare_view:
                     from api_agent.runtime.frontend import prepare_source_frontend
                     await prepare_source_frontend()
+                    from api_agent.runtime import view_flow
+                    from api_agent.runtime.tasks import offload
+                    await offload(view_flow.prepare_view_tools, self.context)
+            async with component_timeout('Local application preparation', 120):
+                if self._config.errors or self._config.missing:
+                    raise ValueError('invalid_runtime_configuration')
                 from api_agent.runtime.local_diagnostics import LocalDiagnosticProjection
                 self._diagnostic_projection = LocalDiagnosticProjection(
                     full_content=self._config.values.get('RUN_LOG_FULL_CONTENT') is True)

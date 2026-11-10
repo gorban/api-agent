@@ -68,6 +68,30 @@ def _view_context(context, entry):
     return replace(context, workflow_entry=path, workflow_root=root_id, workflow_replacements=())
 
 
+def _live_renderer(renderer_path):
+    """Render views the saved diagrams do not cover: an explicitly configured JAR,
+    otherwise the pinned one prepared on first use, run by the project's Java."""
+    from api_agent.runtime.mise_tools import ensure_tools
+    from api_agent.workflows.viewer_build import prepare_renderer
+    from api_agent.workflows.viewer_render import PlantUMLRenderer, RenderError, default_renderer
+    ensure_tools('java')
+    try:
+        return default_renderer(renderer_path)
+    except RenderError:
+        if renderer_path:
+            raise
+    return PlantUMLRenderer(prepare_renderer())
+
+
+def prepare_view_tools(context):
+    """Install what a live view of the selected workflow needs, ahead of its rendering."""
+    from api_agent.workflows.viewer_config import resolve_renderer_path
+    from api_agent.workflows.viewer_projection import project_view
+    definition = load_selected_definition(context)
+    if not _canonical_selection(context, definition, project_view(definition)):
+        _live_renderer(resolve_renderer_path(context))
+
+
 def _prepare_view(context, *, entry=None, renderer_path=None):
     from api_agent.workflows.viewer_projection import project_view
     from api_agent.workflows.viewer_render import (StaleViewError, build_view_bundle,
@@ -89,10 +113,9 @@ def _prepare_view(context, *, entry=None, renderer_path=None):
     renderer_options = {}
     if not canonical:
         from api_agent.workflows.viewer_config import resolve_renderer_path
-        from api_agent.workflows.viewer_render import default_renderer
         if renderer_path is None:
             renderer_path = resolve_renderer_path(context)
-        renderer_options['renderer'] = default_renderer(renderer_path)
+        renderer_options['renderer'] = _live_renderer(renderer_path)
     try:
         bundle = build_view_bundle(projection, roots=definition.roots, verify=canonical,
                                    check_orphans=False,
@@ -101,16 +124,12 @@ def _prepare_view(context, *, entry=None, renderer_path=None):
     except StaleViewError:
         # Build a temporary view of the captured working tree. The saved static
         # diagrams and the commit-time check remain untouched.
-        from api_agent.workflows.viewer_build import prepare_renderer
         from api_agent.workflows.viewer_config import resolve_renderer_path
-        from api_agent.workflows.viewer_render import PlantUMLRenderer, default_renderer
         print('Workflow diagrams changed; preparing a temporary view.', flush=True)
         if renderer_path is None:
             renderer_path = resolve_renderer_path(context)
-        renderer = (default_renderer(renderer_path) if renderer_path
-                    else PlantUMLRenderer(prepare_renderer()))
         bundle = build_view_bundle(projection, roots=definition.roots, verify=False,
-                                   renderer=renderer, check_orphans=False,
+                                   renderer=_live_renderer(renderer_path), check_orphans=False,
                                    repositories=repositories, repository_sources=repository_sources)
     return definition, projection, canonical, bundle, repository_sources
 
