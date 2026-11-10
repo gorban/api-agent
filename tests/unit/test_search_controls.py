@@ -257,10 +257,17 @@ def test_search_shortcuts_share_label_and_preserve_both_actions(reverse_order):
         app = SearchHarness()
         async with app.run_test(size=(120, 12)) as pilot:
             app.screen.set_focus(None)
-            await pilot.pause()
-            footer = app.query_one(search.GroupedUserFooter)
-            group = footer.query_one('.test-search-shortcuts')
-            assert ''.join(widget.render().plain for widget in group.query(Static)) == '/ / ? Search tests (? backwards)'
+            expected = '/ / ? Search tests (? backwards)'
+            # Losing focus recomposes the footer; a slow host may need several frames.
+            for _ in range(100):
+                await pilot.pause()
+                footer = app.query_one(search.GroupedUserFooter)
+                group = footer.query_one('.test-search-shortcuts')
+                text = ''.join(widget.render().plain for widget in group.query(Static))
+                if text == expected:
+                    break
+                await asyncio.sleep(.05)
+            assert text == expected
             keys = list(group.query(search._ShortcutKey))
             assert [key.render().plain for key in keys] == ['/', '?']
             colors = []

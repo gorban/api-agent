@@ -3134,13 +3134,14 @@ def test_focused_content_capture_defers_transient_popup_callback_until_cleanup(o
                     await foreign.send('Debugger.enable')
                 phases = []
                 async def intercepted(method, params=None):
-                    if method == 'Runtime.evaluate' and params.get('expression', '').startswith('debugger;\n//# sourceURL=api-agent-evidence-pause-') and not early_resume:
-                        await send('Runtime.evaluate', {'expression':'''setTimeout(()=>{counts.timer++;popup.showPopover();
-                            setTimeout(()=>popup.hidePopover(),0)},20)'''})
                     if method == 'Page.captureScreenshot' and early_resume:
                         await foreign.send('Debugger.resume')
                         await send('Runtime.evaluate', {'expression':'popup.showPopover()'})
                     if method == 'Page.captureScreenshot' and not early_resume:
+                        # Scheduled once the capture pause holds, so the callback is due but
+                        # deferred however slowly the host reached the pause.
+                        await send('Runtime.evaluate', {'expression':'''setTimeout(()=>{counts.timer++;popup.showPopover();
+                            setTimeout(()=>popup.hidePopover(),0)},0)'''})
                         expression = '[counts.timer,counts.raf,popup.matches(":popover-open")]'
                         first = await send('Runtime.evaluate', {'expression':expression,'returnByValue':True})
                         await asyncio.sleep(.15)
