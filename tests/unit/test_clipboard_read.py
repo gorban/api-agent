@@ -144,18 +144,23 @@ def test_deadline_interrupts_a_stalled_reader(monkeypatch):
         proc = process()
         proc.returncode = None
         stalled = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        now = [loop.time()]
+        monkeypatch.setattr(loop, 'time', lambda: now[0])
+        observed = []
         async def read(_):
+            # The deadline can fall due only once the reader has stalled.
+            now[0] += observed[0][1]
             await stalled.wait()
         proc.stdout.read.side_effect = read
         setup(monkeypatch, proc)
         timeout = clipboard.component_timeout
-        observed = []
 
-        def short_timeout(name, seconds):
+        def observed_timeout(name, seconds):
             observed.append((name, seconds))
-            return timeout(name, 0.01)
+            return timeout(name, seconds)
 
-        monkeypatch.setattr(clipboard, 'component_timeout', short_timeout)
+        monkeypatch.setattr(clipboard, 'component_timeout', observed_timeout)
         with pytest.raises(clipboard.ClipboardError, match='Use terminal Paste'):
             await clipboard.read_text()
         assert observed == [('Clipboard read', 2)]
