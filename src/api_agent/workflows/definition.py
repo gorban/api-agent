@@ -16,7 +16,7 @@ from weakref import WeakKeyDictionary
 
 from .layout import _COLUMNS, _RESPONSE_COLUMNS, _SESSION_COLUMNS, _SUMMARY_COLUMNS, _ID, _MD, _validate
 from .model import (InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage,
-                    declares_source, freeze as _freeze, _MAX_SNAPSHOT_BYTES)
+                    declares_source, freeze as _freeze, _MAX_SNAPSHOT_BYTES, _PY_ID)
 from .document_format import extract_document, validate_presentation_location
 from api_agent.tooling.operations import FIXED_OPERATIONS, name_problem
 
@@ -39,17 +39,26 @@ class WorkflowDefinition:
     tool_usages: tuple[ToolUsage, ...] = ()
     imports: tuple = ()
     declaration_entry: Path | None = None
+    application_binding: tuple[str, Path] | None = None
+
+    def native_sources(self):
+        """Every admitted native source: node bindings and the declared application factory."""
+        return (*(step.source for step in self.layout.steps if step.kind == 'node'),
+                *((self.application_binding[1],) if self.application_binding is not None else ()))
 
     def verify_native_sources(self):
         """Reject a source change before importing its admitted native binding."""
-        for step in self.layout.steps:
-            if step.kind != 'node':
-                continue
-            owner = max((root for root in self.roots.values() if step.source.is_relative_to(root)),
+        for source in self.native_sources():
+            owner = max((root for root in self.roots.values() if source.is_relative_to(root)),
                         key=lambda root: len(root.parts))
-            current = _read_bounded(step.source, owner)
-            if current != self.contents[step.source]:
-                raise LayoutError(f'{step.source}:1: native source changed after definition admission')
+            current = _read_bounded(source, owner)
+            if current != self.contents[source]:
+                raise LayoutError(f'{source}:1: native source changed after definition admission')
+
+    def application_factory(self):
+        """The declared application factory, executed from its admitted bytes."""
+        registry, source = self.application_binding
+        return load_native_catalog(self, source).get(registry)
 
     def verify_sources(self):
         self.verify_native_sources()
@@ -139,8 +148,7 @@ def load_native_catalog(definition: WorkflowDefinition, source: Path, *, reporti
                         packaged_proof=None):
     """Explicitly execute a trusted selected catalog from its admitted bytes."""
     source = Path(source).resolve()
-    if not isinstance(definition, WorkflowDefinition) or source not in {
-            step.source for step in definition.layout.steps if step.kind == 'node'}:
+    if not isinstance(definition, WorkflowDefinition) or source not in definition.native_sources():
         raise LayoutError(f'{source}:1: source is not a selected native binding')
     if os.environ.get('API_AGENT_ALLURE_REPORTING') == '1' or reporting_enabled:
         from .provenance import verified_documents
@@ -223,6 +231,15 @@ def _parse_declaration_parts(path, data):
             raise LayoutError(f'{path}:{line_map[start]}: duplicate section {heading}')
         target[heading] = body
     return title, sections, nodes
+
+
+def _application_row(path, body):
+    """The one factory row of an Application section, shared by both grammars."""
+    rows = _table(path, body, ('Registry', 'Source'))
+    if len(rows) != 1 or not _PY_ID.fullmatch(rows[0]['Registry']):
+        line = rows[-1]['line'] if rows else body[0][0] - 1 if body else 1
+        raise LayoutError(f'{path}:{line}: invalid application binding')
+    return rows[0]
 
 
 def _sections(path, data):
@@ -462,7 +479,7 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
         return capture(path, kind, root_id)
     capture(entry, 'declaration', entry_root)
     _, root_sections = _sections(entry, captured[entry][1])
-    allowed = {'Graph ID', 'Flow', 'Tools', 'Session', *_COLUMNS, 'Notes'}
+    allowed = {'Graph ID', 'Flow', 'Tools', 'Session', 'Application', *_COLUMNS, 'Notes'}
     if set(root_sections) - allowed or 'Graph ID' not in root_sections or 'Flow' not in root_sections:
         raise LayoutError(f'{entry}:1: unknown or missing root section')
     identity = _table(entry, root_sections['Graph ID'], ('ID',))
@@ -597,6 +614,13 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
             if instance.suffix != '.toml':
                 raise LayoutError(f'{owner}:{row["line"]}: tool instance must be TOML')
             tool_usages.append(ToolUsage(scope, port, instance, scope_kind, owner, row['line'], _tool_operations(owner, row, scope_kind)))
+    application_binding = None
+    if 'Application' in root_sections:
+        row = _application_row(entry, root_sections['Application'])
+        source = link(entry, row['Source'], 'native_source')
+        if source.suffix != '.py':
+            raise LayoutError(f'{entry}:{row["line"]}: native source must be Python')
+        application_binding = (row['Registry'], source)
     execution_steps = []
     for step in resolved:
         if step.kind == 'node':
@@ -682,4 +706,5 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,
                               layout, MappingProxyType({path: data for path, (_, data) in captured.items()}),
-                              MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages))
+                              MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages),
+                              application_binding=application_binding)

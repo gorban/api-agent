@@ -4,24 +4,27 @@ from api_agent.workflows.local_application import LocalChatApplication
 
 
 def selected_application(definition, *, config=None):
-    """Admit the useful demo explicitly; preserve the one-call chat policy."""
-    if getattr(definition, 'schema_source', None) is not None:
-        return _typed_application(definition, config=config)
+    """Use a declared application factory; else admit the useful demo explicitly or keep one-call chat."""
+    if (getattr(definition, 'schema_source', None) is not None
+            or getattr(definition, 'application_binding', None) is not None):
+        return _declared_application(definition, config=config)
     if getattr(definition, 'tool_usages', ()):
         from api_agent.workflows.demo_application import UsefulDemoApplication
         return UsefulDemoApplication(definition, config=config)
     return LocalChatApplication(definition, config=config)
 
 
-def _typed_application(definition, *, config=None):
+def _declared_application(definition, *, config=None):
     """Load a selected application's adapter from its immutable native closure."""
     from collections.abc import Mapping
     binding = definition.application_binding
     if binding is None:
         raise ContractError('Selected stateful workflow requires an application binding.')
     registry, source = binding
-    catalog = definition.load_catalog(config=config)
-    factory = catalog.namespaces[source].get(registry)
+    if getattr(definition, 'schema_source', None) is not None:
+        factory = definition.load_catalog(config=config).namespaces[source].get(registry)
+    else:
+        factory = definition.application_factory()
     if not callable(factory):
         raise ContractError('Selected application factory must be callable.')
     application = factory(definition, config=dict(config or {}))

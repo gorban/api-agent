@@ -12,6 +12,7 @@ from typing import ClassVar, Mapping, Protocol, runtime_checkable
 
 MAX_COMPONENT_PASSES = 99
 _ID = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
+_PY_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
 _MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 
 

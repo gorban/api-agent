@@ -223,6 +223,10 @@ def project_view(definition) -> ViewerProjection:
             references.append(ViewerReference(resource.kind, logical(declaration_entry), identifier, 1,
                                               resource.logical_path, resource.sha256, ()))
     else:
+        if getattr(definition, 'application_binding', None) is not None:
+            registry, source = definition.application_binding
+            add_reference('native_source', declaration_entry, None, 1, source,
+                          registry=registry, role='application')
         owner_by_path = {target: identifier for identifier, (_, _, target) in definition.selected_declarations.items()}
         for name, fields in (('Functions', ('Input', 'Output', 'Response schema')),
                              ('Prompts', ('File',)), ('Timeouts', ('Source',))):
