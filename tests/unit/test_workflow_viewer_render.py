@@ -437,6 +437,21 @@ def test_navigation_lists_only_documents_the_diagram_links():
     assert b"## Navigation" not in companion
 
 
+def test_root_companion_lists_the_admitted_native_closure():
+    projection, document = _projection()
+    targets = _diagram_targets(projection, document)
+    module = SimpleNamespace(kind="native_dependency", logical_path="base/src/helpers/util.py")
+    other = SimpleNamespace(kind="native_source", logical_path="base/native.py")
+    projection = SimpleNamespace(**{**vars(projection), "resources": (module, other)})
+
+    root = _companion(projection, document, targets=targets).decode()
+    child = _companion(projection, projection.documents[1], targets=frozenset()).decode()
+
+    assert "## Native closure" in root and "- [src/helpers/util.py](../../src/helpers/util.py)" in root
+    assert "native.py" not in root.split("## Native closure")[1]
+    assert "## Native closure" not in child
+
+
 def test_companion_markdown_links_resolve_to_declared_targets():
     projection, document = _projection()
 

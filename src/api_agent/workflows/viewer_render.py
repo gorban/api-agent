@@ -703,6 +703,13 @@ def _companion(projection: object, document: object, *, targets: frozenset[tuple
         for item in peers:
             target = posixpath.relpath(_companion_route(item.logical_path), folder)
             lines.append(f"- [{_markdown_id(item.stable_id)}]({target})")
+    closure = sorted(item.logical_path for item in getattr(projection, 'resources', ())
+                     if item.kind == 'native_dependency')
+    if closure and document.logical_path == getattr(projection, 'entry_path', None):
+        lines.extend(("", "## Native closure", "",
+                      "Local modules admitted from the native sources' static imports:", ""))
+        lines.extend(f"- [{PurePosixPath(*PurePosixPath(path).parts[1:])}]({posixpath.relpath(_route(path), folder)})"
+                     for path in closure)
     body = ("\n".join(lines) + "\n").encode()
     marker = b"<!-- api-agent-companion-v1 sha256:" + sha256(body).hexdigest().encode() + b" -->\n"
     return marker + body

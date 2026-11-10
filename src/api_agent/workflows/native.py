@@ -486,6 +486,31 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     for row in prompts:
         if set(_SLOT.findall(row['Text'])) - {item['Slot'] for item in slots}:
             raise LayoutError(f'{entry}:{row["line"]}: prompt uses an undeclared slot')
+    # Admit the static local import closure; tables and manifests only add modules
+    # that no admitted source imports statically.
+    pending = [state_source, *helpers, *dependencies.values(), *(row['Source'] for row in nodes),
+               *(row['Source'] for row in edges if row['Source'] is not None),
+               *(row['Source'] for row in slots),
+               *((application_binding[1],) if application_binding is not None else ())]
+    scanned = set()
+    while pending:
+        path = pending.pop()
+        if path in scanned:
+            continue
+        scanned.add(path)
+        for module, local in _local_imports(path, contents[path], roots):
+            if module == 'api_agent' or module.startswith('api_agent.'):
+                continue
+            if module in dependencies:
+                if dependencies[module] != local:
+                    raise LayoutError(f'{path}:1: native dependency {module} resolves to another source')
+                continue
+            if local not in contents:
+                contents[local] = read(local)
+            kinds[local] = 'native_dependency'
+            dependencies[module] = local
+            pending.append(local)
+    dependencies = dict(sorted(dependencies.items()))
     resources = []
     for path, data in contents.items():
         root_id = max((key for key, root in roots.items() if path.is_relative_to(root)),
@@ -528,6 +553,57 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
 
 
 
+
+def _module_for_path(path, roots):
+    base = max((base for root in roots.values() for base in (root, root / 'src')
+                if path.is_relative_to(base)), key=lambda item: len(item.parts))
+    relative = path.relative_to(base).with_suffix('')
+    parts = relative.parts[:-1] if relative.name == '__init__' else relative.parts
+    return '.'.join(parts)
+
+
+def _local_imports(path, data, roots):
+    """Yield (module, file) for each repository-local module a native source imports."""
+    def local_module_path(module):
+        parts = Path(*module.split('.'))
+        for root in roots.values():
+            for base in (root, root / 'src'):
+                for candidate in ((base / parts).with_suffix('.py'), base / parts / '__init__.py'):
+                    if candidate.is_file():
+                        return candidate.resolve()
+        return None
+    trusted_host = Path(__file__).resolve().parents[1]
+    tree = ast.parse(data, filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                owner = _module_for_path(path, roots)
+                package = owner if path.name == '__init__.py' else owner.rpartition('.')[0]
+                prefix = package.split('.') if package else []
+                if node.level > len(prefix):
+                    raise LayoutError(f'{path}:1: relative native import leaves package')
+                prefix = prefix[:len(prefix) - node.level + 1]
+                base_name = '.'.join((*prefix, node.module or '')) if node.module else '.'.join(prefix)
+            else:
+                base_name = node.module or ''
+            names = [base_name, *(base_name + '.' + alias.name for alias in node.names if alias.name != '*')]
+        else:
+            continue
+        for name in names:
+            if not name:
+                continue
+            parts = name.split('.')
+            for length in range(1, len(parts) + 1):
+                module = '.'.join(parts[:length])
+                local = local_module_path(module)
+                host_runtime = (module == 'api_agent' or module.startswith('api_agent.')) and (
+                    local is not None and local.is_relative_to(trusted_host))
+                if local is not None and not host_runtime:
+                    yield module, local
+
+
 def load_native_bindings(definition, *, packaged_proof=None, config=None):
     """Execute only the selected, still admitted native sources."""
     definition.verify_sources()
@@ -540,51 +616,10 @@ def load_native_bindings(definition, *, packaged_proof=None, config=None):
                *(row['Source'] for row in getattr(definition, 'prompt_slots', ()))}
     if definition.application_binding is not None:
         sources.add(definition.application_binding[1])
-    def local_module_path(module):
-        parts = Path(*module.split('.'))
-        for root in definition.roots.values():
-            for base in (root, root / 'src'):
-                for candidate in ((base / parts).with_suffix('.py'), base / parts / '__init__.py'):
-                    if candidate.is_file():
-                        return candidate.resolve()
-        return None
-    trusted_host = Path(__file__).resolve().parents[1]
-    def module_for_path(path):
-        base = max((base for root in definition.roots.values() for base in (root, root / 'src')
-                    if path.is_relative_to(base)), key=lambda item: len(item.parts))
-        relative = path.relative_to(base).with_suffix('')
-        parts = relative.parts[:-1] if relative.name == '__init__' else relative.parts
-        return '.'.join(parts)
     for path in (*definition.helper_sources, *sources, *definition.native_dependencies.values()):
-        tree = ast.parse(definition.contents[path], filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                if node.level:
-                    owner = module_for_path(path)
-                    package = owner if path.name == '__init__.py' else owner.rpartition('.')[0]
-                    prefix = package.split('.') if package else []
-                    if node.level > len(prefix) + 1:
-                        raise LayoutError(f'{path}:1: relative native import leaves package')
-                    prefix = prefix[:len(prefix) - node.level + 1]
-                    base_name = '.'.join((*prefix, node.module or '')) if node.module else '.'.join(prefix)
-                else:
-                    base_name = node.module or ''
-                names = [base_name, *(base_name + '.' + alias.name for alias in node.names if alias.name != '*')]
-            else:
-                continue
-            for name in names:
-                if not name:
-                    continue
-                parts = name.split('.')
-                for length in range(1, len(parts) + 1):
-                    module = '.'.join(parts[:length])
-                    local = local_module_path(module)
-                    host_runtime = (module == 'api_agent' or module.startswith('api_agent.')) and (
-                        local is not None and local.is_relative_to(trusted_host))
-                    if local is not None and not host_runtime and definition.native_dependencies.get(module) != local:
-                        raise LayoutError(f'{path}:1: local native import must be declared as a dependency')
+        for module, local in _local_imports(path, definition.contents[path], definition.roots):
+            if definition.native_dependencies.get(module) != local:
+                raise LayoutError(f'{path}:1: local native import must be declared as a dependency')
     # Reserve every declared name before native execution, including imports
     # deferred until a later graph turn. The finder stays installed so lazy
     # imports read the admitted bytes without an ambient source-root sys.path.
@@ -606,7 +641,7 @@ def load_native_bindings(definition, *, packaged_proof=None, config=None):
                 sys.meta_path.insert(0, loader)
         try:
             for path in sorted(sources):
-                module = module_for_path(path)
+                module = _module_for_path(path, definition.roots)
                 package = module if path.name == '__init__.py' else module.rpartition('.')[0]
                 namespace = {'__name__': '<stateful_catalog>', '__file__': str(path), '__package__': package or None}
                 for helper in definition.helper_sources:
