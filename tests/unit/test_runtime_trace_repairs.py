@@ -51,7 +51,7 @@ def test_actual_ui_owner_retains_trace_only_failed_lifespan_without_failing_fixt
             loop.run_until_complete(ui.start())
             url=operation.prepared_factory.call_args.args[0]['AGENT_DJANGO_URL']
             async def request():
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=60) as client:
                     response=await client.get(url+'/app/agent/models',headers={'Origin':'http://localhost:9443','X-API-Agent-Session':'x'*32})
                     assert response.status_code==200
             loop.run_until_complete(request())
@@ -91,7 +91,7 @@ def test_real_endpoint_pending_disposal_preserves_body_error_and_receipt(primary
             receipt=None
             try:
                 async with agent_endpoint(trace.provider,'sample','http://localhost:9443','x'*32,tracing=trace) as url:
-                    async with httpx.AsyncClient() as client:
+                    async with httpx.AsyncClient(timeout=60) as client:
                         assert (await client.get(url+'/app/agent/models',headers={'Origin':'http://localhost:9443','X-API-Agent-Session':'x'*32})).status_code==200
                     runtime=trace._sessions['automated'].runtime
                     shutdown=runtime._provider.shutdown

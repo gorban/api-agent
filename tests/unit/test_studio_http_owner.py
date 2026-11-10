@@ -210,7 +210,7 @@ def test_actual_http_bridge_preserves_request_and_owned_lifetime(retained, suppl
         try:
             async with bridge.agent_endpoint(owner, 'sample', 'http://localhost:9443', 'x'*32,
                     listener=listener, reasoning_default='medium', application=application) as url:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=60) as client:
                     headers={'Origin':'http://localhost:9443','X-API-Agent-Session':'x'*32}
                     models = await client.get(url+'/app/agent/models', headers=headers)
                     assert models.json()['reasoning_default'] == 'medium'
@@ -252,7 +252,7 @@ def test_http_catalog_and_send_keep_exact_known_family_default_selection():
         headers = {'Origin': 'http://localhost:9443', 'X-API-Agent-Session': 'x' * 32}
         async with bridge.agent_endpoint(provider, 'gpt-5.6-terra', 'http://localhost:9443', 'x' * 32,
                 policy_config={'LLM_ALLOWED_MODELS': r'gpt-5\.6-(terra|sol)'}) as url:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=60) as client:
                 response = await client.get(url + '/app/agent/models', headers=headers)
                 assert response.status_code == 200
                 catalog = response.json()

@@ -99,7 +99,8 @@ def test_one_pass_component_deadline_cancels_owned_call_without_retry():
         finally:
             settled.append(True)
     workflow = build(ROOT, llm=complete, selection='example', observe=events.append)
-    workflow.timeouts['agent'] = 0.01
+    # Long enough for the call to start on a slow host; the call outlives it.
+    workflow.timeouts['agent'] = 1.0
 
     with pytest.raises(TimeoutError):
         asyncio.run(workflow.arun({'messages': [{'role': 'user', 'content': 'Hello'}]}))

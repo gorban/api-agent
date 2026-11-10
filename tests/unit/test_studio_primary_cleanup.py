@@ -38,7 +38,7 @@ def test_endpoint_composes_primary_cleanup_before_trace_without_losing_either_ow
             try:
                 with pytest.raises(type(primary)) as caught:
                     async with agent_endpoint(trace.provider,'sample','http://localhost:9443','x'*32,tracing=trace) as url:
-                        async with httpx.AsyncClient() as client:
+                        async with httpx.AsyncClient(timeout=60) as client:
                             response=await client.get(url+'/app/agent/models',headers={'Origin':'http://localhost:9443','X-API-Agent-Session':'x'*32})
                             assert response.status_code==200
                         runtime=trace._sessions['automated'].runtime

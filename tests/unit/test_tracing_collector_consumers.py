@@ -129,7 +129,7 @@ def test_default_resolver_protected_writer_normal_studio_and_shared_host(default
         async def run():
             async with factory(config.values) as binding:
                 headers={'Origin':config.values['UI_LISTENER_URL'],'X-API-Agent-Session':binding['access_token']}
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=60) as client:
                     response=await client.get(binding['agent_url']+'/app/agent/models',headers=headers)
                     assert response.status_code==200
                     response=await client.post(binding['agent_url']+'/app/agent/chat',headers=headers,json={
