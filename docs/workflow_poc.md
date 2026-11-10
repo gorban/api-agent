@@ -75,6 +75,60 @@ its `fleet` and `construction` packs and adds a follow-up prompt only after the
 first turn; `tests/integration/test_prompted_demo.py` runs it under both packs
 with a controlled model service.
 
+## Typed node Functions
+
+A typed (State-declared) node may declare the same `### Functions` table as the
+binding grammar, in its own `# Node:` document or in an inline `## Node:` block
+of a component document. The table is optional; a node without one keeps its
+current behavior. When present it has exactly one row whose `ID` is the node ID
+and whose `Registry` is the node's `Native` registry. Columns and variants are
+those of the binding grammar: four columns, seven columns that add
+`Response schema | Output mode | Fallback`, or eight with `Display summary`.
+
+```markdown
+## Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| decide | llm | [Python](native.py) |
+
+## Functions
+
+| ID | Registry | Input | Output | Response schema | Output mode | Fallback |
+| --- | --- | --- | --- | --- | --- | --- |
+| decide | decide | [input](decide_input.json) | [output](decide_output.json) | [response](decide_response.json) | structured | reject |
+```
+
+The shared checks apply unchanged: object schemas in JSON Schema draft 2020-12
+without `$ref`, output modes `structured`, `json`, `prompted_json` or `text`,
+fallback `allow` or `reject`, and the same Kind rule (a `deterministic` node
+requires `-` in all three response columns; an `llm` node that declares response
+columns requires an output mode). Linked schema files are captured as `schema`
+resources, and their bytes join the workflow identity.
+
+Typed semantics:
+
+- **Input schema** validates the projection of the current State that the node
+  reads: `{name: state[name] for name in input_schema['properties'] if name in state}`.
+  Fields the schema does not list are not checked, `required` fields missing from
+  State fail, and listed values must be JSON values.
+- **Output schema** validates the partial State update the node returns, after
+  the existing check that every returned key is a State field. Listed values
+  must be JSON values.
+- Property names in either schema must be State fields; a mismatch is rejected
+  when the workflow is built.
+- **Response schema, Output mode and Fallback** populate `context.response_contract`,
+  so `context.response_request(messages)` works in typed `llm` nodes exactly as
+  in the binding grammar. `Display summary` wraps the node's `complete` service
+  in the same way.
+- An Output schema violation in a node that declares an output mode raises
+  `CandidateCorrection` (`reason: output_schema`). Typed graphs have no guarded
+  components, so nothing repairs it: the error reaches the caller, as in the
+  binding grammar when no guard exists. Other schema violations raise a plain
+  `WorkflowError`.
+- Compiled plans do not carry Functions, so compiling a typed graph that
+  declares them is rejected.
+
 ## Named tools and optional dependencies
 
 Workflows select named tool instances through linked Tools tables. Graph and
