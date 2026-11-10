@@ -1,5 +1,5 @@
 version = 1
-id = "prompt-slots-construction"
+id = "prompt-slots-bakery"
 config = "../../../../../cfg/config.toml"
 
 [prompt_slots]

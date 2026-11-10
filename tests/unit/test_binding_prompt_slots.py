@@ -48,16 +48,16 @@ def system_prompt(definition):
 
 def test_each_pack_fills_the_same_workflow_with_its_own_slot_text():
     fleet = system_prompt(load(FIXTURE))
-    construction = system_prompt(load(FIXTURE, 'construction'))
+    bakery = system_prompt(load(FIXTURE, 'bakery'))
 
     assert fleet == SYSTEM.format(
         persona='a fleet equipment management assistant',
         rules='- Report equipment by unit number.\n- Prefer the most recent inspection.',
         closing='the unit number')
-    assert construction == SYSTEM.format(
-        persona='a construction project management assistant',
-        rules='- Follow the user request.', closing='the project name')
-    assert fleet != construction
+    assert bakery == SYSTEM.format(
+        persona='a bakery operations assistant',
+        rules='- Follow the user request.', closing='the order number')
+    assert fleet != bakery
 
 
 def test_slot_files_are_captured_as_prompt_resources():
@@ -170,7 +170,7 @@ def test_slot_text_changes_the_workflow_identity(tree):
 
     assert before.definition_id != after.definition_id
     assert declaration_identity(before) != declaration_identity(after)
-    assert load(FIXTURE, 'fleet').definition_id != load(FIXTURE, 'construction').definition_id
+    assert load(FIXTURE, 'fleet').definition_id != load(FIXTURE, 'bakery').definition_id
 
 
 def swap_persona_and_rules(tree):
@@ -258,9 +258,9 @@ def test_an_imported_workflow_keeps_its_slots_in_its_identity(tree):
 
 
 def test_fixture_packs_are_valid_launch_packs_declaring_the_same_slots():
-    contexts = [load_launch_context(ROOT, FIXTURE / 'packs' / name) for name in ('fleet', 'construction')]
+    contexts = [load_launch_context(ROOT, FIXTURE / 'packs' / name) for name in ('fleet', 'bakery')]
 
-    assert [context.pack_id for context in contexts] == ['prompt-slots-fleet', 'prompt-slots-construction']
+    assert [context.pack_id for context in contexts] == ['prompt-slots-fleet', 'prompt-slots-bakery']
 
 
 @pytest.mark.parametrize('declaration,message', [

@@ -128,13 +128,13 @@ def slots_built(tmp_path):
 
 def test_compiled_plan_fills_each_packs_slots_without_the_source_tree(tmp_path):
     fleet = load_built(build_slots(tmp_path / 'one'))
-    construction = load_built(build_slots(tmp_path / 'two', 'construction'))
+    bakery = load_built(build_slots(tmp_path / 'two', 'bakery'))
 
     assert sorted(fleet.slot_files) == ['closing', 'persona', 'rules']
     assert fleet.slot_files['persona'] == PurePosixPath('/artifact/pack/prompts/persona.md')
     assert compiled_system_prompt(fleet).startswith('You are a fleet equipment management assistant.\n')
-    assert compiled_system_prompt(construction).endswith('Sign off with: the project name\n')
-    assert fleet.definition_id != construction.definition_id
+    assert compiled_system_prompt(bakery).endswith('Sign off with: the order number\n')
+    assert fleet.definition_id != bakery.definition_id
 
 
 def test_compiled_slots_match_the_source_definition_identity(tmp_path):

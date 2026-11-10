@@ -132,7 +132,7 @@ Rules:
   adds a `prompt_slot` reference to the pack-supplied file.
 
 [`tests/fixtures/prompt_slots`](../tests/fixtures/prompt_slots) holds one workflow
-and two packs (`fleet`, `construction`);
+and two packs (`fleet`, `bakery`);
 `tests/unit/test_binding_prompt_slots.py` runs the workflow under both with a
 controlled model service.
 
