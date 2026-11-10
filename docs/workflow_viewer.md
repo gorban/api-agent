@@ -22,6 +22,10 @@ A node's `Functions` row, in either grammar, adds linked `Input:`, `Output:` and
 Browsers lacking the required overlay APIs keep ordinary standalone SVG navigation.
 The shared enhancement uses local packaged assets and needs no additional service.
 
+A node that reads a `SESSION` binding or writes a declared `## Session` field shows
+an unlinked `Session read: FIELD` or `Session write: FIELD` box beside it, in the
+diagram of the document that owns the node.
+
 Configuration-backed budgets appear as linked boxes in the diagram of the document
 that declares them, for both declaration grammars. A timeout shows as
 `Timeout: KEY` beside its owner, and a graph-level timeout appears in the root
