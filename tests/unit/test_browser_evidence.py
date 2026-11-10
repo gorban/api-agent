@@ -38,9 +38,9 @@ def test_selected_owned_capture_uses_bounded_timeout(monkeypatch):
     monkeypatch.setattr(evidence, 'component_timeout', timed)
     page = object()
     assert capture([SimpleNamespace(pages=[page])], capture_policy=AsyncMock(return_value=PNG),
-        capture_timeout_seconds=20)[0][2] == 'image/png'
-    assert durations == [('UI browser evidence', 20)]
-    for invalid in (0, 21, 5.0, True):
+        capture_timeout_seconds=30)[0][2] == 'image/png'
+    assert durations == [('UI browser evidence', 30)]
+    for invalid in (0, 31, 5.0, True):
         with pytest.raises(ValueError, match='capture timeout'):
             capture([SimpleNamespace(pages=[page])], capture_policy=AsyncMock(return_value=PNG),
                 capture_timeout_seconds=invalid)
@@ -211,3 +211,45 @@ def test_excluded_pages_preserve_context_and_page_numbers():
                    capture_policy=policy, phase='success', exclude_pages=(covered,))
     assert [call.args[0] for call in policy.await_args_list] == [other, second_context]
     assert [row[0] for row in rows] == ['UI success context 1 page 2', 'UI success context 2 page 1']
+
+
+def test_extended_capture_keeps_parent_deadline_and_drains_cancelled_policy():
+    from api_agent.providers.progress import component_timeout
+    async def run():
+        cleaned, submitted = [], []
+        async def policy(*_):
+            try:
+                await asyncio.sleep(60)
+                return PNG
+            finally:
+                cleaned.append(True)
+        with pytest.raises(TimeoutError):
+            async with component_timeout('Short parent', 0.05):
+                await evidence.capture_ui_evidence([SimpleNamespace(pages=[object()])],
+                    EmissionBoundary(ContentPolicy(True)), submitted.append,
+                    capture_policy=policy, capture_timeout_seconds=30)
+        assert cleaned == [True]
+        assert not any(row[2] == 'image/png' for row in submitted)
+    asyncio.run(run())
+
+
+def test_expired_extended_capture_cannot_publish_late_pixels(monkeypatch):
+    from api_agent.providers.progress import component_timeout
+    declared, cleaned, submitted = [], [], []
+    @asynccontextmanager
+    async def accelerated(name, seconds):
+        declared.append(seconds)
+        async with component_timeout(name, 0.05):
+            yield
+    monkeypatch.setattr(evidence, 'component_timeout', accelerated)
+    async def policy(*_):
+        try:
+            await asyncio.sleep(60)
+            return PNG
+        finally:
+            cleaned.append(True)
+    rows = capture([SimpleNamespace(pages=[object()])], capture_policy=policy,
+        capture_timeout_seconds=30, submit=submitted.append)
+    assert declared == [30] and cleaned == [True]
+    assert rows == tuple(submitted)
+    assert [row[2] for row in submitted] == ['application/json']
