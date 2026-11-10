@@ -29,7 +29,8 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
-from .predicates import component_controller, component_decision, native_condition_id, parse_predicate, predicate_fields
+from .predicates import (component_controller, component_decision, native_condition_id, parse_predicate,
+                         predicate_fields, state_predicate_fields)
 
 
 class WorkflowError(RuntimeError):
@@ -417,6 +418,16 @@ class Workflow:
         from .capture import annotation_schema
         self.capture_schema = {'type': 'object', 'properties': {
             key: annotation_schema(hint) for key, hint in hints.items()}}
+        fields = state_predicate_fields(self.capture_schema['properties'])
+        self._state_predicates = {}
+        for row in definition.edges:
+            when = row.get('When', 'always')
+            if when in ('always', 'otherwise') or when in self._state_predicates:
+                continue
+            try:
+                self._state_predicates[when] = parse_predicate(when, fields)
+            except ValueError as error:
+                raise LayoutError(f'{definition.entry}:{row["line"]}: {error}') from None
         self.schema = schema
     def _run_services(self):
         return self._services.get()
@@ -452,13 +463,20 @@ class Workflow:
                 node = self._node(step)
             graph.add_node(step.id, node)
         if self.typed_state and parent is not None:
+            entering = [edge for edge in self.definition.edges
+                        if edge['From'] == 'START' and self._parents[edge['To']] == parent]
             async def start_component(_state):
                 await self._start_component(parent)
-                self._event('edge', owner=parent, source='START', target=children[0].id, implicit=True)
+                if not entering:
+                    self._event('edge', owner=parent, source='START', target=children[0].id, implicit=True)
                 return {}
             graph.add_node('__entry', start_component)
             graph.add_edge(START, '__entry')
-            graph.add_edge('__entry', children[0].id)
+            if entering:
+                graph.add_conditional_edges('__entry', self._conditional_route('START', entering, parent),
+                                            {edge['To']: edge['To'] for edge in entering})
+            else:
+                graph.add_edge('__entry', children[0].id)
         def enter(state):
             self._event('edge', source='START', target=children[0].id,
                         owner=parent or 'GRAPH', implicit=True,
@@ -469,7 +487,9 @@ class Workflow:
         for index, step in enumerate(children):
             if self.typed_state:
                 routes = [edge for edge in self.definition.edges if edge['From'] == step.id]
-                if routes[0]['Router'] == '-':
+                if 'When' in routes[0]:
+                    route = self._conditional_route(step.id, routes, parent)
+                elif routes[0]['Router'] == '-':
                     route = self._static_route(step.id, routes[0]['To'], parent)
                 else:
                     router = self._binding(routes[0]['Source'], routes[0]['Router'])
@@ -973,6 +993,23 @@ class Workflow:
             return target
         return route
 
+
+    def _conditional_route(self, source, edges, parent):
+        async def route(state):
+            values = {'state': dict(state)}
+            matches = [edge for edge in edges if edge['When'] not in ('always', 'otherwise')
+                       and self._state_predicates[edge['When']].evaluate(values)]
+            choices = matches or [edge for edge in edges if edge['When'] in ('always', 'otherwise')]
+            if len(choices) != 1:
+                raise WorkflowError('Routing requires exactly one matching condition or fallback')
+            target = choices[0]['To']
+            visit_id = self._turn_state.get()['visits'].get(source)
+            self._event('edge', owner=parent or 'GRAPH', source=source, target=target,
+                        visit_id=visit_id, condition=choices[0]['When'], implicit=False)
+            if target == 'END':
+                await self._complete_component(parent, state=state)
+            return target
+        return route
 
     def _route(self, source, router, edges, parent):
         targets = {edge['To'] for edge in edges}

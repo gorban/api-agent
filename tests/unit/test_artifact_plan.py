@@ -28,6 +28,15 @@ def test_compiled_plan_retains_declared_state_and_binding_features(v2_built, v3_
     assert isinstance(load_built(v3_built), CompiledStateDefinition)
 
 
+def test_compiled_plan_retains_conditional_typed_edges(v3_built):
+    def conditional(value):
+        static = next(row for row in value['state']['edges']
+                      if dict(row['$m']).get('Router') == '-')
+        static['$m'].append(['When', 'always'])
+    loaded = load_built(v3_built, edited(v3_built.plan, conditional))
+    assert any(row.get('When') == 'always' for row in loaded.edges)
+
+
 @pytest.mark.parametrize(
     ('fixture_name', 'key', 'value', 'message'),
     [

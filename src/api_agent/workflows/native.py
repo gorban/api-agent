@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlsplit
 
 from .configuration import resolve_state_timeouts as _validated_timeouts
 from .execution import _source_manifest
+from .predicates import PredicateError, parse_predicate
 from .model import (NativeCatalog, Layout, LayoutError, Replacement, Resource, Step, ToolUsage, freeze as _freeze,
                     _ID, _MAX_SNAPSHOT_BYTES)
 
@@ -364,27 +365,53 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
         raise LayoutError(f'{entry}:1: unknown replacement target')
     edges = []
     parents = {name: parent for name, _, parent, _ in steps}
-    columns = ('From', 'To', 'Router', 'Source')
-    declared_edges = [(None, entry, row) for row in _shared_table(entry, sections['Edges'], columns)]
+    routed_columns, condition_columns = ('From', 'To', 'Router', 'Source'), ('From', 'To', 'When')
+    def edge_table(path, body):
+        header = next((value for _, value in body if value.strip()), '')
+        conditional = tuple(part.strip() for part in header.strip().strip('|').split('|')) == condition_columns
+        return [dict(row, Router='-', Source='-') if conditional else row
+                for row in _shared_table(path, body, condition_columns if conditional else routed_columns)]
+    declared_edges = [(None, entry, row) for row in edge_table(entry, sections['Edges'])]
     for owner_id, (declaration, body) in component_edges.items():
-        declared_edges.extend((owner_id, declaration, row) for row in _shared_table(declaration, body, columns))
+        declared_edges.extend((owner_id, declaration, row) for row in edge_table(declaration, body))
     for owner_id, declaration, row in declared_edges:
-        # A component that declares Edges owns every route from its direct children.
-        if (row['From'] not in parents or row['To'] not in (*parents, 'END')
-                or (row['To'] != 'END' and parents[row['To']] != parents[row['From']])
+        # A component that declares Edges owns every route from its direct children,
+        # including conditional entry from its START.
+        origin = owner_id if row['From'] == 'START' else parents.get(row['From'], ())
+        if (origin == () or row['To'] not in (*parents, 'END')
+                or (row['From'] == 'START' and (owner_id is None or row['To'] == 'END' or 'When' not in row))
+                or (row['To'] != 'END' and parents[row['To']] != origin)
                 or (row['Router'] != '-' and not _ID.fullmatch(row['Router']))
-                or (owner_id is not None and parents[row['From']] != owner_id)
-                or (owner_id is None and parents[row['From']] in component_edges)):
+                or (owner_id is not None and origin != owner_id)
+                or (owner_id is None and origin in component_edges)):
             raise LayoutError(f'{declaration}:{row["line"]}: invalid edge declaration')
         if row['Router'] == '-' and row['Source'] != '-':
             raise LayoutError(f'{declaration}:{row["line"]}: static edge source must be -')
+        if 'When' in row and row['When'] not in ('always', 'otherwise'):
+            try:
+                parse_predicate(row['When'], None)
+            except PredicateError as error:
+                raise LayoutError(f'{declaration}:{row["line"]}: {error}') from None
         edges.append(dict(row, Source=None if row['Router'] == '-' else source(dict(row, _owner=declaration))))
+    def edge_set(outgoing):
+        whens = [row['When'] for row in outgoing if 'When' in row]
+        if whens and (len(whens) != len(outgoing) or len(set(whens)) != len(whens)
+                      or ('always' in whens and len(whens) > 1)
+                      or ('always' not in whens and whens.count('otherwise') != 1)):
+            raise LayoutError(f'{entry}:{outgoing[-1]["line"]}: conditional edges require one otherwise fallback; always must stand alone')
+        if len({row['To'] for row in outgoing}) != len(outgoing):
+            raise LayoutError(f'{entry}:1: duplicate or mixed route source')
     for name in parents:
         outgoing = [row for row in edges if row['From'] == name]
-        if not outgoing or (len(outgoing) > 1 and any(row['Router'] == '-' for row in outgoing)) or len({row['Router'] for row in outgoing}) != 1:
+        if not outgoing or (len(outgoing) > 1 and any(row['Router'] == '-' and 'When' not in row for row in outgoing)) or len({row['Router'] for row in outgoing}) != 1:
             raise LayoutError(f'{entry}:1: each node needs one static or one declared routed edge set')
-        if len({row['To'] for row in outgoing}) != len(outgoing) or len({row['Source'] for row in outgoing}) != 1:
+        if len({row['Source'] for row in outgoing}) != 1:
             raise LayoutError(f'{entry}:1: duplicate or mixed route source')
+        edge_set(outgoing)
+    for owner_id in component_edges:
+        entering = [row for row in edges if row['From'] == 'START' and parents[row['To']] == owner_id]
+        if entering:
+            edge_set(entering)
     timeouts = []
     if 'Timeouts' in sections:
         for row in _shared_table(entry, sections['Timeouts'], ('Owner', 'Source', 'Key')):
@@ -415,7 +442,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                                       sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     layout_steps = tuple(Step(name, kind, parent, next(row['Source'] for row in nodes if row['ID'] == name)
                               if kind == 'node' else path, selected_declarations[name][1]) for name, kind, parent, path in steps)
-    layout_edges = tuple(_freeze(dict(row, When='always' if row['Router'] == '-' else row['Router']))
+    layout_edges = tuple(_freeze(dict(row, When=row.get('When', 'always' if row['Router'] == '-' else row['Router'])))
                          for row in edges)
     layout = Layout(entry, layout_steps, MappingProxyType({'Edges': layout_edges}), tuple(sorted(contents)))
     resources_by_path = {r.logical_path: r for r in resources}
