@@ -998,6 +998,7 @@ def run_integration_tests(context, tests, **options):
     histories = {test.id: [] for test in tests}
     attempts, chunks, inspections = [], [], []
     pending = tests
+    admitted_profiles = deepcopy(options.get('resolved_test_profiles'))
     prepared = cancelled = infrastructure_failed = False
     callbacks = {key: options.get(key) for key in ('on_event', 'on_result', 'before_run', 'after_run')}
     def aggregate():
@@ -1045,7 +1046,13 @@ def run_integration_tests(context, tests, **options):
                     if callbacks['before_run'] is not None:
                         callbacks['before_run']()
                     prepared = True
-            wave = _run_integration_tests(context, pending, **dict(options,
+            wave_options = dict(options)
+            if admitted_profiles is not None:
+                # The first wave validates the complete frozen map. Later waves
+                # retain only profiles for identities still requiring confirmation.
+                wave_options['resolved_test_profiles'] = (admitted_profiles if not attempts else
+                    {test.id: admitted_profiles[test.id] for test in pending})
+            wave = _run_integration_tests(context, pending, **dict(wave_options,
                 on_event=event, on_result=result, before_run=before, after_run=None,
                 config=dict(config, _E2E_ATTEMPT=len(histories[pending[0].id]) + 1)))
             chunks.append(wave.output)

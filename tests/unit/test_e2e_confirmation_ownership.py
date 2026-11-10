@@ -217,3 +217,63 @@ def test_case():
     assert [row.status for row in result.attempts] == ['failed', 'passed', 'passed']
     assert (tmp_path / 'ui-cycles').read_text().splitlines() == [
         'prepare 1', 'dispose 1', 'prepare 2', 'dispose 2', 'prepare 3', 'dispose 3']
+
+
+def test_confirmation_waves_use_profiles_for_their_admitted_selection(tmp_path):
+    from api_agent.testing.collection import collect_tests
+    from api_agent.testing.test_profiles import resolve_test_profiles
+
+    suite = tmp_path / 'tests/e2e'
+    suite.mkdir(parents=True)
+    (suite / 'test_cases.py').write_text('''import os
+import pytest
+
+@pytest.fixture
+def ui_provider_session():
+    yield object()
+
+@pytest.mark.requires_ui_session
+def test_pass():
+    pass
+
+@pytest.mark.requires_ui_session
+def test_retry():
+    assert int(os.environ['API_AGENT_TEST_ATTEMPT']) > 1
+''')
+    context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path,
+        suite_paths=lambda mode: [suite])
+    config = {'TUI_MODE': 'e2e', 'E2E_RERUNS': 2}
+    selected = collect_tests(context, 'e2e', config=config)
+    profiles = resolve_test_profiles(selected, config, owner_root=tmp_path, context=context)
+    published = []
+
+    result = integration.run_integration_tests(context, selected, config=config, accepted=True,
+        resolved_test_profiles=profiles, after_run=published.append)
+
+    assert result.exit_code == 0
+    assert [row.status for row in result.tests] == ['passed', 'passed']
+    assert [row.status for row in result.attempts] == ['passed', 'failed', 'passed', 'passed']
+    assert published == [result]
+    assert set(profiles) == {test.id for test in selected}
+
+
+@pytest.mark.parametrize('damage', ['extra', 'missing', 'repo', 'node_id'])
+def test_e2e_first_wave_rejects_invalid_frozen_profiles(tmp_path, monkeypatch, damage):
+    from api_agent.testing.collection import CollectionError
+
+    case = selected_case()
+    context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path)
+    monkeypatch.setattr(integration, 'collect_tests', lambda *args, **kwargs: (case,))
+    monkeypatch.setattr(integration.subprocess, 'Popen',
+        lambda *args, **kwargs: pytest.fail('Invalid profiles started a worker'))
+    profiles = {case.id: {'repo': case.repo, 'node_id': case.node_id, 'config': {}}}
+    if damage == 'extra':
+        profiles['extra'] = profiles[case.id].copy()
+    elif damage == 'missing':
+        profiles.clear()
+    else:
+        profiles[case.id][damage] = 'wrong'
+
+    with pytest.raises(CollectionError, match='do not match'):
+        integration.run_integration_tests(context, [case], accepted=True,
+            config={'TUI_MODE': 'e2e', 'E2E_RERUNS': 2}, resolved_test_profiles=profiles)

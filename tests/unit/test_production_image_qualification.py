@@ -87,7 +87,7 @@ def test_qualification_plan_is_a_fresh_compile_of_the_root_workflow():
     from api_agent.workflows.artifact_compile import compile_plan
     plan = (ROOT / 'qualification/simple_chat.json').read_bytes()
     fresh = compile_plan(ROOT / 'flow.md.html', base_root=ROOT, pack_root=ROOT, entry_root='base',
-                         wheels=[ROOT / 'demo/.private_resources/wheels/api_agent-0.1.0-py3-none-any.whl'])
+                         wheels=[ROOT / 'demo/.private_resources/wheels/api_agent_demo_bindings-0.1.0-py3-none-any.whl'])
 
     assert plan == fresh, 'qualification/simple_chat.json is stale; regenerate it as docs/compiled_plan.md describes'
 
@@ -350,3 +350,51 @@ def test_qualifier_reports_forbidden_layer_content(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match='forbidden content'):
         module['qualify'](tmp_path, tmp_path / 'evidence', tag='test')
+
+
+def test_immutable_scenario_base_is_tagged_verified_and_cleaned_after_build_failure(monkeypatch, tmp_path):
+    import subprocess
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    image_id = 'sha256:' + 'a' * 64
+    commands = []
+    state = tmp_path / 'state'
+    state.mkdir()
+    monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda prefix: str(state))
+
+    def run(*command, cwd=None):
+        commands.append(command)
+        if command[:3] == ('docker', 'image', 'inspect'):
+            return SimpleNamespace(stdout=image_id + '\n')
+        if command[:2] == ('docker', 'build'):
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(stdout='')
+
+    monkeypatch.setitem(module['_runtime_qualification'].__globals__, '_run', run)
+    with pytest.raises(subprocess.CalledProcessError):
+        module['_runtime_qualification'](tmp_path, tmp_path, tag='runtime', base_image=image_id)
+    tag_command, inspect_command, build_command, cleanup_command = commands
+    assert tag_command[:3] == ('docker', 'tag', image_id)
+    base_tag = tag_command[3]
+    assert base_tag.startswith('api-agent-qualification-base:')
+    assert inspect_command[:4] == ('docker', 'image', 'inspect', base_tag)
+    assert f'BASE_IMAGE={base_tag}' in build_command
+    assert cleanup_command == ('docker', 'image', 'rm', base_tag)
+
+
+def test_scenario_base_tag_mismatch_fails_before_build_and_is_cleaned(monkeypatch, tmp_path):
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    image_id = 'sha256:' + 'a' * 64
+    commands = []
+    state = tmp_path / 'state'
+    state.mkdir()
+    monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda prefix: str(state))
+
+    def run(*command, cwd=None):
+        commands.append(command)
+        return SimpleNamespace(stdout='sha256:' + 'b' * 64 + '\n')
+
+    monkeypatch.setitem(module['_runtime_qualification'].__globals__, '_run', run)
+    with pytest.raises(RuntimeError, match='base image tag'):
+        module['_runtime_qualification'](tmp_path, tmp_path, tag='runtime', base_image=image_id)
+    assert not any(command[:2] == ('docker', 'build') for command in commands)
+    assert commands[-1] == ('docker', 'image', 'rm', commands[0][3])
