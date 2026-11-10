@@ -814,7 +814,7 @@ def test_active_log_collector_keeps_cleanup_receipt_until_thread_finishes(local)
     entered, release = threading.Event(), threading.Event()
     def blocked_logs(*args, **kwargs):
         entered.set()
-        assert release.wait(2)
+        assert release.wait(30)
         return 'synthetic output\n'
     local.owner.CLEANUP_ATTEMPT_SECONDS = .01
 
@@ -834,6 +834,8 @@ def test_active_log_collector_keeps_cleanup_receipt_until_thread_finishes(local)
             assert local.calls == ['operation-start', 'browser-start']
         finally:
             release.set()
+        # Only the first attempt must miss the collector; the retry is given real time to settle.
+        local.owner.CLEANUP_ATTEMPT_SECONDS = 30
         await caught.value.retry()
         assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
         assert local.owner.pending_cleanup is None
