@@ -250,3 +250,42 @@ def test_failed_target_probe_does_not_start_installer(tmp_path, monkeypatch):
         ensure_environment(context, [])
     assert probe.call_count == 1
     assert not (tmp_path / '.venv/.api-agent-dependencies').exists()
+
+
+def test_node_workspace_declarations_are_inert_strict_and_preserved(tmp_path):
+    from api_agent.providers.distribution import NodeWorkspace
+    manifest = tmp_path / 'provider-dependencies.toml'
+    manifest.write_text(
+        'version = 1\n[[node_workspaces]]\npath_field = "WORKSPACE_DIR"\n'
+        'credential_fields = ["REGISTRY_TOKEN"]\nready = ["node_modules/.bin/tool"]\n'
+        'environment = { SKIP_HOOKS = "0" }\n[[node_workspaces]]\npath_field = "OTHER_DIR"\n'
+        'ready = ["node_modules/.package-lock.json"]\n')
+    read = read_provider_manifest(tmp_path, owner='synthetic')
+    assert read.node_workspaces == (
+        NodeWorkspace('WORKSPACE_DIR', ('REGISTRY_TOKEN',), ('node_modules/.bin/tool',), {'SKIP_HOOKS': '0'}),
+        NodeWorkspace('OTHER_DIR', (), ('node_modules/.package-lock.json',), {}))
+    assert read.requirements() == ()
+    assert read.select_groups().node_workspaces == read.node_workspaces
+
+
+@pytest.mark.parametrize('body', [
+    '[[node_workspaces]]\nready = ["a"]\n',
+    '[[node_workspaces]]\npath_field = "lower"\nready = ["a"]\n',
+    '[[node_workspaces]]\npath_field = "DIR"\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = []\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = ["/absolute"]\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = ["../escape"]\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = [""]\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = ["a"]\nunknown = 1\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = ["a"]\ncredential_fields = ["bad name"]\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = ["a"]\ncredential_fields = ["TOKEN", "TOKEN"]\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = ["a"]\nenvironment = { lower = "1" }\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = ["a"]\nenvironment = { VALUE = 1 }\n',
+    '[[node_workspaces]]\npath_field = "DIR"\nready = ["a"]\ncredential_fields = ["TOKEN"]\nenvironment = { TOKEN = "x" }\n',
+    'node_workspaces = "not a table list"\n',
+    'node_workspaces = ["not a table"]\n',
+])
+def test_node_workspace_declaration_rejects_invalid_shapes(tmp_path, body):
+    (tmp_path / 'provider-dependencies.toml').write_text('version = 1\n' + body)
+    with pytest.raises(ValueError, match='node workspace'):
+        read_provider_manifest(tmp_path, owner='synthetic')

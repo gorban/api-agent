@@ -64,6 +64,34 @@ Core orchestration consumes these interfaces rather than hardcoding a pack's
 services. See [provider architecture](architecture/provider_architecture.md) and
 [versioned contracts](architecture/provider_contracts_v1.md) for extension details.
 
+### Provider Node workspaces
+
+A provider whose frontend runs from a separate Node workspace declares it in the
+`provider-dependencies.toml` beside its factory, so a launch installs it instead
+of asking for a manual `npm ci`:
+
+```toml
+version = 1
+
+[[node_workspaces]]
+path_field = "UI_SOURCE_DIR"          # configuration field selecting the workspace
+credential_fields = ["REGISTRY_TOKEN"] # configuration fields the installer needs
+ready = ["node_modules/.bin/tool"]    # workspace-relative paths proving an install
+environment = { SKIP_HOOKS = "1" }    # non-secret installer environment
+```
+
+Field names are uppercase configuration identifiers; credential fields may not
+also appear in `environment`, and `ready` paths stay inside the workspace. The
+declaration is inert: factories are not imported to read it. When a selected
+provider of that kind is active, the parent process runs a locked
+`npm ci --include=dev` once per canonical workspace before any test worker or
+local run component starts, and only when the workspace has no `node_modules`.
+An existing tree that satisfies `ready` is used as is; any other existing tree
+is never replaced. Missing credentials stop before anything is installed and are
+named, never printed. Credentials and `environment` reach only the installer's
+environment, installer output is discarded, and a changed `package-lock.json`
+fails the preparation.
+
 ## Tracing providers
 
 Packs can select export-only or dashboard-capable tracing implementations through

@@ -36,12 +36,12 @@ def _check_budget(budget, cancellation):
         raise TimeoutError('Frontend preparation timed out; retry npm ci from the repository root.')
 
 
-def _command(argv, root, budget, cancellation):
+def _command(argv, root, budget, cancellation, env=None):
     """Discard potentially credential-bearing installer output and reap the group."""
     _check_budget(budget, cancellation)
     with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(argv, cwd=root, stdout=output if argv[1] == '--version' else subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   start_new_session=True)
+                                   start_new_session=True, env=env)
         try:
             while True:
                 _check_budget(budget, cancellation)

@@ -5,6 +5,7 @@ from threading import Event
 
 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS
 from api_agent.runtime.ownership import StackScope
+from api_agent.runtime.workspace_preparation import prepare_selected_workspaces
 from .prerequisites import local_recording_prerequisites
 from .recorded import validate_recorded_integration, validate_integration_start
 from .suite_lock import suite_locked
@@ -39,6 +40,9 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         tests = validate_integration_start(tests, config, accepted=accepted, no_std_in=no_std_in)
         plan = plan_integration_requirements(tests)
         plan.validate(context, config)
+        # One parent-side install before any worker copies the environment.
+        prepare_selected_workspaces(context, config, plan.workspace_kinds,
+                                    cancellation=options.get('cancel_event'))
         if tool_plan is not None:
             from .prerequisites import prepare_selected_tool_dependencies
             prepare_selected_tool_dependencies(context, tool_plan)
@@ -94,6 +98,7 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     plan = plan_integration_requirements(tests)
     plan.validate(context, config)
     cancelled = options.setdefault('cancel_event', Event())
+    prepare_selected_workspaces(context, config, plan.workspace_kinds, cancellation=cancelled)
     if prerequisites is None:
         scope = StackScope.from_roots(context.base_root, context.pack_root)
         prerequisites = local_recording_prerequisites(context, scope=scope,

@@ -25,6 +25,7 @@ connections, start local services, run tests and inspect failures.
   redistributions must reproduce them in accompanying materials. See [LICENSE](LICENSE).
 
 - **Selected prerequisites:** nested configuration, provider Python packages,
+  [provider Node workspaces](docs/resource-packs.md#provider-node-workspaces),
   tool-contributed mise runtimes and recursive local container dependencies.
   [Add a tool, including one in another language](docs/tool-executables.md).
 

@@ -7,6 +7,16 @@ class IntegrationRequirementsPlan:
     requires_pack_api: bool
     requires_ui_session: bool = False
     requires_llm: bool = True
+    requires_owned_ui_session: bool = False
+
+    @property
+    def workspace_kinds(self):
+        """Provider kinds whose declared workspaces must be prepared before workers start.
+
+        Owned-UI tests start their own provider, so they never join ``provider_kinds``,
+        yet they still consume the same installed workspace.
+        """
+        return frozenset({'ui'} if self.requires_ui_session or self.requires_owned_ui_session else ())
 
     @property
     def provider_kinds(self):
@@ -35,4 +45,5 @@ def plan_integration_requirements(tests):
         any('requires_pack_api' in test.tags for test in tests),
         any('requires_ui_session' in test.tags for test in tests),
         any((not ({'requires_ui_session', 'requires_owned_ui_session'} & set(test.tags)))
-            or 'requires_llm' in test.tags for test in tests))
+            or 'requires_llm' in test.tags for test in tests),
+        any('requires_owned_ui_session' in test.tags for test in tests))

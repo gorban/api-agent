@@ -5,6 +5,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 import os
+from pathlib import PurePosixPath
+import re
 import stat
 import tomllib
 
@@ -16,6 +18,18 @@ PROVIDER_SELECTORS = {
 }
 
 
+_FIELD = re.compile(r'[A-Z][A-Z0-9_]*')
+
+
+@dataclass(frozen=True)
+class NodeWorkspace:
+    """One provider-declared Node workspace, named by configuration fields only."""
+    path_field: str
+    credential_fields: tuple[str, ...] = ()
+    ready: tuple[str, ...] = ()
+    environment: Mapping[str, str] = MappingProxyType({})
+
+
 @dataclass(frozen=True)
 class ProviderDependencyManifest:
     root: Path
@@ -23,6 +37,7 @@ class ProviderDependencyManifest:
     dependencies: tuple[str, ...]
     groups: Mapping[str, tuple[str, ...]]
     selected_groups: tuple[str, ...] = ()
+    node_workspaces: tuple[NodeWorkspace, ...] = ()
 
     def requirements(self, groups=None):
         groups = self.selected_groups if groups is None else tuple(groups)
@@ -36,7 +51,33 @@ class ProviderDependencyManifest:
         """Freeze one operation's optional groups into its selected descriptor."""
         self.requirements(groups)
         return ProviderDependencyManifest(self.root, self.owner, self.dependencies,
-                                          self.groups, tuple(groups))
+                                          self.groups, tuple(groups), self.node_workspaces)
+
+
+def _node_workspaces(entries):
+    """Validate inert Node workspace declarations; fields are names, never values."""
+    invalid = ValueError('Provider node workspace declarations are invalid')
+    if not isinstance(entries, list):
+        raise invalid
+    workspaces = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) - {'path_field', 'credential_fields', 'ready', 'environment'}:
+            raise invalid
+        path_field, ready = entry.get('path_field'), entry.get('ready')
+        credentials, environment = entry.get('credential_fields', []), entry.get('environment', {})
+        if (type(path_field) is not str or not _FIELD.fullmatch(path_field)
+                or not isinstance(ready, list) or not ready
+                or any(type(item) is not str or not item or PurePosixPath(item).is_absolute()
+                       or '..' in PurePosixPath(item).parts for item in ready)
+                or not isinstance(credentials, list) or len(set(credentials)) != len(credentials)
+                or any(type(item) is not str or not _FIELD.fullmatch(item) for item in credentials)
+                or not isinstance(environment, dict)
+                or any(type(key) is not str or not _FIELD.fullmatch(key) or key in credentials
+                       or type(value) is not str for key, value in environment.items())):
+            raise invalid
+        workspaces.append(NodeWorkspace(path_field, tuple(credentials), tuple(ready),
+                                        MappingProxyType(dict(environment))))
+    return tuple(workspaces)
 
 
 def read_provider_manifest(root: Path, *, owner: str) -> ProviderDependencyManifest:
@@ -71,7 +112,8 @@ def read_provider_manifest(root: Path, *, owner: str) -> ProviderDependencyManif
             data = tomllib.load(stream)
     except OSError as exc:
         raise ValueError('Provider dependency manifest cannot be read safely') from exc
-    if set(data) - {'version', 'dependencies', 'groups'} or type(data.get('version')) is not int or data['version'] != 1:
+    if (set(data) - {'version', 'dependencies', 'groups', 'node_workspaces'}
+            or type(data.get('version')) is not int or data['version'] != 1):
         raise ValueError('Provider dependency manifest requires version = 1')
     dependencies = data.get('dependencies', [])
     groups = data.get('groups', {})
@@ -81,7 +123,8 @@ def read_provider_manifest(root: Path, *, owner: str) -> ProviderDependencyManif
                 for name, items in groups.items())):
         raise ValueError('Provider dependencies and groups must be nonempty requirement strings')
     return ProviderDependencyManifest(root, owner, tuple(dependencies),
-                                      MappingProxyType({name: tuple(items) for name, items in groups.items()}))
+                                      MappingProxyType({name: tuple(items) for name, items in groups.items()}),
+                                      node_workspaces=_node_workspaces(data.get('node_workspaces', [])))
 
 
 def selected_manifests(values, *, owner_root: Path, active_kinds, groups_by_kind=None):
