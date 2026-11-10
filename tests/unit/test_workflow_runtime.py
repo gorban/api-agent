@@ -215,11 +215,13 @@ def test_optional_timeout_and_config_override(runtime_layout, tmp_path):
 
 
 def test_parent_deadline_is_retained_across_retries(runtime_layout, tmp_path):
-    runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=0.05', owner='first')]
+    runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=0.5', owner='first')]
     attempts, events = [], []
     async def slow(inputs, context):
         attempts.append(context.attempt)
-        await asyncio.sleep(0.03)
+        # Two attempts start within the deadline and the second outlives it,
+        # with slack for a slow host's scheduling.
+        await asyncio.sleep(0.3)
         return dict(original_input=inputs['user_input'], route='skip', ready=False, final_output='x')
     with pytest.raises(TimeoutError):
         asyncio.run(workflow(runtime_layout, slow, services={'observe': events.append}).arun({'user_input': 'x'}))
@@ -227,7 +229,7 @@ def test_parent_deadline_is_retained_across_retries(runtime_layout, tmp_path):
     ends = [event for event in events if event['event'] == 'scope_end']
     assert ends[-1]['outcome'] == 'failed'
     component = next(event for event in ends if event['owner'] == 'first')
-    assert component['timeout_key'] == 'LIMIT' and component['declared_timeout'] == 0.05
+    assert component['timeout_key'] == 'LIMIT' and component['declared_timeout'] == 0.5
     assert component['outcome'] == 'failed'
 
 

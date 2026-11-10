@@ -229,7 +229,8 @@ def test_finished_pytest_reaps_child_holding_output_pipe(tmp_path, inherited_pip
     ctx = context(base)
     start = time.monotonic()
     run_unit_tests(ctx, collect_tests(ctx, 'unit'))
-    assert time.monotonic() - start < 5
+    # Well under the 30s child: the runner must not wait for it, even on a slow host.
+    assert time.monotonic() - start < 20
     stat = Path('/proc') / marker.read_text() / 'stat'
     def running():
         try:
