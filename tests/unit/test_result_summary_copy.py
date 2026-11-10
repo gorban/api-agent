@@ -164,9 +164,16 @@ def test_result_copy_footer_and_test_name_fallback(tmp_path, monkeypatch, kind, 
             await pilot.pause()
             screen = app.screen
 
-            def copy_hint():
-                hints = [hint for hint in screen.query(FooterKey)
-                         if hint.description == 'Copy value']
+            async def copy_hint():
+                def query():
+                    return [hint for hint in screen.query(FooterKey)
+                            if hint.description == 'Copy value']
+                # The footer recomposes after binding changes and lays out on a later refresh.
+                deadline = asyncio.get_running_loop().time() + 10
+                hints = query()
+                while not (hints and hints[0].region.width) and asyncio.get_running_loop().time() < deadline:
+                    await pilot.pause(.02)
+                    hints = query()
                 assert len(hints) == 1
                 hint = hints[0]
                 assert hint.key == key and hint.key_display == label
@@ -177,7 +184,7 @@ def test_result_copy_footer_and_test_name_fallback(tmp_path, monkeypatch, kind, 
                 assert shortcuts[-1] is hint
                 return hint
 
-            assert not copy_hint().has_class('-disabled')
+            assert not (await copy_hint()).has_class('-disabled')
             await pilot.press(key)
             copy.assert_awaited_once_with(app, name)
             copy.reset_mock()
@@ -188,12 +195,12 @@ def test_result_copy_footer_and_test_name_fallback(tmp_path, monkeypatch, kind, 
             expected = screen.query_one('#body', Static).content
             expected = (expected.plain if hasattr(expected, 'plain') else expected)[:9]
             assert screen.get_selected_text() == expected
-            assert not copy_hint().has_class('-disabled')
+            assert not (await copy_hint()).has_class('-disabled')
             await pilot.press(key)
             await pilot.pause()
             copy.assert_awaited_once_with(app, expected)
             assert screen.get_selected_text() is None
-            assert not copy_hint().has_class('-disabled')
+            assert not (await copy_hint()).has_class('-disabled')
             await pilot.press(key)
             copy.assert_awaited_with(app, name)
     asyncio.run(scenario())
