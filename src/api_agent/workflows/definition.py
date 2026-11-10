@@ -441,7 +441,7 @@ def _import_definition(entry, title, sections, *, base_root, pack_root, replacem
     identity = {'version': 1, 'graph_id': graph_id,
         'resources': [(r.kind, r.logical_path, r.sha256) for r in resources],
         'replacements': [(r.target_id, r.root_id, Path(r.entry).as_posix()) for r in selected.replacements]}
-    if selected.slot_files:
+    if getattr(selected, 'slot_files', None):
         identity['prompt_slots'] = _slot_identity(selected.slot_files, roots, resources)
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return replace(selected, graph_id=graph_id, entry=entry, entry_root=entry_root,
