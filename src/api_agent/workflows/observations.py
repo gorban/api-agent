@@ -73,14 +73,14 @@ class WorkflowObservationFactory:
 
     def create(self, definition, *, journal=None, turn_id=None,
                component_passes=None, test_id=None, source_manifest=None,
-               semantic_identity=None):
+               semantic_identity=None, limits=None):
         if journal is not None and semantic_identity is not None:
             from .identity import validate_identity
             if validate_identity(semantic_identity) != getattr(journal, 'semantic_identity', None):
                 raise ValueError("Existing journal semantic identity conflicts")
         journal = journal or WorkflowJournal(definition,
             log_content=self.log_policy.allow_content, boundary=self.boundary,
-            turn_id=turn_id, component_passes=component_passes,
+            turn_id=turn_id, component_passes=component_passes, limits=limits,
             test_id=test_id, source_manifest=source_manifest,
             semantic_identity=semantic_identity)
         return WorkflowObservations(journal, boundary=self.boundary,
