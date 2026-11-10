@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "attempt": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "attempt"
+  ],
+  "additionalProperties": false
+}

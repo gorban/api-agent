@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "properties": {
+    "draft": {
+      "type": "string"
+    },
+    "saw_hint": {
+      "type": "string"
+    },
+    "saw_scratch": {
+      "type": "string"
+    },
+    "hint": {
+      "type": "string"
+    },
+    "scratch": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "draft",
+    "saw_hint",
+    "saw_scratch"
+  ],
+  "additionalProperties": false
+}

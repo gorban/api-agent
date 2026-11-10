@@ -10,10 +10,10 @@ FIXTURE = Path(__file__).resolve().parents[1] / 'fixtures' / 'session_workflow'
 FLOW = 'chat.md.html'
 
 
-def session_entry(root, *edits):
-    """Copy the fixture and apply ``(old, new)`` replacements to its root declaration."""
-    shutil.copytree(FIXTURE, root, dirs_exist_ok=True)
-    entry = root / FLOW
+def session_entry(root, *edits, fixture=FIXTURE, flow=FLOW):
+    """Copy a fixture and apply ``(old, new)`` replacements to its root declaration."""
+    shutil.copytree(fixture, root, dirs_exist_ok=True)
+    entry = root / flow
     text = entry.read_text()
     for old, new in edits:
         assert old in text, old
@@ -30,7 +30,8 @@ def session_workflow(entry, **kwargs):
     definition = load_session(entry)
     source = next(step.source for step in definition.layout.steps if step.kind == 'node')
     namespace = load_native_catalog(definition, source)
-    registry = {name: NodeFunction(namespace[name]) for name in ('reply', 'draft', 'check')}
+    registry = {row['Registry']: NodeFunction(namespace[row['Registry']])
+                for row in definition.layout.tables['Functions']}
     return Workflow(definition, registry, **kwargs)
 
 

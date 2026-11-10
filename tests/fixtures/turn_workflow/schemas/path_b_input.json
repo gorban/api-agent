@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "topic": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "topic"
+  ],
+  "additionalProperties": false
+}

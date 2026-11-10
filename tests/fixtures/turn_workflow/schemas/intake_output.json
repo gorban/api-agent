@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "topic": {
+      "type": "string"
+    },
+    "route": {
+      "type": "string"
+    },
+    "hint": {
+      "type": "string"
+    },
+    "previous": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "topic",
+    "route",
+    "hint",
+    "previous"
+  ],
+  "additionalProperties": false
+}

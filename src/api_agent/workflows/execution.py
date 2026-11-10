@@ -308,6 +308,19 @@ def _thaw(value):
     return value
 
 
+def _latest_turn_value(writers, values, field):
+    """The newest still-present output of ``field`` among nodes that completed this turn.
+
+    ``writers`` maps a field to node IDs in completion order. A node whose output the
+    engine has since cleared (a rejected component pass) no longer counts.
+    """
+    for node in reversed(writers.get(field, ())):
+        output = values.get(node)
+        if output is not None and field in output:
+            return True, output[field]
+    return False, None
+
+
 class _State(TypedDict):
     values: dict
     ancestry: tuple
@@ -485,6 +498,10 @@ class Workflow:
         graph.add_node('commit', lambda state: {})
         graph.add_edge(START, 'commit')
         return graph.compile(checkpointer=checkpointer if checkpointer is not None else InMemorySaver())
+
+    def _turn_payload(self, values, field):
+        found, value = _latest_turn_value(self._turn_state.get()['writers'], values, field)
+        return {field: value} if found else {}
 
     def _run_services(self):
         return self._services.get()
@@ -729,7 +746,8 @@ class Workflow:
                 sources = {'START': values['START'], 'PREVIOUS': state['previous'].get(step.id, {}),
                            'FEEDBACK': state['feedback'], 'ATTEMPT': {'value': context.attempt},
                            'MAX_PASSES': {'value': context.max_passes},
-                           'SESSION': self._turn_state.get().get('session', {})}
+                           'SESSION': self._turn_state.get().get('session', {}),
+                           'TURN': self._turn_payload(values, binding['Field']) if source == 'TURN' else {}}
                 payload = sources.get(source, values.get(source, {}))
                 available = (source in ('START', 'ATTEMPT', 'MAX_PASSES')
                              or (source == 'PREVIOUS' and step.id in state['previous'])
@@ -741,8 +759,9 @@ class Workflow:
                     inputs[binding['Input']] = deepcopy(payload[binding['Field']])
                 elif 'default_value' in binding:
                     inputs[binding['Input']] = _thaw(binding['default_value'])
-                elif source == 'SESSION':
-                    raise WorkflowError(f'Missing required session field {binding["Field"]} for {step.id}.{binding["Input"]}')
+                elif source in ('SESSION', 'TURN'):
+                    kind = 'session field' if source == 'SESSION' else 'turn value'
+                    raise WorkflowError(f'Missing required {kind} {binding["Field"]} for {step.id}.{binding["Input"]}')
                 else:
                     raise WorkflowError(f'Missing required binding for {step.id}.{binding["Input"]}')
             self._validate(row['Input schema'], inputs, step.id, 'input')
@@ -774,6 +793,9 @@ class Workflow:
                 plain_fields=plain_fields.get('output', ...))
             self._event('node', scope_id=budget.id, node=step.id, component=step.parent, attempt=context.attempt,
                         elapsed=time.monotonic() - started, kind=function.kind)
+            writers = self._turn_state.get()['writers']
+            for name in result:
+                writers.setdefault(name, []).append(step.id)
             return dict(state, values={**values, step.id: deepcopy(result)}, visit_id=budget.id)
         async def timed(state):
             frame = next((item for item in reversed(_REPAIRS.get()) if item.workflow is self), None)
@@ -1367,7 +1389,7 @@ class Workflow:
         from .inference_history import InferenceHistory
         history = InferenceHistory()
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
-                                                  'contexts': {}, 'budgets': {}})
+                                                  'contexts': {}, 'budgets': {}, 'writers': {}})
         try:
             selected_journal = self._journal.get()
             active_turn = turn_id if turn_id is not None else (selected_journal.turn_id if selected_journal is not None else None)
