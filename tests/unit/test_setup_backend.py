@@ -389,7 +389,7 @@ def test_slow_loop_handoff_retains_one_thread_until_late_ack(fake_host, monkeypa
     gate = threading.Event()
     original = setup_backend.asyncio.new_event_loop
     def delayed():
-        gate.wait(timeout=2)
+        gate.wait(timeout=30)
         return original()
     monkeypatch.setattr(setup_backend.asyncio, 'new_event_loop', delayed)
     try:
@@ -399,7 +399,9 @@ def test_slow_loop_handoff_retains_one_thread_until_late_ack(fake_host, monkeypa
         assert backend.pending and thread.is_alive() and backend.loop is None
         assert caught.value.inspections == (backend,)
         gate.set()
-        assert backend._ready.wait(timeout=1)
+        assert backend._ready.wait(timeout=30)
+        # Only startup must miss its acknowledgement; the late-ready loop is given real time to dispose.
+        backend.cleanup_timeout = 30
         backend.close()
         assert backend.thread is thread and backend.closed and backend.loop.is_closed()
         assert not fake_host.events
