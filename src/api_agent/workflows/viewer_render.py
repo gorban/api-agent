@@ -11,6 +11,7 @@ from typing import Mapping
 from types import MappingProxyType
 
 from api_agent.auth.owned_process import kill_owned_group
+from api_agent.tooling.operations import FIXED_OPERATIONS, name_problem
 
 from .viewer_repository import RepositoryIdentity, CONFIG_PATH, read_repository_identity
 from .definition import _MAX_RESOURCE_BYTES
@@ -397,7 +398,7 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
         if (type(operations) is not tuple or operations and (binding.scope_kind != 'node'
                 or any(type(operation) is not str for operation in operations)
                 or len(set(operations)) != len(operations)
-                or any(operation not in ('describe', 'prepare', 'verify', 'execute') for operation in operations))):
+                or any(operation not in FIXED_OPERATIONS and name_problem(operation) for operation in operations))):
             raise RenderError('invalid captured tool operations')
         consumer = scope_step
         if operations:

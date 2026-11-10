@@ -322,7 +322,7 @@ def test_tool_operation_changes_affect_view_identity_not_control_flow(consuming)
     assert before.edges == after.edges
 
 
-@pytest.mark.parametrize('operations', [('unknown',), ('execute', 'execute'), ([],), ['execute']])
+@pytest.mark.parametrize('operations', [('invoke',), ('bad-name',), ('execute', 'execute'), ([],), ['execute']])
 def test_renderer_rejects_invalid_captured_consumer_operations(consuming, operations):
     view = admit(consuming)
     binding = next(item for item in view.tool_bindings if item.scope == 'work')
@@ -330,6 +330,14 @@ def test_renderer_rejects_invalid_captured_consumer_operations(consuming, operat
         _projection_source(replace(view, tool_bindings=(replace(binding, operations=operations),)),
                            view.documents[0])
 
+
+
+def test_renderer_accepts_implementation_declared_consumer_operations(consuming):
+    view = admit(consuming)
+    binding = next(item for item in view.tool_bindings if item.scope == 'work')
+    source, _ = _projection_source(replace(view, tool_bindings=(replace(binding, operations=('query', 'mutate')),)),
+                                   view.documents[0])
+    assert 'toolbinding' in unescape(source.decode())
 
 def test_consumer_operations_are_not_graph_availability(selected):
     view = admit(selected)
