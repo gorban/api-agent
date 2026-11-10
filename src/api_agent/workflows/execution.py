@@ -1390,7 +1390,8 @@ class Workflow:
         if selected_journal is None and factory is not None and not recording_enabled():
             from .identity import workflow_identity
             selected_journal = automatic_observations = factory.create(self.definition, turn_id=turn_id,
-                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts, component_passes=self.component_passes, limits=self.limit_values), component_passes=self.component_passes)
+                semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts, component_passes=self.component_passes, limits=self.limit_values), component_passes=self.component_passes,
+                limits=self.limit_values)
         journal_turn = getattr(selected_journal, 'turn_id', None)
         if turn_id is not None and journal_turn is not None and turn_id != journal_turn:
             raise ValueError('explicit turn identity disagrees with the active journal')
@@ -1403,8 +1404,9 @@ class Workflow:
                 raise error_type("Workflow journal semantic identity differs from effective budgets")
         if selected_journal is not None and not self.typed_state:
             from .journal import projection
-            if selected_journal.projection != projection(self.definition, component_passes=self.component_passes):
-                raise WorkflowError('Workflow journal uses a different effective component pass limit')
+            if selected_journal.projection != projection(self.definition, component_passes=self.component_passes,
+                                                         limits=self.limit_values):
+                raise WorkflowError('Workflow journal uses different effective limits')
         selected_context = current_execution_context()
         if selected_journal is not None:
             selected_context = selected_journal.admit_execution_context(selected_context)
@@ -1420,7 +1422,7 @@ class Workflow:
                 semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
                                                     component_passes=self.component_passes,
                                                     limits=self.limit_values),
-                component_passes=self.component_passes,
+                component_passes=self.component_passes, limits=self.limit_values,
                 log_content=requested_log_content(self.config, selected_services),
                 source_manifest=source_manifest,
                 boundary=selected_services.get('emissions'),

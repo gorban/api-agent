@@ -12,7 +12,7 @@ from uuid import uuid4, UUID
 
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary, _COUNTS
 from .model import MAX_COMPONENT_PASSES
-from .predicates import PredicateError, native_condition_id, parse_predicate
+from .predicates import PredicateError, loop_edges, native_condition_id, parse_predicate
 
 _CAPTURE_CALLBACKS = ContextVar('workflow_capture_callbacks', default=None)
 
@@ -139,10 +139,16 @@ def _capture_contract(value, depth=0, *, max_depth=4, budget=None, provider_cont
             or type(value) is str and (max_depth == 8 or len(value) <= 512))
 
 
-def projection(definition, *, component_passes=None):
-    """Describe the admitted selection without exposing machine paths or source text."""
+def projection(definition, *, component_passes=None, limits=None):
+    """Describe the admitted selection without exposing machine paths or source text.
+
+    ``limits`` maps each declared Limits key to its effective value (default: the declared
+    defaults). A bounded backward edge records its limit key and comparison.
+    """
     if definition is None:
         raise ValueError('An admitted workflow definition is required')
+    bounds = {(row['From'], row['To'], row['When']): dict(key=bound[0], inclusive=bound[1])
+              for row, bound in loop_edges(definition.layout) if bound is not None}
     steps = [dict(id=step.id, kind=step.kind, parent=step.parent)
              for step in definition.layout.steps]
     edges = []
@@ -155,8 +161,10 @@ def projection(definition, *, component_passes=None):
         for index, step in enumerate(children):
             declared = [row for row in definition.layout.tables['Edges'] if row['From'] == step.id]
             if declared:
-                edges.extend(dict(owner=owner, source=step.id, target=row['To'],
-                                  condition=row['When'], implicit=False) for row in declared)
+                edges.extend(dict(owner=owner, source=step.id, target=row['To'], condition=row['When'],
+                                  implicit=False, **({'bound': bounds[step.id, row['To'], row['When']]}
+                                                     if (step.id, row['To'], row['When']) in bounds else {}))
+                             for row in declared)
             else:
                 edges.append(dict(owner=owner, source=step.id,
                                   target=children[index + 1].id if index + 1 < len(children) else 'END',
@@ -174,6 +182,14 @@ def projection(definition, *, component_passes=None):
                              else int(declared[name]['Max passes'])))
            for name, value in effective.items()):
         raise ValueError('Invalid effective component pass limit')
+    declared_limits = {row['Key'] for row in getattr(definition, 'limits', ())}
+    if limits is None:
+        from .configuration import resolve_state_limits
+        limits = resolve_state_limits(definition) if declared_limits else {}
+    if (not isinstance(limits, Mapping) or set(limits) != declared_limits
+            or any(type(value) is not int or not 0 <= value <= MAX_COMPONENT_PASSES
+                   for value in limits.values())):
+        raise ValueError('Effective limit values differ from admitted limits')
     result = dict(version=1, graph_id=definition.graph_id, definition_id=definition.definition_id,
                   entry_root=definition.entry_root, steps=steps, edges=edges,
                   component_passes=[dict(id=row['ID'], max_passes=effective[row['ID']],
@@ -185,6 +201,8 @@ def projection(definition, *, component_passes=None):
                              for item in definition.resources],
                   replacements=[dict(target_id=item.target_id, root_id=item.root_id)
                                 for item in definition.replacements])
+    if limits:
+        result['limits'] = [dict(key=key, value=limits[key]) for key in sorted(limits)]
     if len(_encoded(result)) > 1024 * 1024:
         raise ValueError('Workflow projection exceeds 1 MiB')
     return result
@@ -197,6 +215,13 @@ def _routes_complete(projection_data, events):
     declared = {}
     for row in projection_data['edges']:
         declared.setdefault((row['owner'], row['source'], row['target'], row['implicit']), set()).add(row['condition'])
+    limits = {row['key']: row['value'] for row in projection_data.get('limits', ())}
+    # A bounded edge is taken only while its target has started fewer than the cap times,
+    # which is how the engine reads `<target>.attempt < LIMIT` (`<=` allows one more).
+    caps = {(row['owner'], row['source'], row['target'], row['condition']):
+            limits[row['bound']['key']] + row['bound']['inclusive']
+            for row in projection_data['edges'] if 'bound' in row}
+    starts = {}
     scopes, open_scopes, routes, pending = {}, [], {}, {}
     passes, node_outcomes, component_outcomes = {}, {}, {}
     graph_roots = 0
@@ -227,6 +252,7 @@ def _routes_complete(projection_data, events):
                     return False
                 pending.pop(route_key)
             scopes[sid] = dict(event, end=None)
+            starts[owner] = starts.get(owner, 0) + 1
             open_scopes.append(sid)
             if skind == 'component' and owner in pass_components:
                 passes[sid] = dict(next_number=1, active=None, accepted=False,
@@ -257,6 +283,9 @@ def _routes_complete(projection_data, events):
                     return False
             conditions = declared.get((owner, source, target, event.get('implicit')))
             if conditions is None or event.get('condition', 'always') not in conditions:
+                return False
+            cap = caps.get((owner, source, target, event.get('condition')))
+            if cap is not None and starts.get(target, 0) >= cap:
                 return False
             if key not in routes:
                 if source != 'START':
@@ -443,11 +472,11 @@ class WorkflowJournal:
 
     def __init__(self, definition, *, log_content=False, secrets=(), test_id=None,
                  source_manifest=None, boundary=None, turn_id=None, component_passes=None,
-                 content_policy=None, model_identity=None, semantic_identity=None):
+                 content_policy=None, model_identity=None, semantic_identity=None, limits=None):
         from .identity import validate_identity
         self._semantic_identity = (None if semantic_identity is None else
                                   validate_identity(semantic_identity))
-        self.projection = projection(definition, component_passes=component_passes)
+        self.projection = projection(definition, component_passes=component_passes, limits=limits)
         # Native callable kind is admitted by the definition compiler. Keep it
         # private to trace classification; journal and projection stay generic.
         self._node_call_kinds = {row['ID']: row['Kind'] for row in
@@ -799,7 +828,7 @@ class WorkflowJournal:
 
 
 def validate_journal(payload, *, expected_definition=None, expected_component_passes=None,
-                     expected_identity=None):
+                     expected_identity=None, expected_limits=None):
     """Admit only the already-scrubbed, bounded structural envelope."""
     if type(payload) is not dict or payload.get('version') != 1:
         raise ValueError('Invalid workflow journal version')
@@ -823,9 +852,9 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
         raise ValueError('Unexpected workflow journal field')
     projection_data = payload['projection']
     if expected_definition is not None and projection_data != projection(
-            expected_definition, component_passes=expected_component_passes):
+            expected_definition, component_passes=expected_component_passes, limits=expected_limits):
         raise ValueError('Workflow projection differs from independently admitted definition')
-    if (type(projection_data) is not dict or set(projection_data) != {
+    if (type(projection_data) is not dict or set(projection_data) - {'limits'} != {
             'version', 'graph_id', 'definition_id', 'entry_root', 'steps', 'edges', 'component_passes',
             'resources', 'replacements'} or projection_data['version'] != 1
             or projection_data['entry_root'] not in ('base', 'pack')
@@ -833,6 +862,15 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
             or _SAFE_LABEL.fullmatch(projection_data['graph_id']) is None
             or type(projection_data['definition_id']) is not str
             or re.fullmatch('[0-9a-f]{64}', projection_data['definition_id']) is None):
+        raise ValueError('Invalid workflow projection')
+    recorded_limits = projection_data.get('limits', ())
+    if 'limits' in projection_data and (
+            type(recorded_limits) is not list or not recorded_limits
+            or any(type(row) is not dict or set(row) != {'key', 'value'}
+                   or type(row['key']) is not str or re.fullmatch('[A-Z][A-Z0-9_]{0,63}', row['key']) is None
+                   or type(row['value']) is not int or not 0 <= row['value'] <= MAX_COMPONENT_PASSES
+                   for row in recorded_limits)
+            or len({row['key'] for row in recorded_limits}) != len(recorded_limits)):
         raise ValueError('Invalid workflow projection')
     for step in projection_data['steps']:
         if (type(step) is not dict or set(step) != {'id', 'kind', 'parent'}
@@ -842,11 +880,15 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                     or _SAFE_LABEL.fullmatch(step['parent']) is None))):
             raise ValueError('Invalid workflow projection step')
     for edge in projection_data['edges']:
-        if (type(edge) is not dict or set(edge) != {'owner', 'source', 'target', 'condition', 'implicit'}
+        if (type(edge) is not dict or set(edge) - {'bound'} != {'owner', 'source', 'target', 'condition', 'implicit'}
                 or any(type(edge[key]) is not str or _SAFE_LABEL.fullmatch(edge[key]) is None
                        for key in ('owner', 'source', 'target'))
                 or not _condition_label(edge['condition'])
-                or type(edge['implicit']) is not bool):
+                or type(edge['implicit']) is not bool
+                or 'bound' in edge and (
+                    type(edge['bound']) is not dict or set(edge['bound']) != {'key', 'inclusive'}
+                    or edge['bound']['key'] not in {row['key'] for row in recorded_limits}
+                    or type(edge['bound']['inclusive']) is not bool)):
             raise ValueError('Invalid workflow projection edge')
     admitted_edges = {tuple(edge[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
                       for edge in projection_data['edges']}

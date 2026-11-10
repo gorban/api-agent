@@ -19,10 +19,12 @@ def capture_workflow_admissions(context, supplied=None, *, tool_plan=None, profi
     if profiles is None:
         from api_agent.workflows.journal import projection
         return {definition.definition_id: projection(definition) for definition in definitions}
+    from api_agent.workflows.configuration import resolve_state_limits
     from api_agent.workflows.execution import resolve_component_passes
     from api_agent.workflows.journal import projection
     return {(test_id, definition.definition_id): projection(definition, component_passes=
-                resolve_component_passes(definition.layout, row['config'])[0])
+                resolve_component_passes(definition.layout, row['config'])[0],
+                limits=resolve_state_limits(definition, row['config']))
             for test_id, row in profiles.items() for definition in definitions
             if tool_plan is None or definition.definition_id in tool_plan.case_definitions.get(test_id, ())}
 

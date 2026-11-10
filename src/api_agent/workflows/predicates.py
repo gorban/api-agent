@@ -297,6 +297,24 @@ def backward_bound(predicate, target, limits):
     return None
 
 
+def loop_edges(layout):
+    """Yield ``(row, bound)`` for each declared edge back to the same or an earlier step.
+
+    ``bound`` is ``backward_bound``'s ``(key, inclusive)``, or ``None`` when the edge's
+    condition does not name a declared Limits key.
+    """
+    limit_keys = {row['Key'] for row in layout.tables.get('Limits', ())}
+    position = {step.id: index for index, step in enumerate(layout.steps)}
+    for row in layout.tables['Edges']:
+        source, target, when = row['From'], row['To'], row['When']
+        if target == 'END' or position[target] > position[source]:
+            continue
+        bound = None
+        if when not in ('always', 'otherwise') and not native_condition_id(when):
+            bound = backward_bound(parse_predicate(when, predicate_fields(layout, source)), target, limit_keys)
+        yield row, bound
+
+
 def condition_constants(predicate):
     """Uppercase constant names a parsed condition reads, for declaration checks."""
     return frozenset(node.id for node in ast.walk(predicate.tree)

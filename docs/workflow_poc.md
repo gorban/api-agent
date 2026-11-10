@@ -578,6 +578,13 @@ children. The graph's recursion limit is derived from the declared edges (each b
 backward edge adds its limit value, plus one for `<=`, re-runs of every step), so a
 turn with the largest declared loops still terminates normally. Journals of loops list
 each visit as its own scope and edge and validate with the same strict route checks.
+A journal's projection records the effective limit values and, on every bounded
+backward edge, its limit key and whether it is `<=`. Validation counts each step's
+starts in the journal and rejects (as incomplete, like an over-budget component pass
+count) a traversal of a bounded edge once its target has started LIMIT times (LIMIT
+plus one for `<=`). Callers that check a journal against an admitted definition pass
+`expected_limits=` alongside `expected_component_passes=` when limits differ from
+the declared defaults.
 Limit rows and backward edges are part of the workflow identity and of compiled
 plans, and the viewer shows each limit as `Configuration: KEY` in its declaring
 diagram.
