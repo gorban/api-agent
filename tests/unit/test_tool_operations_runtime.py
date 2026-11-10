@@ -149,3 +149,21 @@ def test_the_earlier_tool_resolver_does_not_expose_the_raw_borrowed_tool():
     for name in ('call', 'view', 'owner'):
         with pytest.raises(ContractError, match='not available'):
             getattr(tool, name)
+
+
+def test_the_earlier_tool_resolver_still_reaches_fixed_operation_tools_of_a_runtime():
+    import asyncio
+    from types import SimpleNamespace
+    calls = []
+    async def invoke(prepared):
+        calls.append(prepared)
+        return 'done'
+    tools = (SimpleNamespace(id='sample/other', interface='operations@1'),
+             SimpleNamespace(id='sample/tool', interface='tool@1'))
+    resolver = SimpleNamespace(for_port=lambda **kwargs: SimpleNamespace(invoke=invoke),
+                               instance=lambda **kwargs: 'sample/tool',
+                               runtime=SimpleNamespace(tool_plan=SimpleNamespace(tools=tools)))
+    context = NodeContext('read', (), (), {'tools': resolver})
+
+    assert asyncio.run(context.tool('primary').invoke('request')) == 'done'
+    assert calls == ['request'] and context._effects == [True]
