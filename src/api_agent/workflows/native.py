@@ -22,7 +22,7 @@ from .configuration import resolve_state_timeouts as _validated_timeouts
 from .execution import _source_manifest
 from .predicates import PredicateError, condition_constants, parse_predicate
 from .model import (NativeCatalog, Layout, LayoutError, Replacement, Resource, Step, ToolUsage, freeze as _freeze,
-                    _ID, _MAX_SNAPSHOT_BYTES)
+                    _ID, _PY_ID, _MAX_SNAPSHOT_BYTES)
 
 
 def _read_bounded(path, root):
@@ -32,7 +32,6 @@ def _read_bounded(path, root):
 
 
 _LINK = re.compile(r'\[[^\]\n]+\]\(([^()\n]+)\)\Z')
-_PY_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}\Z')
 _SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
 _LIMIT_KEY = re.compile(r'[A-Z][A-Z0-9_]{0,63}\Z')
 _TIMEOUT_COLUMNS = ('Owner', 'Source', 'Key')
@@ -130,7 +129,8 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     """Admit a fully declared typed graph and immutable native source snapshot."""
     # Admission is source-only; production imports the runtime model instead.
     from api_agent.config.source_reads import resolve_path
-    from .definition import _declaration_parts, _inline_selection, _sections, _table as _shared_table, _tool_operations
+    from .definition import (_application_row, _declaration_parts, _inline_selection, _sections,
+                             _table as _shared_table, _tool_operations)
     from .document_format import validate_presentation_location
     from .layout import validate_function_rows
     entry = resolve_path(entry)
@@ -211,10 +211,8 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
     state_source = source(state[0])
     application_binding = None
     if 'Application' in sections:
-        application = _shared_table(entry, sections['Application'], ('Registry', 'Source'))
-        if len(application) != 1 or not _PY_ID.fullmatch(application[0]['Registry']):
-            raise LayoutError(f'{entry}:1: invalid application binding')
-        application_binding = (application[0]['Registry'], source(application[0]))
+        application = _application_row(entry, sections['Application'])
+        application_binding = (application['Registry'], source(application))
     declared_resources = {}
     if 'Resources' in sections:
         for row in _shared_table(entry, sections['Resources'], ('ID', 'Kind', 'Source')):
