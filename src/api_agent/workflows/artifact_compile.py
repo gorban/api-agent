@@ -155,6 +155,8 @@ def compile_definition(definition, wheels):
     typed = getattr(definition, 'schema_source', None) is not None
     if not typed and getattr(definition, 'application_binding', None) is not None:
         plan['application_binding'] = encode(definition.application_binding)
+    if not typed and getattr(definition, 'slot_files', None):
+        plan['prompt_slots'] = encode(definition.slot_files)
     if typed:
         plan['state'] = {'application_binding': encode(definition.application_binding),
                          'helper_sources': [], 'native_dependencies': encode(definition.native_dependencies),
