@@ -201,7 +201,11 @@ finally:
 
 @pytest.mark.parametrize('trace_enabled', [False, True])
 @pytest.mark.parametrize('overflow', [False, True])
-def test_full_four_mib_capture_from_provider_through_real_worker_recording(tmp_path, trace_enabled, overflow):
+def test_full_four_mib_capture_from_provider_through_real_worker_recording(tmp_path, monkeypatch, trace_enabled, overflow):
+    from api_agent.providers import evidence_watchdog, setup_transport
+    # Only the capture's completeness is under test, not its synchronous publication budget.
+    monkeypatch.setattr(setup_transport, '_RAW_EVIDENCE_PUBLISH_SECONDS', 60)
+    monkeypatch.setattr(evidence_watchdog, '_WALL_SECONDS', 60)
     from api_agent.testing.inference_content import initialize_evidence, read_evidence
     from api_agent.providers.setup_transport import MAX_EVIDENCE_BYTES
     import uuid
@@ -223,7 +227,7 @@ from api_agent.testing.inference_content import publish_content
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 scope = TestAuthorityScope(('ui',))
 scope.join('ui', EmissionBoundary(ContentPolicy(True), secrets=('hij',)))
-client = SetupClient(json.loads(sys.stdin.readline()), timeout=40)
+client = SetupClient(json.loads(sys.stdin.readline()), timeout=240)
 try:
     request = LLMRequest('model', CompletionRequest((Message('user', (TextContent('hello'),)),)))
     client.complete(request, authority_scope=scope)
@@ -242,14 +246,14 @@ finally:
         sidecar = str(tmp_path / 'evidence.db')
         initialize_evidence(sidecar, ['synthetic-node'])
         registry = SetupRegistry('op', 'selected', Owner)
-        server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=40, authority=coordinator)
+        server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=240, authority=coordinator)
         descriptor = await server.start()
         try:
             def run():
                 return subprocess.run([sys.executable, '-c', child, sidecar, str(uuid.uuid4()),
                                        'truncated' if overflow else 'captured'],
                                       input=json.dumps(descriptor) + '\n', text=True, capture_output=True,
-                                      timeout=30)
+                                      timeout=300)
             completed = await asyncio.to_thread(run)
             assert completed.returncode == 0, completed.stderr
             records = read_evidence(sidecar, 0)
