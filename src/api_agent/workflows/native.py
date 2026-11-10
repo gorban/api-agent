@@ -595,8 +595,6 @@ def _local_imports(path, data, roots, resolved=None):
         else:
             continue
         for name in names:
-            if not name:
-                continue
             parts = name.split('.')
             for length in range(1, len(parts) + 1):
                 module = '.'.join(parts[:length])

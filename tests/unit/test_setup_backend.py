@@ -432,7 +432,9 @@ def test_failed_late_startup_is_drained_before_server_cleanup(fake_host):
     backend.cleanup_timeout = .005
     with pytest.raises(TimeoutError):
         backend.start()
-    backend._close_future.result(timeout=1)
+    backend._close_future.result(timeout=30)
+    # Only startup must miss its acknowledgement; draining is given real time.
+    backend.cleanup_timeout = 30
     backend.close()
     assert backend.closed and state.events == ['server', 'start', 'server-close']
 

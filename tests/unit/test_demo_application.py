@@ -845,3 +845,56 @@ def test_review_and_revision_instructions_keep_original_constraints_authoritativ
     assert constraint in llm.requests[2].payload.messages[1].content[0].text
     assert llm.requests[3].payload.messages[0] == llm.requests[1].payload.messages[0]
     assert len(llm.requests) == 5
+
+
+def _review_context(llm, gate):
+    async def complete(value):
+        return await llm.complete(value, context=OperationContext('request'))
+    return SimpleNamespace(tools={'primary': gate}, attempt=1, max_passes=2,
+        services={'selection': 'chosen-model', 'generation': GenerationOptions(),
+                  'messages': [{'role': 'user', 'content': 'Who?'}], 'llm': complete})
+
+
+@pytest.mark.parametrize('reviewed,expected', [(None, 'raise'), (verdict(), 'raise'),
+                                               (verdict(grounded=False, details='No evidence'), 'revise')])
+def test_tool_gate_failure_is_revised_only_after_a_failing_review(reviewed, expected):
+    from api_agent.workflows.tool_gate import ToolGateError
+    spec = SimpleNamespace(name='query', description='Run a query', input_schema={'type': 'object'})
+    class Gate:
+        async def prepare(self, arguments):
+            if reviewed is None:
+                raise ToolGateError('preparation failed')
+            return SimpleNamespace(spec=spec)
+        async def verify(self, prepared, *, relevance):
+            await relevance(prepared)
+            raise ToolGateError('verification failed')
+    llm = LLM([] if reviewed is None else [reviewed])
+    review = application(Owner()).registry['review'].invoke
+    candidate = {'candidate': {'use_tool': True, 'arguments': {'query': '{ a }'}, 'answer': ''}}
+    if expected == 'raise':
+        with pytest.raises(ToolGateError):
+            asyncio.run(review(candidate, _review_context(llm, Gate())))
+        return
+    output = asyncio.run(review(candidate, _review_context(llm, Gate())))
+    assert output['accepted'] is False
+    assert output['feedback']['reason'] == 'Invalid or ungrounded tool candidate'
+
+
+def test_tool_and_render_nodes_run_without_a_result_store():
+    from api_agent.providers.tools import ToolResult
+    app = application(Owner())
+    class Gate:
+        async def execute(self, grant):
+            return ToolResult('success', {'item': 1}, (), None)
+    grant = SimpleNamespace(gate_id='00000000-0000-4000-8000-000000000001')
+    tool_context = SimpleNamespace(services={'verified_call': grant}, tools={'primary': Gate()})
+    executed = asyncio.run(app.registry['execute_tool'].invoke({}, tool_context))
+    assert executed['status'] == 'success' and 'result_store' not in tool_context.services
+    llm = LLM(['Rendered'])
+    async def complete(value):
+        return await llm.complete(value, context=OperationContext('request'))
+    render_context = SimpleNamespace(services={'selection': 'chosen-model', 'generation': GenerationOptions(),
+                                               'messages': [], 'llm': complete})
+    rendered = asyncio.run(app.registry['render'].invoke(
+        {'candidate': {'use_tool': False, 'arguments': {}, 'answer': ''}}, render_context))
+    assert rendered == {'response_text': 'Rendered', 'selected_model': 'chosen-model'}
