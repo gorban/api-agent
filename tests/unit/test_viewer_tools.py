@@ -130,6 +130,38 @@ def test_dispatcher_limits_index_listing_blob_and_aggregate(tmp_path, monkeypatc
     assert dispatcher.run() == 2
 
 
+def test_dispatcher_git_process_count_does_not_grow_with_index(tmp_path, monkeypatch):
+    root = staged_repo(tmp_path)
+    monkeypatch.chdir(root)
+    original = dispatcher._git
+    calls = []
+    def counted(*args, **kwargs):
+        calls.append(args[4:])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(dispatcher, '_git', counted)
+    assert dispatcher.run() == 0
+    baseline = len(calls)
+    for index in range(40):
+        (root / f'extra-{index}.txt').write_text(f'{index}\n')
+    (root / 'same-a.txt').write_text('same\n')
+    (root / 'same-b.txt').write_text('same\n')
+    (root / 'empty.txt').write_bytes(b'')
+    (root / 'run.sh').write_text('#!/bin/sh\n')
+    (root / 'run.sh').chmod(0o755)
+    (root / 'src/api_agent/workflows/viewer_build.py').write_text(
+        'import os\n'
+        'def check_views(root):\n'
+        '    assert [(root / f"extra-{i}.txt").read_text() for i in range(40)] == [f"{i}\\n" for i in range(40)]\n'
+        '    assert (root / "same-a.txt").read_text() == (root / "same-b.txt").read_text() == "same\\n"\n'
+        '    assert (root / "empty.txt").read_bytes() == b""\n'
+        '    assert os.access(root / "run.sh", os.X_OK)\n'
+        '\ndef check_staged_workflow_matches_worktree(snapshot, worktree):\n    pass\n')
+    git(root, 'add', '.')
+    calls.clear()
+    assert dispatcher.run() == 0
+    assert len(calls) == baseline
+
+
 def test_checker_output_limit_rejects_noisy_staged_checker(tmp_path, monkeypatch, capsys):
     root = staged_repo(tmp_path)
     monkeypatch.chdir(root)
@@ -310,18 +342,25 @@ def test_bad_blob_size_and_changed_blob_are_rejected(tmp_path, monkeypatch):
     root = staged_repo(tmp_path)
     monkeypatch.chdir(root)
     original = dispatcher._git
-    def bad_size(root, environment, deadline, limit, *arguments):
-        if arguments[:2] == ('cat-file', '-s'):
-            return b'bad\n'
-        return original(root, environment, deadline, limit, *arguments)
-    monkeypatch.setattr(dispatcher, '_git', bad_size)
+    def replaced(selected, rewrite):
+        def fake(root, environment, deadline, limit, *arguments, **kwargs):
+            out = original(root, environment, deadline, limit, *arguments, **kwargs)
+            return rewrite(out) if arguments[:2] == selected else out
+        monkeypatch.setattr(dispatcher, '_git', fake)
+    listing = ('ls-files', '--stage')
+    replaced(listing, lambda out: out.replace(out.split(b' ')[1], b'z' * 40, 1))
     assert dispatcher.run() == 2
-    def changed(root, environment, deadline, limit, *arguments):
-        if arguments[:2] == ('cat-file', 'blob'):
-            return b''
-        return original(root, environment, deadline, limit, *arguments)
-    monkeypatch.setattr(dispatcher, '_git', changed)
-    assert dispatcher.run() == 2
+    sizes = ('cat-file', '--batch-check')
+    for rewrite in (lambda out: out + b'extra\n', lambda out: out.replace(b' blob ', b' tree ', 1),
+                    lambda out: out.replace(b'\n', b' 1\n', 1)):
+        replaced(sizes, rewrite)
+        assert dispatcher.run() == 2
+    stream = ('cat-file', '--batch')
+    for rewrite in (lambda out: out[:-1], lambda out: out + b'\n', lambda out: out.replace(b'ok\n', b'no\n', 1)[:5]):
+        replaced(stream, rewrite)
+        assert dispatcher.run() == 2
+    replaced(stream, lambda out: out)
+    assert dispatcher.run() == 0
 
 
 def test_checker_requires_complete_snapshot_and_calls_packaged_check(tmp_path, monkeypatch):

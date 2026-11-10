@@ -64,11 +64,11 @@ def _finish(process, deadline):
     return process.wait(timeout=max(0, deadline - time.monotonic()))
 
 
-def _capture(command, *, cwd, env, deadline, seconds, output_limit):
+def _capture(command, *, cwd, env, deadline, seconds, output_limit, stdin=None):
     """Capture bounded output and kill the owned process group on failure."""
     if time.monotonic() >= deadline:
         raise TimeoutError('Index check deadline exceeded')
-    process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+    process = subprocess.Popen(command, cwd=cwd, env=env, stdin=stdin, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True)
     limit = time.monotonic() + seconds
     selector = selectors.DefaultSelector()
@@ -99,12 +99,48 @@ def _capture(command, *, cwd, env, deadline, seconds, output_limit):
             pipe.close()
 
 
-def _git(root, environment, deadline, limit, *arguments):
+def _git(root, environment, deadline, limit, *arguments, stdin=None, seconds=10):
     code, out, err = _capture(['git', *arguments], cwd=root, env=environment,
-                              deadline=deadline, seconds=10, output_limit=limit)
+                              deadline=deadline, seconds=seconds, output_limit=limit, stdin=stdin)
     if code:
         raise ValueError(f'Git index command failed: {err[:512].decode(errors="replace")}')
     return out
+
+
+def _read_blobs(root, environment, deadline, blobs):
+    """Read every staged blob through one bounded size query and one content stream."""
+    with tempfile.TemporaryFile() as request:
+        request.write(b''.join(blob.encode('ascii') + b'\n' for blob in blobs))
+        request.flush()
+        request.seek(0)
+        listing = _git(root, environment, deadline, 128 * len(blobs), 'cat-file', '--batch-check',
+                       stdin=request, seconds=OPERATION_SECONDS)
+        sizes = []
+        lines = listing.split(b'\n')
+        if len(lines) != len(blobs) + 1 or lines[-1]:
+            raise ValueError('Invalid staged blob size')
+        for blob, line in zip(blobs, lines):
+            fields = line.split(b' ')
+            if (len(fields) != 3 or fields[0] != blob.encode('ascii') or fields[1] != b'blob'
+                    or not fields[2].isdigit()):
+                raise ValueError('Invalid staged blob size')
+            sizes.append(int(fields[2]))
+        if any(size > BLOB_BYTES for size in sizes) or sum(sizes) > TOTAL_BLOB_BYTES:
+            raise ValueError('Index snapshot exceeds blob or aggregate limit')
+        request.seek(0)
+        stream = _git(root, environment, deadline, sum(sizes) + 129 * len(blobs), 'cat-file', '--batch',
+                      stdin=request, seconds=OPERATION_SECONDS)
+    contents, offset = [], 0
+    for blob, size in zip(blobs, sizes):
+        header = f'{blob} blob {size}\n'.encode('ascii')
+        end = offset + len(header) + size
+        if stream[offset:offset + len(header)] != header or stream[end:end + 1] != b'\n':
+            raise ValueError('Staged blob size changed')
+        contents.append(stream[offset + len(header):end])
+        offset = end + 1
+    if offset != len(stream):
+        raise ValueError('Staged blob size changed')
+    return contents
 
 
 def run(argv=None):
@@ -127,7 +163,7 @@ def run(argv=None):
         with tempfile.TemporaryDirectory(prefix='api-agent-index-') as temporary:
             snapshot = Path(temporary)
             seen = set()
-            total = 0
+            staged = []
             for record in entries.split(b'\0'):
                 if not record:
                     continue
@@ -143,16 +179,11 @@ def run(argv=None):
                         or '\\' in str(path) or path in seen):
                     raise ValueError('Unsafe or conflicted index entry')
                 seen.add(path)
-                length = _git(root, environment, deadline, 64, 'cat-file', '-s', blob)
-                if not length.strip().isdigit():
-                    raise ValueError('Invalid staged blob size')
-                size = int(length.strip())
-                if size > BLOB_BYTES or total + size > TOTAL_BLOB_BYTES:
-                    raise ValueError('Index snapshot exceeds blob or aggregate limit')
-                data = _git(root, environment, deadline, size + 512, 'cat-file', 'blob', blob)
-                if len(data) != size:
-                    raise ValueError('Staged blob size changed')
-                total += size
+                if not (len(blob) in (40, 64) and all(character in '0123456789abcdef' for character in blob)):
+                    raise ValueError('Malformed index entry')
+                staged.append((mode, blob, path))
+            contents = _read_blobs(root, environment, deadline, [blob for _, blob, _ in staged])
+            for (mode, _, path), data in zip(staged, contents):
                 target = snapshot / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)

@@ -11,8 +11,9 @@ import tempfile
 from api_agent.config.process_settings import process_setting
 
 MARKER = '# api-agent managed pre-commit dispatcher v1'
-DISPATCHER_SHA256 = 'ee8a6311873df766ed3091e548c8b6aa7c12b4ab8109514fa99bebf5738623e8'
+DISPATCHER_SHA256 = 'dcb111cedd4ac411b00d829385423130b7d80d9dd3198e56cb39534feb106054'
 PREVIOUS_DISPATCHER_SHA256 = frozenset({
+    'ee8a6311873df766ed3091e548c8b6aa7c12b4ab8109514fa99bebf5738623e8',
     '4a02d434823228190ccaaa3c18de0bb716ed53cf2792012e5a9879a741bc87d5',
     'cededf3fd6d38156a5a868987591f7f24154be3dc6c2144e81ce2186b39f9f2b',
 })
