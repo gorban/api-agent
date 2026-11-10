@@ -393,7 +393,7 @@ def _decode_plan(value, typed):
         nodes, edges, timeouts = (_decode(state[key]) for key in ('nodes', 'edges', 'timeouts'))
         if (not all(isinstance(row, MappingProxyType) and set(row) == {
                 'ID', 'Registry', 'Kind', 'Source', '_owner_id', 'line'} for row in nodes)
-                or not all(isinstance(row, MappingProxyType) and set(row) == {
+                or not all(isinstance(row, MappingProxyType) and set(row) - {'When'} == {
                 'From', 'To', 'Router', 'Source', 'line'} for row in edges)
                 or not all(isinstance(row, MappingProxyType) and set(row) == {
                 'Owner', 'Source', 'Key', 'line'} for row in timeouts)):

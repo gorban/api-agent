@@ -140,11 +140,14 @@ def project_view(definition) -> ViewerProjection:
 
     if hasattr(definition, 'nodes'):
         edges = [ViewerEdge('GRAPH', 'START', steps[0].id, 'always', True)]
-        for component in (step for step in steps if step.kind == 'component'):
+        parent_of = {step.id: step.parent for step in steps}
+        entered = {parent_of[row['To']] for row in definition.edges if row['From'] == 'START'}
+        for component in (step for step in steps if step.kind == 'component' and step.id not in entered):
             first_child = next(step for step in steps if step.parent == component.id)
             edges.append(ViewerEdge(component.id, 'START', first_child.id, 'always', True))
-        edges.extend(ViewerEdge(next((s.parent for s in steps if s.id == row['From']), None) or 'GRAPH',
-                                row['From'], row['To'], 'always' if row['Router'] == '-' else row['Router'],
+        edges.extend(ViewerEdge((parent_of[row['To']] if row['From'] == 'START' else parent_of[row['From']]) or 'GRAPH',
+                                row['From'], row['To'],
+                                row.get('When', 'always' if row['Router'] == '-' else row['Router']),
                                 False) for row in definition.edges)
     else:
         edges = []

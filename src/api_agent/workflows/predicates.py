@@ -246,6 +246,18 @@ def predicate_fields(layout, source):
     return fields
 
 
+def state_predicate_fields(properties):
+    """Typed-state fields visible to every route; `.field` reads the current state."""
+    owners = {}
+    def visit(rules, prefix=()):
+        for key, rule in rules.items():
+            owners[(*prefix, key)] = 'state'
+            if _exact_type(rule, 'object'):
+                visit(rule.get('properties', {}), (*prefix, key))
+    visit(properties)
+    return {'state': properties, _SOURCE: {'owners': owners}}
+
+
 def component_controller(component, *, maximum=None):
     if maximum is None:
         maximum = (component['max_passes_default'] if 'max_passes_default' in component

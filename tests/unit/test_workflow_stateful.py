@@ -1220,6 +1220,98 @@ def test_component_routes_have_one_declaring_owner(fixture_graph, group_edges, r
         load_definition(entry, base_root=root, pack_root=root)
 
 
+_WHEN_GROUP = ('| From | To | When |\n| --- | --- | --- |\n'
+               '| START | finish | .pending |\n'
+               '| START | intake | otherwise |\n'
+               '| intake | finish | .visits == 1 |\n'
+               '| intake | END | otherwise |\n'
+               '| finish | END | always |\n')
+
+
+def _conditional(root, entry, group_edges=_WHEN_GROUP, root_edges='| group | END | always |\n'):
+    _grouped(root, entry, '')
+    group = root / 'parts/group.md.html'
+    text = group.read_text()
+    start = text.index('| From | To | Router | Source |')
+    group.write_text(text[:start] + group_edges + text[text.index('\n## Notes'):])
+    text = entry.read_text()
+    entry.write_text(text[:text.index('| From | To | Router | Source |')]
+                     + '| From | To | When |\n| --- | --- | --- |\n' + root_edges)
+
+
+def test_typed_edges_route_on_state_conditions_and_conditional_component_entry(fixture_graph):
+    from api_agent.workflows.viewer_projection import project_view
+    root, entry = fixture_graph
+    _conditional(root, entry)
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+
+    first = asyncio.run(workflow.arun({'messages': [HumanMessage(id='human', content='hello')],
+                                       'pending': False, 'visits': 0}, thread_id='conditional'))
+    second = asyncio.run(workflow.arun({'messages': []}, thread_id='conditional'))
+
+    assert (first['visits'], first['pending']) == (1, True)
+    assert (second['visits'], second['pending']) == (1, True)
+    edges = {(edge.owner, edge.source, edge.target): (edge.condition, edge.implicit)
+             for edge in project_view(definition).edges}
+    assert edges[('group', 'START', 'finish')] == ('.pending', False)
+    assert edges[('group', 'START', 'intake')] == ('otherwise', False)
+    assert edges[('group', 'intake', 'finish')] == ('.visits == 1', False)
+    assert edges[('GRAPH', 'group', 'END')] == ('always', False)
+
+
+@pytest.mark.parametrize(('group_edges', 'root_edges', 'message'), [
+    (_WHEN_GROUP.replace('| intake | END | otherwise |', '| intake | END | .visits == 2 |'), None,
+     'conditional edges require one otherwise fallback'),
+    (_WHEN_GROUP.replace('| finish | END | always |', '| finish | END | always |\n| finish | intake | otherwise |'),
+     None, 'conditional edges require one otherwise fallback'),
+    (_WHEN_GROUP.replace('.visits == 1', '.visits ==='), None, 'invalid condition syntax'),
+    (_WHEN_GROUP.replace('| START | finish |', '| START | END |'), None, 'invalid edge declaration'),
+    (_WHEN_GROUP, '| START | group | always |\n| group | END | always |\n', 'invalid edge declaration'),
+])
+def test_typed_condition_sets_are_validated_at_admission(fixture_graph, group_edges, root_edges, message):
+    root, entry = fixture_graph
+    _conditional(root, entry, group_edges, *(() if root_edges is None else (root_edges,)))
+    with pytest.raises(LayoutError, match=message):
+        load_definition(entry, base_root=root, pack_root=root)
+
+
+def test_typed_conditions_must_select_exactly_one_route(fixture_graph):
+    from api_agent.workflows.execution import WorkflowError
+    root, entry = fixture_graph
+    _conditional(root, entry, _WHEN_GROUP.replace('| START | finish | .pending |', '| START | finish | .visits == 1 |')
+                 .replace('| intake | END | otherwise |', '| intake | END | not .pending |\n| intake | intake | otherwise |'))
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+    with pytest.raises(WorkflowError, match='exactly one matching condition'):
+        asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='ambiguous'))
+
+
+def test_routed_edge_set_has_one_router_source(fixture_graph):
+    root, entry = fixture_graph
+    _write(root, 'other.py', (root / 'native.py').read_text())
+    entry.write_text(entry.read_text().replace('| intake | END | choose | [Python](native.py) |',
+                                               '| intake | END | choose | [Python](other.py) |'))
+    with pytest.raises(LayoutError, match='duplicate or mixed route source'):
+        load_definition(entry, base_root=root, pack_root=root)
+
+
+def test_state_condition_fields_include_nested_objects():
+    from api_agent.workflows.predicates import parse_predicate, state_predicate_fields
+    fields = state_predicate_fields({'scope': {'type': 'object', 'properties': {'kind': {'type': 'string'}}},
+                                     'count': {'type': 'integer'}})
+    predicate = parse_predicate('.scope.kind == "read" and .count > 1', fields)
+    assert predicate.evaluate({'state': {'scope': {'kind': 'read'}, 'count': 2}}) is True
+
+
+def test_typed_conditions_read_only_declared_scalar_state(fixture_graph):
+    root, entry = fixture_graph
+    _conditional(root, entry, _WHEN_GROUP.replace('.visits == 1', '.missing == 1'))
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    with pytest.raises(LayoutError, match='declared'):
+        Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+
+
 @pytest.mark.parametrize(('schema', 'settings', 'message'), [
     ('broken = [', {}, 'invalid timeout declaration'),
     ('version = 1\n[fields.LIMIT]\ntype = "str"\ndefault = "soon"\n', {}, 'timeout key must be numeric'),
