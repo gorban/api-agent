@@ -185,8 +185,17 @@ def project_view(definition) -> ViewerProjection:
         for row in definition.edges:
             if row['Source'] is not None:
                 routed.setdefault((row['From'], row['Router'], row['Source']), []).append(row)
+        from .definition import _sections
+        parent_of = {step.id: step.parent for step in definition.layout.steps}
+        def edge_declaration(source_id):
+            parent = parent_of[source_id]
+            if parent is not None:
+                path = definition.selected_declarations[parent][2]
+                if 'Edges' in _sections(path, definition.contents[path])[1]:
+                    return path
+            return declaration_entry
         for (owner_id, router, source), routes in routed.items():
-            add_reference('router_source', declaration_entry, owner_id, routes[0]['line'], source,
+            add_reference('router_source', edge_declaration(owner_id), owner_id, routes[0]['line'], source,
                           router=router, targets=','.join(row['To'] for row in routes))
         for row in definition.timeouts:
             add_reference('timeout', declaration_entry, row['Owner'], row['line'], row['Source'], key=row['Key'])

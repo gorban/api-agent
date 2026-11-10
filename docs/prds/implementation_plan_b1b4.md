@@ -1,6 +1,6 @@
 # Stateful workflow execution
 
-This public capability accepts a versioned, fully declared graph. Its root links ordered node and component declarations. Each node names an admitted native callable. The root names one TypedDict state schema, registered reducers, and every static or conditional target. A router observes state after the source node update and returns exactly one declared target or END. An approval or clarification result ends the current turn; the next turn starts at the graph entry with retained state.
+This public capability accepts a versioned, fully declared graph. Its root links ordered node and component declarations. Each node names an admitted native callable. The root names one TypedDict state schema, registered reducers, and every static or conditional target. A component may instead declare its own `Edges` table (and `Notes`); it then owns every route from its direct children, whose router sources resolve relative to that component declaration, and the root may not declare them. A router observes state after the source node update and returns exactly one declared target or END. An approval or clarification result ends the current turn; the next turn starts at the graph entry with retained state.
 
 ## Requirements
 
