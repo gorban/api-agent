@@ -1,0 +1,26 @@
+# Node: answer
+
+## Native
+
+| Registry | Kind | Source |
+| --- | --- | --- |
+| answer | llm | [source](functions.py) |
+
+## Functions
+
+| ID | Registry | Input | Output |
+| --- | --- | --- | --- |
+| answer | answer | [input](schemas/input.json) | [output](schemas/output.json) |
+
+## Prompt: sign_off
+
+```text
+Sign off with: {{closing}}
+```
+
+## Prompts
+
+| Node | File | When |
+| --- | --- | --- |
+| answer | [system](prompts/system.md) | always |
+| answer | @sign_off | always |
