@@ -112,22 +112,39 @@ Rules:
 
 - Slot names are lowercase identifiers (`[a-z][a-z0-9_]{0,63}`); anything else in
   braces, such as `{{ spaced }}` or `{{Upper}}`, is ordinary text.
-- Admission reads `<pack root>/pack.toml` only when a prompt uses a slot. A used
-  slot the pack does not supply is a load error naming the slot and the `Prompts`
-  row (`node.md.html:26: prompt uses slot closing that the selected resource pack
-  does not supply`). A supplied slot no prompt uses is allowed and is not captured.
-- Each used slot file is captured as a `prompt` resource, so its bytes (and the
-  slot-to-file mapping) join the workflow identity, the viewer projection and the
-  compiled plan. Slot files must be UTF-8.
+- Each slot resolves independently, taking the first pack, in this order, whose
+  `[prompt_slots]` supplies it: the **pack root** (the selected, consuming pack),
+  then the **base root** (the library or owning workflow root, when it differs
+  from the pack root). A library ships default text in a `pack.toml` at its base
+  root; a product pack selecting the library workflow overrides any slot it
+  declares and inherits the rest, and may supply slots the library lacks. This is
+  the order in which `[[workflow.replacements]]` and `<resource_pack>/` links
+  already prefer the pack root over the base root, and it applies the same way
+  whether the product selects the library through `[workflow.library]` with an
+  `## Import` wrapper in its pack or loads a base-root entry with its own pack.
+  Each root's manifest is read only when a prompt needs a slot, and a root without
+  a `pack.toml` supplies nothing.
+- A used slot that no root supplies is a load error naming the slot, the `Prompts`
+  row and every root consulted, in order (`node.md.html:26: prompt uses slot
+  closing that no consulted resource pack supplies; consulted: pack /p, base /l`).
+  A supplied slot no prompt uses is allowed and is not captured.
+- Each used slot file is captured as a `prompt` resource, so its bytes and the
+  resolved slot-to-file mapping join the workflow identity, the viewer projection
+  and the compiled plan. The logical path starts with the root that supplied it
+  (`pack/...` or `base/...`), so the same library workflow under two selecting
+  packs has different identities when their slot text differs, and identical
+  identities when the supplying root, path and text are equal. Slot files must be
+  UTF-8.
 - Slot text is the file's text without its single final line break, so a trailing
   newline added by an editor does not land mid-sentence. Filling is one pass over
   each prompt's own text at delivery to the node (`context.prompts`); supplied
   text is never rescanned, so a `{{...}}` inside slot text stays literal.
 - Write `\{{name}}` for a literal `{{name}}`: a backslash directly before a
   placeholder is consumed and the placeholder is not filled or required.
-- Only the pack that owns the workflow supplies slots, including when packs are
-  composed. A compiled plan embeds the filled-in slot texts and does not read the
-  pack at run time.
+- A compiled plan embeds the resolved slot texts (compile under the selecting
+  pack to get its text) and does not read any pack at run time. Packs that are
+  only ordered earlier or later on the launcher command line, and not the
+  workflow's pack root or base root, are not consulted.
 - The viewer's `prompts` references list the slot names they use, and each use
   adds a `prompt_slot` reference to the pack-supplied file.
 

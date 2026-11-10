@@ -75,7 +75,7 @@ def test_a_slot_the_pack_does_not_supply_names_the_slot_and_prompt_location(tree
     manifest = pack / 'pack.toml'
     manifest.write_text(manifest.read_text().replace('closing = "prompts/closing.txt"\n', ''))
 
-    with pytest.raises(LayoutError, match=r"answer\.md\.html:26: prompt uses slot closing .*does not supply"):
+    with pytest.raises(LayoutError, match=r"answer\.md\.html:26: prompt uses slot closing .*no consulted resource pack supplies"):
         load(tree)
 
 
