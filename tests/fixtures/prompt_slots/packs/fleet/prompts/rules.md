@@ -1,0 +1,2 @@
+- Report equipment by unit number.
+- Prefer the most recent inspection.

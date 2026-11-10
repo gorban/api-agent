@@ -8,6 +8,7 @@ from pathlib import Path
 from .definition import InlinePromptRef
 from .document_format import canonical_executable_bytes
 from .session import source_parts
+from .prompt_slots import used_slots
 
 
 @dataclass(frozen=True)
@@ -243,8 +244,14 @@ def project_view(definition) -> ViewerProjection:
                         owner_id = None if row['Owner'] == 'GRAPH' else row['Owner']
                     else:
                         owner_id = row.get('_owner_id', owner_by_path.get(owner))
+                    slots = used_slots(definition.contents[target]) if name == 'Prompts' else ()
+                    if slots:
+                        attrs['slots'] = ','.join(slots)
                     add_reference(name.lower(), owner, owner_id, row['line'], target,
                                   field=field, **attrs)
+                    for slot in slots:
+                        add_reference('prompt_slot', owner, owner_id, row['line'],
+                                      definition.slot_files[slot], slot=slot)
         for row in definition.layout.tables['Bindings']:
             owner = row.get('_owner', declaration_entry)
             references.append(ViewerReference('binding', logical(owner), row.get('_owner_id', owner_by_path.get(owner)), row['line'],

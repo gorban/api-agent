@@ -1,0 +1,8 @@
+version = 1
+id = "prompt-slots-construction"
+config = "../../../../../cfg/config.toml"
+
+[prompt_slots]
+persona = "prompts/persona.md"
+rules = "prompts/rules.md"
+closing = "prompts/closing.txt"

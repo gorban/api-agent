@@ -21,6 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from .model import LayoutError
 from .model import NativeCatalog
 from . import session as session_contract
+from .prompt_slots import fill_slots, slot_text
 from .configuration import resolve_timeouts, resolve_component_passes, resolve_state_limits, resolve_state_timeouts
 from api_agent.runtime.tasks import settle
 from api_agent.providers.progress import bind_timeout_budget
@@ -1425,6 +1426,14 @@ class Workflow:
                 publish(journal.finalize())
 
 
+    def _prompt_texts(self):
+        """Declared prompt texts with each ``{{slot}}`` replaced by its pack-supplied text."""
+        contents = self.definition.contents
+        slots = {name: slot_text(contents[path])
+                 for name, path in getattr(self.definition, 'slot_files', {}).items()}
+        return {path: fill_slots(contents[path].decode('utf-8'), slots)
+                for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
+
     async def arun(self, update, *, thread_id=None, request=None, services=None, journal=None,
                    turn_id=None, turn_kind='initial'):
         from .run_context import canonical_uuid
@@ -1450,8 +1459,7 @@ class Workflow:
                 snapshot = await self._session.aget_state(config)
                 session = deepcopy(snapshot.values.get('session', {}))
                 self._turn_state.get()['session'] = session
-            prompts = {path: self.definition.contents[path].decode('utf-8')
-                       for path in dict.fromkeys(row['File'] for row in self.layout.tables['Prompts'])}
+            prompts = self._prompt_texts()
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
                 feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None),
                 {'recursion_limit': len(self.layout.steps) + 1})

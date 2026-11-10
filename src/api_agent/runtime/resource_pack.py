@@ -120,7 +120,7 @@ def load_launch_context(
             data = tomllib.loads(_manifest_body.decode('utf-8'))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure", "tooling", "composition"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure", "tooling", "composition", "prompt_slots"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -140,6 +140,15 @@ def load_launch_context(
     config = _relative_path(data.get("config"), pack, "config")
     if not config.is_file():
         raise ResourcePackError(f"Resource-pack configuration does not exist: {config}")
+    if "prompt_slots" in data:
+        from api_agent.workflows.model import LayoutError
+        from api_agent.workflows.prompt_slots import slot_paths
+        try:
+            slots = slot_paths(data, str(manifest))
+        except LayoutError as exc:
+            raise ResourcePackError(str(exc)) from exc
+        for name, relative in slots.items():
+            _workflow_selected_path(relative, pack, f"prompt_slots.{name}")
     infrastructure = data.get("infrastructure", {"version": 1, "declarations": []})
     if (type(infrastructure) is not dict or not {"version", "declarations"} <= set(infrastructure)
             or set(infrastructure) - {"version", "declarations", "inventory"}

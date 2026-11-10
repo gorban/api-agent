@@ -1,6 +1,6 @@
 """Versioned workflow declarations with an immutable resource snapshot."""
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from hashlib import sha256
 from itertools import combinations
@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import tomllib
 from types import MappingProxyType
 from typing import ClassVar
 from urllib.parse import unquote, urlsplit
@@ -18,6 +19,7 @@ from .layout import _COLUMNS, _RESPONSE_COLUMNS, _SESSION_COLUMNS, _SUMMARY_COLU
 from .model import (InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage,
                     declares_source, freeze as _freeze, _MAX_SNAPSHOT_BYTES, _PY_ID)
 from .document_format import extract_document, validate_presentation_location
+from .prompt_slots import slot_paths, slot_text, used_slots
 from api_agent.tooling.operations import FIXED_OPERATIONS, name_problem
 
 
@@ -40,6 +42,7 @@ class WorkflowDefinition:
     imports: tuple = ()
     declaration_entry: Path | None = None
     application_binding: tuple[str, Path] | None = None
+    slot_files: object = field(default_factory=lambda: MappingProxyType({}))
 
     def native_sources(self):
         """Every admitted native source: node bindings and the declared application factory."""
@@ -242,6 +245,28 @@ def _application_row(path, body):
     return rows[0]
 
 
+def _pack_slots(pack):
+    """The ``slot -> relative path`` table of the selected pack's manifest, if it has one."""
+    manifest = pack / 'pack.toml'
+    if not manifest.is_file():
+        return {}
+    try:
+        document = tomllib.loads(_read_bounded(manifest, pack).decode('utf-8'))
+    except (UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise LayoutError(f'{manifest}: invalid resource-pack declaration') from error
+    return slot_paths(document, str(manifest))
+
+
+def _slot_identity(slot_files, roots, resources):
+    """Each used slot with the logical path of its file: the mapping is part of the definition."""
+    known = {item.logical_path for item in resources}
+
+    def logical(path):
+        return next(name for key, root in roots.items() if path.is_relative_to(root)
+                    if (name := f'{key}/{path.relative_to(root).as_posix()}') in known)
+    return [(slot, logical(path)) for slot, path in sorted(slot_files.items())]
+
+
 def _sections(path, data):
     title, sections, _ = _declaration_parts(path, data)
     return title, sections
@@ -416,6 +441,8 @@ def _import_definition(entry, title, sections, *, base_root, pack_root, replacem
     identity = {'version': 1, 'graph_id': graph_id,
         'resources': [(r.kind, r.logical_path, r.sha256) for r in resources],
         'replacements': [(r.target_id, r.root_id, Path(r.entry).as_posix()) for r in selected.replacements]}
+    if selected.slot_files:
+        identity['prompt_slots'] = _slot_identity(selected.slot_files, roots, resources)
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return replace(selected, graph_id=graph_id, entry=entry, entry_root=entry_root,
         roots=MappingProxyType(roots), resources=resources, contents=MappingProxyType(contents),
@@ -680,6 +707,21 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
                     row[column] = virtual
                 else:
                     row[column] = link(owner, value, kind)
+    slot_files = {}
+    supplied = None
+    for row in tables['Prompts']:
+        for slot in used_slots(captured[row['File']][1]):
+            if supplied is None:
+                supplied = _pack_slots(roots['pack'])
+            if slot not in supplied:
+                raise LayoutError(f'{row.get("_owner", entry)}:{row["line"]}: prompt uses slot {slot} '
+                                  'that the selected resource pack does not supply')
+            if slot not in slot_files:
+                path = slot_files[slot] = capture(roots['pack'] / supplied[slot], 'prompt', 'pack')
+                try:
+                    slot_text(captured[path][1])
+                except UnicodeError:
+                    raise LayoutError(f'{path}:1: prompt slot text must be UTF-8') from None
     layout = Layout(entry, tuple(execution_steps), tables, tuple(sorted(captured, key=str)))
     _validate(layout, {path: data for path, (_, data) in captured.items()})
     layout = Layout(entry, layout.steps, _freeze(tables), layout.files)
@@ -703,8 +745,10 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
             raise LayoutError(f'{path}:1: resource changed during definition admission')
     identity = {'version': 1, 'graph_id': graph_id, 'resources': [(item.kind, item.logical_path, item.sha256) for item in resources],
                 'replacements': [(item.target_id, item.root_id, Path(item.entry).as_posix()) for item in replacements]}
+    if slot_files:
+        identity['prompt_slots'] = _slot_identity(slot_files, roots, resources)
     definition_id = sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,
                               layout, MappingProxyType({path: data for path, (_, data) in captured.items()}),
                               MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages),
-                              application_binding=application_binding)
+                              application_binding=application_binding, slot_files=MappingProxyType(slot_files))

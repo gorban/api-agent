@@ -129,6 +129,8 @@ class _Snapshot:
             result['tables'] = normalized
             if getattr(d, 'application_binding', None) is not None:
                 result['application'] = [d.application_binding[0], self.logical(d.application_binding[1])]
+            if getattr(d, 'slot_files', None):
+                result['prompt_slots'] = {slot: self.logical(path) for slot, path in d.slot_files.items()}
         else:
             result.update(state=[d.schema_name, self.logical(d.schema_source)],
                           nodes=[self.row(row) for row in d.nodes],
