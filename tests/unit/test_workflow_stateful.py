@@ -1308,6 +1308,7 @@ _PROMPTED_INTAKE = '''# Node: intake
 
 ```text
 Hello {{greeting}} and {{greeting}}.
+
 ```
 '''
 _SLOTS = '''

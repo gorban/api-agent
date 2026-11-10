@@ -284,7 +284,8 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                 raw.pop()
             if not _ID.fullmatch(prompt_id) or len(raw) < 2 or raw[0] != '```text' or raw[-1] != '```':
                 raise LayoutError(f'{declaration}:1: invalid inline prompt')
-            inline[prompt_id] = '\n'.join(raw[1:-1]) + '\n'
+            # Typed prompt bytes are exactly the fenced lines; blank edge lines keep edge newlines.
+            inline[prompt_id] = '\n'.join(raw[1:-1])
         rows = _shared_table(declaration, sections.get('Prompts', []), ('Node', 'File', 'When'))
         selected = []
         for row in rows:
