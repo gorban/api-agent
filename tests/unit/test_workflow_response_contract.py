@@ -317,14 +317,16 @@ def legacy_demo_root(tmp_path):
     from pathlib import Path
     source = Path(__file__).resolve().parents[2] / 'demo'
     shutil.copytree(source, tmp_path / 'demo')
+    headers = (HEADER, '| Input | Output | Response schema | Output mode | Fallback |')
     for path in (tmp_path / 'demo').rglob('*.md.html'):
         source = path.read_text()
-        if HEADER not in source:
+        if not any(header in source for header in headers):
             continue
-        lines = []
+        lines, inside = [], False
         for line in source.splitlines():
-            if line.startswith('|') and len(line.split('|')) == 9:
-                line = '|' + '|'.join(line.split('|')[1:5]) + '|'
+            inside = line in headers or inside and line.startswith('|')
+            if inside:
+                line = '|'.join(line.split('|')[:-4]) + '|'
             lines.append(line)
         path.write_text('\n'.join(lines) + '\n')
     return tmp_path
