@@ -79,7 +79,9 @@ execution, provider authentication or application startup.
 mise and the managed browser's host prerequisites are required;
 the launcher prepares its browser dependencies. Fresh owner-local diagrams are
 checked without Java or renderer setup. A library/composed/replacement selection
-may need a new temporary diagram and therefore the optional generator below.
+may need a new temporary diagram; the viewer and run-local then prepare the pinned
+renderer and the project's Java themselves (run-local does this before its startup
+budget). An explicitly configured renderer JAR is used as is and must exist.
 That view discloses its selected definition identity and never overwrites owner
 diagrams or reloads replaced originals. Explicitly referenced, captured Python
 sources open as UTF-8 plain text, alongside captured JSON schemas and TOML
@@ -107,8 +109,9 @@ Check mode is read-only and needs no renderer or download. Changed declarations,
 linked resources, diagram source metadata, companions or viewer assets require
 explicit generation to update saved diagrams. Managed viewing can render a
 temporary view of current changes without modifying saved diagrams; when needed,
-it prepares the pinned renderer in the development cache. Rendering needs Java
-17 or newer available as `java` on PATH. To update saved diagrams, prepare the
+it prepares the pinned renderer in the development cache and, under the source
+launcher, the project's mise-managed Java. Outside the launcher, rendering needs
+Java 17 or newer available as `java` on PATH. To update saved diagrams, prepare the
 pinned optional MIT PlantUML JAR, then generate:
 
 ```sh

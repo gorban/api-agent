@@ -30,7 +30,10 @@ Choose one; follow its upstream installation instructions for your platform:
   open-source Linux engine, installed independently of Docker Desktop. Also
   install its [Compose plugin](https://docs.docker.com/compose/install/linux/).
 
-These options do not require Docker Desktop. Container-registry accounts,
+Docker Desktop also works: it reports bind mounts as its VM sees them
+(`/host_mnt/...`), and retained-container verification maps those back to host
+paths only when the engine identifies itself as Docker Desktop. These options do
+not require Docker Desktop. Container-registry accounts,
 download limits and hosted services have separate terms from the engine.
 
 ### Using Podman with Docker commands
@@ -117,7 +120,8 @@ confirmation before accepting. The launcher does not perform that broad cleanup.
 ## Other conditional requirements
 
 Other downloadable tools are prepared at their existing operation boundaries,
-including browsers, mkcert, and Java/Allure for the report viewer. Host browser
+including browsers, mkcert, Java/Allure for the report viewer, and Java plus the
+pinned PlantUML renderer for live workflow views. Host browser
 libraries, a graphical session, OpenSSL, certificate-trust approval, credentials,
 and service access may need your attention when relevant; the app reports these
 requirements where they are used.
