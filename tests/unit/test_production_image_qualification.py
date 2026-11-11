@@ -84,12 +84,11 @@ def test_inspector_explicitly_allows_unmodified_base_stdlib_viewer_and_ensurepip
 def test_qualification_plan_is_a_fresh_compile_of_the_root_workflow():
     # Its bound module ships only in the production wheel, so equality with a
     # fresh compile, not a source-checkout load, keeps it runnable.
-    from api_agent.workflows.artifact_compile import compile_plan
-    plan = (ROOT / 'qualification/simple_chat.json').read_bytes()
-    fresh = compile_plan(ROOT / 'flow.md.html', base_root=ROOT, pack_root=ROOT, entry_root='base',
-                         wheels=[ROOT / 'demo/.private_resources/wheels/api_agent_demo_bindings-0.1.0-py3-none-any.whl'])
+    from api_agent.workflows.artifact_plans import QUALIFICATION_PLAN, _qualification_plan
+    plan = (ROOT / QUALIFICATION_PLAN).read_bytes()
+    fresh = _qualification_plan(ROOT)
 
-    assert plan == fresh, 'qualification/simple_chat.json is stale; regenerate it as docs/compiled_plan.md describes'
+    assert plan == fresh, 'qualification/simple_chat.json is stale; regenerate with python -m api_agent.workflows.artifact_plans regenerate --root .'
 
 
 def test_failed_command_output_is_reported_before_the_error(capsys):
