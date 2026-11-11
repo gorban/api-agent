@@ -17,6 +17,30 @@ def _warning(message):
     print('WARNING: ' + message, file=sys.stderr, flush=True)
 
 
+def _collector_diagnostic(error, factory, config, binding):
+    """Explain infrastructure failures locally without exposing arbitrary SDK errors."""
+    from api_agent.runtime.prerequisites import PrerequisiteError
+    from api_agent.testing.diagnostics import CredentialScrubber, write_exception_diagnostic
+    if not isinstance(error, PrerequisiteError):
+        return
+    try:
+        # Acquisition precedes SDK startup, where exporter headers normally
+        # become registered secrets. Resolve the admitted plan without opening
+        # an exporter so failed startup diagnostics get the same protection.
+        plan = binding._export_plan({})
+        headers = tuple(value for signal in plan.headers.values() for value in signal.values() if value)
+        CredentialScrubber(config.values, boundary=factory.boundary, secret_values=headers)
+        # Do not traverse the original exception's cause/context chain: it can
+        # contain an SDK response whose narrative is not admitted for logging.
+        diagnostic = PrerequisiteError('Tracing collector prerequisite failed.',
+                                       local_details=error.local_details)
+        write_exception_diagnostic(diagnostic, sys.stderr.write, authority=factory.boundary,
+                                   label='Tracing collector prerequisite')
+    except Exception:
+        # Optional diagnostic delivery must not replace the application outcome.
+        pass
+
+
 class _TraceResources:
     """Keep the collector lease until SDK and binding disposal are confirmed."""
 
@@ -137,6 +161,8 @@ async def _owned_workflow_trace_locked(factory, config, *, owner_root, environ,
     except BaseException as error:
         if isinstance(error, Exception):
             _warning(f'Tracing setup failed at {stage}; continuing without tracing.')
+            if stage == 'collector acquisition':
+                _collector_diagnostic(error, factory, config, binding)
         await _close_owned(owner)
         if not isinstance(error, Exception):
             raise

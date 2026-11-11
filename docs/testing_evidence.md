@@ -197,6 +197,10 @@ Delegated model calls retain structural usage with either content flag disabled.
 In Allure, inspect the call's token parameters and **Suite usage**; missing
 categories remain unknown, while `transport_known_*` parameters retain reported
 lower bounds when the SDK's internal transport retry inventory is unavailable.
+When the cache breakdown is incomplete, terminal details also show **input
+(including cache)** from the known inclusive input counts. This subtotal
+overlaps the cache categories; do not add them together. Unknown calls retain
+`+ unknown`, and an unavailable non-cached count is not inferred from that subtotal.
 A separate **Native model usage boundary** attachment contains the fixed-schema
 before/after account counters. **Usage reconciliation** places those account
 changes beside the measured test totals, with explicit unknown call/inventory

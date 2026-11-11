@@ -554,6 +554,66 @@ def test_owned_trace_external_collector_receipt_needs_no_managed_lease(monkeypat
     runtime.aclose.assert_awaited_once()
 
 
+def test_collector_command_failure_has_scrubbed_local_evidence_without_failing_workflow(monkeypatch, capsys):
+    from pathlib import Path
+    from time import monotonic
+    from api_agent.testing import workflow_trace
+    from api_agent.runtime import tracing_collector_snapshot
+    from api_agent.runtime.prerequisites import PrerequisiteError
+
+    resolved = config(TRACE_EXPORT_HEADERS='authorization=private-header')
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary(secrets=('runtime-secret',)))
+    binding = workflow_trace.admit_binding(resolved, owner_root=Path(__file__).resolve().parents[2],
+                                          boundary=original.boundary)
+    runtime = SimpleNamespace(astart=AsyncMock(), aclose=AsyncMock())
+    def fail(**_kwargs):
+        error = PrerequisiteError('Prerequisite command failed (exit 1).',
+            local_details='Command: docker start collector\nstderr: bind source missing private-header runtime-secret')
+        raise error from RuntimeError('private SDK narrative')
+    manager = SimpleNamespace(timeout=1, now=monotonic, acquire=fail, release=lambda **_kwargs: None)
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: binding)
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(tracing_collector_snapshot, 'verify_collector_binding', lambda *_args: None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'collector_from_snapshot', lambda *_args: manager)
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2],
+                collector_snapshot={'trace_collector_plan': {'version': 2}}) as scoped:
+            assert scoped is original
+            return 'application result'
+
+    assert asyncio.run(run()) == 'application result'
+    output = capsys.readouterr().err
+    assert 'Tracing setup failed at collector acquisition; continuing without tracing.' in output
+    assert 'Local command evidence:' in output
+    assert 'Command: docker start collector' in output
+    assert 'bind source missing' in output
+    assert 'private-header' not in output
+    assert 'runtime-secret' not in output
+    assert 'private SDK narrative' not in output
+    runtime.aclose.assert_awaited_once()
+
+
+@pytest.mark.parametrize('phase', ['header admission', 'diagnostic write'])
+def test_collector_diagnostic_delivery_failure_is_nonfatal(monkeypatch, phase):
+    from unittest.mock import Mock
+    from api_agent.runtime.prerequisites import PrerequisiteError
+    from api_agent.testing import diagnostics, workflow_trace
+
+    factory = WorkflowObservationFactory(config(), boundary=EmissionBoundary())
+    plan = SimpleNamespace(headers={'traces': {'authorization': 'private-header'}})
+    binding = SimpleNamespace(_export_plan=Mock(return_value=plan))
+    writer = Mock(side_effect=OSError('diagnostic unavailable'))
+    monkeypatch.setattr(diagnostics, 'write_exception_diagnostic', writer)
+    if phase == 'header admission':
+        binding._export_plan.side_effect = ValueError('invalid private exporter configuration')
+
+    workflow_trace._collector_diagnostic(PrerequisiteError('Collector failed'), factory, config(), binding)
+
+    assert writer.call_count == (phase == 'diagnostic write')
+
+
 @pytest.mark.parametrize('result', [False, RuntimeError('private drain detail')])
 def test_worker_session_end_reports_retained_trace_cleanup_without_private_detail(
         monkeypatch, capsys, result):

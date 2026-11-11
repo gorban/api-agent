@@ -159,7 +159,7 @@ def _rounded_costs(costs, total):
 
 
 def tokens_text(report, test_id=None):
-    """Display disjoint counts/prices; CSV input/output totals stay inclusive."""
+    """Display disjoint counts/prices and retain an incomplete input breakdown's subtotal."""
     rows = [row for row in report.get('usage_observations', report.get('usage_rows', ()))
             if test_id is None or row.get('session_id') == test_id]
     unmeasured = report.get('unmeasured_calls', {})
@@ -173,13 +173,24 @@ def tokens_text(report, test_id=None):
     labels = {'input_tokens': 'non-cached input (writes unreported)' if writes_unknown else 'non-cached input',
               'output_tokens': 'output (reasoning unreported)' if reasoning_unknown else 'non-reasoning output',
               'total_tokens': 'total'}
+    parts = []
+    if any(row.get(field) is None or field in row.get('unknown_fields', ())
+           for row in rows for field in ('cache_read_tokens', 'cache_creation_tokens')):
+        known = [row['input_tokens'] for row in rows
+                 if type(row.get('input_tokens')) is int and row['input_tokens'] >= 0]
+        unknown = (unknown_calls > 0 or len(known) != len(rows)
+                   or any('input_tokens' in row.get('unknown_fields', ()) for row in rows))
+        value = (f'{sum(known):,}' + (' + unknown' if unknown else '') if known or not unknown
+                 else 'unavailable')
+        # This inclusive subtotal overlaps the cache categories below. Never
+        # assign a second category price or infer a non-cached count from it.
+        parts.append(f'  input (including cache): {value}')
     rows = [_partition_row(row) for row in rows]
     # A charge without a positive observed count cannot be displayed on that
     # category; retain it explicitly as unallocated rather than losing money.
     visible_costs = {field: value for field, value in costs.items() if any(
         type(row.get(field)) is int and row[field] > 0 for row in rows)}
     prices = _rounded_costs(visible_costs, total)
-    parts = []
     for field, label in TOKEN_LABELS:
         values = [row.get(field) for row in rows]
         known = [value for value in values if type(value) is int and value >= 0]
