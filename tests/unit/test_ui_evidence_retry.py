@@ -1,0 +1,340 @@
+"""Turn screenshots retry transient instability and report why they finally failed."""
+import asyncio
+import base64
+from types import SimpleNamespace
+
+import pytest
+
+from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+from api_agent.ui import evidence
+from api_agent.ui.evidence import OwnedFrameContract, capture_studio_viewport
+
+_ORIGIN = 'http://localhost:9000'
+_OWNED_FRAME = OwnedFrameContract('iframe[data-testid="chat-message-html"]',
+    '/assets/agent-html-runtime/renderer.html', 'allow-scripts')
+_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAAAACw='
+
+
+async def _pixels(page, png, box):
+    """Whether a PNG region is all black, and whether it contains any red."""
+    return await page.evaluate('''async ({png, box}) => {
+      const image = new Image(); image.src = 'data:image/png;base64,' + png;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width; canvas.height = image.height;
+      const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+      const data = context.getImageData(box.x, box.y, box.width, box.height).data;
+      let black = true, red = false;
+      for (let index = 0; index < data.length; index += 4) {
+        const [r, g, b] = data.slice(index, index + 3);
+        black &&= r === 0 && g === 0 && b === 0;
+        red ||= r > 200 && g < 80 && b < 80;
+      }
+      return {black, red};
+    }''', {'png': base64.b64encode(png).decode(), 'box': box})
+
+
+async def _owned_frame_page(browser, markup):
+    page = await browser.new_page(viewport={'width': 600, 'height': 400})
+    await page.route(_ORIGIN + '/da2/Home', lambda route: route.fulfill(
+        content_type='text/html', body=f'''<body style="margin:0;background:white">
+        <iframe data-testid="chat-message-html" sandbox="allow-scripts"
+          src="/assets/agent-html-runtime/renderer.html" style="width:300px;height:80px;border:0"></iframe>
+        {markup}<button id="send">Send</button></body>'''))
+    await page.route(_ORIGIN + _OWNED_FRAME.path, lambda route: route.fulfill(
+        content_type='text/html', body='<body><div>Rendered answer</div></body>'))
+    await page.goto(_ORIGIN + '/da2/Home')
+    await page.frame_locator(_OWNED_FRAME.selector).locator('div').wait_for()
+    return page
+
+
+async def _capture(page, reasons, **options):
+    return await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)), _ORIGIN,
+        path='/da2/Home', allow_frames=True, owned_frames=_OWNED_FRAME, unavailable=reasons.append,
+        **options)
+
+
+@pytest.mark.asyncio
+async def test_paused_capture_isolates_surfaces_without_moving_layout_on_every_turn():
+    from playwright.async_api import async_playwright
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            # Collapsed margins move as soon as size containment applies.
+            page = await _owned_frame_page(browser, f'<div id="art" style="background-image:url({_PIXEL})">'
+                '<p style="margin:20px 0;color:red;font:bold 30px Arial">Private art</p></div>')
+            send = await page.locator('#send').bounding_box()
+            art = await page.locator('#art').bounding_box()
+            for _turn in range(2):
+                reasons = []
+                image = await _capture(page, reasons)
+                assert image is not None, reasons
+                pixels = await _pixels(page, image, {key: int(art[key]) + (1 if key in 'xy' else -2)
+                                                     for key in ('x', 'y', 'width', 'height')})
+                assert pixels == {'black': True, 'red': False}
+                assert await page.locator('#art').get_attribute('style') == f'background-image:url({_PIXEL})'
+                assert await page.locator('#send').bounding_box() == send
+                assert await page.locator('html > div').count() == 0
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_paused_capture_withholds_top_layer_opened_inside_an_isolated_surface():
+    from playwright.async_api import async_playwright
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await _owned_frame_page(browser, f'<div id="art" style="background-image:url({_PIXEL})">'
+                '<div id="pop" popover style="background:red">Confidential escape</div></div>')
+            await page.locator('#pop').evaluate('node => node.showPopover()')
+            reasons = []
+            assert await _capture(page, reasons) is None
+            assert reasons == ['content_top_layer']
+        finally:
+            await browser.close()
+
+
+_SHADOW_HOSTS = {
+    'block': '<div id="host" style="width:50px;height:20px"></div>',
+    'inline-custom': '<x-card id="host">card</x-card>',
+    'span': '<span id="host">card</span>',
+    'table-row': '<div id="host" style="display:table-row">card</div>',
+    'inline-in-isolated-block': f'<div style="background-image:url({_PIXEL})"><x-card id="host">card</x-card></div>',
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paused', [True, False], ids=['paused', 'live'])
+@pytest.mark.parametrize('host', sorted(_SHADOW_HOSTS))
+async def test_top_layer_inside_unowned_shadow_root_is_withheld(host, paused):
+    from playwright.async_api import async_playwright
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            # content-visibility does not suppress inline or table hosts, so the
+            # audit must reach unowned shadow internals instead of trusting CSS.
+            markup = _SHADOW_HOSTS[host] + """<script>
+              const root = document.getElementById('host').attachShadow({mode:'open'});
+              root.innerHTML = '<div id="pop" popover style="background:rgb(255,0,0);width:200px;height:100px;border:0">Confidential escape</div>';
+              root.getElementById('pop').showPopover();
+            </script>"""
+            if paused:
+                page = await _owned_frame_page(browser, markup)
+                reasons = []
+                assert await _capture(page, reasons) is None
+            else:
+                page = await browser.new_page()
+                await page.route(_ORIGIN + '/', lambda route: route.fulfill(
+                    content_type='text/html', body='<body style="margin:0">' + markup + '</body>'))
+                await page.goto(_ORIGIN + '/')
+                reasons = []
+                assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)), _ORIGIN,
+                    unavailable=reasons.append) is None
+            assert reasons == ['content_top_layer']
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_change_during_screenshot_recovers_on_a_restored_second_attempt(monkeypatch):
+    from playwright.async_api import async_playwright
+    monkeypatch.setattr(evidence, 'CAPTURE_RETRY_DELAY_SECONDS', 0)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route(_ORIGIN + '/', lambda route: route.fulfill(content_type='text/html', body='''
+              <style id="paint"></style><header style="height:40px;background:blue">Navigation</header>'''))
+            await page.goto(_ORIGIN + '/')
+            original, calls = page.screenshot, []
+            async def changing_once(**kwargs):
+                calls.append(True)
+                if len(calls) == 1:
+                    await page.evaluate("document.querySelector('#paint').sheet.insertRule('header{background:red!important}')")
+                return await original(**kwargs)
+            monkeypatch.setattr(page, 'screenshot', changing_once)
+            reasons, stages = [], []
+            assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)), _ORIGIN,
+                unavailable=reasons.append, stage=lambda name, _elapsed: stages.append(name)) is not None
+            assert reasons == [] and len(calls) == 2
+            assert stages.count('retry') == 1 and stages.count('cleanup') == 2
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_layout_failure_reports_the_moved_element_once(monkeypatch):
+    from playwright.async_api import async_playwright
+    monkeypatch.setattr(evidence, 'CAPTURE_RETRY_DELAY_SECONDS', 0)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+              <body style="margin:0"><main id="panel"><section id="private" data-testid="private">
+                <p style="margin:20px 0">Confidential answer</p>
+              </section><button id="send">Send</button></main></body>'''))
+            await page.goto(_ORIGIN + '/')
+            reasons, details, stages = [], [], []
+            assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                _ORIGIN, content_mask_selector='#private', content_mask_anchor='#panel',
+                unavailable=reasons.append, failure_detail=details.append,
+                stage=lambda name, _elapsed: stages.append(name)) is None
+            # The same element moving the same way twice is deterministic: stop early.
+            assert reasons == ['content_layout']
+            assert stages.count('cleanup') == 2 and stages.count('retry') == 1
+            [detail] = details
+            assert detail['reason'] == 'content_layout' and detail['attempts'] == 2
+            shift = detail['layout_shift']
+            assert (shift['tag'], shift['testid'], shift['kind']) == ('section', 'private', 'content')
+            assert shift['shifted'] >= 1 and shift['before'] != shift['after']
+            assert set(shift['before']) == {'x', 'y', 'width', 'height'}
+            assert await page.locator('#private').get_attribute('style') is None
+        finally:
+            await browser.close()
+
+
+def _scripted_attempts(monkeypatch, outcomes, *, seconds=()):
+    calls, clock = [], [0.0]
+    async def once(page, boundary, origin, *, unavailable, **options):
+        calls.append(options)
+        clock[0] += seconds[len(calls) - 1] if seconds else 0
+        outcome = outcomes[len(calls) - 1]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if isinstance(outcome, tuple) and len(outcome) == 2:
+            # A refusal recorded by an attempt that is then interrupted.
+            unavailable(*outcome[0])
+            raise outcome[1]
+        reason, shift, image = outcome
+        if reason is not None:
+            unavailable(reason, shift)
+        return image
+    monkeypatch.setattr(evidence, '_capture_viewport_once', once)
+    monkeypatch.setattr(evidence, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(evidence, 'CAPTURE_RETRY_DELAY_SECONDS', 0)
+    return calls
+
+
+def _run(**options):
+    reasons, details = [], []
+    result = asyncio.run(capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN,
+        unavailable=reasons.append, failure_detail=details.append, **options))
+    return result, reasons, details
+
+
+def test_transient_failure_redoes_the_whole_capture_and_reports_nothing(monkeypatch):
+    calls = _scripted_attempts(monkeypatch, [('content_layout', None, None), (None, None, b'png')])
+    assert _run(path='/x') == (b'png', [], [])
+    assert len(calls) == 2 and calls[0] == calls[1] == {'path': '/x'}
+
+
+def test_deterministic_refusal_is_reported_without_retrying(monkeypatch):
+    calls = _scripted_attempts(monkeypatch, [('registered_secret', None, None)])
+    assert _run() == (None, ['registered_secret'], [{'reason': 'registered_secret', 'attempts': 1,
+                                                      'layout_shift': None, 'interrupted': False}])
+    assert len(calls) == 1
+
+
+def test_changing_layout_shifts_use_every_attempt(monkeypatch):
+    first, second = (evidence._layout_shift(dict(_SHIFT, shifted=count)) for count in (1, 2))
+    calls = _scripted_attempts(monkeypatch, [('content_layout', first, None),
+        ('content_layout', second, None), ('content_layout', second, None)])
+    _, reasons, details = _run()
+    assert len(calls) == 3 and reasons == ['content_layout'] and details[0]['attempts'] == 3
+
+
+def test_retry_that_would_outlast_the_window_is_skipped(monkeypatch):
+    calls = _scripted_attempts(monkeypatch, [('paint_changed', None, None)] * 3, seconds=(9, 3, 9))
+    _, reasons, details = _run(retry_window_seconds=20)
+    # After 9s, a 9s retry fits 20s. After 12s the slowest attempt (9s), not the
+    # last one (3s), projects 21s, so the third attempt is skipped.
+    assert len(calls) == 2 and reasons == ['paint_changed'] and details[0]['attempts'] == 2
+
+
+def test_cancellation_after_a_refusal_still_reports_it(monkeypatch):
+    _scripted_attempts(monkeypatch, [('frame_changed', None, None), asyncio.CancelledError()])
+    reasons, details = [], []
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN,
+            unavailable=reasons.append, failure_detail=details.append))
+    assert reasons == ['frame_changed']
+    assert details == [{'reason': 'frame_changed', 'attempts': 1, 'layout_shift': None, 'interrupted': True}]
+
+
+def test_interrupted_attempt_reports_its_own_refusal_despite_a_failing_callback(monkeypatch):
+    _scripted_attempts(monkeypatch, [('paint_changed', None, None),
+        (('pause_lost', None), asyncio.CancelledError())])
+    reasons = []
+    def failing(detail):
+        raise RuntimeError('diagnostic sink failed')
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN,
+            unavailable=reasons.append, failure_detail=failing))
+    assert reasons == ['pause_lost']
+
+
+def test_refusal_inside_an_interrupted_first_attempt_counts_that_attempt(monkeypatch):
+    _scripted_attempts(monkeypatch, [(('frame_changed', None), asyncio.CancelledError())])
+    details = []
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN,
+            failure_detail=details.append))
+    assert details == [{'reason': 'frame_changed', 'attempts': 1, 'layout_shift': None, 'interrupted': True}]
+
+
+def test_error_before_any_refusal_reports_nothing(monkeypatch):
+    _scripted_attempts(monkeypatch, [RuntimeError('capture failed')])
+    reasons, details = [], []
+    with pytest.raises(RuntimeError, match='capture failed'):
+        asyncio.run(capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN,
+            unavailable=reasons.append, failure_detail=details.append))
+    assert reasons == [] and details == []
+
+
+def test_silent_refusal_without_callbacks_is_not_retried(monkeypatch):
+    calls = _scripted_attempts(monkeypatch, [(None, None, None)])
+    assert asyncio.run(capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN)) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('window', [-1, float('inf'), float('nan'), '5', True])
+def test_invalid_retry_window_is_rejected(window):
+    with pytest.raises(ValueError, match='retry window'):
+        asyncio.run(capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN,
+                                            retry_window_seconds=window))
+
+
+_BOX = {'x': 0, 'y': 1.5, 'width': 10, 'height': 20}
+_SHIFT = {'tag': 'section', 'testid': 'chat-card', 'kind': 'opaque', 'shifted': 2,
+          'before': _BOX, 'after': {**_BOX, 'y': 21.5}}
+
+
+@pytest.mark.parametrize('value, expected', [
+    (_SHIFT, {**_SHIFT, 'before': {'x': 0., 'y': 1.5, 'width': 10., 'height': 20.},
+              'after': {'x': 0., 'y': 21.5, 'width': 10., 'height': 20.}}),
+    ({**_SHIFT, 'testid': 'has space'}, 'no-testid'),
+    ({**_SHIFT, 'testid': None}, 'no-testid'),
+    ({**_SHIFT, 'testid': ''}, 'no-testid'),
+    ({**_SHIFT, 'testid': 'x' * 65}, 'no-testid'),
+    ({**_SHIFT, 'testid': '秘密'}, 'no-testid'),
+    (None, None),
+    ({**_SHIFT, 'tag': ''}, None),
+    ({**_SHIFT, 'tag': 7}, None),
+    ({**_SHIFT, 'tag': 'x' * 33}, None),
+    ({**_SHIFT, 'tag': 'café-card'}, None),
+    ({**_SHIFT, 'kind': 'text'}, None),
+    ({**_SHIFT, 'shifted': 0}, None),
+    ({**_SHIFT, 'shifted': True}, None),
+    ({**_SHIFT, 'before': None}, None),
+    ({**_SHIFT, 'before': {'x': 0}}, None),
+    ({**_SHIFT, 'after': {**_BOX, 'x': float('nan')}}, None),
+    ({**_SHIFT, 'after': {**_BOX, 'x': '1'}}, None),
+])
+def test_layout_shift_admits_only_bounded_structure(value, expected):
+    result = evidence._layout_shift(value)
+    if expected == 'no-testid':
+        assert result is not None and result['testid'] is None and result['tag'] == 'section'
+    else:
+        assert result == expected

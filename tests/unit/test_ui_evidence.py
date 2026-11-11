@@ -13,6 +13,12 @@ from api_agent.ui.evidence import (OwnedFrameContract, _owned_application_frames
 from api_agent.ui.provider import DemoUIProvider
 
 
+@pytest.fixture(autouse=True)
+def _single_capture_attempt(monkeypatch):
+    # These cases pin what one attempt guarantees; test_ui_evidence_retry.py owns retries.
+    monkeypatch.setattr('api_agent.ui.evidence.CAPTURE_ATTEMPTS', 1)
+
+
 async def _painted_baseline(page):
     # Navigation/load does not guarantee the first compositor frame exists.
     # Allow font layout and two rendering-frame turns before pixel preconditions.

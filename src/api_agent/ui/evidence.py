@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import math
+import re
 from dataclasses import dataclass
 from functools import wraps
 from time import monotonic
@@ -281,22 +282,26 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
   };
   for (const node of nodes) {
     const {contentMasked, effects, opaque, display, intrinsic} = plans.get(node);
-    if (opaque || (contentMasked && !preserveContentFocus)) focusHidden ||= containsFocus(node);
+    // A paused page cannot open new top-layer content, and inspection rejects any
+    // already open under an isolated root, so opacity alone hides it there. Size
+    // containment stays for live pages only: it can move authored layout.
+    if ((opaque || contentMasked) && !preserveContentFocus) focusHidden ||= containsFocus(node);
     if ((opaque || contentMasked) && display === 'contents') throw 'display_contents';
     if (!opaque && !effects.length && !contentMasked) continue;
-    const properties = [...new Set([...(opaque ? ['opacity','content-visibility','contain-intrinsic-size','animation','transition'] : []),
-      ...(contentMasked ? ['opacity','clip-path', ...(preserveContentFocus ? [] : ['content-visibility','contain-intrinsic-size'])] : []), ...effects])];
+    const containment = preserveContentFocus ? [] : ['content-visibility','contain-intrinsic-size'];
+    const properties = [...new Set([...(opaque ? ['opacity', ...containment, 'animation','transition'] : []),
+      ...(contentMasked ? ['opacity','clip-path', ...containment] : []), ...effects])];
     const originalStyle = node.getAttribute('style');
     const previous = properties.map(property => [property,
       node.style.getPropertyValue(property), node.style.getPropertyPriority(property)]);
     const record = {opaque, previous, originalStyle, preparedStyle:null, overrides:[]};
     saved.set(node, record);
-    if (opaque || (contentMasked && !preserveContentFocus)) {
+    if ((opaque || contentMasked) && !preserveContentFocus) {
       node.style.setProperty('contain-intrinsic-size', intrinsic, 'important');
     }
     if (opaque) {
       node.style.setProperty('opacity', '0', 'important');
-      node.style.setProperty('content-visibility', 'hidden', 'important');
+      if (!preserveContentFocus) node.style.setProperty('content-visibility', 'hidden', 'important');
       node.style.setProperty('animation', 'none', 'important');
       node.style.setProperty('transition', 'none', 'important');
     }
@@ -331,15 +336,27 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
     }
     if (literals.length) effectTexts.set(node, literals);
   }
+  let layoutShift = null;
   const verifyOriginal = () => {
     // Size containment must not move cards or controls (for example through
     // collapsed margins). Unsupported authored layouts fail closed.
+    const shifted = [];
     for (const [node, before] of layout) {
       if (geometryProtected.has(node)) continue;
       if (!node.isConnected) return 'document_changed';
       const after = node.getBoundingClientRect();
       if (['x','y','width','height'].some(key => Math.abs(after[key] - before[key]) > .02))
-        return 'content_layout';
+        shifted.push([node, before, after]);
+    }
+    if (shifted.length) {
+      // Structural identity only: authored tag and test hook, never text or attributes.
+      const [node, before, after] = shifted.find(([moved]) => saved.has(moved)) || shifted[0];
+      const plan = plans.get(node) || {};
+      const box = rect => Object.fromEntries(['x','y','width','height'].map(key => [key, Math.round(rect[key] * 100) / 100]));
+      layoutShift = {tag:node.localName, testid:node.getAttribute('data-testid'),
+        kind:plan.opaque ? 'opaque' : plan.contentMasked ? 'content' : plan.effects?.length ? 'effect' : 'none',
+        shifted:shifted.length, before:box(before), after:box(after)};
+      return 'content_layout';
     }
     for (const [node, beforeScopes, beforeEffects] of paint) {
       if (paintProtected.has(node)) continue;
@@ -375,7 +392,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
   // Keep clipped intersections keyed by original nodes. Capture planning must
   // never add DOM whose presence could activate authored selectors.
   for (const node of contentRoots) masks.set(node, maskBox(node));
-  return {saved, masks, ownedHosts, chromeRoots, chromeConfig, restoreFocus, urlProperties, verifyOriginal, effectTexts, preserveContentFocus, reason:null, nodeIds:new WeakMap(), nextNodeId:0, marked:new Set()};
+  return {saved, masks, ownedHosts, chromeRoots, chromeConfig, restoreFocus, urlProperties, verifyOriginal, layoutShift:() => layoutShift, effectTexts, preserveContentFocus, reason:null, nodeIds:new WeakMap(), nextNodeId:0, marked:new Set()};
   } catch (error) {
     for (const [node, record] of saved) {
       if (record.originalStyle === null) node.removeAttribute('style');
@@ -411,7 +428,8 @@ _RESTORE = r'''prepared => {
 
 
 _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSelector, ownedShadowSelector, chromeOwned, chromeConfig, contentMaskSelector, contentMaskAnchor, contentMaskRequirements, diagnose, prepared}) => {
-  const reject = reason => diagnose ? {unavailable:reason} : null;
+  const reject = reason => diagnose ? {unavailable:reason,
+    shift:reason === 'content_layout' ? prepared.layoutShift?.() ?? null : null} : null;
   const ownedHosts = prepared.ownedHosts;
   const chromeRoots = prepared.chromeRoots;
   chromeConfig = prepared.chromeConfig;
@@ -519,13 +537,20 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
   if (contentMaskSelector && (!found.some(node => node.matches(contentMaskAnchor)) ||
       !found.some(node => node.matches(contentMaskSelector))))
     return reject('content_mask_missing');
-  if (contentMaskSelector) {
-    const maskedRoots = found.filter(node => node.matches(contentMaskSelector));
-    const elevated = found.filter(node => node.matches(':popover-open, :modal, :fullscreen'));
-    if (document.fullscreenElement) elevated.push(document.fullscreenElement);
-    if (elevated.some(node => maskedRoots.some(root => composedContains(root, node))))
-      return reject('content_top_layer');
-  }
+  // Top-layer content paints outside every ancestor's opacity, and content-visibility
+  // does not apply to inline or table hosts. Audit every open shadow root, owned or
+  // not (closed roots are rejected earlier), rather than trusting CSS to hide it.
+  const topLayer = [];
+  let topLayerVisited = 0;
+  const collectTopLayer = root => {
+    for (const node of root.querySelectorAll('*')) {
+      if (++topLayerVisited > 20000) return false;
+      if (node.matches(':popover-open, :modal, :fullscreen')) topLayer.push(node);
+      if (node.shadowRoot && !collectTopLayer(node.shadowRoot)) return false;
+    }
+    return true;
+  };
+  if (!collectTopLayer(document)) return reject('tree_budget');
   for (const [parentSelector, childSelector] of contentMaskRequirements || []) {
     const children = found.filter(node => node.matches(childSelector));
     for (const parent of found.filter(node => node.matches(parentSelector)))
@@ -569,7 +594,10 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
         !buttonIcon(node));
     const isolated = prepared?.saved.get(node);
     if (opaque && (!isolated?.opaque || style.opacity !== '0' ||
-        style.contentVisibility !== 'hidden' || style.display === 'contents')) return reject('isolation_verify');
+        (!prepared.preserveContentFocus && style.contentVisibility !== 'hidden') ||
+        style.display === 'contents')) return reject('isolation_verify');
+    if ((opaque || contentMasked) && topLayer.some(top => top !== node && composedContains(node, top)))
+      return reject('content_top_layer');
     if (isolated && !node.isConnected) return reject('document_changed');
     if (contentMasked && (style.opacity !== '0' || (!prepared.preserveContentFocus && style.contentVisibility !== 'hidden') ||
         style.clipPath !== 'inset(0px)' ||
@@ -967,12 +995,109 @@ def _serialized_capture(function):
     return capture
 
 
+CAPTURE_ATTEMPTS = 3
+CAPTURE_RETRY_DELAY_SECONDS = 1.0
+# Default whole-capture window; it fits capture_ui_evidence's ten-second page budget.
+CAPTURE_RETRY_WINDOW_SECONDS = 8.0
+# Page instability that a later, fully restored attempt can outlast.
+_TRANSIENT_REASONS = frozenset({'content_layout', 'paint_changed', 'document_changed',
+    'content_mask_geometry', 'frame_changed', 'pause_lost'})
+_SHIFT_KINDS = frozenset({'opaque', 'content', 'effect', 'none'})
+_STRUCTURAL_NAME = re.compile(r'[A-Za-z0-9_-]+')
+
+
+def _layout_shift(value):
+    """Admit only the bounded structural description a browser reports."""
+    def text(item, limit):
+        return item if (type(item) is str and len(item) <= limit and
+                        _STRUCTURAL_NAME.fullmatch(item)) else None
+    def box(item):
+        if type(item) is not dict or set(item) != {'x', 'y', 'width', 'height'}:
+            return None
+        if any(type(number) not in (int, float) or not math.isfinite(number) for number in item.values()):
+            return None
+        return {key: float(number) for key, number in item.items()}
+    if type(value) is not dict or text(value.get('tag'), 32) is None:
+        return None
+    shifted = value.get('shifted')
+    before, after = box(value.get('before')), box(value.get('after'))
+    if (value.get('kind') not in _SHIFT_KINDS or type(shifted) is not int or shifted < 1
+            or before is None or after is None):
+        return None
+    return {'tag': value['tag'], 'testid': text(value.get('testid'), 64), 'kind': value['kind'],
+            'shifted': shifted, 'before': before, 'after': after}
+
+
 @_serialized_capture
-async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_frames=False,
-                                  owned_frames=None, owned_shadow_selector=None, owned_chrome=None, content_mask_selector=None,
-                                  content_mask_anchor=None,
-                                  content_mask_requirements=(),
-                                  unavailable=None, stage=None):
+async def capture_studio_viewport(page, boundary, origin, *, unavailable=None, failure_detail=None,
+                                  retry_window_seconds=CAPTURE_RETRY_WINDOW_SECONDS, **options):
+    """Capture once, redoing the whole capture after transient page instability.
+
+    Each attempt restores the page before returning, so later turns and retries
+    see the original document. Up to ``CAPTURE_ATTEMPTS`` run with
+    ``CAPTURE_RETRY_DELAY_SECONDS`` between them. Deterministic refusals, a
+    layout refusal naming the same moved element twice, and a retry projected
+    (from the slowest attempt so far) to end after ``retry_window_seconds`` stop
+    at once. Only the final refusal reaches ``unavailable(reason)``, and
+    ``failure_detail`` then receives the reason, the completed attempt count and,
+    for a layout refusal, the structural description of the element that moved.
+    A cancellation or error after a refusal still reports that refusal first.
+    Options are those of ``_capture_viewport_once``.
+    """
+    if (type(retry_window_seconds) not in (int, float) or not math.isfinite(retry_window_seconds)
+            or retry_window_seconds < 0):
+        raise ValueError('Invalid capture retry window')
+    stage = options.get('stage')
+    started = monotonic()
+    attempts, reason, shift, longest, failures = 0, None, None, 0.0, []
+
+    def report(interrupted=False):
+        if unavailable is not None:
+            unavailable(reason)
+        if failure_detail is not None:
+            failure_detail({'reason': reason, 'attempts': attempts, 'layout_shift': shift,
+                            'interrupted': interrupted})
+
+    try:
+        while True:
+            if attempts and stage is not None:
+                stage('retry', int((monotonic() - started) * 1000))
+            began = monotonic()
+            failures = []
+            image = await _capture_viewport_once(page, boundary, origin,
+                unavailable=lambda refused, moved: failures.append((refused, moved)), **options)
+            if image is not None:
+                return image
+            attempts += 1
+            previous = shift
+            reason, shift = failures[-1] if failures else ('unavailable', None)
+            now = monotonic()
+            longest = max(longest, now - began)
+            if (reason not in _TRANSIENT_REASONS or attempts >= CAPTURE_ATTEMPTS
+                    or (reason == 'content_layout' and shift is not None and shift == previous)
+                    or now - started + CAPTURE_RETRY_DELAY_SECONDS + longest > retry_window_seconds):
+                break
+            failures = []
+            await asyncio.sleep(CAPTURE_RETRY_DELAY_SECONDS)
+    except BaseException:
+        if failures:
+            # A refusal the interrupted attempt already recorded is the newest evidence.
+            attempts += 1
+            reason, shift = failures[-1]
+        if reason is not None:
+            try:
+                report(interrupted=True)
+            except Exception:
+                pass  # A failing diagnostic callback must not replace the interruption.
+        raise
+    report()
+    return None
+
+
+async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/', allow_frames=False,
+                                 owned_frames=None, owned_shadow_selector=None, owned_chrome=None, content_mask_selector=None,
+                                 content_mask_anchor=None,
+                                 content_mask_requirements=(), stage=None):
     """Return masked original PNG, or None when owned safety is unavailable.
 
     Authentication controls and unsupported rendering surfaces are hidden before
@@ -991,9 +1116,8 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
     Browser strings remain transient and are never attachment metadata. The
     caller owns exception isolation.
     """
-    def reject(reason):
-        if unavailable is not None:
-            unavailable(reason)
+    def reject(reason, shift=None):
+        unavailable(reason, _layout_shift(shift))
         return None
 
     started = monotonic()
@@ -1169,9 +1293,9 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
             'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None,
             'contentMaskAnchor': content_mask_anchor if boundary.policy.allow_content is not True else None,
             'contentMaskRequirements': content_mask_requirements if boundary.policy.allow_content is not True else (),
-            'diagnose': unavailable is not None, 'prepared': prepared})
+            'diagnose': True, 'prepared': prepared})
         if isinstance(rows, dict) and rows.get('unavailable'):
-            return reject(rows['unavailable'])
+            return reject(rows['unavailable'], rows.get('shift'))
         mark('inspected')
         if rows is None:
             return reject('inspection')
@@ -1214,7 +1338,7 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
             'contentMaskSelector': content_mask_selector if boundary.policy.allow_content is not True else None,
             'contentMaskAnchor': content_mask_anchor if boundary.policy.allow_content is not True else None,
             'contentMaskRequirements': content_mask_requirements if boundary.policy.allow_content is not True else (),
-            'diagnose': unavailable is not None, 'prepared': prepared})
+            'diagnose': True, 'prepared': prepared})
         mark('verified')
         try:
             closed_shadow = await _closed_author_shadow(cdp, owned_shadow_selector)
@@ -1237,7 +1361,7 @@ async def capture_studio_viewport(page, boundary, origin, *, path='/', allow_fra
         result = image if stable and page.url == origin.rstrip('/') + path else None
         if result is None:
             reject(after.get('unavailable', 'document_changed') if isinstance(after, dict)
-                   else 'document_changed')
+                   else 'document_changed', after.get('shift') if isinstance(after, dict) else None)
     finally:
         async def restore_capture():
             nonlocal result, resume_listener
