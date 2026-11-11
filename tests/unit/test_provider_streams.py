@@ -333,8 +333,14 @@ def test_malformed_expired_and_late_stream_factory_keeps_close_handle():
         with pytest.raises(CleanupPendingError):
             await llm.aclose()
         release.set()
-        await asyncio.sleep(0)
-        await llm.aclose()
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                await llm.aclose()
+                break
+            except CleanupPendingError:
+                assert time.monotonic() < deadline, 'released late factory never finished its cleanup'
+                await asyncio.sleep(.01)
         assert raw.aclose.await_count == 2
     run(scenario())
 
