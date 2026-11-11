@@ -269,11 +269,36 @@ class SharedReportingManager:
                 primary.cleanup_pending = self._pending()
             raise
 
+    def _removed_outside(self, record, budget):
+        """True when a canonical ready binding's Compose project has no containers left.
+
+        Removing every container (`docker rm`, Docker Desktop bulk delete) leaves
+        nothing to restart or protect; the named data volume survives, so the
+        binding is re-provisioned like a first acquisition. Any remaining or
+        foreign container still takes the refusing path below.
+        """
+        try:
+            directory, scope = _binding_location(record, self.key, self.directory)
+        except (KeyError, TypeError, ValueError, OSError):
+            return False
+        if record['roots'] or record.get('state') != 'ready':
+            return False
+        with self._original_lock(record, budget):
+            probe = self.factory(rebind_reporting_plan(self.plan, scope), scope, directory,
+                                 engine_environment=self.environment, cancelled=self.cancelled,
+                                 deadline_seconds=budget.remaining)
+            listed = probe._command((self.plan.command[0], 'ps', '-a', '--no-trunc', '--filter',
+                f'label=com.docker.compose.project={scope.project}', '--format', '{{.ID}}'),
+                time.monotonic() + budget.remaining)
+            return not listed.split()
+
     def _acquire(self):
         if self.lease is not None:
             return self.lease
         with self._binding() as (path, budget):
             record = _read(path)
+            if record is not None and self._removed_outside(record, budget):
+                record = None
             if record is not None:
                 with self._original_lock(record, budget):
                     try:
