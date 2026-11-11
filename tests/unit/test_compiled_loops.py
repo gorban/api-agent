@@ -8,6 +8,7 @@ import pytest
 from artifact_acceptance_support import build_wheel, install
 from artifact_unit_support import Built, edited, isolated_imports, load_built  # noqa: F401
 from loop_support import NATIVE, OUTPUTS, edges, graph, limits, load
+from test_binding_application import FACTORY
 from test_workflow_loops import retry
 
 from api_agent.workflows import LayoutError, NodeFunction, Workflow
@@ -109,3 +110,50 @@ def test_an_empty_limits_table_is_not_a_compiled_plan(tmp_path):
     with pytest.raises(ArtifactRejected, match='invalid limit rows'):
         load_built(built, plan)
 
+
+
+LINES = ("return {'n': CALLS.count('draft'), "
+         "'lines': ['draft#%d %s' % (CALLS.count('draft'), context.prompts[0].strip())]}")
+
+
+def test_one_plan_carries_session_limits_loop_slots_and_application_together(tmp_path, monkeypatch):
+    import asyncio
+    import loop_support
+    from api_agent.runtime.local_tools import selected_application
+    from api_agent.workflows.identity import declaration_identity, workflow_identity
+    monkeypatch.setitem(loop_support.OUTPUTS, 'draft', {'n': {'type': 'integer'}, 'lines': {'type': 'array'}})
+    native = NATIVE.replace("return {'n': CALLS.count('draft')}", LINES)
+    root = tmp_path / 'tree'
+    (root / 'prompts').mkdir(parents=True)
+    (root / 'prompts/system.md').write_text('You are {{persona}}.\n')
+    (root / 'prompts/persona.md').write_text('a careful reviewer\n')
+    (root / 'pack.toml').write_text('version = 1\nid = "loops-pack"\n[prompt_slots]\npersona = "prompts/persona.md"\n')
+    (root / 'application.py').write_text(FACTORY)
+    sections = (limits('PLAN_PASSES')
+                + edges(('verify', 'accept', 'verify.accepted'),
+                        ('verify', 'draft', 'not verify.accepted and draft.attempt < PLAN_PASSES'),
+                        ('verify', 'failed', 'otherwise'), ('accept', 'END', 'always'))
+                + '## Session\n\n| Field | Source | Merge |\n| --- | --- | --- |\n| log | draft.lines | append |\n\n'
+                + '## Prompts\n\n| Node | File | When |\n| --- | --- | --- |\n| draft | [system](prompts/system.md) | always |\n\n'
+                + '## Application\n\n| Registry | Source |\n| --- | --- |\n| create_application | [Python](application.py) |\n')
+    entry = graph(root, [('node', 'draft'), ('node', 'verify'), ('node', 'accept'), ('node', 'failed')],
+                  sections=sections, native=native)
+    wheel = build_wheel(tmp_path, 'aq-loops', {'aq_loops/__init__.py': b'', 'aq_loops/native.py': native.encode(),
+                                               'aq_loops/application.py': FACTORY.encode()})
+    plan = compile_plan(entry, base_root=root, pack_root=root, wheels=[wheel])
+    built = Built(plan, plan_digest(plan), install(wheel, tmp_path / 'site'), wheel, tmp_path)
+    compiled, source = load_built(built), load(entry)
+
+    assert declaration_identity(compiled) == declaration_identity(source)
+    settings = dict(timeouts={}, component_passes={}, limits={'PLAN_PASSES': 2})
+    assert workflow_identity(compiled, **settings) == workflow_identity(source, **settings)
+    assert selected_application(compiled).definition is compiled
+    assert sorted(compiled.slot_files) == ['persona']
+
+    workflow = compiled.workflow()
+    for accept_at in (2, 1):
+        asyncio.run(workflow.arun({'accept_at': accept_at}, thread_id='t'))
+    saved = asyncio.run(workflow._session.aget_state({'configurable': {'thread_id': 'loops:t'}}))
+    assert saved.values['session'] == {'log': ['draft#1 You are a careful reviewer.',
+                                               'draft#2 You are a careful reviewer.',
+                                               'draft#3 You are a careful reviewer.']}
