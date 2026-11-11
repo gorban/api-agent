@@ -64,15 +64,16 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
         if len(set(ids)) != len(ids) or set(ids) != {key for key, item in steps.items() if item.kind == kind}:
             layout.error(f'{section} must declare each matching step exactly once')
     functions = {row['ID']: row for row in layout.tables['Functions']}
-    validate_function_rows(layout.tables['Functions'], resource_bytes, layout.error)
+    for row in layout.tables['Functions']:
+        validate_function_rows([row], resource_bytes, lambda message, line, row=row: layout.row_error(row, message))
     pass_sources = {}
     for row in layout.tables['Components']:
         if 'max_passes_link' in row:
             key, source = row['max_passes_key'], row['max_passes_link']
             if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', key):
-                layout.error('Max passes link requires an uppercase configuration key', row['line'])
+                layout.row_error(row, 'Max passes link requires an uppercase configuration key')
             if key in pass_sources and pass_sources[key] != source:
-                layout.error('Max passes key has conflicting configuration sources', row['line'])
+                layout.row_error(row, 'Max passes key has conflicting configuration sources')
             pass_sources[key] = source
             try:
                 from api_agent.config.declarations import schema_from_dict, UNSET
@@ -83,26 +84,26 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
                     raise ValueError('Max passes requires a declared integer default')
                 maximum = field.default
             except (OSError, UnicodeError, ValueError, KeyError) as error:
-                layout.error(f'Max passes declaration: {error}', row['line'])
+                layout.row_error(row, f'Max passes declaration: {error}')
         else:
             if not re.fullmatch(r'[1-9][0-9]*', row['Max passes']):
-                layout.error('Max passes must be a positive integer', row['line'])
+                layout.row_error(row, 'Max passes must be a positive integer')
             if len(row['Max passes']) > len(str(MAX_COMPONENT_PASSES)):
-                layout.error(f'Max passes must be at most {MAX_COMPONENT_PASSES}', row['line'])
+                layout.row_error(row, f'Max passes must be at most {MAX_COMPONENT_PASSES}')
             maximum = int(row['Max passes'])
         if not 1 <= maximum <= MAX_COMPONENT_PASSES:
-            layout.error(f'Max passes must be at most {MAX_COMPONENT_PASSES} and positive', row['line'])
+            layout.row_error(row, f'Max passes must be at most {MAX_COMPONENT_PASSES} and positive')
         row['max_passes_default'] = maximum
         if row['Guard'] == '-':
             if maximum != 1:
-                layout.error('Unguarded components require exactly one pass', row['line'])
+                layout.row_error(row, 'Unguarded components require exactly one pass')
             continue
         guard = steps.get(row['Guard'])
         if guard is None or guard.kind != 'node' or guard.parent != row['ID']:
-            layout.error('Guard must be a directly owned node', row['line'])
+            layout.row_error(row, 'Guard must be a directly owned node')
         children = [item.id for item in layout.steps if item.parent == row['ID']]
         if children[-1] != guard.id:
-            layout.error('Guard must be the final directly owned step', row['line'])
+            layout.row_error(row, 'Guard must be the final directly owned step')
     validate_limit_rows(layout, pass_sources)
     limit_keys = {row['Key'] for row in layout.tables.get('Limits', ())}
     bound = {key: set() for key in functions}
@@ -110,28 +111,28 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
     for row in layout.tables['Bindings']:
         target, field, source = row['Node'], row['Input'], row['From']
         if target not in functions or field in bound[target] or field not in functions[target]['Input schema'].get('properties', {}):
-            layout.error('unknown or duplicate input binding', row['line'])
+            layout.row_error(row, 'unknown or duplicate input binding')
         bound[target].add(field)
         if not row['Field'] or (source in ('ATTEMPT', 'MAX_PASSES') and row['Field'] != 'value'):
-            layout.error('invalid binding source field', row['line'])
+            layout.row_error(row, 'invalid binding source field')
         if source not in ('START', 'PREVIOUS', 'FEEDBACK', 'ATTEMPT', 'MAX_PASSES', 'SESSION', 'TURN'):
             if source not in functions or ordered.index(source) >= ordered.index(target):
-                layout.error('binding source must be an earlier node', row['line'])
+                layout.row_error(row, 'binding source must be an earlier node')
             if row['Field'] != '*' and row['Field'] not in functions[source]['Output schema'].get('properties', {}):
-                layout.error('unknown output field', row['line'])
+                layout.row_error(row, 'unknown output field')
         if row['Default'] != '-':
             try:
                 row['default_value'] = _decode_json(row['Default'])
                 Draft202012Validator(functions[target]['Input schema']['properties'][field]).validate(row['default_value'])
             except (ValueError, ValidationError) as error:
-                layout.error(str(error), row['line'])
+                layout.row_error(row, str(error))
     for key, row in functions.items():
         for reserved, meaning in (('attempt', 'the engine start counter'), ('expired', 'the engine timeout expiry flag')):
             if reserved in row['Output schema'].get('properties', {}):
                 layout.row_error(row, f'Output schema declares reserved field {reserved}; '
                                       f'<step>.{reserved} is {meaning}')
         if not set(row['Input schema'].get('required', ())) <= bound[key]:
-            layout.error('required inputs must have declared bindings', row['line'])
+            layout.row_error(row, 'required inputs must have declared bindings')
     invalid = session.problem(layout.tables)
     if invalid is not None:
         layout.row_error(invalid[1], invalid[0])
@@ -141,12 +142,12 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
         source, target = row['From'], row['To']
         guard_ids = {component['Guard'] for component in layout.tables['Components'] if component['Guard'] != '-'}
         if source in guard_ids and (row['When'] != 'always' or target != 'END'):
-            layout.error('guard node may only declare always to END', row['line'])
+            layout.row_error(row, 'guard node may only declare always to END')
         if source not in steps or (target != 'END' and (target not in steps or steps[target].parent != steps[source].parent)):
-            layout.error('edges must connect siblings or their END', row['line'])
+            layout.row_error(row, 'edges must connect siblings or their END')
         identity = source, row['When']
         if identity in seen:
-            layout.error('duplicate edge condition', row['line'])
+            layout.row_error(row, 'duplicate edge condition')
         seen.add(identity)
         edge_groups.setdefault(source, []).append(row)
         predicate = None
@@ -154,18 +155,18 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
             try:
                 predicate = parse_predicate(row['When'], predicate_fields(layout, source))
             except PredicateError as error:
-                layout.error(str(error), row['line'])
+                layout.row_error(row, str(error))
         if (target != 'END' and ordered.index(target) <= ordered.index(source)
                 and (predicate is None or backward_bound(predicate, target, limit_keys) is None)):
             layout.row_error(row, unbounded_edge_message(target))
     for rows in edge_groups.values():
         whens = {row['When'] for row in rows}
         if ('always' in whens and len(rows) > 1) or ('otherwise' in whens and 'always' in whens):
-            layout.error('conditional edges require otherwise fallback; always must stand alone', rows[-1]['line'])
+            layout.row_error(rows[-1], 'conditional edges require otherwise fallback; always must stand alone')
     for row in layout.tables['Prompts']:
         if (row['Node'] not in functions or row['When'] == 'otherwise'
                 or (row['When'] != 'always' and _ID.fullmatch(row['When']) is None)):
-            layout.error('unknown prompt node or condition', row['line'])
+            layout.row_error(row, 'unknown prompt node or condition')
     problem = timeout_owner_problem(layout.tables['Timeouts'], steps, tool_ports or {})
     if problem is not None:
         layout.row_error(*problem)
