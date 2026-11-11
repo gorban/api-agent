@@ -1,4 +1,4 @@
-"""Prepare selected launcher-managed executables on demand."""
+"""Prepare selected launcher-managed executables and files on demand."""
 from api_agent.testing.processes import wait_owned
 import os
 from pathlib import Path
@@ -17,13 +17,20 @@ TOOLS = {
     'java': 'core:java',
     'allure': 'github:allure-framework/allure2',
     'mkcert': 'aqua:FiloSottile/mkcert',
+    'plantuml': 'github:plantuml/plantuml',
 }
+# These install one release file, named by the tool's literal mise asset_pattern.
+FILE_TOOLS = frozenset({'plantuml'})
 
 
 def ensure_tools(*names, timeout=300, cancellation=None):
-    """Install only named tools when the source launcher opted into mise."""
+    """Install only named tools when the source launcher opted into mise.
+
+    Returns the installed path of each named file tool; without the launcher's
+    opt-in nothing is installed and no file is returned.
+    """
     if os.environ.get('API_AGENT_MISE') != '1':
-        return
+        return {}
     names = tuple(dict.fromkeys(names))
     if not names or any(name not in TOOLS for name in names):
         raise ValueError('Unknown managed executable')
@@ -33,12 +40,19 @@ def ensure_tools(*names, timeout=300, cancellation=None):
     try:
         config = tomllib.loads((ROOT / 'mise.toml').read_text(encoding='utf-8'))['tools']
         versions = {}
+        assets = {}
         for name in names:
             value = config[TOOLS[name]]
             version = value['version'] if isinstance(value, dict) else value
             if not isinstance(version, str) or not version or '@' in version or any(c.isspace() for c in version):
                 raise ValueError('invalid version')
             versions[name] = f'{TOOLS[name]}@{version}'
+            if name in FILE_TOOLS:
+                asset = value['asset_pattern']
+                if (not isinstance(asset, str) or asset in ('', '.', '..')
+                        or any(c.isspace() or c in '/\\*?[]{}' for c in asset)):
+                    raise ValueError('invalid asset')
+                assets[name] = asset
     except (OSError, KeyError, TypeError, ValueError):
         raise OSError('Managed executable version is missing or invalid in project mise configuration') from None
     env = os.environ.copy()
@@ -75,19 +89,31 @@ def ensure_tools(*names, timeout=300, cancellation=None):
                 from api_agent.testing.processes import finalize
                 finalize(process)
 
+    def resolved(arguments, budget, asset=None):
+        raw = run(arguments, budget)
+        try:
+            value = raw.decode('utf-8').strip()
+            path = Path(value)
+            if len(raw) > 4096 or '\n' in value or not path.is_absolute():
+                raise ValueError
+            if asset is not None:
+                path = path / asset
+            if not path.is_file():
+                raise ValueError
+        except (UnicodeError, ValueError, OSError):
+            raise OSError('Managed executable path is invalid; check mise and retry') from None
+        return path
+
     with report_timeout_sync('Managed executable preparation', timeout) as budget:
         run(['install', *(versions[name] for name in names)], budget)
         paths = []
+        files = {}
         java_home = None
         for name in names:
-            raw = run(['which', '--tool', versions[name], name], budget)
-            try:
-                value = raw.decode('utf-8').strip()
-                executable = Path(value)
-                if len(raw) > 4096 or '\n' in value or not executable.is_absolute() or not executable.is_file():
-                    raise ValueError
-            except (UnicodeError, ValueError, OSError):
-                raise OSError('Managed executable path is invalid; check mise and retry') from None
+            if name in FILE_TOOLS:
+                files[name] = resolved(['where', versions[name]], budget, assets[name])
+                continue
+            executable = resolved(['which', '--tool', versions[name], name], budget)
             paths.append(str(executable.parent))
             if name == 'java':
                 java_home = str(executable.parent.parent)
@@ -98,3 +124,4 @@ def ensure_tools(*names, timeout=300, cancellation=None):
         os.environ['PATH'] = os.pathsep.join((*dict.fromkeys(reversed(paths)), os.environ.get('PATH', '')))
         if java_home is not None:
             os.environ['JAVA_HOME'] = java_home
+    return files

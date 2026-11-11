@@ -3,12 +3,9 @@
 from dataclasses import replace
 from hashlib import sha256
 import json
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
-from multiprocessing import active_children
 from pathlib import Path
 import shutil
-from threading import Event, Thread
 import time
 from types import SimpleNamespace
 import runpy
@@ -370,8 +367,7 @@ def test_default_renderer_accepts_explicit_pinned_location_and_reports_missing(t
     with pytest.raises(RenderError, match="renderer missing"):
         viewer_render.default_renderer()
     monkeypatch.delenv("API_AGENT_PLANTUML_JAR")
-    monkeypatch.setattr(viewer_render.Path, "home", lambda: tmp_path)
-    with pytest.raises(RenderError, match="renderer missing"):
+    with pytest.raises(RenderError, match="run through ./launch.sh"):
         viewer_render.default_renderer()
 
 
@@ -750,129 +746,6 @@ def test_generation_rechecks_orphan_ownership_at_move(tmp_path, monkeypatch):
     assert orphan.read_bytes() == b"concurrent human note"
 
 
-def test_renderer_download_deadline_stops_blocked_transfer(tmp_path, monkeypatch):
-    entered = Event()
-    finished = Event()
-    entry_time = []
-
-    class SlowHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Length", "100")
-            self.end_headers()
-            self.wfile.flush()
-            entry_time.append(time.monotonic())
-            entered.set()
-            time.sleep(1)
-            finished.set()
-
-        def log_message(self, *args):
-            pass
-
-    class Budget:
-        startup_deadline = time.monotonic() + 5
-
-        @property
-        def remaining(self):
-            deadline = entry_time[0] + 0.2 if entered.is_set() else self.startup_deadline
-            return max(0, deadline - time.monotonic())
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler)
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    children_before = {child.pid for child in active_children()}
-    monkeypatch.setattr(viewer_build, "PLANTUML_URL", f"http://127.0.0.1:{server.server_port}/artifact")
-    try:
-        with pytest.raises(RenderError, match="timed out"):
-            viewer_build._prepare_renderer(cache=tmp_path, budget=Budget())
-        elapsed_after_entry = time.monotonic() - entry_time[0] if entered.is_set() else None
-        transfer_pending = not finished.is_set()
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-
-    assert entered.is_set(), "download must reach a blocked HTTP body before the deadline"
-    assert elapsed_after_entry is not None and elapsed_after_entry < 0.6
-    assert transfer_pending
-    assert not list(tmp_path.glob(".plantuml-*"))
-    assert {child.pid for child in active_children()} == children_before
-
-
-def test_renderer_preparation_downloads_verified_bytes_and_reuses_cache(tmp_path, monkeypatch):
-    body = b"local renderer fixture"
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
-    class Budget:
-        @property
-        def remaining(self):
-            return 3.0
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    monkeypatch.setattr(viewer_build, "PLANTUML_URL", f"http://127.0.0.1:{server.server_port}/artifact")
-    monkeypatch.setattr(viewer_build, "PLANTUML_SHA256", sha256(body).hexdigest())
-    try:
-        first = viewer_build._prepare_renderer(cache=tmp_path, budget=Budget())
-        second = viewer_build._prepare_renderer(cache=tmp_path, budget=Budget())
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-
-    assert first == second
-    assert first.read_bytes() == body
-    assert not list(tmp_path.glob(".plantuml-*"))
-
-
-@pytest.mark.parametrize("limit,digest,error", [
-    (3, sha256(b"artifact").hexdigest(), "exceeds size"),
-    (100, "0" * 64, "digest mismatch"),
-])
-def test_renderer_preparation_rejects_oversize_or_wrong_digest(tmp_path, monkeypatch,
-                                                                limit, digest, error):
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"artifact")
-
-        def log_message(self, *args):
-            pass
-
-    class Budget:
-        @property
-        def remaining(self):
-            return 3.0
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    monkeypatch.setattr(viewer_build, "PLANTUML_URL", f"http://127.0.0.1:{server.server_port}/artifact")
-    monkeypatch.setattr(viewer_build, "PLANTUML_SHA256", digest)
-    monkeypatch.setattr(viewer_build, "_MAX_JAR", limit)
-    try:
-        with pytest.raises(RenderError, match=error):
-            viewer_build._prepare_renderer(cache=tmp_path, budget=Budget())
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-
-    assert not (tmp_path / "plantuml-mit-1.2026.9.jar").exists()
-    assert not list(tmp_path.glob(".plantuml-*"))
-
-
 @pytest.fixture
 def fake_renderer(tmp_path, monkeypatch):
     jar = tmp_path / "renderer.jar"
@@ -1166,166 +1039,16 @@ def test_renderer_reports_missing_java(fake_renderer):
         renderer.render(b"@startuml\nA\n@enduml\n")
 
 
-def test_renderer_preparation_rejects_changed_cached_artifact(tmp_path):
-    cached = tmp_path / "plantuml-mit-1.2026.9.jar"
-    cached.write_bytes(b"changed")
-
-    with pytest.raises(RenderError, match="cached PlantUML digest mismatch"):
-        viewer_build._prepare_renderer(cache=tmp_path, budget=SimpleNamespace(remaining=1))
-
-
-@pytest.mark.parametrize("limit,error", [(20, None), (3, "exceeds size")])
-def test_download_worker_caps_bytes_and_reports_result(tmp_path, monkeypatch, limit, error):
-    class Response:
-        def __init__(self):
-            self.reads = iter((b"artifact", b""))
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def read(self, count):
-            return next(self.reads)
-
-    class Channel:
-        result = None
-        closed = False
-
-        def send(self, value):
-            self.result = value
-
-        def close(self):
-            self.closed = True
-
-    monkeypatch.setattr(viewer_build, "urlopen", lambda request, timeout: Response())
-    channel = Channel()
-    target = tmp_path / "download.jar"
-
-    viewer_build._download_renderer(target, 1.0, "https://example.invalid/artifact", limit, channel)
-
-    assert channel.closed
-    assert (error is None and channel.result is None) or (error in channel.result)
-    assert target.read_bytes() == (b"artifact" if error is None else b"")
-
-
-def _exit_download_process(*args):
-    __import__("os")._exit(17)
-
-
-def test_unexpected_download_process_exit_reports_bounded_error(tmp_path, monkeypatch):
-    children_before = {child.pid for child in active_children()}
-    monkeypatch.setattr(viewer_build, "_download_renderer", _exit_download_process)
-
-    with pytest.raises(RenderError, match="worker exited without a result"):
-        viewer_build._prepare_renderer(cache=tmp_path, budget=SimpleNamespace(remaining=2))
-
-    assert {child.pid for child in active_children()} == children_before
-    assert not list(tmp_path.glob(".plantuml-*"))
-
-
-def test_download_process_start_failure_closes_temporary_file(tmp_path, monkeypatch):
-    context = viewer_build.multiprocessing.get_context("spawn")
-
-    class FailingProcess:
-        def start(self):
-            raise OSError("process startup failed")
-
-    class FailingContext:
-        Pipe = context.Pipe
-
-        def Process(self, *, target, args):
-            return FailingProcess()
-
-    monkeypatch.setattr(viewer_build.multiprocessing, "get_context", lambda method: FailingContext())
-
-    with pytest.raises(OSError, match="startup failed"):
-        viewer_build._prepare_renderer(cache=tmp_path, budget=SimpleNamespace(remaining=1))
-
-    assert not list(tmp_path.glob(".plantuml-*"))
-
-
-@pytest.mark.parametrize('stops_on_terminate, expected_cleanup', [
-    (True, ['terminate', ('join', 0.05)]),
-    (False, ['terminate', ('join', 0.05), 'kill', ('join', None)]),
-])
-def test_download_worker_is_reaped_with_kill_fallback(tmp_path, monkeypatch, stops_on_terminate, expected_cleanup):
-    context = viewer_build.multiprocessing.get_context("spawn")
-    events = []
-
-    class StuckProcess:
-        exitcode = None
-
-        def __init__(self, channel):
-            self.channel = channel
-            self.alive = True
-
-        def start(self):
-            self.channel.send(None)
-            self.channel.close()
-
-        def join(self, timeout=None):
-            events.append(("join", timeout))
-
-        def is_alive(self):
-            return self.alive
-
-        def terminate(self):
-            events.append("terminate")
-            self.alive = not stops_on_terminate
-
-        def kill(self):
-            events.append("kill")
-            self.alive = False
-
-    class StuckContext:
-        Pipe = context.Pipe
-
-        def Process(self, *, target, args):
-            return StuckProcess(args[-1])
-
-    monkeypatch.setattr(viewer_build.multiprocessing, "get_context", lambda method: StuckContext())
-    with pytest.raises(RenderError, match="preparation timed out"):
-        viewer_build._prepare_renderer(cache=tmp_path, budget=SimpleNamespace(remaining=0.01))
-    assert events[1:] == expected_cleanup
-    assert not list(tmp_path.glob(".plantuml-*"))
-
-
-def test_prepare_renderer_wraps_shared_timeout(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(viewer_build, "_prepare_renderer",
-                        lambda *, cache, budget: calls.append((cache, budget)) or tmp_path / "renderer.jar")
-
-    result = viewer_build.prepare_renderer(cache=tmp_path)
-
-    assert result == tmp_path / "renderer.jar"
-    assert len(calls) == 1 and calls[0][0] == tmp_path
-    assert calls[0][1].remaining is not None
-
-
-def test_renderer_cache_refuses_symlink(tmp_path):
-    cache = tmp_path / "cache"
-    cache.symlink_to(tmp_path, target_is_directory=True)
-
-    with pytest.raises(RenderError, match="cache symlink"):
-        viewer_build._prepare_renderer(cache=cache, budget=SimpleNamespace(remaining=1))
-
-
-@pytest.mark.parametrize("operation", ["cache", "render"])
+@pytest.mark.parametrize("operation", ["prepare", "render"])
 def test_fifo_renderer_artifact_is_rejected_without_blocking(tmp_path, operation):
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    artifact = cache / "plantuml-mit-1.2026.9.jar"
-    artifact_path = artifact if operation == "cache" else tmp_path / "renderer.jar"
+    artifact_path = tmp_path / "renderer.jar"
     __import__("os").mkfifo(artifact_path)
     script = ("from pathlib import Path\n"
-              "from types import SimpleNamespace\n"
+              "from api_agent.runtime import mise_tools\n"
               "from api_agent.workflows import viewer_build\n"
-              "from api_agent.workflows.viewer_render import PlantUMLRenderer\n"
-              f"path = Path({str(artifact_path)!r})\n"
-              "viewer_build._prepare_renderer(cache=path.parent, budget=SimpleNamespace(remaining=0.2))\n"
-              if operation == "cache" else
+              f"mise_tools.ensure_tools = lambda *names: {{'plantuml': Path({str(artifact_path)!r})}}\n"
+              "viewer_build.prepare_renderer()\n"
+              if operation == "prepare" else
               "from pathlib import Path\n"
               "from api_agent.workflows.viewer_render import PlantUMLRenderer\n"
               f"PlantUMLRenderer(Path({str(artifact_path)!r}), timeout=0.2).render(b'@startuml\\nA\\n@enduml\\n')\n")

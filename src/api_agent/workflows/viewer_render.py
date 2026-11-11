@@ -787,15 +787,18 @@ def _asset_root() -> Path:
 
 
 def default_renderer(path=None) -> "PlantUMLRenderer":
+    """Use an explicitly configured JAR as is, otherwise the pinned mise-installed one."""
     if path is None:
         from .viewer_config import resolve_renderer_path
         path = resolve_renderer_path()
-    if path:
-        jar = Path(path)
-    else:
-        jar = Path.home() / ".cache/api-agent/plantuml/plantuml-mit-1.2026.9.jar"
+    if not path:
+        from .viewer_build import prepare_renderer
+        return PlantUMLRenderer(prepare_renderer())
+    jar = Path(path)
     if not jar.is_file():
-        raise RenderError("PlantUML renderer missing; run the workflow viewer preparation command")
+        raise RenderError("PlantUML renderer missing; check API_AGENT_PLANTUML_JAR")
+    from api_agent.runtime.mise_tools import ensure_tools
+    ensure_tools("java")
     return PlantUMLRenderer(jar)
 
 

@@ -17,50 +17,6 @@ from api_agent.runtime.https import prepare_local_https
 from api_agent.testing.allure_viewer import ManagedAllureViewer
 
 
-@pytest.fixture
-def fake_mise(tmp_path, monkeypatch):
-    root = tmp_path / 'project'
-    root.mkdir()
-    (root / 'mise.toml').write_text('''[tools]
-"core:node" = "24.22.2"
-"aqua:npm/cli" = "11.16.0"
-"core:java" = "temurin-21.0.13+9.0.LTS"
-"github:allure-framework/allure2" = "2.46.1"
-"aqua:FiloSottile/mkcert" = "1.4.4"
-''')
-    bin_dir = tmp_path / 'bin'
-    bin_dir.mkdir()
-    tool_dir = tmp_path / 'tools'
-    tool_dir.mkdir()
-    for name in ('node', 'npm', 'mkcert', 'java', 'allure'):
-        (tool_dir / name).write_text('synthetic')
-    log = tmp_path / 'calls.jsonl'
-    program = bin_dir / 'mise'
-    program.write_text(f'''#!{sys.executable}
-import json, os, sys
-with open(os.environ['FAKE_MISE_LOG'], 'a') as stream:
-    stream.write(json.dumps([sys.argv[1:], os.getcwd(), os.environ.get('MISE_ENV')]) + '\\n')
-if os.environ.get('FAKE_MISE_FAIL'):
-    print('sensitive installer output', file=sys.stderr)
-    sys.exit(1)
-if os.environ.get('FAKE_MISE_WAIT'):
-    import time
-    open(os.environ['FAKE_MISE_WAIT'], 'w').close()
-    time.sleep(5)
-if 'which' in sys.argv:
-    print(os.environ.get('FAKE_MISE_' + sys.argv[-1].upper(),
-                         os.path.join(os.environ['FAKE_MISE_TOOLS'], sys.argv[-1])))
-''')
-    program.chmod(0o755)
-    monkeypatch.setattr(mise_tools, 'ROOT', root)
-    monkeypatch.setenv('PATH', str(bin_dir))
-    monkeypatch.setenv('FAKE_MISE_LOG', str(log))
-    monkeypatch.setenv('FAKE_MISE_TOOLS', str(tool_dir))
-    monkeypatch.setenv('API_AGENT_MISE', '1')
-    monkeypatch.setenv('MISE_ENV', 'untrusted')
-    return root, bin_dir, tool_dir, log
-
-
 def test_only_selected_pinned_tools_are_prepared(fake_mise):
     root, bin_dir, tools, log = fake_mise
     mise_tools.ensure_tools('java', 'allure')
@@ -87,10 +43,48 @@ def test_selected_npm_precedes_node_bundled_npm(fake_mise, tmp_path, monkeypatch
     assert shutil.which('node') == str(node_dir / 'node')
 
 
+def test_file_tool_returns_its_declared_release_file(fake_mise, tmp_path):
+    root, bin_dir, _, log = fake_mise
+    files = mise_tools.ensure_tools('plantuml')
+    assert files == {'plantuml': tmp_path / 'installs/plantuml/plantuml-mit-1.2026.9.jar'}
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [call[0][-2:] for call in calls] == [['install', 'github:plantuml/plantuml@1.2026.9'],
+                                               ['where', 'github:plantuml/plantuml@1.2026.9']]
+    assert all(call[1:] == [str(root), ''] for call in calls)
+    assert os.environ['PATH'] == str(bin_dir)
+    assert 'JAVA_HOME' not in os.environ
+
+
+@pytest.mark.parametrize('declaration', [
+    '"1.2026.9"',
+    '{ version = "1.2026.9" }',
+    '{ version = "1.2026.9", asset_pattern = 7 }',
+    '{ version = "1.2026.9", asset_pattern = "" }',
+    '{ version = "1.2026.9", asset_pattern = ".." }',
+    '{ version = "1.2026.9", asset_pattern = "plantuml-*.jar" }',
+    '{ version = "1.2026.9", asset_pattern = "nested/plantuml.jar" }',
+    '{ version = "1.2026.9", asset_pattern = "plantuml mit.jar" }',
+])
+def test_file_tool_requires_one_literal_release_file(fake_mise, declaration):
+    root, _, _, log = fake_mise
+    (root / 'mise.toml').write_text(f'[tools]\n"github:plantuml/plantuml" = {declaration}\n')
+    with pytest.raises(OSError, match='version is missing or invalid'):
+        mise_tools.ensure_tools('plantuml')
+    assert not log.exists()
+
+
+@pytest.mark.parametrize('where', ['relative/install', 'empty'])
+def test_file_tool_rejects_an_install_without_its_release_file(fake_mise, tmp_path, monkeypatch, where):
+    (tmp_path / 'empty').mkdir()
+    monkeypatch.setenv('FAKE_MISE_WHERE', where if where.startswith('relative') else str(tmp_path / where))
+    with pytest.raises(OSError, match='path is invalid'):
+        mise_tools.ensure_tools('plantuml')
+
+
 def test_missing_launcher_marker_never_starts_mise(fake_mise, monkeypatch):
     _, _, _, log = fake_mise
     monkeypatch.delenv('API_AGENT_MISE')
-    mise_tools.ensure_tools('node', 'npm')
+    assert mise_tools.ensure_tools('node', 'npm', 'plantuml') == {}
     assert not log.exists()
 
 

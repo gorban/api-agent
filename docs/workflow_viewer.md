@@ -104,9 +104,10 @@ execution, provider authentication or application startup.
 mise and the managed browser's host prerequisites are required;
 the launcher prepares its browser dependencies. Fresh owner-local diagrams are
 checked without Java or renderer setup. A library/composed/replacement selection
-may need a new temporary diagram; the viewer and run-local then prepare the pinned
-renderer and the project's Java themselves (run-local does this before its startup
-budget). An explicitly configured renderer JAR is used as is and must exist.
+may need a new temporary diagram; the viewer and run-local then install the pinned
+PlantUML JAR and the project's Java through mise themselves (run-local does this
+before its startup budget). An explicitly configured renderer JAR is used as is and
+must exist.
 That view discloses its selected definition identity and never overwrites owner
 diagrams or reloads replaced originals. Explicitly referenced, captured Python
 sources open as UTF-8 plain text, alongside captured JSON schemas and TOML
@@ -134,14 +135,16 @@ Check mode is read-only and needs no renderer or download. Changed declarations,
 linked resources, diagram source metadata, companions or viewer assets require
 explicit generation to update saved diagrams. Managed viewing can render a
 temporary view of current changes without modifying saved diagrams; when needed,
-it prepares the pinned renderer in the development cache and, under the source
-launcher, the project's mise-managed Java. Outside the launcher, rendering needs
-Java 17 or newer available as `java` on PATH. To update saved diagrams, prepare the
-pinned optional MIT PlantUML JAR, then generate:
+it installs the pinned renderer and Java on first use. Both are lazy tools in the
+project `mise.toml`: Java and the optional MIT PlantUML JAR, whose lockfile checksum
+and the renderer's own pinned digest must match. `./launch.sh` opts into mise;
+`API_AGENT_MISE=1` gives the generator commands the same opt-in. Without it, set
+`API_AGENT_PLANTUML_JAR` and provide Java 17 or newer as `java` on PATH; there is no
+other download. To update saved diagrams:
 
 ```sh
-.venv/bin/python tools/workflow_views.py prepare
-.venv/bin/python tools/workflow_views.py generate --root .
+API_AGENT_MISE=1 .venv/bin/python tools/workflow_views.py prepare
+API_AGENT_MISE=1 .venv/bin/python tools/workflow_views.py generate --root .
 .venv/bin/python tools/workflow_views.py check --root .
 ```
 
@@ -165,12 +168,12 @@ repository-hosted SVG links retain the placeholder. The SVG image path itself st
 relative. Repository identity, the adapter and its allowed mappings are bound into
 the saved diagram provenance.
 
-Preparation uses an owned development cache; `API_AGENT_PLANTUML_JAR` can point
+Preparation prints the mise-installed JAR path; `API_AGENT_PLANTUML_JAR` can point
 to an already downloaded JAR with the required digest. This declared path setting
 uses the usual dotenv, environment, and CLI precedence; view-flow mode accepts
 `--api-agent-plantuml-jar PATH`. The generation command accepts the same option;
 its dotenv files and relative paths use `--root`. Viewer paths use the selected
-owner root. An explicit empty CLI value selects the default cache. The JAR and Java runtime
+owner root. An explicit empty CLI value selects the mise-installed JAR. The JAR and Java runtime
 are not shipped in the application wheel; diagrams add no bundled fonts. Generation uses temporary
 PlantUML input and leaves all source changes unstaged. Review declaration,
 companion and SVG changes together before staging them. Normal agent execution

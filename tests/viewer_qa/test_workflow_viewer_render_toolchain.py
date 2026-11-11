@@ -25,9 +25,11 @@ from api_agent.workflows import viewer_render
 
 
 def _qa_prerequisites():
-    jar = Path(os.environ.get("API_AGENT_TEST_PLANTUML_JAR") or
-               os.environ.get("API_AGENT_PLANTUML_JAR") or
-               Path.home() / ".cache/api-agent/plantuml/plantuml-mit-1.2026.9.jar")
+    configured = os.environ.get("API_AGENT_TEST_PLANTUML_JAR") or os.environ.get("API_AGENT_PLANTUML_JAR")
+    try:
+        jar = Path(configured) if configured else viewer_build.prepare_renderer()
+    except RenderError as error:
+        pytest.fail(f"viewer QA requires the pinned PlantUML JAR: {error}")
     java = os.environ.get("API_AGENT_TEST_JAVA") or shutil.which("java")
     if not jar.is_file():
         pytest.fail(f"viewer QA requires the pinned PlantUML JAR: {jar}; set API_AGENT_PLANTUML_JAR")

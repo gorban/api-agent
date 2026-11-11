@@ -106,6 +106,38 @@ checksum_source = "mise-versions"
 url = "https://github.com/allure-framework/allure2/releases/download/2.46.1/allure-2.46.1.tgz"
 url_api = "https://api.github.com/repos/allure-framework/allure2/releases/assets/542912124"
 
+[[tools."github:plantuml/plantuml"]]
+version = "1.2026.9"
+backend = "github:plantuml/plantuml"
+specifiers = ["1.2026.9"]
+
+[tools."github:plantuml/plantuml".options]
+asset_pattern = "plantuml-mit-1.2026.9.jar"
+
+[tools."github:plantuml/plantuml"."platforms.linux-arm64"]
+checksum = "sha256:835b2f2eb1d756da3f03bffdbd0baf252b4b858547a741ac8e972958a09c7f91"
+checksum_source = "mise-versions"
+url = "https://github.com/plantuml/plantuml/releases/download/v1.2026.9/plantuml-mit-1.2026.9.jar"
+url_api = "https://api.github.com/repos/plantuml/plantuml/releases/assets/649980653"
+
+[tools."github:plantuml/plantuml"."platforms.linux-x64"]
+checksum = "sha256:835b2f2eb1d756da3f03bffdbd0baf252b4b858547a741ac8e972958a09c7f91"
+checksum_source = "mise-versions"
+url = "https://github.com/plantuml/plantuml/releases/download/v1.2026.9/plantuml-mit-1.2026.9.jar"
+url_api = "https://api.github.com/repos/plantuml/plantuml/releases/assets/649980653"
+
+[tools."github:plantuml/plantuml"."platforms.macos-arm64"]
+checksum = "sha256:835b2f2eb1d756da3f03bffdbd0baf252b4b858547a741ac8e972958a09c7f91"
+checksum_source = "mise-versions"
+url = "https://github.com/plantuml/plantuml/releases/download/v1.2026.9/plantuml-mit-1.2026.9.jar"
+url_api = "https://api.github.com/repos/plantuml/plantuml/releases/assets/649980653"
+
+[tools."github:plantuml/plantuml"."platforms.macos-x64"]
+checksum = "sha256:835b2f2eb1d756da3f03bffdbd0baf252b4b858547a741ac8e972958a09c7f91"
+checksum_source = "mise-versions"
+url = "https://github.com/plantuml/plantuml/releases/download/v1.2026.9/plantuml-mit-1.2026.9.jar"
+url_api = "https://api.github.com/repos/plantuml/plantuml/releases/assets/649980653"
+
 [[tools.java]]
 version = "temurin-21.0.13+9.0.LTS"
 backend = "core:java"
