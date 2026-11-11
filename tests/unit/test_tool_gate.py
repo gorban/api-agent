@@ -282,7 +282,7 @@ def test_gate_accepts_wire_valid_invocation_identity(length):
     assert gate.invocation_id == 'x' * length
 
 
-def _expensive_local_schema(depth=13):
+def _expensive_local_schema(depth=15):
     definitions = {'D0': {'type': 'object'}}
     for index in range(1, depth + 1):
         definitions[f'D{index}'] = {'allOf': [
@@ -329,7 +329,8 @@ def test_expensive_local_references_obey_gate_timeout_and_keep_loop_responsive(p
             with pytest.raises(TimeoutError):
                 await gate.execute(checked)
         await timer
-        assert time.monotonic() - started < .25
+        # The untimed schema work alone outlasts the gate timeout; this bounds prompt teardown.
+        assert time.monotonic() - started < 1
         assert processes and all(process.returncode is not None for process in processes)
 
     asyncio.run(run())

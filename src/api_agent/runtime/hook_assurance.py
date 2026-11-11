@@ -92,6 +92,16 @@ def _upgrade_hook(staged, hook, previous, report):
             recovery.rmdir()
 
 
+def _current_managed(hook):
+    """Whether a hook file is exactly the current managed dispatcher."""
+    if not hook.is_file() or hook.is_symlink():
+        return False
+    header = b'#!/usr/bin/env python3\n' + MARKER.encode() + b'\n'
+    snapshot = _hook_snapshot(hook)
+    return (snapshot is not None and snapshot[0].startswith(header)
+            and sha256(snapshot[0][len(header):]).hexdigest() == DISPATCHER_SHA256)
+
+
 def assure_hook(root: Path, *, report=None) -> str:
     report = report or (lambda message: print(message, file=sys.stderr))
     if shutil.which('git') is None:
@@ -102,12 +112,15 @@ def assure_hook(root: Path, *, report=None) -> str:
         if len(lines) != 2 or Path(lines[0]).resolve() != root:
             return 'not-applicable'
         locations = _git(root, 'rev-parse', '--git-dir', '--git-common-dir').decode().splitlines()
-        if len(locations) != 2 or (root / locations[0]).resolve() != (root / locations[1]).resolve():
-            report('Managed pre-commit hook not installed: shared Git hook directory; integrate tools/pre_commit_dispatcher.py manually.')
-            return 'foreign'
         hooks = Path(lines[1])
         if not hooks.is_absolute():
             hooks = root / hooks
+        if len(locations) != 2 or (root / locations[0]).resolve() != (root / locations[1]).resolve():
+            # A linked worktree shares its main checkout's hooks; never write there.
+            if _current_managed(hooks / 'pre-commit'):
+                return 'present'
+            report('Managed pre-commit hook not installed: shared Git hook directory; integrate tools/pre_commit_dispatcher.py manually.')
+            return 'foreign'
         if not hooks.resolve().is_relative_to((root / locations[0]).resolve()):
             report('Managed pre-commit hook not installed: hook path leaves this Git directory; integrate tools/pre_commit_dispatcher.py manually.')
             return 'foreign'

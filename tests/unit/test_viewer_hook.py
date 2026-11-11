@@ -123,6 +123,28 @@ def test_linked_worktree_does_not_install_into_shared_hook_directory(tmp_path):
     assert not (root / '.git/hooks/pre-commit').exists()
 
 
+
+def test_linked_worktree_accepts_the_current_managed_hook_it_shares(tmp_path):
+    root = repository(tmp_path)
+    git(root, 'config', 'user.name', 'Viewer Test')
+    git(root, 'config', 'user.email', 'viewer@example.invalid')
+    git(root, 'commit', '-q', '-m', 'baseline')
+    assert assure_hook(root, report=lambda _: None) == 'installed'
+    linked = tmp_path / 'linked'
+    git(root, 'worktree', 'add', '-q', '-b', 'linked', str(linked))
+    hook = root / '.git/hooks/pre-commit'
+    before = hook.read_bytes()
+    messages = []
+
+    assert assure_hook(linked, report=messages.append) == 'present'
+    assert messages == [] and hook.read_bytes() == before
+    hook.write_bytes(before + b'# changed\n')
+    assert assure_hook(linked, report=messages.append) == 'foreign'
+    assert len(messages) == 1 and 'shared Git hook directory' in messages[0]
+    git(root, 'config', 'core.hooksPath', 'custom-hooks')
+    hook.write_bytes(before)
+    assert assure_hook(linked, report=messages.append) == 'foreign'
+
 def test_symlinked_hook_file_is_foreign(tmp_path):
     root = repository(tmp_path)
     foreign = tmp_path / 'foreign-hook'

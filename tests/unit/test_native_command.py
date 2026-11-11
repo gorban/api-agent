@@ -135,7 +135,9 @@ def test_real_post_spawn_failure_has_no_completion_and_blocks_recovery(intent, m
             with native_recovery._quiescent(intent.state):
                 pytest.fail('post-spawn native command was not confirmed disposed')
     finally:
-        for process in processes:
+        # Cleanup's own process snapshots must not be captured by the patched spawn.
+        monkeypatch.undo()
+        for process in tuple(processes):
             finalize(process)
             output = process.stdout.pipe if isinstance(process.stdout, UnclosedPipe) else process.stdout
             output.close()
