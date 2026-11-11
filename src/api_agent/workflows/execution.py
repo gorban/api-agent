@@ -32,7 +32,7 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
-from .predicates import (component_controller, component_decision, loop_edges, native_condition_id,
+from .predicates import (component_controller, component_decision, edge_expiry, loop_edges, native_condition_id,
                          parse_predicate, predicate_fields, state_predicate_fields, unbounded_edge_message)
 
 
@@ -326,6 +326,12 @@ def _started(starts, step_id):
     return {**starts, step_id: starts.get(step_id, 0) + 1}
 
 
+def _entered(state, step_id):
+    """``state`` as ``step_id`` starts: one more start counted and its expiry flag cleared."""
+    return dict(state, starts=_started(state.get('starts', {}), step_id),
+                expired={key: value for key, value in state.get('expired', {}).items() if key != step_id})
+
+
 class _SessionCommit:
     """One turn's session write, and the means to take it back.
 
@@ -364,6 +370,7 @@ class _State(TypedDict):
     visit_id: str | None
     attempt_id: str | None
     starts: dict
+    expired: dict
 
 
 
@@ -468,6 +475,10 @@ class Workflow:
             except ValueError as error:
                 layout.error(str(error), row['line'])
         self._recursion_limit = self._loop_recursion_limit(layout)
+        self._expiry = {}
+        for source, when in self._predicates:
+            if edge_expiry(when, source) is not None:
+                self._expiry.setdefault(source, set()).add(when)
         self.schema = _State
 
     def _loop_recursion_limit(self, layout):
@@ -636,9 +647,7 @@ class Workflow:
                                             {target: END if target == 'END' else target})
             else:
                 def route(state, edges=edges, step=step):
-                    matches = [row for row in edges if row['When'] not in ('always', 'otherwise') and self._condition(row['When'], state['values'], source=step.id, ancestry=state['ancestry'], visits=state.get('starts'))]
-                    fallback = [row for row in edges if row['When'] in ('always', 'otherwise')]
-                    choices = matches or fallback
+                    choices = self._route_choices(step.id, edges, state)
                     if len(choices) != 1:
                         raise WorkflowError('Routing requires exactly one matching condition or fallback')
                     chosen = choices[0]
@@ -660,6 +669,7 @@ class Workflow:
                           effective_timeout=budget.timeout, timeout_key=self.timeout_keys.get(owner), **metadata)
             with structural_scope(budget.id):
                 outcome = 'failed'
+                expired = False
                 try:
                     self._event('scope_start', **common)
                     yield budget
@@ -672,11 +682,14 @@ class Workflow:
                         scope_ids=(budget.id,), terminal=owner == 'GRAPH' and metadata.get('kind') == 'graph' and parent_id is None,
                         deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
                     outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
+                    expired = (isinstance(error, (asyncio.CancelledError, TimeoutError))
+                               and owner in self._expiry and self._own_expiry(owner, budget))
                     raise
                 finally:
                     try:
                         self._event('scope_end', **common, stopped_ms=time.time() * 1000,
-                                    elapsed=time.monotonic() - budget.started, outcome=outcome)
+                                    elapsed=time.monotonic() - budget.started, outcome=outcome,
+                                    **({'reason': 'declared_timeout_expired'} if expired else {}))
                     except Exception:
                         if outcome == 'passed':
                             raise
@@ -688,11 +701,27 @@ class Workflow:
             raise TimeoutError('Workflow component deadline expired')
 
 
-    def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None):
+    def _route_choices(self, source, edges, state):
+        """The edges that apply after ``source``: the matching ones, else the fallback.
+
+        After ``source`` ended at its own declared timeout only the edges that read its expiry
+        apply, and there is no fallback, so an expiry never continues as a finished run.
+        """
+        expired = state.get('expired', {})
+        own = bool(expired.get(source))
+        choices = [row for row in edges if row['When'] not in ('always', 'otherwise')
+                   and (not own or row['When'] in self._expiry[source])
+                   and self._condition(row['When'], state['values'], source=source, ancestry=state['ancestry'],
+                                       visits=state.get('starts'), expired=expired)]
+        if not own:
+            choices = choices or [row for row in edges if row['When'] in ('always', 'otherwise')]
+        return choices
+
+    def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None, expired=None):
         if (source, identifier) in self._predicates:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
-            result = predicate.evaluate(values, attempt=attempt, max_passes=maximum, visits=visits,
+            result = predicate.evaluate(values, attempt=attempt, max_passes=maximum, visits=visits, expired=expired,
                                         constants={**self.pass_constants, **self.limit_values})
         else:
             result = self.conditions[identifier](deepcopy(values))
@@ -711,13 +740,25 @@ class Workflow:
             original_previous = state['previous']
             original_attempt_id = state['attempt_id']
             descendants = {item.id for item in self.layout.steps if self._owned_by(item, step.id)}
-            current = dict(state, starts=_started(state.get('starts', {}), step.id))
+            current = _entered(state, step.id)
             feedback = {}
-            async with self._scope(step.id, kind='component', component=step.id, attempt=1,
-                                   attempt_id=state.get('attempt_id'), max_passes=maximum) as budget:
-                frame = _RepairFrame(self, step.id, maximum, budget)
-                async with _repair_owner(frame if controller['accepted'] else None):
-                    return await passes(frame, current, budget, original_ancestry, original_feedback, original_previous, original_attempt_id, descendants)
+            turn = self._turn_state.get()
+            run_start, budget = len(turn['runs']), None
+            for descendant in descendants:
+                turn['contexts'].pop(descendant, None)
+            try:
+                async with self._scope(step.id, kind='component', component=step.id, attempt=1,
+                                       attempt_id=state.get('attempt_id'), max_passes=maximum) as budget:
+                    frame = _RepairFrame(self, step.id, maximum, budget)
+                    async with _repair_owner(frame if controller['accepted'] else None):
+                        return await passes(frame, current, budget, original_ancestry, original_feedback, original_previous, original_attempt_id, descendants)
+            except TimeoutError:
+                expired = self._expired_state(step.id, budget, tuple(descendants), dict(
+                    current, ancestry=self._repair_ancestry(original_ancestry)))
+                if expired is None:
+                    raise
+                del turn['runs'][run_start:]
+                return expired
         async def passes(frame, current, budget, original_ancestry, original_feedback, original_previous, original_attempt_id, descendants):
             feedback = {}
             runs = self._turn_state.get()['runs']
@@ -793,6 +834,7 @@ class Workflow:
                 state.get('_rejected'), state.get('_correction_attempt', 0), state.get('_guard_attempt', 1),
                 state.get('_repair_limit'))
             state['_node_context'] = context
+            self._turn_state.get()['contexts'][step.id] = context
             for binding in bindings:
                 source = binding['From']
                 sources = {'START': values['START'], 'PREVIOUS': state['previous'].get(step.id, {}),
@@ -853,13 +895,13 @@ class Workflow:
             return dict(state, values={**values, step.id: output}, visit_id=budget.id)
         async def timed(state):
             frame = next((item for item in reversed(_REPAIRS.get()) if item.workflow is self), None)
-            current = dict(state, starts=_started(state.get('starts', {}), step.id))
+            current = _entered(state, step.id)
             correction_attempt = 0
             while True:
                 if frame is not None:
                     self._check_deadline(frame.budget)
                 current['ancestry'] = self._repair_ancestry(current['ancestry'])
-                context = None
+                context, budget = None, None
                 try:
                     async with self._scope(step.id, kind='node', node=step.id, component=step.parent,
                                            attempt=frame.attempt if frame is not None else current['ancestry'][-1][1] if current['ancestry'] else 1,
@@ -870,6 +912,12 @@ class Workflow:
                             current['_repair_limit'] = (frame.attempt, frame.maximum)
                         result = await execute(current, budget)
                         return {key: value for key, value in result.items() if not key.startswith('_')}
+                except TimeoutError:
+                    expired = self._expired_state(step.id, budget, (step.id,),
+                                                  {key: value for key, value in current.items() if not key.startswith('_')})
+                    if expired is None:
+                        raise
+                    return expired
                 except CandidateCorrection as error:
                     context = current.get('_node_context')
                     if frame is None:
@@ -1002,6 +1050,19 @@ class Workflow:
         contexts = self._turn_state.get()['contexts']
         return (owner in self._expiry and self._own_expiry(owner, budget)
                 and not any(context._dispatched() for context in map(contexts.get, nodes) if context is not None))
+
+    def _expired_state(self, owner, budget, nodes, state):
+        """``state`` after ``owner``'s own declared timeout expired, or ``None`` when its edges cannot route that.
+
+        The abandoned run leaves no output of its own or of the steps it owns, and an expiry is
+        routable only when one of the owner's expiry edges matches the resulting state.
+        """
+        if not self._routes_expiry(owner, budget, nodes):
+            return None
+        after = dict(state, visit_id=budget.id, expired={**state.get('expired', {}), owner: True},
+                     values={key: value for key, value in state['values'].items() if key != owner and key not in nodes})
+        edges = [row for row in self.layout.tables['Edges'] if row['From'] == owner]
+        return after if self._route_choices(owner, edges, after) else None
 
     def _expiry_update(self, owner, state):
         expired, expirations = self._expiry[owner]
@@ -1534,7 +1595,7 @@ class Workflow:
                 self._turn_state.get()['session'] = session
             prompts = self._prompt_texts()
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
-                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}),
+                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}, expired={}),
                 {'recursion_limit': self._recursion_limit})
             if commit is not None:
                 commit.merged = self._merge_session(session, self._turn_state.get()['runs'])

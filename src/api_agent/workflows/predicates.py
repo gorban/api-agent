@@ -2,6 +2,7 @@
 import ast
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 import io
 import re
 import tokenize
@@ -13,6 +14,7 @@ _CONTEXT = {'attempt': {'type': 'integer'}, 'max_passes': {'type': 'integer'}}
 _SOURCE = '__route_source__'
 _CONSTANTS = '__route_constants__'
 _VISITS = '__route_visits__'
+_EXPIRING = '__route_expiring__'
 _COMPARISONS = frozenset(('==', '!=', '<', '<=', '>', '>='))
 
 
@@ -30,10 +32,13 @@ class Predicate:
     tree: ast.Expression
     source_owners: Mapping
     steps: frozenset = frozenset()
+    expiring: frozenset = frozenset()
 
-    def evaluate(self, values, *, attempt=1, max_passes=1, constants=None, visits=None):
-        """``visits`` maps a step ID to its start count; an unstarted step reads 0."""
-        counters = {step: (visits or {}).get(step, 0) for step in self.steps}
+    def evaluate(self, values, *, attempt=1, max_passes=1, constants=None, visits=None, expired=None):
+        """``visits`` maps a step ID to its start count (an unstarted step reads 0) and ``expired`` to
+        whether its latest run ended at its own declared timeout (an unstarted step reads false)."""
+        counters = {('attempt', step): (visits or {}).get(step, 0) for step in self.steps}
+        counters.update({('expired', step): bool((expired or {}).get(step)) for step in self.expiring})
         return _evaluate(self.tree.body, values, self.source_owners,
                          {'attempt': attempt, 'max_passes': max_passes}, constants or {}, counters)
 
@@ -47,7 +52,7 @@ def _normalize(text):
     result = []
     previous = None
     for token in tokens:
-        if token.type == tokenize.NAME and unicodedata.normalize('NFKC', token.string) in (_SOURCE, _CONSTANTS, _VISITS):
+        if token.type == tokenize.NAME and unicodedata.normalize('NFKC', token.string) in (_SOURCE, _CONSTANTS, _VISITS, _EXPIRING):
             raise PredicateError('reserved condition name')
         if token.type == tokenize.OP and token.string == '.' and previous in (
                 None, 'not', 'and', 'or', '(', *_COMPARISONS):
@@ -96,11 +101,16 @@ def parse_predicate(text, fields):
     source_owners = {} if fields is None else fields.get(_SOURCE, {}).get('owners', {})
     constants = {} if fields is None else fields.get(_CONSTANTS, {})
     steps = frozenset() if fields is None else frozenset(fields.get(_VISITS, ()))
+    expiring = frozenset() if fields is None else frozenset(fields.get(_EXPIRING, ()))
 
     def contract(node):
         owner, path = _reference(node)
         if path == ('attempt',) and owner in steps:
             return {'type': 'integer'}
+        if path == ('expired',) and owner in steps:
+            if owner not in expiring:
+                raise PredicateError(f'{owner}.expired requires {owner} to declare its own Timeouts row')
+            return {'type': 'boolean'}
         if owner == _SOURCE and fields is not None:
             owner = source_owners.get(path)
             if owner is None:
@@ -154,7 +164,7 @@ def parse_predicate(text, fields):
             check_value(node, boolean=True)
 
     check(tree.body)
-    return Predicate(text, tree, source_owners, steps)
+    return Predicate(text, tree, source_owners, steps, expiring)
 
 
 def _evaluate(node, values, owners, context, constants, counters):
@@ -186,8 +196,8 @@ def _value(node, values, owners, context, constants, counters):
     if isinstance(node, ast.Constant):
         return node.value
     owner, path = _reference(node)
-    if path == ('attempt',) and owner in counters:
-        return counters[owner]
+    if len(path) == 1 and (path[0], owner) in counters:
+        return counters[path[0], owner]
     if owner in context and not path:
         return context[owner]
     if not path and owner in constants:
@@ -272,6 +282,8 @@ def predicate_fields(layout, source):
     # A root Limits row is visible to every edge; a component's or node's own row only to edges
     # whose source is that step or inside it (scoped by the edge's source, not its document).
     fields[_VISITS] = {step.id: {'type': 'integer'} for step in layout.steps}
+    step_ids = {step.id for step in layout.steps}
+    fields[_EXPIRING] = {row['Owner'] for row in layout.tables.get('Timeouts', ()) if row['Owner'] in step_ids}
     fields[_CONSTANTS].update({row['Key']: {'type': 'integer'} for row in layout.tables.get('Limits', ())
                                if row.get('_owner_id') is None or in_component(row['_owner_id'])})
     return fields
@@ -283,19 +295,44 @@ def backward_bound(predicate, target, limits):
     ``limits`` names the declared Limits keys. Returns ``(key, inclusive)`` for the first
     such comparison, or ``None`` when the condition does not bound re-entering ``target``.
     """
-    def conjuncts(node):
-        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
-            for value in node.values:
-                yield from conjuncts(value)
-        else:
-            yield node
-    for node in conjuncts(predicate.tree.body):
+    for node in _conjuncts(predicate.tree.body):
         if (isinstance(node, ast.Compare) and isinstance(node.ops[0], (ast.Lt, ast.LtE))
                 and isinstance(node.left, ast.Attribute) and node.left.attr == 'attempt'
                 and isinstance(node.left.value, ast.Name) and node.left.value.id == target
                 and isinstance(node.comparators[0], ast.Name) and node.comparators[0].id in limits):
             return node.comparators[0].id, isinstance(node.ops[0], ast.LtE)
     return None
+
+
+def _conjuncts(node):
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+        for value in node.values:
+            yield from _conjuncts(value)
+    else:
+        yield node
+
+
+def _reads_expired(node, step):
+    try:
+        return _reference(node) == (step, ('expired',))
+    except PredicateError:
+        return False
+
+
+@lru_cache(maxsize=1024)
+def edge_expiry(when, step):
+    """How an edge condition text uses ``<step>.expired``: ``'requires'`` when a top-level conjunct is
+    exactly that flag, ``'reads'`` when it appears anywhere else, otherwise ``None``.
+
+    Condition texts that do not parse as predicates (native condition IDs, ``always``) use nothing.
+    """
+    try:
+        tree = ast.parse(_normalize(when), mode='eval').body
+    except (PredicateError, SyntaxError):
+        return None
+    if any(_reads_expired(node, step) for node in _conjuncts(tree)):
+        return 'requires'
+    return 'reads' if any(_reads_expired(node, step) for node in ast.walk(tree)) else None
 
 
 def unbounded_edge_message(target):
