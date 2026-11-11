@@ -48,8 +48,9 @@ def test_port_timeout_labels_the_tool_binding_and_node_timeout_stays_on_the_node
     lines = source.splitlines()
     port_alias, node_alias = alias_of(source, 'Timeout: TOOL_SECONDS'), alias_of(source, 'Timeout: NODE_SECONDS')
     binding, node_box = alias_of(source, 'Tool instance: tool'), alias_of(source, '"work"')
-    assert f'{node_box} .. {node_alias}' in lines
-    assert f'{node_box} .. {port_alias}' not in lines
+    import re
+    assert any(re.fullmatch(rf'{node_box} \.{{2,}} {node_alias}', line) for line in lines)
+    assert not any(re.fullmatch(rf'{node_box} \.{{2,}} {port_alias}', line) for line in lines)
     assert f'{binding} .. {port_alias}' in lines
     assert source.count('Timeout: TOOL_SECONDS') == source.count('Timeout: NODE_SECONDS') == 1
     assert any(link.endswith('timeouts.toml') for link in links)
