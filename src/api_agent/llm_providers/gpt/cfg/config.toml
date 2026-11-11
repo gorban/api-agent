@@ -56,6 +56,12 @@ applies_when = {GPT_AUTH_MODE = "subscription"}
 default = "api-agent"
 help = "Application display-name hint for first ChatGPT subscription registration. Defaults to api-agent even with a resource pack; override here or in the pack's configuration to name your application, consistently across its installations. Existing registrations keep their issued client ID; changing this value does not rename them."
 
+[fields.GPT_DISCOVERY_TIMEOUT_SECONDS]
+type = "float"
+default = 15
+validation = "positive"
+help = "Deadline in seconds, greater than zero, for each model-catalog request made while the selected provider is set up or its catalog refreshed. This is a startup operation owned by the shared provider, so it is bounded here rather than by a workflow's declared Timeouts. Inference has no deadline of its own: inside a flow it inherits the enclosing node, component or graph budget."
+
 [fields.LLM_CREDENTIAL_ROLE]
 type = "str"
 override = true

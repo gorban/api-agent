@@ -96,6 +96,10 @@ Expired access credentials use the provider's owned refresh mechanism.
 it does not rename an existing issued registration. No manual GPT_PROFILE is
 required. Unrecognized pages/security challenges may still require intervention.
 
+`GPT_DISCOVERY_TIMEOUT_SECONDS` (default 15, positive) bounds each model-catalog request
+made while the provider is set up or its catalog refreshed. Inference has no deadline of its
+own: inside a flow it inherits the enclosing declared budget.
+
 See [browser debugging](development.md#browser-debugging) for retained sessions
 and agent inspection, and [session contracts](architecture/provider_architecture.md) for
 ownership and cleanup.

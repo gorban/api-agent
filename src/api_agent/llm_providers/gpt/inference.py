@@ -14,7 +14,6 @@ from .discovery import _endpoint, _failure, _authentication_type
 from .cache_policy import prompt_cache_fields
 
 _LIMIT = 1048576
-_TIMEOUT = 120
 _RETRY_CODE = "subscription_sharing_user_unavailable"
 
 
@@ -600,7 +599,7 @@ async def complete_text(*, client, base_url, access_token, subscription, api_mod
     failure_usage = None
     dispatch = {'response': None}
     try:
-        async with component_timeout('GPT text inference', _TIMEOUT) as budget:
+        async with component_timeout('GPT text inference') as budget:
             try:
                 result = await _complete_attempt(client=client, base_url=base_url, headers=headers,
                     body=body, subscription=subscription, api_mode=api_mode, request=request,

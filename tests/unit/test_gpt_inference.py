@@ -170,7 +170,7 @@ def test_nested_deadline_progress_and_cleanup():
                     await module.complete_text(client=client,base_url=BASE,access_token=TOKEN,subscription=False,api_mode='responses',request=request())
     with pytest.raises(ProviderAccessError) as caught: asyncio.run(execute())
     assert caught.value.kind=='deadline' and streamed==[True] and closed==[True]
-    assert any(row.name=='GPT text inference' and row.timeout<=1 for row in progress)
+    assert any(row.name=='GPT text inference' and row.timeout is None for row in progress)
 
 
 def test_invalid_unicode_rejected_without_echo():

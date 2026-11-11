@@ -834,6 +834,15 @@ configuration field for it, now inherit the enclosing declared budget instead of
 hardcoded value. A provider's own configured inference timeout (for example a typed
 configuration field with a default) remains a declared provider-level budget.
 
+The GPT provider is such a provider: its HTTP call inside a flow (formerly capped at a
+hidden 120 seconds on top of the declared budgets) takes only the budget of the enclosing
+node, component or graph `Timeouts` row, and when nothing encloses it only the caller's own
+deadline applies. Model-catalog discovery is classified as a startup operation, not an
+in-flow one: the shared provider runs it detached from any workflow budget so one waiter's
+deadline never cuts another's setup. It keeps a bound of its own, now declared and visible
+as `GPT_DISCOVERY_TIMEOUT_SECONDS` (default 15 seconds, positive), which covers each catalog
+request made during setup or a catalog refresh.
+
 ## Installed declaration check
 
 Validate the root example with `python -m api_agent.workflows validate`, or the
