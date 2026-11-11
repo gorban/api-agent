@@ -10,7 +10,8 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
 from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID, timeout_owner_problem
-from .predicates import PredicateError, backward_bound, parse_predicate, predicate_fields, unbounded_edge_message
+from .predicates import (PredicateError, backward_bound, edge_source, entry_problem, parse_predicate,
+                         predicate_fields, unbounded_edge_message)
 from . import session
 
 
@@ -144,20 +145,25 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
         guard_ids = {component['Guard'] for component in layout.tables['Components'] if component['Guard'] != '-'}
         if source in guard_ids and (row['When'] != 'always' or target != 'END'):
             layout.row_error(row, 'guard node may only declare always to END')
-        if source not in steps or (target != 'END' and (target not in steps or steps[target].parent != steps[source].parent)):
+        group, entering = edge_source(row)
+        if entering is not None:
+            problem = entry_problem(layout, row)
+            if problem is not None:
+                layout.row_error(row, problem)
+        elif source not in steps or (target != 'END' and (target not in steps or steps[target].parent != steps[source].parent)):
             layout.row_error(row, 'edges must connect siblings or their END')
-        identity = source, row['When']
+        identity = group, row['When']
         if identity in seen:
             layout.row_error(row, 'duplicate edge condition')
         seen.add(identity)
-        edge_groups.setdefault(source, []).append(row)
+        edge_groups.setdefault(group, []).append(row)
         predicate = None
         if row['When'] not in ('always', 'otherwise') and _ID.fullmatch(row['When']) is None:
             try:
-                predicate = parse_predicate(row['When'], predicate_fields(layout, source))
+                predicate = parse_predicate(row['When'], predicate_fields(layout, source, entering))
             except PredicateError as error:
                 layout.row_error(row, str(error))
-        if (target != 'END' and ordered.index(target) <= ordered.index(source)
+        if (entering is None and target != 'END' and ordered.index(target) <= ordered.index(source)
                 and (predicate is None or backward_bound(predicate, target, limit_keys) is None)):
             layout.row_error(row, unbounded_edge_message(target))
     for rows in edge_groups.values():

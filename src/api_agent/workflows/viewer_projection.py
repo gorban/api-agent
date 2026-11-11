@@ -162,7 +162,12 @@ def project_view(definition) -> ViewerProjection:
         for parent in (None, *(step.id for step in steps if step.kind == 'component')):
             children = [step for step in steps if step.parent == parent]
             owner = parent or 'GRAPH'
-            edges.append(ViewerEdge(owner, 'START', children[0].id, 'always', True))
+            entering = [row for row in definition.layout.tables['Edges']
+                        if row['From'] == 'START' and row['To'] in {child.id for child in children}]
+            if entering:
+                edges.extend(ViewerEdge(owner, 'START', row['To'], row['When'], False) for row in entering)
+            else:
+                edges.append(ViewerEdge(owner, 'START', children[0].id, 'always', True))
             for index, step in enumerate(children):
                 declared = [row for row in definition.layout.tables['Edges'] if row['From'] == step.id]
                 if declared:

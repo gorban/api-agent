@@ -689,6 +689,79 @@ Limit rows and backward edges are part of the workflow identity and of compiled
 plans, and the viewer shows each limit as `Configuration: KEY` in its declaring
 diagram.
 
+### Conditional entry and component results
+
+Normally entering a component runs its first Flow child. Rows with `START` in `From`
+choose the first child instead; the graph's own entry works the same way:
+
+```markdown
+## Edges
+
+| From | To | When |
+| --- | --- | --- |
+| START | recover | triage.route == "recover" |
+| START | review | triage.route == "review" |
+| START | draft | otherwise |
+```
+
+- A `START` row is declared in the document of the scope it enters, a component document
+  or the root, and `To` must be a direct child of that scope. A row in a node document, a
+  row naming `END`, a grandchild or an unknown step is a located `LayoutError`.
+- The rows of one scope follow the ordinary edge-group rules: exactly one matching row or
+  `otherwise` applies (`Routing requires exactly one matching condition or fallback`
+  fails the turn otherwise), `always` must stand alone, and a repeated `When` is
+  rejected. Without `START` rows the first Flow child runs, as before.
+- `When` may read the same data as an edge leaving the scope's previous step: outputs of
+  steps that precede the component (including steps outside it that ran earlier in the
+  turn), `START.<field>` for turn input a binding reads (the only data the graph's own entry
+  can read), declared `Limits`, `<step>.attempt` (including the entered component's own
+  count, already incremented) and `<step>.expired`. Steps inside the component and steps
+  after it are not visible and are rejected at load. A step that has not run reads like an
+  unrun node on any edge: the turn fails with `condition field NODE.FIELD was not produced`.
+  On re-entry the descendants' outputs are already cleared, so the choice can depend on
+  `<component>.attempt` or on a value outside the component.
+- The skipped children do not run, so a later child that binds an output of a skipped child
+  fails with the usual missing-binding error unless the binding has a `Default`.
+
+An edge outside a component reads its result as `<component_id>.<field>`:
+
+```markdown
+| From | To | When |
+| --- | --- | --- |
+| review_group | publish | review_group.verdict == "approved" |
+| review_group | rework | otherwise |
+```
+
+- The result is the output of the child that exited the component on its latest completed
+  run: the child that took an edge to `END` inside it, the last child when its flow ends
+  implicitly, or the guard of a guarded component's accepted pass. When that child is a
+  component, its own result is used in turn. The latest run wins, so a component re-entered
+  by a backward edge reads its newest exit; a run abandoned at its own declared timeout, or
+  one whose exiting child produced no output, leaves no result, and a rejected guarded
+  pass is replaced by the next pass.
+- Load requires `field` to appear in the `Output` schema of every node that can exit the
+  component, with the same JSON `type` in each. The error names the nodes. A field only some
+  exits declare is rejected, and so is any field of a component with no exit. This is the
+  documented rule, rather than "at least one", so a loaded predicate cannot name a field some
+  exits will never carry.
+- At run time the exiting child's output must contain the field, because an optional
+  property can be omitted: otherwise the turn fails with `condition field C.F was not
+  produced`, as does reading a component that has not run. A result is not readable on edges
+  inside the component or before it in the flow.
+- Diagrams draw each `START` row as an edge from the scope's START circle, labelled with its
+  `When` (an unlabelled `always` edge to the first child when there are none).
+
+Journals record the choice as the entry `edge` event (`source: START`, the chosen `target` and
+`condition`, `implicit: false`) on the scope's owner. The projection lists a scope's declared
+`START` rows instead of its implicit edge to the first child, and validation rejects an entry
+event naming an edge the projection does not declare, an implicit entry for a scope that
+declares rows, an entry whose target is not the child that then starts, or a missing entry.
+Like every routing choice, a validator cannot re-evaluate a predicate, so a declared row
+that was not the matching one is not detectable from the journal. `START` rows and the
+rows that read results are part of the declaration identity, and compiled plans carry
+them: a plan whose `START` row does not name a direct child of its owner is rejected when
+it loads.
+
 ### Timeout expiry routing in Bindings graphs
 
 A node or component with its own `## Timeouts` row (an `Owner` that is the step ID, not

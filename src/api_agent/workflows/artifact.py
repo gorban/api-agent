@@ -21,7 +21,7 @@ from typing import ClassVar
 
 from . import session
 from .model import InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage, timeout_owner_problem
-from .predicates import loop_edges, unbounded_edge_message
+from .predicates import entry_problem, loop_edges, unbounded_edge_message
 from .prompt_slots import slot_text, used_slots
 
 PLAN_FORMAT = 'api-agent-workflow-plan'
@@ -473,6 +473,10 @@ def _decode_plan(value, typed):
             and ('Limits' not in tables or limits)):
         raise ValueError('invalid limit rows')
     if not typed:
+        for row in tables['Edges']:
+            problem = entry_problem(layout, row) if row['From'] == 'START' else None
+            if problem is not None:
+                raise ArtifactRejected(f'invalid layout: {problem}')
         for row, bound in loop_edges(layout):
             if bound is None:
                 raise ArtifactRejected(f'invalid layout: {unbounded_edge_message(row["To"])}')

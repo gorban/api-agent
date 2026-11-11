@@ -32,8 +32,9 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
-from .predicates import (component_controller, component_decision, edge_expiry, loop_edges, native_condition_id,
-                         parse_predicate, predicate_fields, state_predicate_fields, unbounded_edge_message)
+from .predicates import (component_controller, component_decision, edge_expiry, edge_source, entry_source, loop_edges,
+                         native_condition_id, parse_predicate, predicate_fields, state_predicate_fields,
+                         unbounded_edge_message)
 
 
 _PROMPT_SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
@@ -471,8 +472,9 @@ class Workflow:
                 continue
             if row in layout.tables['Prompts']:
                 layout.row_error(row, 'unknown registered condition')
+            source, entering = edge_source(row)
             try:
-                self._predicates[row['From'], when] = parse_predicate(when, predicate_fields(layout, row['From']))
+                self._predicates[source, when] = parse_predicate(when, predicate_fields(layout, row['From'], entering))
             except ValueError as error:
                 layout.row_error(row, str(error))
         self._recursion_limit = self._loop_recursion_limit(layout)
@@ -614,13 +616,21 @@ class Workflow:
                                             {edge['To']: edge['To'] for edge in entering})
             else:
                 graph.add_edge('__entry', children[0].id)
+        entry = [] if self.typed_state else [row for row in self.layout.tables['Edges']
+                                             if row['From'] == 'START' and self._parents[row['To']] == parent]
         def enter(state):
+            if entry:
+                chosen = self._choose(entry_source(parent), entry, state)
+                self._event('edge', source='START', target=chosen['To'], owner=parent or 'GRAPH',
+                            condition=chosen['When'], implicit=False, attempt_id=state.get('attempt_id'))
+                return chosen['To']
             self._event('edge', source='START', target=children[0].id,
                         owner=parent or 'GRAPH', implicit=True,
                         attempt_id=None if self.typed_state else state.get('attempt_id'))
             return children[0].id
         if not (self.typed_state and parent is not None):
-            graph.add_conditional_edges(START, enter, {children[0].id: children[0].id})
+            graph.add_conditional_edges(START, enter, {row['To']: row['To'] for row in entry}
+                                        if entry else {children[0].id: children[0].id})
         for index, step in enumerate(children):
             if self.typed_state:
                 routes = [edge for edge in self.definition.edges if edge['From'] == step.id]
@@ -640,6 +650,8 @@ class Workflow:
             if not edges:
                 target = children[index + 1].id if index + 1 < len(children) else 'END'
                 def implicit_route(state, source=step.id, target=target):
+                    if target == 'END':
+                        self._exited(parent, source)
                     self._event('edge', source=source, target=target,
                                 owner=parent or 'GRAPH', condition='always', implicit=True,
                                 visit_id=state.get('visit_id'), attempt_id=state.get('attempt_id'))
@@ -648,10 +660,9 @@ class Workflow:
                                             {target: END if target == 'END' else target})
             else:
                 def route(state, edges=edges, step=step):
-                    choices = self._route_choices(step.id, edges, state)
-                    if len(choices) != 1:
-                        raise WorkflowError('Routing requires exactly one matching condition or fallback')
-                    chosen = choices[0]
+                    chosen = self._choose(step.id, edges, state)
+                    if chosen['To'] == 'END':
+                        self._exited(parent, step.id)
                     self._event('edge', source=step.id, target=chosen['To'],
                                 owner=parent or 'GRAPH', condition=chosen['When'], implicit=False,
                                 visit_id=state.get('visit_id'), attempt_id=state.get('attempt_id'))
@@ -702,6 +713,28 @@ class Workflow:
             raise TimeoutError('Workflow component deadline expired')
 
 
+    def _choose(self, source, edges, state):
+        """The one edge that applies after ``source``; a graph that matches none or several is invalid."""
+        choices = self._route_choices(source, edges, state)
+        if len(choices) != 1:
+            raise WorkflowError('Routing requires exactly one matching condition or fallback')
+        return choices[0]
+
+    def _settle(self, component, values):
+        """Keep the output of the child that exited ``component`` as its result; no output leaves none."""
+        turn = self._turn_state.get()
+        child = turn['exits'][component]
+        output = turn['results'].get(child) if child in self.components else values.get(child)
+        if output is None:
+            turn['results'].pop(component, None)
+        else:
+            turn['results'][component] = deepcopy(output)
+
+    def _exited(self, component, child):
+        """Record which child of ``component`` took the edge to its ``END``."""
+        if component is not None:
+            self._turn_state.get()['exits'][component] = child
+
     def _route_choices(self, source, edges, state):
         """The edges that apply after ``source``: the matching ones, else the fallback.
 
@@ -722,7 +755,8 @@ class Workflow:
         if (source, identifier) in self._predicates:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
-            result = predicate.evaluate(values, attempt=attempt, max_passes=maximum, visits=visits, expired=expired,
+            result = predicate.evaluate({**values, **self._turn_state.get()['results']}, attempt=attempt,
+                                        max_passes=maximum, visits=visits, expired=expired,
                                         constants={**self.pass_constants, **self.limit_values})
         else:
             result = self.conditions[identifier](deepcopy(values))
@@ -759,14 +793,19 @@ class Workflow:
                 if expired is None:
                     raise
                 del turn['runs'][run_start:]
+                for descendant in descendants:
+                    turn['results'].pop(descendant, None)
                 return expired
         async def passes(frame, current, budget, original_ancestry, original_feedback, original_previous, original_attempt_id, descendants):
             feedback = {}
-            runs = self._turn_state.get()['runs']
+            turn = self._turn_state.get()
+            runs = turn['runs']
             while frame.attempt <= maximum:
                 attempt = frame.attempt
                 attempt_id = str(uuid4())
                 pass_start = len(runs)
+                for descendant in descendants:
+                    turn['results'].pop(descendant, None)
                 previous = {key: value for key, value in current['values'].items() if key in descendants} if frame.guard_attempt > 1 else {}
                 current = dict(current, values={key: value for key, value in current['values'].items() if key not in descendants},
                                previous=previous, ancestry=(*original_ancestry, (step.id, attempt, maximum)), feedback=feedback,
@@ -776,6 +815,7 @@ class Workflow:
                 current = await graph.ainvoke(current, {'recursion_limit': self._recursion_limit})
                 attempt = frame.attempt
                 if not controller['accepted']:
+                    self._settle(step.id, current['values'])
                     return dict(current, ancestry=self._repair_ancestry(original_ancestry), feedback=original_feedback,
                                 previous=original_previous, attempt_id=original_attempt_id,
                                 visit_id=budget.id)
@@ -784,6 +824,7 @@ class Workflow:
                 guard = GuardResult.from_output(current['values'][row['Guard']])
                 self._event('guard', scope_id=budget.id, component=step.id, attempt=attempt, accepted=guard.accepted)
                 if component_decision(controller, guard.accepted, attempt) == 'accepted':
+                    self._settle(step.id, current['values'])
                     return dict(current, ancestry=self._repair_ancestry(original_ancestry), feedback=original_feedback,
                                 previous=original_previous, attempt_id=original_attempt_id,
                                 visit_id=budget.id)
@@ -1511,7 +1552,7 @@ class Workflow:
         from .inference_history import InferenceHistory
         history = InferenceHistory()
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
-                                                  'contexts': {}, 'budgets': {}, 'runs': []})
+                                                  'contexts': {}, 'budgets': {}, 'runs': [], 'exits': {}, 'results': {}})
         completed = False
         try:
             selected_journal = self._journal.get()
@@ -1636,7 +1677,11 @@ def diagram_layout(layout, *, component_passes=None):
         for step in children:
             if step.kind == 'node':
                 lines.append(f'    {step.id}["node {step.id}"]')
-        lines.append(f'    {scope}_START --> {children[0].id}')
+        entry = [row for row in layout.tables['Edges'] if row['From'] == 'START' and next(
+            item.parent for item in layout.steps if item.id == row['To']) == parent]
+        for row in entry or [dict(When=None, To=children[0].id)]:
+            label = '' if row['When'] is None else f'|{row["When"]}|'
+            lines.append(f'    {scope}_START -->{label} {row["To"]}')
         for index, step in enumerate(children):
             edges = [row for row in layout.tables['Edges'] if row['From'] == step.id]
             if edges:

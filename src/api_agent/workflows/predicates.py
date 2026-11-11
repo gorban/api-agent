@@ -15,6 +15,7 @@ _SOURCE = '__route_source__'
 _CONSTANTS = '__route_constants__'
 _VISITS = '__route_visits__'
 _EXPIRING = '__route_expiring__'
+_EXITS = '__route_exits__'
 _COMPARISONS = frozenset(('==', '!=', '<', '<=', '>', '>='))
 
 
@@ -52,7 +53,7 @@ def _normalize(text):
     result = []
     previous = None
     for token in tokens:
-        if token.type == tokenize.NAME and unicodedata.normalize('NFKC', token.string) in (_SOURCE, _CONSTANTS, _VISITS, _EXPIRING):
+        if token.type == tokenize.NAME and unicodedata.normalize('NFKC', token.string) in (_SOURCE, _CONSTANTS, _VISITS, _EXPIRING, _EXITS):
             raise PredicateError('reserved condition name')
         if token.type == tokenize.OP and token.string == '.' and previous in (
                 None, 'not', 'and', 'or', '(', *_COMPARISONS):
@@ -102,6 +103,7 @@ def parse_predicate(text, fields):
     constants = {} if fields is None else fields.get(_CONSTANTS, {})
     steps = frozenset() if fields is None else frozenset(fields.get(_VISITS, ()))
     expiring = frozenset() if fields is None else frozenset(fields.get(_EXPIRING, ()))
+    exits = {} if fields is None else fields.get(_EXITS, {})
 
     def contract(node):
         owner, path = _reference(node)
@@ -128,6 +130,9 @@ def parse_predicate(text, fields):
             # supplies the declaration binding independently.
             return {'type': 'boolean'}
         rule = fields.get(owner, {}).get(path[0])
+        if rule is None and owner in exits:
+            raise PredicateError(f'{owner}.{path[0]} must be declared with one type in the Output schema of every '
+                                 f'node that can exit component {owner}: {", ".join(exits[owner]) or "none"}')
         for part in path[1:]:
             if not _exact_type(rule, 'object'):
                 raise PredicateError('condition may read only declared scalar output fields')
@@ -238,8 +243,55 @@ def condition_lines(when):
     return [when[start:end].strip() for start, end in zip(starts, [*starts[1:], len(when)])]
 
 
-def predicate_fields(layout, source):
-    """Output fields visible at a routing source, with unique source-relative paths."""
+def entry_source(scope):
+    """The routing source of the ``START`` rows that enter ``scope``: a component ID, or ``None`` for the graph."""
+    return 'START' if scope is None else f'START:{scope}'
+
+
+def edge_source(row):
+    """``(source, entering)`` for an Edges row: the key its routing group and conditions use, and
+    the scope (``'GRAPH'`` or a component ID) a ``START`` row enters, else ``None``."""
+    if row['From'] != 'START':
+        return row['From'], None
+    scope = row.get('_owner_id')
+    return entry_source(scope), 'GRAPH' if scope is None else scope
+
+
+def entry_problem(layout, row):
+    """Why the ``START`` row ``row`` does not enter a direct child of its declaring document, else ``None``."""
+    steps = {step.id: step for step in layout.steps}
+    if row['To'] not in steps or steps[row['To']].parent != row.get('_owner_id'):
+        return 'START must name a direct child of the document that declares it'
+    return None
+
+
+def component_exits(layout):
+    """Map each component to the nodes that can exit it: a child with an edge to ``END`` (or the last
+    child, which ends an implicit flow), through any component among them."""
+    edges = layout.tables.get('Edges', ())
+    routed = {row['From'] for row in edges}
+    ending = {row['From'] for row in edges if row['To'] == 'END'}
+
+    def leaves(component):
+        children = [step for step in layout.steps if step.parent == component]
+        exiting = [step for index, step in enumerate(children)
+                   if step.id in ending or index == len(children) - 1 and step.id not in routed]
+        return tuple(dict.fromkeys(leaf for step in exiting
+                                   for leaf in (leaves(step.id) if step.kind == 'component' else (step.id,))))
+    return {step.id: leaves(step.id) for step in layout.steps if step.kind == 'component'}
+
+
+def _declared_type(rule):
+    return rule.get('type') if isinstance(rule, Mapping) else None
+
+
+def predicate_fields(layout, source, entering=None):
+    """Output fields visible at a routing source, with unique source-relative paths.
+
+    ``entering`` is ``'GRAPH'`` or a component ID when ``source`` is the ``START`` of that scope:
+    only steps before the scope began are visible then. A finished component's result reads as
+    ``<component>.<field>`` for each field every node that can exit it declares with one type.
+    """
     functions = {row['ID']: row for row in layout.tables['Functions']}
     ordered = [step.id for step in layout.steps]
     parents = {step.id: step.parent for step in layout.steps}
@@ -252,8 +304,13 @@ def predicate_fields(layout, source):
             parent = parents[parent]
         return False
 
-    boundary = max(index for index, step in enumerate(layout.steps)
-                   if step.id == source or belongs_to(step.id, source))
+    if entering is None:
+        boundary = max(index for index, step in enumerate(layout.steps)
+                       if step.id == source or belongs_to(step.id, source))
+        inside = source
+    else:
+        boundary = -1 if entering == 'GRAPH' else ordered.index(entering) - 1
+        inside = None if entering == 'GRAPH' else entering
     fields = {'START': {}}
     for binding in layout.tables['Bindings']:
         if binding['From'] == 'START' and binding['Field'] != '*':
@@ -261,6 +318,17 @@ def predicate_fields(layout, source):
             fields['START'][binding['Field']] = target.get(binding['Input'], {})
     fields.update({key: row['Output schema'].get('properties', {}) for key, row in functions.items()
                    if ordered.index(key) <= boundary})
+    exits = {}
+    for component, leaves in component_exits(layout).items():
+        # A component the routing source sits inside has not finished, so it has no result yet.
+        if ordered.index(component) > boundary or inside in parents and belongs_to(inside, component):
+            continue
+        rules = [functions[leaf]['Output schema'].get('properties', {}) for leaf in leaves]
+        fields[component] = {key: rule for key, rule in (rules[0].items() if rules else ())
+                             if all(key in other and _declared_type(other[key]) == _declared_type(rule)
+                                    for other in rules[1:])}
+        exits[component] = leaves
+    fields[_EXITS] = exits
     # Components have no declared output object. Their children are separate
     # producers and must always be named explicitly in route expressions.
     candidates = [source] if source in functions else []
@@ -275,7 +343,7 @@ def predicate_fields(layout, source):
         visit(candidate, fields[candidate])
     fields[_SOURCE] = {'owners': owners}
     def in_component(component):
-        return source == component or (source in parents and belongs_to(source, component))
+        return inside == component or (inside in parents and belongs_to(inside, component))
     fields[_CONSTANTS] = {row['max_passes_key']: {'type': 'integer'}
                           for row in layout.tables.get('Components', ())
                           if 'max_passes_key' in row and in_component(row['ID'])}
@@ -351,7 +419,7 @@ def loop_edges(layout):
     position = {step.id: index for index, step in enumerate(layout.steps)}
     for row in layout.tables['Edges']:
         source, target, when = row['From'], row['To'], row['When']
-        if target == 'END' or position[target] > position[source]:
+        if source == 'START' or target == 'END' or position[target] > position[source]:
             continue
         bound = None
         if when not in ('always', 'otherwise') and not native_condition_id(when):
