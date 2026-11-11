@@ -136,6 +136,50 @@ def test_rollback_destination_then_source_failure(tmp_path, monkeypatch):
     assert base.read_bytes() == before and not pack.exists()
 
 
+def test_interrupted_role_move_restores_both_files(tmp_path, monkeypatch):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    put(base, {'roles': {'Secondary': [account('old')], 'Other': [account('kept')]}})
+    put(pack, {'roles': {'Pack': [account('pack')]}})
+    before = base.read_bytes(), pack.read_bytes()
+    original = DotenvEditor.update
+    interruption = KeyboardInterrupt('cancel role move')
+
+    def interrupt_after_source(editor, values):
+        original(editor, values)
+        if editor.path == base:
+            raise interruption
+
+    monkeypatch.setattr(DotenvEditor, 'update', interrupt_after_source)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        config.save_auth_role('Secondary', [account('new')])
+    assert caught.value is interruption
+    assert (base.read_bytes(), pack.read_bytes()) == before
+
+
+def test_interrupted_manager_move_restores_both_files(tmp_path, monkeypatch):
+    config = session(tmp_path)
+    base, pack = config.target_paths[0], config.target_paths[-1]
+    put(base, {'password_manager': {'manager': 'keeper', 'cli_path': 'keeper'},
+               'roles': {'Primary': [account('kept')]}})
+    put(pack, {'roles': {'Pack': [account('pack')]}})
+    config.switch_target(pack)
+    before = base.read_bytes(), pack.read_bytes()
+    original = DotenvEditor.update
+    interruption = KeyboardInterrupt('cancel manager move')
+
+    def interrupt_after_source(editor, values):
+        original(editor, values)
+        if editor.path == base:
+            raise interruption
+
+    monkeypatch.setattr(DotenvEditor, 'update', interrupt_after_source)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        config.save_auth_manager({'manager': '1password', 'cli_path': 'op'})
+    assert caught.value is interruption
+    assert (base.read_bytes(), pack.read_bytes()) == before
+
+
 def test_explicit_manager_choice_resolves_mixed_legacy(tmp_path):
     config = session(tmp_path)
     base = config.target_paths[0]

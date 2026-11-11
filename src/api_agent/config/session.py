@@ -302,7 +302,7 @@ class ConfigSession:
                     DotenvEditor(path).update({'UNATTENDED_AUTH': json.dumps(updated[path], ensure_ascii=False, separators=(',', ':'))})
                 else:
                     DotenvEditor(path).delete(['UNATTENDED_AUTH'])
-        except Exception:
+        except BaseException:
             # Include the failing path: an editor may mutate it before raising.
             for path in reversed(changed):
                 self._restore(path, snapshots[path])
@@ -360,7 +360,7 @@ class ConfigSession:
                     DotenvEditor(path).update({'UNATTENDED_AUTH': json.dumps(updated[path], ensure_ascii=False, separators=(',', ':'))})
                 else:
                     DotenvEditor(path).delete(['UNATTENDED_AUTH'])
-        except Exception:
+        except BaseException:
             for path in reversed(changed):
                 self._restore(path, snapshots[path])
             raise
