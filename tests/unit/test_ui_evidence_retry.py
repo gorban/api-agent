@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from api_agent.providers.progress import component_timeout, progress_sink
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 from api_agent.ui import evidence
 from api_agent.ui.evidence import OwnedFrameContract, capture_studio_viewport
@@ -289,6 +290,11 @@ def _scripted_attempts(monkeypatch, outcomes, *, seconds=()):
         outcome = outcomes[len(calls) - 1]
         if isinstance(outcome, BaseException):
             raise outcome
+        if isinstance(outcome, list):
+            # Several refusals recorded by one attempt.
+            for refusal in outcome:
+                unavailable(*refusal)
+            return None
         if isinstance(outcome, tuple) and len(outcome) == 2:
             # A refusal recorded by an attempt that is then interrupted.
             unavailable(*outcome[0])
@@ -339,6 +345,37 @@ def test_retry_that_would_outlast_the_window_is_skipped(monkeypatch):
     assert len(calls) == 2 and reasons == ['paint_changed'] and details[0]['attempts'] == 2
 
 
+def test_caller_deadline_clips_the_retry_window(monkeypatch):
+    calls = _scripted_attempts(monkeypatch, [('paint_changed', None, None)] * 3, seconds=(3, 3, 3))
+    reasons, components = [], []
+    async def capture():
+        with progress_sink(lambda progress: components.append((progress.name, progress.timeout))):
+            async with component_timeout('Caller page budget', 5):
+                return await capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN,
+                    unavailable=reasons.append, retry_window_seconds=20)
+    assert asyncio.run(capture()) is None
+    # A 3s retry after 3s fits the 20s window, but not the caller's 5s deadline.
+    assert len(calls) == 1 and reasons == ['paint_changed']
+    timeouts = [timeout for name, timeout in components if name == 'UI viewport capture']
+    assert timeouts and all(4 < timeout <= 5 for timeout in timeouts)
+
+
+def test_attempt_with_any_deterministic_refusal_is_not_retried(monkeypatch):
+    calls = _scripted_attempts(monkeypatch, [
+        [('document_changed', None), ('registered_secret', None), ('paint_changed', None)],
+        (None, None, b'png')])
+    result, reasons, details = _run()
+    assert result is None and len(calls) == 1 and reasons == ['registered_secret']
+    assert details[0]['reason'] == 'registered_secret' and details[0]['attempts'] == 1
+
+
+def test_refused_attempt_never_returns_its_pixels(monkeypatch):
+    calls = _scripted_attempts(monkeypatch, [('registered_secret', None, b'png')])
+    assert _run() == (None, ['registered_secret'], [{'reason': 'registered_secret', 'attempts': 1,
+                                                      'layout_shift': None, 'interrupted': False}])
+    assert len(calls) == 1
+
+
 def test_cancellation_after_a_refusal_still_reports_it(monkeypatch):
     _scripted_attempts(monkeypatch, [('frame_changed', None, None), asyncio.CancelledError()])
     reasons, details = [], []
@@ -385,7 +422,7 @@ def test_silent_refusal_without_callbacks_is_not_retried(monkeypatch):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize('window', [-1, float('inf'), float('nan'), '5', True])
+@pytest.mark.parametrize('window', [-1, 0, float('inf'), float('nan'), '5', True])
 def test_invalid_retry_window_is_rejected(window):
     with pytest.raises(ValueError, match='retry window'):
         asyncio.run(capture_studio_viewport(SimpleNamespace(), object(), _ORIGIN,

@@ -18,7 +18,7 @@ from urllib.parse import unquote, urljoin, urlsplit
 from uuid import uuid4
 
 from api_agent.providers.control import finish_cleanup
-from api_agent.providers.progress import component_timeout
+from api_agent.providers.progress import component_timeout, report_timeout
 
 
 @dataclass(frozen=True, slots=True)
@@ -1015,7 +1015,8 @@ def _serialized_capture(function):
 
 CAPTURE_ATTEMPTS = 3
 CAPTURE_RETRY_DELAY_SECONDS = 1.0
-# Default whole-capture window; it fits capture_ui_evidence's ten-second page budget.
+# Default whole-capture window; enclosing deadlines such as capture_ui_evidence's
+# page budget clip it.
 CAPTURE_RETRY_WINDOW_SECONDS = 8.0
 # Page instability that a later, fully restored attempt can outlast.
 _TRANSIENT_REASONS = frozenset({'content_layout', 'paint_changed', 'document_changed',
@@ -1046,6 +1047,12 @@ def _layout_shift(value):
             'shifted': shifted, 'before': before, 'after': after}
 
 
+def _final_refusal(failures):
+    """An attempt's deciding refusal: any deterministic one, else the newest."""
+    return next((failure for failure in failures if failure[0] not in _TRANSIENT_REASONS),
+                failures[-1] if failures else ('unavailable', None))
+
+
 @_serialized_capture
 async def capture_studio_viewport(page, boundary, origin, *, unavailable=None, failure_detail=None,
                                   retry_window_seconds=CAPTURE_RETRY_WINDOW_SECONDS, **options):
@@ -1053,18 +1060,26 @@ async def capture_studio_viewport(page, boundary, origin, *, unavailable=None, f
 
     Each attempt restores the page before returning, so later turns and retries
     see the original document. Up to ``CAPTURE_ATTEMPTS`` run with
-    ``CAPTURE_RETRY_DELAY_SECONDS`` between them. Deterministic refusals, a
-    layout refusal naming the same moved element twice, and a retry projected
-    (from the slowest attempt so far) to end after ``retry_window_seconds`` stop
-    at once. Only the final refusal reaches ``unavailable(reason)``, and
-    ``failure_detail`` then receives the reason, the completed attempt count and,
-    for a layout refusal, the structural description of the element that moved.
-    A cancellation or error after a refusal still reports that refusal first.
-    Options are those of ``_capture_viewport_once``.
+    ``CAPTURE_RETRY_DELAY_SECONDS`` between them. An attempt recording any
+    deterministic refusal, a layout refusal naming the same moved element twice,
+    and a retry projected (from the slowest attempt so far, including the delay)
+    to end after ``retry_window_seconds`` stop at once. The window is a timeout
+    scope, so enclosing deadlines clip it. An attempt that recorded a refusal
+    never returns pixels. Only the final refusal reaches ``unavailable(reason)``,
+    and ``failure_detail`` then receives the reason, the completed attempt count
+    and, for a layout refusal, the structural description of the element that
+    moved. A cancellation or error after a refusal still reports that refusal
+    first. Options are those of ``_capture_viewport_once``.
     """
     if (type(retry_window_seconds) not in (int, float) or not math.isfinite(retry_window_seconds)
-            or retry_window_seconds < 0):
+            or retry_window_seconds <= 0):
         raise ValueError('Invalid capture retry window')
+    async with report_timeout('UI viewport capture', retry_window_seconds) as budget:
+        return await _capture_with_retries(page, boundary, origin, budget.remaining,
+                                           unavailable, failure_detail, options)
+
+
+async def _capture_with_retries(page, boundary, origin, window, unavailable, failure_detail, options):
     stage = options.get('stage')
     started = monotonic()
     attempts, reason, shift, longest, failures = 0, None, None, 0.0, []
@@ -1084,16 +1099,16 @@ async def capture_studio_viewport(page, boundary, origin, *, unavailable=None, f
             failures = []
             image = await _capture_viewport_once(page, boundary, origin,
                 unavailable=lambda refused, moved: failures.append((refused, moved)), **options)
-            if image is not None:
+            if image is not None and not failures:
                 return image
             attempts += 1
             previous = shift
-            reason, shift = failures[-1] if failures else ('unavailable', None)
+            reason, shift = _final_refusal(failures)
             now = monotonic()
             longest = max(longest, now - began)
             if (reason not in _TRANSIENT_REASONS or attempts >= CAPTURE_ATTEMPTS
                     or (reason == 'content_layout' and shift is not None and shift == previous)
-                    or now - started + CAPTURE_RETRY_DELAY_SECONDS + longest > retry_window_seconds):
+                    or now - started + CAPTURE_RETRY_DELAY_SECONDS + longest > window):
                 break
             failures = []
             await asyncio.sleep(CAPTURE_RETRY_DELAY_SECONDS)
@@ -1101,7 +1116,7 @@ async def capture_studio_viewport(page, boundary, origin, *, unavailable=None, f
         if failures:
             # A refusal the interrupted attempt already recorded is the newest evidence.
             attempts += 1
-            reason, shift = failures[-1]
+            reason, shift = _final_refusal(failures)
         if reason is not None:
             try:
                 report(interrupted=True)
