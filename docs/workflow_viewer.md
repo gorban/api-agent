@@ -29,6 +29,11 @@ listing the fields it writes (each in declaration order). Session data is the on
 source a node diagram shows. `TURN` bindings, which read values from earlier steps of the
 same turn, draw nothing, so a node with many such inputs does not make its diagram taller.
 
+In the Bindings grammar, `START` rows that choose a component's (or the graph's) first
+child draw as edges from that diagram's START circle to each named child, labelled with
+the row's `When`; a scope without `START` rows keeps the single `always` edge to its first
+child.
+
 Configuration-backed budgets appear as linked boxes in the diagram of the document
 that declares them, for both declaration grammars. A timeout shows as
 `Timeout: KEY` beside its owner, and a graph-level timeout appears in the root
