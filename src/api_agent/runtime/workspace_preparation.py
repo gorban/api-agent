@@ -7,8 +7,6 @@ import threading
 
 def _text(value):
     value = getattr(value, 'value', value)
-    if isinstance(value, os.PathLike):
-        value = os.fspath(value)
     return value if isinstance(value, str) and value.strip() else None
 
 
