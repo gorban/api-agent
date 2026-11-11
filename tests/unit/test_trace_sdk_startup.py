@@ -10,6 +10,8 @@ from api_agent.telemetry.privacy import EmissionBoundary
 from api_agent.telemetry.tracing import _sdk_factory
 from api_agent.telemetry.tracing_providers import admit_binding
 
+# Waits for an expected event; they bound only a hung test on a slow host.
+EVENTUAL = 30
 BASE = Path(__file__).resolve().parents[2]
 BUNDLED_PROVIDER = str(BASE / 'src/api_agent/telemetry/trace_adapters/provider.py') + ':create_tracing_provider'
 
@@ -118,13 +120,13 @@ async def test_cancelled_startup_and_close_retain_same_worker_receipt(monkeypatc
     entered, release = Event(), Event()
     def fail(*args, **kwargs):
         entered.set()
-        assert release.wait(3)
+        assert release.wait(EVENTUAL)
         raise RuntimeError('synthetic tracer failure')
     monkeypatch.setattr('opentelemetry.sdk.trace.TracerProvider.get_tracer', fail)
     binding = admit_binding({'TRACE_PROVIDER': BUNDLED_PROVIDER, 'JAEGER_VIEWER_PORT': 16686, 'TRACE_MODE': 'OTEL', 'TRACE_EXPORT_ENDPOINT': 'http://unused.invalid/traces'},
         owner_root=BASE, boundary=EmissionBoundary())
     opening = asyncio.create_task(binding.open({}))
-    assert await asyncio.to_thread(entered.wait, 3)
+    assert await asyncio.to_thread(entered.wait, EVENTUAL)
     opening.cancel()
     with pytest.raises(asyncio.CancelledError):
         await opening
@@ -152,11 +154,11 @@ async def test_actual_export_drain_precedes_session_close(sessions):
     response = Mock(status_code=200)
     def post(*args, **kwargs):
         entered.set()
-        assert release.wait(3)
+        assert release.wait(EVENTUAL)
         return response
     sessions[0].post = post
     tracer.start_span('synthetic').end()
-    assert await asyncio.to_thread(entered.wait, 3)
+    assert await asyncio.to_thread(entered.wait, EVENTUAL)
     closing = asyncio.create_task(asyncio.to_thread(owner.shutdown))
     await asyncio.sleep(0)
     try:
