@@ -563,9 +563,12 @@ def test_receipt_created_during_invocation_cancellation_blocks_terminal_publicat
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 raise CleanupPendingError(('resource',), dispose)
-        deadline = time.monotonic() + .02 if stop == 'deadline' else None
+        # The operation always starts before its deadline, which still ends the turn
+        # before the unrenewed lease expires.
+        engine.expiry = 1
+        deadline = time.monotonic() + .5 if stop == 'deadline' else None
         turn = engine.start('owner', 'session', invoke, context=OperationContext('request', deadline))
-        await invoked.wait()
+        await asyncio.wait_for(invoked.wait(), EVENTUAL)
         control = (engine.cancel if stop == 'cancel' else engine.disconnect if stop == 'disconnect' else engine.wait)
         waiting = asyncio.create_task(control('owner', 'session'))
         await asyncio.wait_for(disposing.wait(), EVENTUAL)
@@ -596,9 +599,12 @@ def test_lease_expiring_during_cleanup_keeps_an_ended_turns_outcome():
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 raise CleanupPendingError(('resource',), dispose)
+        # The operation always starts before its deadline, which still ends the turn
+        # before the unrenewed lease expires.
+        engine.expiry = 1
         turn = engine.start('owner', 'session', invoke,
-                            context=OperationContext('request', time.monotonic() + .02))
-        await invoked.wait()
+                            context=OperationContext('request', time.monotonic() + .5))
+        await asyncio.wait_for(invoked.wait(), EVENTUAL)
         waiting = asyncio.create_task(engine.wait('owner', 'session'))
         await asyncio.wait_for(disposing.wait(), EVENTUAL)
         with pytest.raises(CleanupPendingError) as pending:
