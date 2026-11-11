@@ -413,10 +413,20 @@ session is the failed turn's. Only the accepted pass of a guarded component
 contributes: outputs from rejected passes are discarded before the turn ends.
 Pass `checkpointer=` to `Workflow` (or a compiled definition's `workflow()`) to
 persist beyond the process; the default is in-memory. A workflow without
-`## Session` still rejects `thread_id` and `checkpointer`. Sessions are keyed by
-`thread_id` alone, so use a distinct checkpointer per workflow. The table is part
-of the declaration identity and compiled plans, and diagrams mark each node that
-reads or writes a session field.
+`## Session` still rejects `thread_id` and `checkpointer`. A session is stored under
+`<graph_id>:<thread_id>`, so graphs that share a checkpointer and thread names keep
+separate sessions (graph IDs never contain `:`). Fields in a stored session that the
+`## Session` table no longer declares are dropped when it loads and are not written
+back. The table is part of the declaration identity and compiled plans, and diagrams
+mark each node that reads or writes a session field.
+
+A thread runs one turn at a time. Within one `Workflow` instance a second `arun` for a
+thread whose turn is still running is refused at once with `RuntimeError` rather than
+queued: two overlapping turns would start from the same stored session, and one would
+overwrite the other's writes. The thread stays claimed until a failed turn's restore
+has finished. The guard does not span separate `Workflow` instances sharing a
+checkpointer, or processes; callers that run those against one thread must serialize
+turns themselves, and the checkpointer is not a transaction across them.
 
 ### Per-turn values with `TURN`
 
