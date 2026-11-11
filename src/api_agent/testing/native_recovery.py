@@ -113,7 +113,12 @@ def run_native_command(state, runner, command, **kwargs):
         bootstrap = ('import sys;sys.path.insert(0,' + repr(str(Path(__file__).resolve().parents[2]))
             + ');from api_agent.testing.native_command import main;main()')
         supervisor = (sys.executable, '-c', bootstrap, str(intent), str(descriptor))
-        result = runner(supervisor, **kwargs, inherited_fds=(descriptor,))
+        def not_started():
+            # Only the canonical pre-Popen observer can establish this. A
+            # supervisor that started but died without an ack stays pending.
+            _write(intent / 'complete.json', {'version': 1,
+                'request_sha256': _request_digest(request), 'disposed': True})
+        result = runner(supervisor, **kwargs, inherited_fds=(descriptor,), on_not_started=not_started)
         _completed(intent)
         return result
     finally:

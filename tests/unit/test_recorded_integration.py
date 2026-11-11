@@ -187,6 +187,28 @@ def test_unrecordable_publication_failure_may_fail_operation(tmp_path, monkeypat
     assert result.execution.tests[0].status == 'passed'
 
 
+@pytest.mark.parametrize('status, expected_exit', [('passed', 0), ('failed', 1)])
+def test_publication_warning_accepts_textual_print_capture(tmp_path, monkeypatch, status, expected_exit):
+    import sys
+    from textual.app import _PrintCapture
+    context, test, config = fixture(tmp_path)
+    messages, flushed = [], []
+    app = SimpleNamespace(
+        _print=lambda text, *, stderr: messages.append((text, stderr)),
+        _flush=lambda *, stderr: flushed.append(stderr))
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'stderr', _PrintCapture(app, stderr=True))
+        result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+            storage=Storage(fail=True), runner=fake_runner(status))
+
+    assert result.exit_code == expected_exit and not result.persisted
+    assert result.execution.tests[0].status == status
+    assert result.execution.output == ''
+    assert flushed == [True]
+    assert any('Allure publication failed:' in text and stderr for text, stderr in messages)
+    assert all('private-provider-error' not in text for text, _ in messages)
+
+
 def test_bad_optional_csv_keeps_primary_usage_and_records_finalization_failure(tmp_path):
     context, test, config = fixture(tmp_path)
     config['TOKEN_USAGE_CSV'] = tmp_path

@@ -1,6 +1,7 @@
 """Launch-owned recording prerequisites around an accepted integration run."""
 import os
 import sys
+from contextlib import contextmanager
 from threading import Event
 
 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS
@@ -10,6 +11,20 @@ from .prerequisites import local_recording_prerequisites
 from .recorded import validate_recorded_integration, validate_integration_start
 from .suite_lock import suite_locked
 from .requirements import plan_integration_requirements
+
+
+@contextmanager
+def _preparing(options, name):
+    callback = options.get('on_event')
+    if callback is None:
+        yield
+        return
+    from api_agent.providers.progress import progress_sink, report_timeout_sync
+    from .contracts import RunnerEvent
+    def observe(component):
+        callback(RunnerEvent('suite_progress', component=component))
+    with progress_sink(observe), report_timeout_sync(name):
+        yield
 
 
 @suite_locked
@@ -41,11 +56,13 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         plan = plan_integration_requirements(tests)
         plan.validate(context, config)
         # One parent-side install before any worker copies the environment.
-        prepare_selected_workspaces(context, config, plan.workspace_kinds,
-                                    cancellation=options.get('cancel_event'))
+        with _preparing(options, 'Prepare selected workspaces'):
+            prepare_selected_workspaces(context, config, plan.workspace_kinds,
+                                        cancellation=options.get('cancel_event'))
         if tool_plan is not None:
-            from .prerequisites import prepare_selected_tool_dependencies
-            prepare_selected_tool_dependencies(context, tool_plan)
+            with _preparing(options, 'Prepare selected tools'):
+                from .prerequisites import prepare_selected_tool_dependencies
+                prepare_selected_tool_dependencies(context, tool_plan)
         import json
         from dataclasses import replace
         from .diagnostics import CredentialScrubber
@@ -98,7 +115,8 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     plan = plan_integration_requirements(tests)
     plan.validate(context, config)
     cancelled = options.setdefault('cancel_event', Event())
-    prepare_selected_workspaces(context, config, plan.workspace_kinds, cancellation=cancelled)
+    with _preparing(options, 'Prepare selected workspaces'):
+        prepare_selected_workspaces(context, config, plan.workspace_kinds, cancellation=cancelled)
     if prerequisites is None:
         scope = StackScope.from_roots(context.base_root, context.pack_root)
         prerequisites = local_recording_prerequisites(context, scope=scope,
@@ -109,7 +127,8 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     prepare = options.pop('prepare', None)
 
     def before(usage):
-        prerequisites.prepare(tests, config, accepted=accepted, no_std_in=no_std_in)
+        with _preparing(options, 'Prepare reporting prerequisites'):
+            prerequisites.prepare(tests, config, accepted=accepted, no_std_in=no_std_in)
         if prepare is not None:
             prepare(usage)
 

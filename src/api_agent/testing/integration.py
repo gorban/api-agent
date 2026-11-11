@@ -1025,11 +1025,19 @@ def run_integration_tests(context, tests, **options):
         while pending:
             physical = {test.id: replace(test, id=(test.id if not histories[test.id]
                 else test.id + '::confirmation:' + str(len(histories[test.id]) + 1))) for test in pending}
+            attempt_labels = {test.id: (f'Confirmation {len(histories[test.id])}/{allowance}'
+                if histories[test.id] else '') for test in pending}
             def event(row):
                 # Journals retain the collected node ID; only their owning identity
                 # changes. This keeps journal validation and Allure history stable.
-                if row.identity is not None and row.kind != 'test_started':
-                    row = replace(row, identity=physical[row.identity.id])
+                if row.identity is not None:
+                    key = row.identity.id
+                    if row.kind in {'test_started', 'component_progress'}:
+                        # Live progress belongs to the collected UI row; immutable
+                        # evidence below still belongs to its physical attempt.
+                        row = replace(row, text=attempt_labels[key])
+                    else:
+                        row = replace(row, identity=physical[key])
                 if callbacks['on_event'] is not None and row.kind not in {'started', 'finished', 'test_finished'}:
                     callbacks['on_event'](row)
             def result(row):

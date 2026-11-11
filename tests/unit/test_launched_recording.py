@@ -36,6 +36,20 @@ def test_launch_prepares_once_and_releases_after_publication(tmp_path):
     assert log[0][1] == {'accepted': True, 'no_std_in': False}
 
 
+def test_launch_reports_preparation_phases_before_test_start(tmp_path):
+    context, test, config = fixture(tmp_path)
+    events = []
+
+    result = launched.run_launched_integration(context, [test], config, accepted=True,
+        prerequisites=owner([]), storage=Storage(), runner=fake_runner(), on_event=events.append)
+
+    phases = [event.component for event in events if event.kind == 'suite_progress']
+    assert result.persisted
+    assert [phase.name for phase in phases] == ['Prepare selected workspaces'] * 2 + ['Prepare reporting prerequisites'] * 2
+    assert [phase.active for phase in phases] == [True, False, True, False]
+    assert all(event.identity is None for event in events if event.kind == 'suite_progress')
+
+
 def test_multiple_repository_callbacks_do_not_reset_usage_or_reprepare(tmp_path):
     context, test, config = fixture(tmp_path)
     log = []
