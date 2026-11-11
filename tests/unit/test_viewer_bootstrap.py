@@ -1,25 +1,20 @@
-"""Standalone viewer switch is selected before execution configuration."""
+"""The viewer mode is selected before execution configuration."""
 import pytest
 from pathlib import Path
 
-from api_agent.runtime.bootstrap import _extract_view_flow, _validate_view_flow_arguments, main
+from api_agent.runtime.bootstrap import _validate_view_flow_arguments, main
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_extracts_one_flag_without_changing_pack_arguments():
-    remaining, selected = _extract_view_flow(['--resource-pack-dir', '/pack', '--view-flow', '--debug'])
-    assert selected is True
-    assert remaining == ['--resource-pack-dir', '/pack', '--debug']
-
-
-@pytest.mark.parametrize('arguments', [
-    ['--view-flow', '--view-flow'], ['--view-flow=yes'],
-])
-def test_rejects_duplicate_or_valued_flag(arguments):
-    with pytest.raises(ValueError):
-        _extract_view_flow(arguments)
+@pytest.mark.parametrize('flag', ['--no-such-option', '--view-flow', '--trace-viewer'])
+def test_viewer_is_selected_only_by_its_mode(monkeypatch, capsys, flag):
+    from api_agent.runtime import dependencies, hook_assurance
+    monkeypatch.setattr(hook_assurance, 'assure_hook', lambda root: 'present')
+    monkeypatch.setattr(dependencies, 'ensure_environment', lambda *args, **kwargs: pytest.fail('launched'))
+    assert main([flag], base_root=ROOT, _worktrees_verified=True) == 2
+    assert f'Unknown option {flag}' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('arguments', [
@@ -44,8 +39,8 @@ def test_explicit_flow_survives_dependency_handoff_and_reaches_viewer(monkeypatc
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda context, arguments, **kwargs: calls.append(arguments))
     viewed = []
     monkeypatch.setattr(view_flow, 'run_view_flow', lambda context, *, entry: viewed.append(entry) or 0)
-    assert main(['--view-flow', 'nested/flow.md.html'], base_root=ROOT, _worktrees_verified=True) == 0
-    assert calls == [['--view-flow', 'nested/flow.md.html']]
+    assert main(['--tui-mode', 'view-flow', 'nested/flow.md.html'], base_root=ROOT, _worktrees_verified=True) == 0
+    assert calls == [['--tui-mode=view-flow', 'nested/flow.md.html']]
     assert viewed == [tmp_path / 'nested/flow.md.html']
 
 
@@ -68,8 +63,8 @@ def test_viewer_help_does_not_load_execution_schema_or_providers(monkeypatch, ca
     monkeypatch.setattr(config, 'load_shared_schema', poison)
     monkeypatch.setattr(loading, 'bootstrap_schema', poison)
     monkeypatch.setattr(hook_assurance, 'assure_hook', lambda root: 'present')
-    assert main(['--view-flow', '--help'], base_root=ROOT, _worktrees_verified=True) == 0
-    assert './launch.sh --view-flow' in capsys.readouterr().out
+    assert main(['--tui-mode=view-flow', '--help'], base_root=ROOT, _worktrees_verified=True) == 0
+    assert './launch.sh --tui-mode view-flow' in capsys.readouterr().out
 
 
 
@@ -94,12 +89,12 @@ def test_viewer_dependency_handoff_preserves_selected_context_and_arguments(monk
     monkeypatch.setattr(dependencies, 'ensure_environment', handoff)
     monkeypatch.setattr(view_flow, 'run_view_flow', poison)
 
-    assert main(['--view-flow', '--debug', '--no-std-in'], base_root=ROOT,
+    assert main(['--tui-mode=view-flow', '--debug', '--no-std-in'], base_root=ROOT,
                 _worktrees_verified=True, _replace_process=True) == 7
     context, arguments, groups, replace_process = prepared.pop()
     assert context.base_root == ROOT
     assert context.pack_root == ROOT / 'demo'
-    assert arguments == ['--view-flow', '--debug', '--no-std-in']
+    assert arguments == ['--tui-mode=view-flow', '--debug', '--no-std-in']
     assert groups == ('browser',)
     assert replace_process is True
     assert prepared == []
@@ -130,12 +125,12 @@ def test_prepared_viewer_propagates_interrupt_status_without_execution_bootstrap
     monkeypatch.setattr(dependencies, 'ensure_environment', prepare)
     monkeypatch.setattr(view_flow, 'run_view_flow', run)
 
-    assert main(['--no-std-in', '--view-flow', '--debug'], base_root=ROOT,
+    assert main(['--no-std-in', '--tui-mode=view-flow', '--debug'], base_root=ROOT,
                 _worktrees_verified=True) == 130
     context, arguments, groups = prepared.pop()
     assert context.base_root == ROOT
     assert context.pack_root == ROOT / 'demo'
-    assert arguments == ['--view-flow', '--no-std-in', '--debug']
+    assert arguments == ['--tui-mode=view-flow', '--no-std-in', '--debug']
     assert groups == ('browser',)
     assert viewed == [context]
     assert prepared == []
@@ -148,7 +143,7 @@ def test_viewer_forwards_declared_cli_renderer_path(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(view_flow, 'run_view_flow', lambda context, **kwargs: calls.append(kwargs) or 0)
     jar = tmp_path / 'renderer.jar'
-    assert main(['--view-flow', '--api-agent-plantuml-jar', str(jar)],
+    assert main(['--tui-mode=view-flow', '--api-agent-plantuml-jar', str(jar)],
                 base_root=ROOT, _worktrees_verified=True) == 0
     assert calls == [{'renderer_path': str(jar)}]
 
@@ -160,6 +155,6 @@ def test_viewer_cli_can_clear_inherited_renderer_path(monkeypatch):
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda *args, **kwargs: None)
     calls = []
     monkeypatch.setattr(view_flow, 'run_view_flow', lambda context, **kwargs: calls.append(kwargs) or 0)
-    assert main(['--view-flow', '--api-agent-plantuml-jar='],
+    assert main(['--tui-mode=view-flow', '--api-agent-plantuml-jar='],
                 base_root=ROOT, _worktrees_verified=True) == 0
     assert calls == [{'renderer_path': ''}]

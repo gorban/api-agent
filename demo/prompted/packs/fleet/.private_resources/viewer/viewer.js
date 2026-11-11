@@ -17,7 +17,7 @@
     const heading = document.createElement("h2");
     heading.textContent = "Workflow viewer dependencies are unavailable";
     const guidance = document.createElement("p");
-    guidance.textContent = "For a source checkout, run npm ci from the repository root, then reopen this file or run ./launch.sh --view-flow. For an installed Python package, reinstall a complete api-agent distribution; do not run npm inside the installed package.";
+    guidance.textContent = "For a source checkout, run npm ci from the repository root, then reopen this file or run ./launch.sh --tui-mode view-flow. For an installed Python package, reinstall a complete api-agent distribution; do not run npm inside the installed package.";
     diagnostic.replaceChildren(heading, guidance);
     if (!fallback) document.body.append(diagnostic);
     return;

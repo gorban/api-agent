@@ -77,13 +77,12 @@ From the checkout, run:
 
 ```sh
 ./launch.sh --tui-mode view-flow --no-std-in
-./launch.sh --view-flow "demo/contrived/flow.md.html"
-./launch.sh --view-flow "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html"
+./launch.sh --tui-mode view-flow "demo/contrived/flow.md.html"
+./launch.sh --tui-mode view-flow "tests/integration/fixtures/tool_instances/shared_primary/flow.md.html"
 ```
 
 The main menu also offers View workflow; it closes the menu and hands the
 terminal to the viewer. Press Ctrl+C to stop it and release owned resources.
-The `--view-flow` flag remains an alias.
 
 With no path, this opens the selected application's declared flow. The bundled
 demo application currently selects `demo/simple/flow.md.html`; the repository-root
@@ -168,7 +167,7 @@ the saved diagram provenance.
 
 Preparation uses an owned development cache; `API_AGENT_PLANTUML_JAR` can point
 to an already downloaded JAR with the required digest. This declared path setting
-uses the usual dotenv, environment, and CLI precedence; `--view-flow` accepts
+uses the usual dotenv, environment, and CLI precedence; view-flow mode accepts
 `--api-agent-plantuml-jar PATH`. The generation command accepts the same option;
 its dotenv files and relative paths use `--root`. Viewer paths use the selected
 owner root. An explicit empty CLI value selects the default cache. The JAR and Java runtime

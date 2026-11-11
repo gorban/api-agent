@@ -79,40 +79,6 @@ def _has_viewer_mode(argv, modes):
     return False
 
 
-def _extract_view_flow(argv):
-    """Select the standalone viewer before unrelated execution configuration."""
-    remaining = []
-    selected = False
-    for token in argv:
-        if token == '--view-flow':
-            if selected:
-                raise ValueError('Duplicate --view-flow')
-            selected = True
-        elif token.startswith('--view-flow='):
-            raise ValueError('--view-flow does not accept a value')
-        else:
-            remaining.append(token)
-    return remaining, selected
-
-
-def _extract_trace_viewer(argv):
-    """Select the standalone tracing viewer without parsing provider options."""
-    remaining, selected = [], False
-    for index, token in enumerate(argv):
-        if token == '--':
-            remaining.extend(argv[index:])
-            break
-        if token == '--trace-viewer':
-            if selected:
-                raise ValueError('Duplicate --trace-viewer')
-            selected = True
-        elif token.startswith('--trace-viewer='):
-            raise ValueError('--trace-viewer does not accept a value')
-        else:
-            remaining.append(token)
-    return remaining, selected
-
-
 def _validate_view_flow_arguments(argv):
     allowed = {'--debug', '--no-std-in', '--help', '-h'}
     entry = None
@@ -121,10 +87,10 @@ def _validate_view_flow_arguments(argv):
             continue
         if not token.startswith('-'):
             if entry is not None or not token.endswith('.md.html'):
-                raise ValueError('--view-flow accepts one optional .md.html flow path')
+                raise ValueError('view-flow mode accepts one optional .md.html flow path')
             entry = Path(token).expanduser().absolute()
             continue
-        raise ValueError(f'--view-flow conflicts with {token.partition("=")[0]}')
+        raise ValueError(f'view-flow mode conflicts with {token.partition("=")[0]}')
     return entry
 
 
@@ -288,19 +254,13 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
     argv = list(sys.argv[1:] if argv is None else argv)
     handoff_options = {'replace_process': True} if _replace_process else {}
     try:
-        argv, view_flow_requested = _extract_view_flow(argv)
-        argv, trace_viewer_requested = _extract_trace_viewer(argv)
         viewer_modes = {'view-flow', 'trace-viewer'}
         mode_arguments, explicit_mode = (_extract_tui_mode(argv)
                                          if _has_viewer_mode(argv, viewer_modes) else (argv, None))
-        if explicit_mode in {'view-flow', 'trace-viewer'}:
-            if view_flow_requested or trace_viewer_requested:
-                raise ValueError('Viewer mode conflicts with a standalone viewer flag')
+        if explicit_mode in viewer_modes:
             argv = mode_arguments
-            view_flow_requested = explicit_mode == 'view-flow'
-            trace_viewer_requested = explicit_mode == 'trace-viewer'
-        if view_flow_requested and trace_viewer_requested:
-            raise ValueError('--trace-viewer conflicts with --view-flow')
+        view_flow_requested = explicit_mode == 'view-flow'
+        trace_viewer_requested = explicit_mode == 'trace-viewer'
         argv, origin = _extract_option(argv, {'--_launcher-root'})
         if origin is not None:
             launcher_root = Path(origin).expanduser().resolve()
@@ -356,10 +316,10 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 environ=os.environ, dotenv=viewer_dotenv, anchors=context.anchors, skip=viewer_help)
             if viewer_help:
                 if trace_viewer_requested:
-                    print('Usage: ./launch.sh --trace-viewer [tracing options]\n'
+                    print('Usage: ./launch.sh --tui-mode trace-viewer [tracing options]\n'
                           'Open the configured managed local trace dashboard in a headed browser.')
                 else:
-                    print('Usage: ./launch.sh --view-flow [FLOW.md.html] [--resource-pack-dir PATH] [--api-agent-plantuml-jar PATH] [--debug] [--no-std-in]\n'
+                    print('Usage: ./launch.sh --tui-mode view-flow [FLOW.md.html] [--resource-pack-dir PATH] [--api-agent-plantuml-jar PATH] [--debug] [--no-std-in]\n'
                           'Open the selected workflow in a managed headed browser without app or provider startup.\n'
                           'Omit the flow path for the selected application; relative paths use the current directory.\n'
                           'Requires mise; browser prerequisites are prepared only when viewing.')
@@ -380,7 +340,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             manifests = selected_manifests(values, owner_root=context.owner_root, active_kinds={'tracing'})
             if manifests:
                 tracing_options['selected_provider_manifests'] = manifests
-            status = ensure_environment(context, ['--trace-viewer', *argv], groups=('browser',), **tracing_options, **handoff_options)
+            status = ensure_environment(context, ['--tui-mode=trace-viewer', *argv], groups=('browser',), **tracing_options, **handoff_options)
             if status is not None:
                 return status
             from api_agent.runtime.trace_viewer import run_trace_viewer
@@ -391,7 +351,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 view_arguments, {'--api-agent-plantuml-jar', '--api_agent_plantuml_jar', '--API_AGENT_PLANTUML_JAR'}, allow_empty=True)
             view_entry = _validate_view_flow_arguments(view_arguments)
             from api_agent.runtime.dependencies import ensure_environment
-            status = ensure_environment(context, ['--view-flow', *argv], groups=('browser',), **handoff_options)
+            status = ensure_environment(context, ['--tui-mode=view-flow', *argv], groups=('browser',), **handoff_options)
             if status is not None:
                 return status
             from api_agent.workflows.viewer_config import resolve_renderer_path
@@ -682,7 +642,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 viewer_schema, _ = selected_viewer_schema(foundation_schema, argv=argv,
                     environ=os.environ, dotenv=dotenv, anchors=context.anchors)
             remaining = _viewer_handoff_arguments(schema, argv, selection, viewer_schema=viewer_schema)
-            return main([*remaining, '--' + selection], base_root=base_root,
+            return main([*remaining, '--tui-mode=' + selection], base_root=base_root,
                         resource_pack_dir=resource_pack_dir, launcher_root=launcher_root,
                         _worktrees_verified=True, _replace_process=_replace_process,
                         _composition_identity=_composition_identity)
@@ -717,8 +677,8 @@ def _colored(text, code, enabled):
 def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color=False):
     """Show CLI behavior and deliberate callouts; declarations own full config docs."""
     lines = ['Usage: ./launch.sh [OPTIONS] [TEST SELECTORS]', '', 'CLI options and selected configuration switches:']
-    lines.append('  --trace-viewer: open the managed local tracing dashboard without starting the app or providers.')
-    lines.append('  --view-flow [FLOW.md.html]: open a workflow (default: selected application) without starting the app or providers.')
+    lines.append('  --tui-mode trace-viewer: open the managed local tracing dashboard without starting the app or providers.')
+    lines.append('  --tui-mode view-flow [FLOW.md.html]: open a workflow (default: selected application) without starting the app or providers.')
     callouts = {
         'HELP': '-h, --help: print help without execution configuration validation.',
         'NO_STD_IN': '--no-std-in: use terminal execution without menus; owned authentication may still prompt. Worktree and multi-test DEBUG safety confirmations also remain.',

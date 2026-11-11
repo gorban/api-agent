@@ -353,7 +353,7 @@ def test_fallback_survives_unavailable_scripts(static_view, view_url, failure):
             page = browser.new_page(java_script_enabled=failure != "disabled")
             page.goto(view_url("flow.md.html"))
             assert page.locator("#workflow-fallback").is_visible()
-            assert "./launch.sh --view-flow" in page.locator("#workflow-fallback").inner_text()
+            assert "./launch.sh --tui-mode view-flow" in page.locator("#workflow-fallback").inner_text()
             assert page.locator("main").count() == 0
             assert not page.locator("plaintext").is_visible()
         finally:

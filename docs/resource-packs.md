@@ -205,7 +205,7 @@ without putting protocol branches in generic test drivers.
 Current tracing supports the built-in OTEL and LangFuse paths. A pack can
 configure an OTLP-compatible destination, but cannot yet register a complete
 new tracing implementation or managed dashboard through a provider contract.
-Standalone `--trace-viewer` currently admits managed Jaeger and LangFuse only.
+Trace-viewer mode currently admits managed Jaeger and LangFuse only.
 
 The [tracing-provider task](prds/implementation_plan_k1a2.md), grouped with
 [GenAI field support](prds/implementation_plan_k1a.md), will add pack-owned export,

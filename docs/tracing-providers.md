@@ -34,7 +34,7 @@ Metrics deliver on explicit owned SDK flush and runtime/session close. They do n
 yet provide per-turn or periodic live updates; recording a call makes no HTTP
 request. Trace batch export remains unchanged.
 
-For a selected dashboard, use `./launch.sh --trace-viewer`. Only explicitly
+For a selected dashboard, use `./launch.sh --tui-mode trace-viewer`. Only explicitly
 named human-dashboard login fields can appear on that command's console.
 Exporter credentials are never chosen as dashboard login values. Remote-only and
 export-only operation need no managed collector. Dashboard readiness, optional

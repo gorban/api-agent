@@ -35,7 +35,7 @@ def test_view_flow_opens_original_managed_browser_and_cleans_up(stop):
         display = []
 
     script = ('from pathlib import Path; from api_agent.runtime.bootstrap import main; '
-              'raise SystemExit(main(["--view-flow"], base_root=Path.cwd(), _worktrees_verified=True))')
+              'raise SystemExit(main(["--tui-mode=view-flow"], base_root=Path.cwd(), _worktrees_verified=True))')
     environment = os.environ.copy()
     environment['PYTHONPATH'] = str(ROOT / 'src')
     owned = (ROOT / 'flow.md.html', ROOT / '.private_resources/diagrams/flow.svg')

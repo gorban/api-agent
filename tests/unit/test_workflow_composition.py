@@ -80,7 +80,7 @@ def test_static_import_publishes_only_the_pack_and_keeps_library_sources(fixture
     assert changed and all(path.is_relative_to(pack) for path in changed)
     assert {path.relative_to(shared): path.read_bytes() for path in shared.rglob('*') if path.is_file()} == before
     assert any(link.startswith('//github.com/example/shared/blob/') and link.endswith('/intake.md.html') for link in renderer.links)
-    assert b'./launch.sh --view-flow' in entry.read_bytes()
+    assert b'./launch.sh --tui-mode view-flow' in entry.read_bytes()
     assert not (pack / 'intake.md.html').exists()
 
 
