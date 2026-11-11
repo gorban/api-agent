@@ -6,6 +6,8 @@ from .artifact_compile import ArtifactCompileError, compile_plan
 
 PLAN_DIRECTORY = '.private_resources/plans'
 IGNORED_PARTS = frozenset({'.git', '.venv', 'node_modules', '__pycache__', 'dist', 'build'})
+QUALIFICATION_PLAN = 'qualification/simple_chat.json'
+QUALIFICATION_WHEEL = 'demo/.private_resources/wheels/api_agent_demo_bindings-0.1.0-py3-none-any.whl'
 
 
 def plan_path(pack_root: Path, graph_id: str) -> Path:
@@ -28,6 +30,12 @@ def compile_selected_plan(context) -> bytes:
     pack = getattr(context, 'workflow_pack_root', None) or context.pack_root
     return compile_plan(entry, base_root=base, pack_root=pack, wheels=wheels,
                         entry_root=context.workflow_root, replacements=context.workflow_replacements)
+
+
+def _qualification_plan(root: Path) -> bytes:
+    """The production image qualifier's plan: a fresh compile of the root workflow."""
+    return compile_plan(root / 'flow.md.html', base_root=root, pack_root=root, entry_root='base',
+                        wheels=[root / QUALIFICATION_WHEEL])
 
 
 def _contexts(root: Path):
@@ -82,6 +90,10 @@ def check_plans(root: Path) -> None:
         if plan not in selected:
             raise ValueError(f'{plan.relative_to(root)}: orphaned compiled plan is not selected by any '
                              'resource pack; delete it or restore its declaration')
+    qualification = root / QUALIFICATION_PLAN
+    if qualification.is_file() and qualification.read_bytes() != _qualification_plan(root):
+        raise ValueError(f'{QUALIFICATION_PLAN}: compiled plan is stale; regenerate with '
+                         'python -m api_agent.workflows.artifact_plans regenerate --root .')
 
 
 def regenerate_plans(root: Path) -> tuple[Path, ...]:
@@ -98,6 +110,10 @@ def regenerate_plans(root: Path) -> tuple[Path, ...]:
     for plan in _plan_files(root):
         if plan not in selected:
             plan.unlink()
+    qualification = root / QUALIFICATION_PLAN
+    if qualification.is_file():
+        qualification.write_bytes(_qualification_plan(root))
+        written.append(qualification)
     return tuple(written)
 
 
