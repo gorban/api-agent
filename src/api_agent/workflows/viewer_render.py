@@ -452,6 +452,15 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
             tool_instances.setdefault(binding.instance_path, alias)
             tool_records += 1
         tool_records += 1
+        for reference in projection.references:
+            if (reference.kind in ('timeout', 'timeouts') and reference.owner_id == f'{binding.scope}.{binding.port}'
+                    and _route(reference.target_path) in reference_sources):
+                timeout_alias = f'timeout{reference_index}'
+                reference_index += 1
+                key = dict(reference.attributes).get('key') or dict(reference.attributes)['Key']
+                lines.append(f'rectangle "Timeout: {_label(key)}" as {timeout_alias} [[{reference_href(reference)}]]')
+                lines.append(f'{alias} .. {timeout_alias}')
+                tool_records += 1
         if operations:
             lines.append(f'{source_alias} ..> {alias}')
         else:
