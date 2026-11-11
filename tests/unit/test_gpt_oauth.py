@@ -374,7 +374,7 @@ def test_authorized_party_and_key_permissions():
     assert run(claims={'azp':'issued'}, keys={'keys':[dict(JWK, alg='RS256', use='sig', key_ops=['verify'])]})[0].subject == 'subject'
 
 
-@pytest.mark.parametrize('extra', [{'use':'enc'}, {'alg':'HS256'}, {'key_ops':['encrypt']}, {'key_ops':'verify'}, {'kty':'EC'}, {'kid':None}, {'kid':''}, {'n':12}, {'e':12}, {'e':'AA'}])
+@pytest.mark.parametrize('extra', [{'use':'enc'}, {'alg':'HS256'}, {'key_ops':['encrypt']}, {'key_ops':'verify'}, {'kty':'EC'}, {'n':12}, {'e':12}, {'e':'AA'}])
 def test_key_constraints(extra):
     with pytest.raises(AuthError) as caught:
         run(keys={'keys':[dict(JWK, **extra)]})
@@ -408,12 +408,95 @@ def test_transport_context_is_discarded():
     assert caught.value.__context__ is None
 
 
-def test_header_requires_nonempty_key_id():
-    for kid in ['', None]:
-        headers = {'kid':kid} if kid is not None else {}
-        token = jwt.encode(dict(iss=o.ISSUER, aud='issued', sub='subject', exp=2000), KEY, algorithm='RS256', headers=headers)
-        with pytest.raises(AuthError, match='invalid_identity'):
-            run(data={'id_token':token})
+def signed(attempt_, key=KEY, headers=None, algorithm='RS256', **claims):
+    identity = dict(iss=o.ISSUER, aud='issued', sub='subject', exp=2000, email='a@example.com', nonce=attempt_.nonce)
+    identity.update(claims)
+    return jwt.encode(identity, key, algorithm=algorithm, headers=headers)
+
+
+def other_jwk(kid):
+    return dict(json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(OTHER.public_key())), kid=kid)
+
+
+@pytest.mark.parametrize('headers', [{}, {'kid': ''}, {'kid': 'wrong'}, {'kid': 'other'}])
+def test_key_id_header_is_not_used_to_select_the_key(headers):
+    a = attempt()
+    token = signed(a, headers=headers)
+    assert run(a, data={'id_token': token})[0].subject == 'subject'
+
+
+@pytest.mark.parametrize('kid', [None, '', 7])
+def test_jwks_key_ids_do_not_gate_eligibility(kid):
+    assert run(keys={'keys': [dict(JWK, kid=kid)]})[0].subject == 'subject'
+
+
+def test_correct_key_among_several_eligible_keys_verifies():
+    keys = {'keys': [other_jwk('a'), dict(JWK, kid='b'), other_jwk('c')]}
+    assert run(keys=keys)[0].subject == 'subject'
+    assert run(keys={'keys': [dict(JWK, kid='z'), other_jwk('a')]})[0].subject == 'subject'
+
+
+def test_token_signed_by_key_outside_the_jwks_is_rejected():
+    a = attempt()
+    token = signed(a, key=OTHER, headers={'kid': 'key'})
+    with pytest.raises(AuthError, match='invalid_identity'):
+        run(a, data={'id_token': token}, keys={'keys': [JWK]})
+    with pytest.raises(AuthError, match='invalid_identity'):
+        run(a, data={'id_token': token}, keys={'keys': [JWK, dict(JWK, kid='again')]})
+
+
+def test_two_eligible_keys_that_both_verify_are_rejected():
+    for keys in ({'keys': [JWK, dict(JWK, kid='copy')]}, {'keys': [JWK, JWK]}):
+        with pytest.raises(AuthError, match='invalid_identity') as caught:
+            run(keys=keys)
+        assert caught.value.__context__ is None
+
+
+def test_a_malformed_eligible_key_does_not_block_the_valid_one():
+    assert run(keys={'keys': [dict(JWK, kid='bad', n=12), JWK]})[0].subject == 'subject'
+    assert run(keys={'keys': [dict(JWK, kid='bad', e='AA'), JWK]})[0].subject == 'subject'
+
+
+def test_ineligible_keys_are_never_tried(monkeypatch):
+    tried = []
+    original = jwt.PyJWK.from_dict
+    def spy(data, algorithm=None):
+        tried.append(data)
+        return original(data, algorithm=algorithm)
+    monkeypatch.setattr(jwt.PyJWK, 'from_dict', spy)
+    ineligible = [dict(JWK, kid=f'x{index}', **extra) for index, extra in enumerate(
+        [{'use': 'enc'}, {'alg': 'HS256'}, {'key_ops': ['encrypt']}, {'key_ops': 'verify'}, {'kty': 'EC'}])]
+    keys = {'keys': ineligible + [JWK]}
+    assert run(keys=keys)[0].subject == 'subject'
+    assert tried == [JWK]
+    tried.clear()
+    with pytest.raises(AuthError, match='invalid_identity'):
+        run(keys={'keys': ineligible})
+    assert tried == []
+
+
+def test_the_unverified_header_is_never_read(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError('unverified header read')
+    monkeypatch.setattr(jwt, 'get_unverified_header', forbidden)
+    assert run()[0].subject == 'subject'
+    with pytest.raises(AuthError, match='invalid_identity'):
+        run(error='signature')
+
+
+@pytest.mark.parametrize('algorithm,key', [('HS256', 'x' * 64), ('HS512', 'y' * 64), ('RS512', KEY)])
+def test_tokens_with_another_algorithm_are_rejected(algorithm, key):
+    a = attempt()
+    token = signed(a, key=key, algorithm=algorithm, headers={'kid': 'key'})
+    with pytest.raises(AuthError, match='invalid_identity'):
+        run(a, data={'id_token': token})
+
+
+def test_unsigned_tokens_are_rejected():
+    a = attempt()
+    token = signed(a, key=None, algorithm='none', headers={'kid': 'key'})
+    with pytest.raises(AuthError, match='invalid_identity'):
+        run(a, data={'id_token': token})
 
 
 def test_rotation_admission_timeout_retains_lock_until_cleanup(tmp_path):
