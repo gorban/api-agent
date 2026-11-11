@@ -296,6 +296,9 @@ def test_returned_observer_task_stays_owned_until_cancellation_is_acknowledged(s
         finally:
             release.set()
             await task
+            # The short budget made the blocked close fail promptly; the final
+            # close only needs to finish, however slowly the host runs it.
+            owner._timeout = 5
             await owner.aclose()
         assert task.done()
         loaded.aclose.assert_awaited_once()

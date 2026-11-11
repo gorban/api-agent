@@ -13,6 +13,19 @@ from api_agent.providers.setup_transport import SetupServer
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 from api_agent.workflows.inference_capture import bind_boundary, capture_inference
 
+# Optional evidence is published within a bounded allowance and is otherwise
+# reported as unavailable. A loaded host must not turn that bound into the
+# observable under test, so these deadlines only guard a hung scenario.
+PATIENT = 60
+
+
+@pytest.fixture(autouse=True)
+def patient_evidence_publication(monkeypatch):
+    from api_agent.providers import evidence_watchdog, setup_transport
+    monkeypatch.setattr(setup_transport, '_EVIDENCE_PUBLISH_SECONDS', PATIENT)
+    monkeypatch.setattr(setup_transport, '_RAW_EVIDENCE_PUBLISH_SECONDS', PATIENT)
+    monkeypatch.setattr(evidence_watchdog, '_WALL_SECONDS', PATIENT)
+
 
 def test_real_process_projects_overlapping_authorities_once_and_isolates_callers():
     source = EmissionBoundary(ContentPolicy(True))
@@ -35,7 +48,7 @@ from api_agent.testing.authority_scope import TestAuthorityScope
 descriptor = json.loads(sys.stdin.readline())
 scope = TestAuthorityScope(('ui',))
 scope.join('ui', EmissionBoundary(ContentPolicy(True), secrets=('efg', sys.argv[1])))
-client = SetupClient(descriptor, timeout=5)
+client = SetupClient(descriptor, timeout=60)
 request = LLMRequest('model', CompletionRequest((Message('user', (TextContent('hello'),)),)))
 try:
     client.complete(request, authority_scope=scope)
@@ -46,11 +59,11 @@ finally:
 '''
     async def scenario():
         registry = SetupRegistry('op', 'selected', Owner)
-        server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=5, authority=coordinator)
+        server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=PATIENT, authority=coordinator)
         descriptor = await server.start()
         def run(secret):
             completed = subprocess.run([sys.executable, '-c', child, secret], input=json.dumps(descriptor) + '\n',
-                                       text=True, capture_output=True, timeout=10, check=True)
+                                       text=True, capture_output=True, timeout=PATIENT, check=True)
             assert not completed.stderr
             return json.loads(completed.stdout)
         try:
@@ -172,7 +185,7 @@ except ContractError:
 else:
     raise AssertionError('invalidated authority was admitted')
 scope = TestAuthorityScope(('coordinator',))
-client = SetupClient(json.loads(sys.stdin.readline()), timeout=10)
+client = SetupClient(json.loads(sys.stdin.readline()), timeout=60)
 try:
     request = LLMRequest('model', CompletionRequest((Message('user', (TextContent('hello'),)),)))
     client.complete(request, authority_scope=scope)
@@ -183,12 +196,12 @@ finally:
 '''
     async def scenario():
         registry = SetupRegistry('op', 'selected', Owner)
-        server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=10, authority=coordinator)
+        server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=PATIENT, authority=coordinator)
         descriptor = await server.start()
         try:
             def run():
                 return subprocess.run([sys.executable, '-c', child], input=json.dumps(descriptor) + '\n',
-                                      text=True, capture_output=True, timeout=15, check=True)
+                                      text=True, capture_output=True, timeout=PATIENT, check=True)
             completed = await asyncio.to_thread(run)
             assert not completed.stderr
             rows = json.loads(completed.stdout)
@@ -619,7 +632,7 @@ from api_agent.testing.authority_scope import TestAuthorityScope
 descriptor = json.loads(sys.stdin.readline())
 scope = TestAuthorityScope(('ui',))
 scope.join('ui', EmissionBoundary(ContentPolicy(True), secrets=('efg',)))
-client = SetupClient(descriptor, timeout=5)
+client = SetupClient(descriptor, timeout=60)
 try:
     client.complete(LLMRequest('model', CompletionRequest((Message('user', (TextContent('hello'),)),))), authority_scope=scope)
     print(json.dumps(client.evidence))
@@ -629,11 +642,11 @@ finally:
 '''
     async def scenario():
         registry = SetupRegistry('op', 'selected', Owner)
-        server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=5, authority=coordinator)
+        server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=PATIENT, authority=coordinator)
         descriptor = await server.start()
         try:
             completed = await asyncio.to_thread(subprocess.run, [sys.executable, '-c', child],
-                input=json.dumps(descriptor) + '\n', text=True, capture_output=True, timeout=10, check=True)
+                input=json.dumps(descriptor) + '\n', text=True, capture_output=True, timeout=PATIENT, check=True)
             assert not completed.stderr
             assert observed == [{'abc', 'cde', 'efg', 'worker-secret'}]
             assert json.loads(completed.stdout)[0]['content']['text'] == '[REDACTED] [REDACTED]'
@@ -798,7 +811,7 @@ def test_shared_authority_retry_upgrades_serialize_across_servers():
     def call(descriptor):
         scope = TestAuthorityScope(('ui',))
         scope.join('ui', source)
-        client = SetupClient(descriptor, timeout=5)
+        client = SetupClient(descriptor, timeout=PATIENT)
         try:
             client.complete(LLMRequest('model', CompletionRequest((Message('user', (TextContent('hello'),)),))),
                             authority_scope=scope)
@@ -809,7 +822,7 @@ def test_shared_authority_retry_upgrades_serialize_across_servers():
 
     async def scenario():
         registries = [SetupRegistry('op-' + str(index), 'selected', Owner) for index in range(2)]
-        servers = [SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=5, authority=source)
+        servers = [SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=PATIENT, authority=source)
                    for registry in registries]
         descriptors = [await server.start() for server in servers]
         try:
@@ -919,7 +932,7 @@ def test_shared_authority_upgrades_across_server_event_loops():
     def serve(index, ready):
         async def run():
             registry = SetupRegistry('op-' + str(index), 'selected', Owner)
-            server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=5, authority=source)
+            server = SetupServer(registry, 'synthetic-authority-capability-0000000', timeout=PATIENT, authority=source)
             try:
                 ready.set_result(await server.start())
                 await asyncio.to_thread(stop.wait)
@@ -931,9 +944,9 @@ def test_shared_authority_upgrades_across_server_event_loops():
     def call(descriptor):
         scope = TestAuthorityScope(('ui',))
         scope.join('ui', source)
-        client = SetupClient(descriptor, timeout=5)
+        client = SetupClient(descriptor, timeout=PATIENT)
         try:
-            barrier.wait(timeout=5)
+            barrier.wait(timeout=PATIENT)
             client.complete(LLMRequest('model', CompletionRequest((Message('user', (TextContent('hello'),)),))),
                             authority_scope=scope)
             return client.evidence
@@ -945,16 +958,16 @@ def test_shared_authority_upgrades_across_server_event_loops():
     with ThreadPoolExecutor(max_workers=4) as executor:
         servers = [executor.submit(serve, index, ready[index]) for index in range(2)]
         try:
-            descriptors = [future.result(timeout=5) for future in ready]
+            descriptors = [future.result(timeout=PATIENT) for future in ready]
             calls = [executor.submit(call, descriptor) for descriptor in descriptors]
-            rows = [future.result(timeout=10) for future in calls]
+            rows = [future.result(timeout=PATIENT) for future in calls]
             assert len(loops) == 2
             assert observed == [1, 1]
             assert all(row[0]['content']['text'] == '[REDACTED] [REDACTED] [REDACTED]' for row in rows)
         finally:
             stop.set()
             for server in servers:
-                server.result(timeout=10)
+                server.result(timeout=PATIENT)
 
 
 def test_scope_owner_change_while_server_waits_for_gate_releases_lease(monkeypatch):

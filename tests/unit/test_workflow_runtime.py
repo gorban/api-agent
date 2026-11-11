@@ -496,12 +496,12 @@ def test_async_node_cannot_accept_output_after_swallowing_timeout(runtime_layout
 
 def test_scope_cannot_report_success_after_body_swallows_timeout(runtime_layout, tmp_path):
     events = []
-    runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=0.01', owner='first')]
+    runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=0.25', owner='first')]
     compiled = workflow(runtime_layout, services={'observe': events.append})
     async def swallowed():
         async with compiled._scope('first'):
             try:
-                await asyncio.sleep(1)
+                await asyncio.sleep(60)
             except asyncio.CancelledError:
                 pass
 

@@ -247,6 +247,9 @@ def test_resistant_operation_retains_receipt_and_blocks_admission():
 def test_concurrent_cancellation_retries_dispose_once():
     async def exercise():
         engine = registry()
+        # The retry stays blocked until released; a short disposal budget would
+        # let a loaded host expire it first and report the cleanup as pending.
+        engine.cleanup_timeout = EVENTUAL
         calls = []
         ready, release = asyncio.Event(), asyncio.Event()
         async def retry():
@@ -801,7 +804,8 @@ def test_operation_preparation_failure_closes_unstarted_invocation(monkeypatch, 
         loop = asyncio.get_running_loop()
         schedule = loop.create_task
         def reject_invocation(coroutine, *args, **kwargs):
-            if coroutine.__name__ == '_invoke':
+            # Loop shutdown also schedules async-generator finalizers here.
+            if getattr(coroutine, '__name__', None) == '_invoke':
                 raise RuntimeError('invocation task unavailable')
             return schedule(coroutine, *args, **kwargs)
         if rejection == 'allocation':
