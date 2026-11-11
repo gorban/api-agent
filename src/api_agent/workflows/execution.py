@@ -1579,12 +1579,7 @@ class Workflow:
         if not self.typed_state and self._session is None and thread_id is not None:
             raise WorkflowError('Conversation checkpoints require a declared State or Session contract')
         config = {'configurable': {'thread_id': thread_id}}
-        commit = None
-        if self._session is not None:
-            # Graph IDs never contain ':', so the prefix keeps graphs that share a checkpointer apart.
-            commit = _SessionCommit(
-                self._session, {'configurable': {'thread_id': f'{self.definition.graph_id}:{thread_id}'}},
-                {row['Field'] for row in self.session_rows})
+        commit = self._session_commit(thread_id) if self._session is not None else None
         async with self._turn(thread_id or str(uuid4()), request, services, journal, turn_id, turn_kind,
                               session=commit):
             if self.typed_state:
@@ -1601,6 +1596,20 @@ class Workflow:
             if commit is not None:
                 commit.merged = self._merge_session(session, self._turn_state.get()['runs'])
             return result['values']
+
+    def _session_commit(self, thread_id):
+        # Graph IDs never contain ':', so the prefix keeps graphs that share a checkpointer apart.
+        return _SessionCommit(
+            self._session, {'configurable': {'thread_id': f'{self.definition.graph_id}:{thread_id}'}},
+            {row['Field'] for row in self.session_rows})
+
+    async def session(self, thread_id):
+        """A deep copy of the session committed for ``thread_id``; empty before any turn commits one."""
+        if self._session is None:
+            raise WorkflowError('Workflow declares no Session')
+        if type(thread_id) is not str or not thread_id:
+            raise ValueError('thread_id is required to read a session')
+        return await self._session_commit(thread_id).load()
 
     def _merge_session(self, session, runs):
         """Fold this turn's completed node runs into a copy of the start-of-turn session."""

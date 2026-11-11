@@ -410,9 +410,10 @@ value type can satisfy the input schema. `SESSION` does not take `*`.
 
 `Workflow.arun(update, thread_id=...)` requires a non-empty string `thread_id`
 when a workflow declares `## Session`. The session is loaded from the checkpointer
-at turn start and written back only when the turn's final outcome is passed. A turn
-that raises, times out, is cancelled, or ends with an explicit `partial`, `failure`,
-`cancelled` or `unknown` execution outcome leaves it unchanged. The write happens
+at turn start and written back only when the turn's final outcome is passed (or an
+outcome a `## Session Commit` table lists, below). A turn that raises, times out, is
+cancelled, or ends with any other explicit `partial`, `failure`, `cancelled` or
+`unknown` execution outcome leaves it unchanged. The write happens
 inside the graph scope, under the graph timeout and before the journal is finalized
 and published, so a slow or failing store fails the turn and is journaled as such.
 If finalizing or publishing the journal then fails, the start-of-turn session is
@@ -457,6 +458,14 @@ root `## Session Commit` table widens that policy to turns an application labels
   raises, times out or is cancelled never commits, whatever the table lists.
 - The table is part of the declaration identity, and of compiled plans, which decode
   it as strictly as `## Session`. A graph without the table keeps its previous identity.
+
+`await workflow.session(thread_id)` returns a deep copy of the session committed for a
+thread, without running a turn: `{}` when no turn has committed one, and only the
+fields the `## Session` table declares now. It reads the same `<graph_id>:<thread_id>`
+entry a turn loads, so a graph never sees another graph's session even through a shared
+checkpointer. A workflow without `## Session` raises `WorkflowError`, and an empty or
+non-string `thread_id` raises `ValueError`. Mutating the result changes nothing stored.
+A turn still in flight has not committed yet, so the read returns the previous session.
 
 A thread runs one turn at a time. Within one `Workflow` instance a second `arun` for a
 thread whose turn is still running is refused at once with `RuntimeError` rather than
