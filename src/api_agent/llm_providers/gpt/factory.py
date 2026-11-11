@@ -14,6 +14,7 @@ from .browser import subscription_browser
 from .oauth import refresh_connection, OAUTH_ERROR_CODES
 from .api_key import APIKeySession
 from .endpoint import validate_base_url
+from .budgets import discovery_timeout
 
 
 class OwnedSubscriptionSession(SubscriptionSession):
@@ -108,6 +109,7 @@ class GPTProvider:
         self.cache_policy = config.get('LLM_CACHE_POLICY')
         self.reasoning_effort = config.get('LLM_REASONING_EFFORT')
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
+        self.discovery_timeout = discovery_timeout(config)
         self.app_name = config.get("GPT_APP_NAME", "api-agent")
         self.base_url = config.get("GPT_BASE_URL", "https://api.openai.com/v1")
         self.run_ui = config.get("TUI_MODE") == "run-local" and config.get("RUN_UI", False)
@@ -332,7 +334,8 @@ class GPTProvider:
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
         async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
             selections = await discover_selections(client=client, base_url=base, access_token=auth,
-                                              subscription=self.auth_mode == "subscription", authority=self.emissions)
+                                              subscription=self.auth_mode == "subscription", authority=self.emissions,
+                                              timeout=self.discovery_timeout)
         if base == 'https://openrouter.ai/api/v1':
             self._reasoning_catalog = {row.selected_llm: row.reasoning_efforts for row in selections}
         from dataclasses import replace

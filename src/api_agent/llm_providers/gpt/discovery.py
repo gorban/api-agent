@@ -8,9 +8,10 @@ from api_agent.providers.contracts import ProviderAccessError
 from api_agent.providers.llm import AvailableSelection
 from api_agent.providers.progress import component_timeout
 
+from .budgets import DEFAULT_DISCOVERY_TIMEOUT
+
 _OFFICIAL_BASE = 'https://api.openai.com/v1'
 _LIMIT = 1048576
-_TIMEOUT = 15
 _BEARER = re.compile(r'bearer\s+[^\s,;]+', flags=re.IGNORECASE)
 
 
@@ -151,12 +152,12 @@ def _endpoint(base_url, access_token, subscription):
     return base_url
 
 
-async def discover_models(*, client, base_url, access_token, subscription):
+async def discover_models(*, client, base_url, access_token, subscription, timeout=DEFAULT_DISCOVERY_TIMEOUT):
     """One authorized catalog GET; the caller owns the injected client."""
     base_url = _endpoint(base_url, access_token, subscription)
     failure = None
     try:
-        async with component_timeout('GPT model discovery', _TIMEOUT) as budget:
+        async with component_timeout('GPT model discovery', timeout) as budget:
             status, data, request_id, authentication_type = await _get(client, base_url + '/models', access_token, budget)
             if status != 200:
                 raise _failure(status, data, request_id, access_token, authentication_type)
@@ -197,7 +198,8 @@ async def _get(client, url, token, budget):
                 _authentication_type(response.headers.get('www-authenticate')))
 
 
-async def discover_selections(*, client, base_url, access_token, subscription, authority=None):
+async def discover_selections(*, client, base_url, access_token, subscription, authority=None,
+                              timeout=DEFAULT_DISCOVERY_TIMEOUT):
     """Verify remote access before returning a public or authenticated catalog."""
     base_url = _endpoint(base_url, access_token, subscription)
     failure = None
@@ -245,7 +247,7 @@ async def discover_selections(*, client, base_url, access_token, subscription, a
         except (CredentialProtectionError, ResponseValidationError):
             raise ModelDiscoveryError('unknown', 'GPT model discovery returned invalid metadata or protected authentication content.') from None
     try:
-        async with component_timeout('GPT authenticated discovery', _TIMEOUT) as budget:
+        async with component_timeout('GPT authenticated discovery', timeout) as budget:
             status, data, request_id, authentication_type = await checked_get(base_url + '/models', None, budget)
             if status == 200:
                 if subscription:

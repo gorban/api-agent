@@ -828,7 +828,6 @@ def test_real_component_deadline_keeps_explicit_usage_before_timeout_rewrites_ca
         with (bind_response_dispatch() if bound else nullcontext(None)) as dispatch:
             if provider == 'gpt':
                 from api_agent.llm_providers.gpt import inference
-                monkeypatch.setattr(inference, '_TIMEOUT', 120)
                 async with httpx.AsyncClient(transport=httpx.MockTransport(stall)) as client:
                     with pytest.raises(ProviderAccessError) as caught:
                         await inference.complete_text(client=client, base_url=BASE, access_token='synthetic-token',
