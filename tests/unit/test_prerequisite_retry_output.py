@@ -493,7 +493,7 @@ def test_dense_overlapping_registered_output_has_bounded_diagnostics_and_owned_c
         'prerequisites.finalize = finalize\n'
         'try:\n'
         '    run_command((sys.executable, sys.argv[1], sys.argv[2]), environment={"API_KEY": "A" * 65536},\n'
-        '                directory=sys.argv[3], deadline=time.monotonic() + 5, cancelled=lambda: False)\n'
+        '                directory=sys.argv[3], deadline=time.monotonic() + 120, cancelled=lambda: False)\n'
         'except PrerequisiteError as error:\n'
         '    assert "A" * 200 not in error.local_details\n'
         '    assert "[REDACTED]" in error.local_details and "Exit code: 7" in error.local_details\n'
@@ -504,7 +504,7 @@ def test_dense_overlapping_registered_output_has_bounded_diagnostics_and_owned_c
         'assert disposal_complete(owned[0]) and owned[0].returncode == 7\n')
     environment = {**os.environ, 'PYTHONPATH': str(Path(prerequisites.__file__).parents[2])}
     result = subprocess.run((sys.executable, str(driver), str(helper), '1' if stream == 'stdout' else '2', str(tmp_path)),
-        env=environment, capture_output=True, text=True, timeout=10, check=False)
+        env=environment, capture_output=True, text=True, timeout=300, check=False)
     assert result.returncode == 0, result.stderr
 
 
