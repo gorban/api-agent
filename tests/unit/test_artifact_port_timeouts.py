@@ -21,7 +21,8 @@ def ported(tmp_path):
     root = tmp_path / 'tree'
     root.mkdir()
     entry = graph(root, [('node', 'draft')], config=CONFIG + '\n[fields.TOOL_SECONDS]\ntype = "float"\ndefault = 0.5\n',
-                  sections=table('Timeouts', ('Owner', 'Source', 'Key'), [PORT_ROW]))
+                  sections=table('Timeouts', ('Owner', 'Source', 'Key'), [PORT_ROW])
+                  + table('Tools', ('Port', 'Instance'), [('shared', '[tool](tool.toml)')]))
     node(root, 'draft', extra=TOOLS)
     write(root, 'tool.toml', 'id = "sample/primary"\n')
     wheel = build_wheel(tmp_path, 'aq-loops', {'aq_loops/__init__.py': b'', 'aq_loops/native.py': NATIVE.encode()})
@@ -50,6 +51,7 @@ def rows_of(value):
     lambda rows: rows[0].update(Owner='ghost.search'),
     lambda rows: rows[0].update(Owner='draft.absent'),
     lambda rows: rows[0].update(Owner='draft.search.more'),
+    lambda rows: rows[0].update(Owner='draft.shared'),
     lambda rows: rows[0].update(Owner='nobody'),
     lambda rows: rows.append(dict(rows[0])),
     lambda rows: rows[0].update(Key='bad-key'),
