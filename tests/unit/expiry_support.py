@@ -23,7 +23,7 @@ default = 2
 
 # `work` follows its SCRIPT entry for each run: 'ok' completes, 'hang' outlives any timeout, 'effect'
 # marks a write before hanging, 'port' hangs inside a nested tool-style budget, 'native' raises
-# TimeoutError itself. `prepare` and `review` always complete.
+# TimeoutError itself, 'swallow' turns the cancellation it receives into a TimeoutError of its own. `prepare` and `review` always complete.
 NATIVE = '''import asyncio
 
 from api_agent.providers.progress import component_timeout
@@ -44,6 +44,11 @@ async def work(inputs, context):
             await asyncio.sleep(30)
     if step == 'native':
         raise TimeoutError('raised by native code')
+    if step == 'swallow':
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            raise TimeoutError('swallowed cancellation') from None
     return {'n': CALLS.count('work')}
 
 
