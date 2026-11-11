@@ -1411,7 +1411,7 @@ class Workflow:
             from .journal import projection
             if selected_journal.projection != projection(self.definition, component_passes=self.component_passes,
                                                          limits=self.limit_values):
-                raise WorkflowError('Workflow journal uses different effective limits')
+                raise WorkflowError('Workflow journal uses a different effective component pass limit or limit value')
         selected_context = current_execution_context()
         if selected_journal is not None:
             selected_context = selected_journal.admit_execution_context(selected_context)

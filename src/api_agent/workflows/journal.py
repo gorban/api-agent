@@ -142,13 +142,15 @@ def _capture_contract(value, depth=0, *, max_depth=4, budget=None, provider_cont
 def projection(definition, *, component_passes=None, limits=None):
     """Describe the admitted selection without exposing machine paths or source text.
 
-    ``limits`` maps each declared Limits key to its effective value (default: the declared
-    defaults). A bounded backward edge records its limit key and comparison.
+    For binding-grammar graphs, ``limits`` maps each declared Limits key to its effective value
+    (default: the declared defaults) and a bounded backward edge records its limit key and
+    comparison. Typed-state graphs record neither.
     """
     if definition is None:
         raise ValueError('An admitted workflow definition is required')
+    bound_graph = getattr(definition, 'schema_source', None) is None
     bounds = {(row['From'], row['To'], row['When']): dict(key=bound[0], inclusive=bound[1])
-              for row, bound in loop_edges(definition.layout) if bound is not None}
+              for row, bound in (loop_edges(definition.layout) if bound_graph else ()) if bound is not None}
     steps = [dict(id=step.id, kind=step.kind, parent=step.parent)
              for step in definition.layout.steps]
     edges = []
@@ -182,7 +184,9 @@ def projection(definition, *, component_passes=None, limits=None):
                              else int(declared[name]['Max passes'])))
            for name, value in effective.items()):
         raise ValueError('Invalid effective component pass limit')
-    declared_limits = {row['Key'] for row in getattr(definition, 'limits', ())}
+    declared_limits = {row['Key'] for row in getattr(definition, 'limits', ())} if bound_graph else set()
+    if not bound_graph:
+        limits = {}
     if limits is None:
         from .configuration import resolve_state_limits
         limits = resolve_state_limits(definition) if declared_limits else {}

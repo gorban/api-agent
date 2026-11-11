@@ -180,7 +180,7 @@ def test_a_workflow_refuses_a_journal_whose_projection_records_other_limits(tmp_
     journal = WorkflowJournal(definition, semantic_identity=identity)
     workflow, _, _ = build(entry, config={'PLAN_PASSES': 3}, journal=journal)
 
-    with pytest.raises(WorkflowError, match='different effective limits'):
+    with pytest.raises(WorkflowError, match='different effective component pass limit or limit value'):
         asyncio.run(workflow.arun({'accept_at': 2}))
 
 
