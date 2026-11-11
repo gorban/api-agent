@@ -64,7 +64,10 @@ persona = "prompts/persona.md"
 ```
 
 The manifest check rejects invalid names, non-relative or escaping paths, other
-suffixes and missing files. The workflow loader captures only the files its
+suffixes and missing files. The loader also resolves symlinks: a slot file must resolve to a `.md` or
+`.txt` file inside its pack root, so a link cannot redirect a slot to another
+file such as a dotenv file. A linked prompt file must likewise stay inside the
+root that declares it. The workflow loader captures only the files its
 prompts use, so their text is part of the workflow identity. A product pack that
 selects a library workflow overrides the library's slots: each slot comes from the
 pack root first, then the library (base) root's `pack.toml`; a slot neither
