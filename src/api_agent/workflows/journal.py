@@ -160,7 +160,7 @@ def projection(definition, *, component_passes=None, limits=None):
             continue
         owner = parent or 'GRAPH'
         entering = [row for row in definition.layout.tables['Edges']
-                    if parent is not None and row['From'] == 'START'
+                    if (parent is not None or bound_graph) and row['From'] == 'START'
                     and row['To'] in {child.id for child in children}]
         if entering:
             edges.extend(dict(owner=owner, source='START', target=row['To'],
