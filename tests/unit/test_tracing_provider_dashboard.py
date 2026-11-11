@@ -363,7 +363,7 @@ def test_trace_viewer_bootstrap_prepares_only_selected_provider_dependencies(mon
     monkeypatch.setattr('api_agent.providers.distribution.selected_manifests', lambda *a, **kw: manifests)
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', ensure)
     monkeypatch.setattr(trace_viewer,'run_trace_viewer',lambda *a: 0)
-    assert bootstrap.main(['--trace-viewer'],base_root=BASE,_worktrees_verified=True) == 0
+    assert bootstrap.main(['--tui-mode=trace-viewer'],base_root=BASE,_worktrees_verified=True) == 0
     assert ensure.call_args.kwargs.get('selected_provider_manifests', ()) == manifests
 
 

@@ -12,14 +12,14 @@ pytestmark = pytest.mark.feature('Workflow viewer')
 
 def test_view_flow_rejects_test_mode_before_browser_setup():
     program = ('from pathlib import Path; from api_agent.runtime.bootstrap import main; '
-               'raise SystemExit(main(["--view-flow", "--tui-mode=unit"], '
+               'raise SystemExit(main(["--tui-mode=view-flow", "--start"], '
                'base_root=Path.cwd(), _worktrees_verified=True))')
     environment = os.environ.copy()
     environment['PYTHONPATH'] = str(ROOT / 'src')
     result = subprocess.run([sys.executable, '-c', program], cwd=ROOT, env=environment,
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 2
-    assert '--view-flow conflicts with --tui-mode' in result.stderr
+    assert 'view-flow mode conflicts with --start' in result.stderr
     assert 'Preparing' not in result.stderr
 
 

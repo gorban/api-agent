@@ -15,7 +15,7 @@ Requirements and acceptance gates are in
 [the B2 hierarchy](prds/implementation_plan_b2.md).
 
 Open root `flow.md.html` directly for its saved static declaration/diagram, or
-use `./launch.sh --view-flow "flow.md.html"` for its checked managed view.
+use `./launch.sh --tui-mode view-flow "flow.md.html"` for its checked managed view.
 Omitting the path instead opens the selected application's flow. See
 [diagram maintenance and inspection](workflow_viewer.md) for markup-based
 freshness, explicit generation and pre-commit checks.

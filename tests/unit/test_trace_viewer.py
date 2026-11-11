@@ -181,7 +181,7 @@ def test_bootstrap_selects_viewer_before_provider_and_workflow_discovery(monkeyp
     monkeypatch.setattr(bootstrap, '_prepare_workflow_discovery', lambda *a, **k: pytest.fail('workflow discovery'))
     monkeypatch.setattr(api_agent.runtime.dependencies, 'ensure_environment', lambda *a, **k: handoff_status)
     monkeypatch.setattr(trace_viewer, 'run_trace_viewer', lambda context, values: observed.append(values) or 0)
-    assert bootstrap.main(['--trace-viewer', '--trace-mode=OTEL'], base_root=ROOT, _worktrees_verified=True) == (0 if handoff_status is None else handoff_status)
+    assert bootstrap.main(['--tui-mode=trace-viewer', '--trace-mode=OTEL'], base_root=ROOT, _worktrees_verified=True) == (0 if handoff_status is None else handoff_status)
     if handoff_status is None:
         assert observed[0]['TRACE_MODE'] == 'OTEL'
     else:
@@ -194,8 +194,8 @@ def test_trace_help_is_lazy(monkeypatch, capsys):
     import api_agent.runtime.hook_assurance
     monkeypatch.setattr(api_agent.runtime.hook_assurance, 'assure_hook', lambda root: None)
     monkeypatch.setattr(api_agent.runtime.dependencies, 'ensure_environment', lambda *a, **k: pytest.fail('dependency preparation'))
-    assert bootstrap.main(['--trace-viewer', '--help'], base_root=ROOT, _worktrees_verified=True) == 0
-    assert '--trace-viewer' in capsys.readouterr().out
+    assert bootstrap.main(['--tui-mode=trace-viewer', '--help'], base_root=ROOT, _worktrees_verified=True) == 0
+    assert './launch.sh --tui-mode trace-viewer' in capsys.readouterr().out
 
 
 def test_invalid_collector_and_positional_inputs_fail():
@@ -350,12 +350,12 @@ def test_repeated_cleanup_failures_only_report_once(capsys):
     assert capsys.readouterr().out.count('cleanup remains pending') == 1
 
 
-@pytest.mark.parametrize('argv', [('--trace-viewer', '--trace-viewer'), ('--trace-viewer=yes',),
-                                  ('--trace-viewer', '--view-flow')])
-def test_trace_viewer_rejects_duplicate_value_and_conflicting_mode(argv, capsys):
+@pytest.mark.parametrize('argv', [('--tui-mode=trace-viewer', '--tui-mode=trace-viewer'),
+                                  ('--tui-mode=trace-viewer', '--tui-mode=view-flow')])
+def test_trace_viewer_rejects_a_second_mode(argv, capsys):
     from api_agent.runtime import bootstrap
     assert bootstrap.main(argv, base_root=ROOT, _worktrees_verified=True) == 2
-    assert 'trace-viewer' in capsys.readouterr().err
+    assert 'Duplicate option --tui-mode' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('phase', ['browser-start', 'dashboard-login'])
@@ -433,7 +433,7 @@ def test_malformed_raw_urls_are_rejected_before_collector_acquisition(monkeypatc
     monkeypatch.setattr(api_agent.runtime.hook_assurance, 'assure_hook', lambda root: None)
     monkeypatch.setattr(api_agent.runtime.dependencies, 'ensure_environment', lambda *a, **k: pytest.fail('dependency preparation'))
     monkeypatch.setattr(trace_viewer, 'local_trace_prerequisites', lambda *a, **k: acquisitions.append(True))
-    assert bootstrap.main(['--trace-viewer', '--trace-mode=OTEL', f'{option}={value}'],
+    assert bootstrap.main(['--tui-mode=trace-viewer', '--trace-mode=OTEL', f'{option}={value}'],
                           base_root=ROOT, _worktrees_verified=True) == 2
     assert acquisitions == []
     assert value not in capsys.readouterr().err

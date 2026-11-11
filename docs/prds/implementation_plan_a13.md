@@ -7,7 +7,7 @@ available until this migration is implemented and qualified.
 
 ## Dispatch and main menu
 
-- [ ] Make View flow and Trace viewer ordinary TUI modes, selected through `--tui-mode view-flow` and `--tui-mode trace-viewer`. Remove the top-level `--view-flow` and `--trace-viewer` options as part of this migration. Update help and give actionable replacement syntax for obsolete options; do not retain competing dispatch paths.
+- [x] Make View flow and Trace viewer ordinary TUI modes, selected through `--tui-mode view-flow` and `--tui-mode trace-viewer`. Remove the top-level `--view-flow` and `--trace-viewer` options as part of this migration; they are now ordinary unknown options. Update help and do not retain competing dispatch paths.
 - [ ] Present this two-column order, retaining existing behavior for all other actions:
 
 | Left | Right |
@@ -34,7 +34,7 @@ available until this migration is implemented and qualified.
 
 ## Trace viewer and configuration repair
 
-- [ ] Enter the interactive viewer operation only when the same effective configuration that currently admits standalone `--trace-viewer` is valid. Disabled tracing, external/custom targets and missing/invalid relevant settings must not start a collector or browser. Reuse provider capability admission when [pack tracing providers](implementation_plan_k1a2.md) are delivered.
+- [ ] Enter the interactive viewer operation only when the same effective configuration that currently admits `--tui-mode trace-viewer` is valid. Disabled tracing, external/custom targets and missing/invalid relevant settings must not start a collector or browser. Reuse provider capability admission when [pack tracing providers](implementation_plan_k1a2.md) are delivered.
 - [ ] Resolve one actionable blocker at a time in a stable order. If its offending value is saved in `.env`, open Clear .env configuration; otherwise open Review configuration. Reuse the existing operation-required header and red footer-adjacent diagnostic, with the field and viewer-mode context. Distinguish a missing required value from a present but unsupported destination. Preserve applicability and saved-value provenance rather than guessing from error prose.
 - [ ] Carry the trace-viewer continuation intent only through its own repair screen. On `c Close`, re-resolve configuration: continue to the viewer if it is now valid; otherwise return to the main menu. Do not trap the user in repeated redirects, start a blocked viewer or change the return behavior of independently opened Clear/Review screens. Refresh the displayed blocker as corrections expose another requirement, without listing all failures at once.
 - [ ] Preserve headed browser/CDP presentation, optional dashboard login, explicitly permitted intended-login display and existing shared collector ownership. Closing Playwright must leave the command/operation and collector usable from another browser until explicit Stop, Ctrl+C or owner disposal. Menu return and quit must clean up safely; never remove retained trace volumes or disrupt another consumer.

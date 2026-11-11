@@ -36,7 +36,7 @@ _ROOT_FALLBACK = (
     b'\n'
     b'  Open this file in a browser to view the workflow.\n'
     b'  For managed viewing, follow Getting started in README.md, then run the launcher.\n'
-    b'./launch.sh --view-flow\n'
+    b'./launch.sh --tui-mode view-flow\n'
     b'\n'
     b'\n'
     b'\n'
@@ -46,7 +46,7 @@ _ROOT_FALLBACK = (
     b'\n'
     b'[workflow-help]: <section id="workflow-fallback" style="font:16px/1.6 system-ui,sans-serif"> "\n'
     b'    <h2>Viewing this file</h2><p>Follow Getting started in README.md, then run from the repository root:</p>\n'
-    b'    <pre>./launch.sh --view-flow</pre></section>"\n'
+    b'    <pre>./launch.sh --tui-mode view-flow</pre></section>"\n'
 )
 _ROOT_INSTRUCTIONS, _ROOT_HELP_BODY = _ROOT_FALLBACK.split(b'[workflow-help]', 1)
 _ROOT_HELP = b'[workflow-help]' + _ROOT_HELP_BODY
@@ -61,7 +61,7 @@ _NEW_END = b'\n<!-- workflow-generated-diagram:end -->\n'
 
 def _view_command(flow_path: str | None) -> str:
     from .layout import LayoutError
-    command = './launch.sh --view-flow'
+    command = './launch.sh --tui-mode view-flow'
     if flow_path is None or flow_path == 'flow.md.html':
         return command
     path = PurePosixPath(flow_path)
@@ -80,7 +80,7 @@ def _normalize_view_command(raw: bytes, *, flow_path: str | None = None) -> byte
     prefix, separator, body = raw.partition(_CARRIER)
     if not separator or not raw.startswith(_HINT):
         return raw
-    match = re.search(rb'^\./launch\.sh --view-flow ("(?:\\.|[^"\\\r\n])*")$', prefix, re.M)
+    match = re.search(rb'^\./launch\.sh --tui-mode view-flow ("(?:\\.|[^"\\\r\n])*")$', prefix, re.M)
     if match is None:
         return prefix + separator + body
     try:
@@ -92,7 +92,7 @@ def _normalize_view_command(raw: bytes, *, flow_path: str | None = None) -> byte
             raise LayoutError('workflow viewing command does not match declaration location')
     except (UnicodeError, ValueError) as error:
         raise LayoutError('invalid workflow viewing command') from error
-    base = b'./launch.sh --view-flow'
+    base = b'./launch.sh --tui-mode view-flow'
     prefix = prefix.replace(b'<pre>' + html.escape(command, quote=True).encode() + b'</pre>',
                             b'<pre>' + base + b'</pre>')
     prefix = prefix.replace(match[0], base, 1)
@@ -241,7 +241,7 @@ def validate_presentation_location(raw: bytes, *, path: Path, root: Path) -> Non
 
     path, root = Path(path), Path(root)
     relative = path.relative_to(root).as_posix()
-    if re.search(rb'^\./launch\.(?:py|sh) --view-flow "', raw, re.M):
+    if re.search(rb'^\./launch\.(?:py|sh) --tui-mode view-flow "', raw, re.M):
         from .viewer_repository import read_repository_identity
         recorded = read_repository_identity(root)
         prefix = recorded[0].path_prefix if recorded is not None else ''
@@ -321,6 +321,6 @@ def wrap_document(executable_bytes: bytes, *, root: bool, asset_prefix: str,
     help_body = _ROOT_HELP if root else b''
     if root:
         command = _view_command(flow_path)
-        head = head.replace(b'./launch.sh --view-flow', command.encode('utf-8'))
-        help_body = help_body.replace(b'./launch.sh --view-flow', html.escape(command, quote=True).encode())
+        head = head.replace(b'./launch.sh --tui-mode view-flow', command.encode('utf-8'))
+        help_body = help_body.replace(b'./launch.sh --tui-mode view-flow', html.escape(command, quote=True).encode())
     return head + help_body + _CARRIER + executable_bytes

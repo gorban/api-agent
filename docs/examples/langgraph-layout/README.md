@@ -5,4 +5,4 @@ components. The [contrived workflow](../../../demo/contrived/flow.md.html)
 exercises routing, schema contracts, and independently bounded retries.
 
 These declarations are the executable documentation. Open them directly or use
-`./launch.sh --view-flow` from the repository root.
+`./launch.sh --tui-mode view-flow` from the repository root.

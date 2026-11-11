@@ -291,10 +291,10 @@ an implemented-mode pass.
 
 ## Browser debugging
 
-For declaration-only inspection, `./launch.sh --view-flow` opens the selected
+For declaration-only inspection, `./launch.sh --tui-mode view-flow` opens the selected
 workflow in its own managed headed browser without provider setup or graph
 execution. Add one double-quoted flow path, for example
-`./launch.sh --view-flow "demo/contrived/flow.md.html"`, to inspect a different
+`./launch.sh --tui-mode view-flow "demo/contrived/flow.md.html"`, to inspect a different
 graph relative to the current directory. See [workflow diagrams](workflow_viewer.md) for static file opening,
 markup freshness, generator prerequisites and staged checks.
 

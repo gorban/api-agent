@@ -16,7 +16,7 @@ def test_root_page_command_round_trips_without_changing_executable_bytes(tmp_pat
     path = tmp_path / relative
     prefix = '../' * (len(Path(relative).parts) - 1) + '.private_resources/viewer/'
     wrapped = wrap_document(source, root=True, asset_prefix=prefix, flow_path=relative)
-    assert b'./launch.sh --view-flow "' in wrapped
+    assert b'./launch.sh --tui-mode view-flow "' in wrapped
     assert extract_document(wrapped, path=path).executable_bytes == source
     validate_presentation_location(wrapped, path=path, root=tmp_path)
 
@@ -24,15 +24,15 @@ def test_root_page_command_round_trips_without_changing_executable_bytes(tmp_pat
 def test_repository_root_command_omits_optional_path():
     wrapped = wrap_document(b'# Workflow\n', root=True,
                             asset_prefix='.private_resources/viewer/', flow_path='flow.md.html')
-    assert b'./launch.sh --view-flow\n' in wrapped
-    assert b'./launch.sh --view-flow "' not in wrapped
+    assert b'./launch.sh --tui-mode view-flow\n' in wrapped
+    assert b'./launch.sh --tui-mode view-flow "' not in wrapped
 
 
 def test_previous_python_launcher_envelope_is_rejected(tmp_path):
     source = b'# Workflow\n'
     wrapped = wrap_document(source, root=True, asset_prefix='../.private_resources/viewer/',
                             flow_path='nested/flow.md.html')
-    legacy = wrapped.replace(b'./launch.sh --view-flow', b'./launch.py --view-flow')
+    legacy = wrapped.replace(b'./launch.sh --tui-mode view-flow', b'./launch.py --view-flow')
     legacy = legacy.replace(b'For managed viewing, follow Getting started in README.md, then run the launcher.',
                             b'For managed viewing, use Python 3.13 or newer.')
     legacy = legacy.replace(b'Follow Getting started in README.md, then run from the repository root:',
@@ -40,6 +40,16 @@ def test_previous_python_launcher_envelope_is_rejected(tmp_path):
     path = tmp_path / 'nested/flow.md.html'
     with pytest.raises(LayoutError, match='envelope'):
         extract_document(legacy, path=path)
+
+
+@pytest.mark.parametrize('flow_path', ['flow.md.html', 'nested/flow.md.html'])
+def test_previous_standalone_view_flag_envelope_is_rejected(tmp_path, flow_path):
+    wrapped = wrap_document(b'# Workflow\n', root=True, flow_path=flow_path,
+                            asset_prefix='../' * flow_path.count('/') + '.private_resources/viewer/')
+    legacy = wrapped.replace(b'./launch.sh --tui-mode view-flow', b'./launch.sh --view-flow')
+    assert legacy != wrapped
+    with pytest.raises(LayoutError, match='envelope'):
+        validate_presentation_location(legacy, path=tmp_path / flow_path, root=tmp_path)
 
 
 def test_previous_mise_envelope_is_rejected(tmp_path):
@@ -67,8 +77,8 @@ def test_generated_viewing_command_rejects_unsafe_paths(relative):
 def test_root_page_rejects_mismatched_help_and_editor_commands(tmp_path):
     wrapped = wrap_document(b'# Workflow\n', root=True,
                             asset_prefix='.private_resources/viewer/', flow_path='nested/flow.md.html')
-    changed = wrapped.replace(b'<pre>./launch.sh --view-flow &quot;nested/flow.md.html&quot;</pre>',
-                              b'<pre>./launch.sh --view-flow &quot;other/flow.md.html&quot;</pre>')
+    changed = wrapped.replace(b'<pre>./launch.sh --tui-mode view-flow &quot;nested/flow.md.html&quot;</pre>',
+                              b'<pre>./launch.sh --tui-mode view-flow &quot;other/flow.md.html&quot;</pre>')
     assert changed != wrapped
     with pytest.raises(LayoutError, match='envelope'):
         extract_document(changed, path=tmp_path / 'flow.md.html')

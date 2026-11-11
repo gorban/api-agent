@@ -162,9 +162,9 @@ def test_configured_noninteractive_viewer_mode_bypasses_application_setup(mode, 
     run.assert_called_once()
 
 
-@pytest.mark.parametrize('alias', ['--view-flow', '--trace-viewer'])
+@pytest.mark.parametrize('mode', ['view-flow', 'trace-viewer'])
 @pytest.mark.parametrize('source', ['cli', 'environment', 'dotenv'])
-def test_viewer_alias_collection_never_starts_resources(alias, source, capsys):
+def test_viewer_mode_collection_never_starts_resources(mode, source, capsys):
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     options = ['--collect-only=True'] if source == 'cli' else []
@@ -173,9 +173,9 @@ def test_viewer_alias_collection_never_starts_resources(alias, source, capsys):
     with patch.dict('os.environ', environ, clear=True), \
             patch('api_agent.config.read_dotenv', return_value=dotenv), \
             patch('api_agent.runtime.dependencies.ensure_environment', side_effect=AssertionError('started resources')):
-        assert main([alias, *options], base_root=root, _worktrees_verified=True) == 2
+        assert main(['--tui-mode=' + mode, *options], base_root=root, _worktrees_verified=True) == 2
         assert 'COLLECT_ONLY requires' in capsys.readouterr().err
-        assert main([alias, *options, '--help'], base_root=root, _worktrees_verified=True) == 0
+        assert main(['--tui-mode=' + mode, *options, '--help'], base_root=root, _worktrees_verified=True) == 0
 
 
 @pytest.mark.parametrize('field', ['LLM_PROVIDER', 'API_PROVIDER', 'UI_PROVIDER'])
@@ -232,12 +232,11 @@ def test_trace_menu_handoff_filters_other_provider_options_and_keeps_trace_optio
 
 
 @pytest.mark.parametrize('mode,runner', [('view-flow', 'view_flow'), ('trace-viewer', 'trace_viewer')])
-@pytest.mark.parametrize('entry', ['mode', 'alias'])
 @pytest.mark.parametrize('help_args', [['--help', 'False'], ['--help=False']])
-def test_viewer_cli_help_false_overrides_inherited_true(mode, runner, entry, help_args):
+def test_viewer_cli_help_false_overrides_inherited_true(mode, runner, help_args):
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
-    select = ['--tui-mode=' + mode] if entry == 'mode' else ['--' + mode]
+    select = ['--tui-mode=' + mode]
     with patch.dict('os.environ', {'HELP': 'True'}, clear=True), \
             patch('api_agent.config.read_dotenv', return_value={}), \
             patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
@@ -249,12 +248,11 @@ def test_viewer_cli_help_false_overrides_inherited_true(mode, runner, entry, hel
 
 
 @pytest.mark.parametrize('mode', ['view-flow', 'trace-viewer'])
-@pytest.mark.parametrize('entry', ['mode', 'alias'])
 @pytest.mark.parametrize('help_args', [['--help', 'True'], ['--help=True']])
-def test_viewer_cli_help_true_is_lazy(mode, entry, help_args):
+def test_viewer_cli_help_true_is_lazy(mode, help_args):
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
-    select = ['--tui-mode=' + mode] if entry == 'mode' else ['--' + mode]
+    select = ['--tui-mode=' + mode]
     with patch.dict('os.environ', {'HELP': 'False', 'LLM_PROVIDER': '/invalid/provider.py:factory'}, clear=True), \
             patch('api_agent.config.read_dotenv', return_value={}), \
             patch('api_agent.runtime.dependencies.ensure_environment', side_effect=AssertionError('started resources')), \
@@ -309,15 +307,6 @@ def test_viewer_mode_rejects_missing_value():
     from api_agent.runtime.bootstrap import _extract_tui_mode
     with pytest.raises(ValueError, match='requires a value'):
         _extract_tui_mode(['--TUI_MODE'])
-
-
-@pytest.mark.parametrize('alias', ['--view-flow', '--trace-viewer'])
-def test_viewer_mode_conflicts_with_standalone_flag(alias):
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[2]
-    with patch.dict('os.environ', {}, clear=True), \
-            patch('api_agent.runtime.dependencies.ensure_environment', side_effect=AssertionError('started resources')):
-        assert main(['--tui-mode=view-flow', alias], base_root=root, _worktrees_verified=True) == 2
 
 
 def test_viewer_mode_selector_after_separator_is_not_help(capsys):
