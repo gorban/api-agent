@@ -85,6 +85,45 @@ def test_unknown_failed_calls_do_not_erase_reported_spend_or_claim_zero():
     assert has_tokens(legacy, 'first') and 'total: 5' in tokens_text(legacy, 'first')
 
 
+def test_inclusive_input_subtotal_survives_unknown_cache_breakdown_and_calls():
+    from api_agent.telemetry.usage import SuiteUsage
+    from api_agent.telemetry.usage_output import tokens_text
+
+    usage = SuiteUsage('run')
+    usage.add_usage(provider='p', model='one', session_id='first',
+                    input_tokens=317654, output_tokens=14312)
+    usage.add_usage(provider='p', model='one', session_id='second',
+                    input_tokens=91864, output_tokens=1571)
+    usage.add_usage(provider='p', model='one', session_id='second',
+                    input_tokens=None, output_tokens=None)
+
+    text = tokens_text(usage.report())
+
+    assert '  input (including cache): 409,518 + unknown\n' in text
+    assert '  non-cached input (writes unreported): unavailable\n' in text
+    assert '  output (reasoning unreported): 15,883 + unknown\n' in text
+    assert '  total: 425,401 + unknown' in text
+    assert 'input (including cache): 317,654\n' in tokens_text(usage.report(), 'first')
+    assert 'input (including cache): 91,864 + unknown\n' in tokens_text(usage.report(), 'second')
+    assert 'input (including cache)' not in tokens_text(usage.report(), 'absent')
+
+
+def test_inclusive_input_subtotal_does_not_mix_cached_and_uncached_counts():
+    from api_agent.telemetry.usage_output import tokens_text
+
+    report = {'usage_observations': [
+        dict(input_tokens=100, output_tokens=5, cache_read_tokens=80,
+             cache_creation_tokens=0, reasoning_tokens=0, total_tokens=105),
+        dict(input_tokens=200, output_tokens=5, cache_read_tokens=None,
+             cache_creation_tokens=None, reasoning_tokens=0, total_tokens=205)]}
+
+    text = tokens_text(report)
+
+    assert 'input (including cache): 300\n' in text
+    assert 'non-cached input (writes unreported): 20 + unknown\n' in text
+    assert 'cached input: 80 + unknown\n' in text
+
+
 def test_native_invocation_without_provider_observation_is_counted_but_tokens_unknown():
     from api_agent.telemetry.usage import SuiteUsage
     from api_agent.telemetry.usage_output import tokens_text
