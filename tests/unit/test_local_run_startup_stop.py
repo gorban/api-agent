@@ -47,9 +47,11 @@ def test_stop_during_suppressed_startup_keeps_loop_and_automatically_retries(loc
             await entered.wait()
             stopping = asyncio.create_task(screen.close_owned())
             try:
-                finished, _ = await asyncio.wait({stopping}, timeout=.05)
-                assert stopping not in finished
+                deadline = asyncio.get_running_loop().time() + 5
+                while 'cleanup-pending' not in phases and asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(.01)
                 assert 'cleanup-pending' in phases
+                assert not stopping.done()
                 assert local.owner.pending_cleanup is not None
                 assert not screen.disposed
                 assert not app.menu_shown
