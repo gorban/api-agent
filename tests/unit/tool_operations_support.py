@@ -19,8 +19,12 @@ def table(rows):
 
 
 def build(root, grammar, *, reader='introspect, query', writer='mutate', interface='operations@1',
-          implementation='tool/tool.toml', graph_timeout=None):
-    """Write one graph whose `reader` and `writer` nodes share one tool instance."""
+          implementation='tool/tool.toml', graph_timeout=None, timeouts=(), node_timeouts=None):
+    """Write one graph whose `reader` and `writer` nodes share one tool instance.
+
+    ``timeouts`` rows ``(owner, key, default)`` go to the root; ``node_timeouts`` maps a node to
+    rows written in its own document. Every key is declared in one configuration file.
+    """
     shutil.copytree(FIXTURE, root / 'tool')
     (root / 'instance.toml').write_text(
         f'version = 1\nid = "sample/records"\ninterface = "{interface}"\n'
@@ -35,7 +39,10 @@ def build(root, grammar, *, reader='introspect, query', writer='mutate', interfa
         (root / f'{node}.md.html').write_text(
             f'# Node: {node}\n\n## Native\n\n| Registry | Kind | Source |\n| --- | --- | --- |\n'
             f'| {node} | deterministic | [source](native.py) |\n' + functions
-            + '\n## Tools\n\n' + table([(port, operations)]))
+            + '\n## Tools\n\n' + table([(port, operations)])
+            + ('\n## Timeouts\n\n| Owner | Source | Key |\n| --- | --- | --- |\n' + ''.join(
+                f'| {owner} | [configuration](timeouts.toml) | {key} |\n'
+                for owner, key, _ in (node_timeouts or {}).get(node, ())) if node in (node_timeouts or {}) else ''))
     components = ('\n## Components\n\n| ID | Max passes | Guard |\n| --- | --- | --- |\n| work | 1 | writer |\n'
                   if grammar == 'older' else '')
     (root / 'component.md.html').write_text(
@@ -45,14 +52,19 @@ def build(root, grammar, *, reader='introspect, query', writer='mutate', interfa
              '\n## Edges\n\n| From | To | Router | Source |\n| --- | --- | --- | --- |\n'
              '| reader | writer | - | - |\n| writer | END | - | - |\n| work | END | - | - |\n'
              if grammar == 'typed' else '')
+    rows = [('GRAPH', 'GRAPH_TIMEOUT', graph_timeout)] if graph_timeout is not None else []
+    rows += list(timeouts)
+    declared = {key: default for _, key, default in
+                rows + [row for node in (node_timeouts or {}).values() for row in node]}
     timeouts = ''
-    if graph_timeout is not None:
-        (root / 'timeouts.toml').write_text(
-            'version = 1\n\n[fields.GRAPH_TIMEOUT]\ntype = "float"\n'
-            f'default = {graph_timeout}\nvalidation = "positive"\nacknowledge_default = false\n'
-            'help = "Whole workflow deadline in seconds."\n')
-        timeouts = ('\n## Timeouts\n\n| Owner | Source | Key |\n| --- | --- | --- |\n'
-                    '| GRAPH | [configuration](timeouts.toml) | GRAPH_TIMEOUT |\n')
+    if declared:
+        (root / 'timeouts.toml').write_text('version = 1\n' + ''.join(
+            f'\n[fields.{key}]\ntype = "float"\ndefault = {default}\nvalidation = "positive"\n'
+            'acknowledge_default = false\nhelp = "Declared budget in seconds."\n'
+            for key, default in declared.items()))
+    if rows:
+        timeouts = ('\n## Timeouts\n\n| Owner | Source | Key |\n| --- | --- | --- |\n' + ''.join(
+            f'| {owner} | [configuration](timeouts.toml) | {key} |\n' for owner, key, _ in rows))
     entry = root / 'flow.md.html'
     entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| sample |\n'
                      '\n## Flow\n\n1.  [component work](component.md.html)\n' + typed + timeouts)

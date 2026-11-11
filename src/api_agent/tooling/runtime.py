@@ -206,8 +206,10 @@ def _matches(resolver, definition):
 
 
 class ToolInvocation:
-    def __init__(self, definition, resolver):
+    def __init__(self, definition, resolver, timeouts=None):
         self.definition, self.resolver = definition, resolver
+        # Resolved Timeouts values by owner; ``<node>.<port>`` owners bound that port's calls.
+        self.timeouts = timeouts or {}
         if resolver is not None and not _matches(resolver, definition):
             raise ContractError('Tool resolver does not match workflow definition')
         self.id, self.closed, self.gates = str(uuid4()), False, {}
@@ -218,6 +220,9 @@ class ToolInvocation:
         if self.closed:
             raise ContractError('Tool invocation is closed')
 
+    def timeout(self, use):
+        return self.timeouts.get(f'{use.scope}.{use.port}')
+
     def gate(self, use):
         self.check()
         if self.resolver is None:
@@ -225,7 +230,7 @@ class ToolInvocation:
         resolver = self.resolver.for_node(use.scope)
         instance = resolver.instance(use.port)
         if instance not in self.gates:
-            self.gates[instance] = resolver.gate(use.port, invocation_id=self.id)
+            self.gates[instance] = resolver.gate(use.port, invocation_id=self.id, timeout=self.timeout(use))
         return instance, self.gates[instance]
 
     async def dispatch(self, use, operation, /, *args, **kwargs):
@@ -300,13 +305,13 @@ def bind_workflow_tools(resolver):
 
 
 @asynccontextmanager
-async def invocation_tools(definition, services):
+async def invocation_tools(definition, services, *, timeouts=None):
     admitted, supplied = _ADMITTED_TOOLS.get(), services.get('tools')
     if admitted is not None and not _matches(admitted, definition):
         admitted = None
     if admitted is not None and supplied is not None:
         raise ContractError('Workflow tools are supplied by the engine, not the application')
-    invocation = ToolInvocation(definition, admitted if admitted is not None else supplied)
+    invocation = ToolInvocation(definition, admitted if admitted is not None else supplied, timeouts)
     token = _CURRENT_TOOLS.set(invocation)
     try:
         yield invocation
@@ -335,13 +340,13 @@ class OwnerTools:
         body = getattr(self.definition, 'contents', {}).get(self._instance)
         return tomllib.loads(body.decode('utf-8'))['id'] if body is not None else str(self._instance)
 
-    def gate(self, port, *, invocation_id):
+    def gate(self, port, *, invocation_id, timeout=None):
         factory = getattr(self.owner, 'for_invocation', None)
         if factory is not None and (not callable(factory) or inspect.iscoroutinefunction(factory)):
             raise ContractError('Tool invocation factory must be synchronous')
         view = factory() if factory is not None else self.owner
         # A direct owner is borrowed and must never be disposed by a node turn.
-        return ToolGate(_OwnerView(view, self.owner), invocation_id=invocation_id,
+        return ToolGate(_OwnerView(view, self.owner), invocation_id=invocation_id, timeout=timeout,
                         tool_alias=port, tool_instance=self.instance())
 
 

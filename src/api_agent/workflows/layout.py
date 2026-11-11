@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
-from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID
+from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID, timeout_owner_problem
 from .predicates import PredicateError, backward_bound, parse_predicate, predicate_fields, unbounded_edge_message
 from . import session
 
@@ -56,7 +56,7 @@ def load_layout(path, *, base_root, pack_root):
     return load_definition(path, base_root=base_root, pack_root=pack_root).layout
 
 
-def _validate(layout, resource_bytes=None):
+def _validate(layout, resource_bytes=None, tool_ports=None):
     steps = {item.id: item for item in layout.steps}
     for section, kind in (('Components', 'component'), ('Functions', 'node')):
         entries = layout.tables[section]
@@ -165,11 +165,9 @@ def _validate(layout, resource_bytes=None):
         if (row['Node'] not in functions or row['When'] == 'otherwise'
                 or (row['When'] != 'always' and _ID.fullmatch(row['When']) is None)):
             layout.error('unknown prompt node or condition', row['line'])
-    seen = set()
-    for row in layout.tables['Timeouts']:
-        if row['Owner'] not in {'GRAPH', *steps} or row['Owner'] in seen or _ID.fullmatch(row['Key'].lower()) is None:
-            layout.error('unknown or duplicate timeout owner/key', row['line'])
-        seen.add(row['Owner'])
+    problem = timeout_owner_problem(layout.tables['Timeouts'], steps, tool_ports or {})
+    if problem is not None:
+        layout.row_error(*problem)
 
 
 def validate_limit_rows(layout, pass_sources):
