@@ -308,15 +308,15 @@ def _thaw(value):
     return value
 
 
-def _latest_turn_value(writers, values, field):
-    """The newest still-present output of ``field`` among nodes that completed this turn.
+def _latest_turn_value(runs, field):
+    """The value of ``field`` written by the most recently completed run that wrote it.
 
-    ``writers`` maps a field to node IDs in completion order. A node whose output the
-    engine has since cleared (a rejected component pass) no longer counts.
+    ``runs`` lists ``(node, output)`` for every completed run of the turn in completion
+    order, without the runs a rejected guarded pass discarded. A run that omits the field
+    writes nothing, and a run an engine re-entry superseded still counts.
     """
-    for node in reversed(writers.get(field, ())):
-        output = values.get(node)
-        if output is not None and field in output:
+    for _, output in reversed(runs):
+        if field in output:
             return True, output[field]
     return False, None
 
@@ -560,8 +560,8 @@ class Workflow:
         graph.add_edge(START, 'commit')
         return graph.compile(checkpointer=checkpointer if checkpointer is not None else InMemorySaver())
 
-    def _turn_payload(self, values, field):
-        found, value = _latest_turn_value(self._turn_state.get()['writers'], values, field)
+    def _turn_payload(self, field):
+        found, value = _latest_turn_value(self._turn_state.get()['runs'], field)
         return {field: value} if found else {}
 
     def _run_services(self):
@@ -842,7 +842,7 @@ class Workflow:
                            'FEEDBACK': state['feedback'], 'ATTEMPT': {'value': context.attempt},
                            'MAX_PASSES': {'value': context.max_passes},
                            'SESSION': self._turn_state.get().get('session', {}),
-                           'TURN': self._turn_payload(values, binding['Field']) if source == 'TURN' else {}}
+                           'TURN': self._turn_payload(binding['Field']) if source == 'TURN' else {}}
                 payload = sources.get(source, values.get(source, {}))
                 available = (source in ('START', 'ATTEMPT', 'MAX_PASSES')
                              or (source == 'PREVIOUS' and step.id in state['previous'])
@@ -889,8 +889,6 @@ class Workflow:
             self._event('node', scope_id=budget.id, node=step.id, component=step.parent, attempt=context.attempt,
                         elapsed=time.monotonic() - started, kind=function.kind)
             turn_state = self._turn_state.get()
-            for name in result:
-                turn_state['writers'].setdefault(name, []).append(step.id)
             output = deepcopy(result)
             turn_state['runs'].append((step.id, output))
             return dict(state, values={**values, step.id: output}, visit_id=budget.id)
@@ -1513,7 +1511,7 @@ class Workflow:
         from .inference_history import InferenceHistory
         history = InferenceHistory()
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
-                                                  'contexts': {}, 'budgets': {}, 'writers': {}, 'runs': []})
+                                                  'contexts': {}, 'budgets': {}, 'runs': []})
         completed = False
         try:
             selected_journal = self._journal.get()
