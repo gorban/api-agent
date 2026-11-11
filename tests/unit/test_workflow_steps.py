@@ -426,3 +426,29 @@ def test_mixed_llm_tool_children_follow_observation_order_with_untimed_call_owne
     assert all({'name': 'input_tokens', 'value': '2'} in leaf['parameters'] for leaf in calls)
     assert {'name': 'inclusive_input_tokens', 'value': '6.0'} in projected['parameters']
     assert not any(item['name'].startswith('call ') for item in projected['parameters'])
+
+
+@pytest.mark.parametrize('events', [
+    [dict(event='scope_start', scope_id='00000000-0000-0000-0000-000000000002', parent_id=None, kind='graph', owner='GRAPH', started_ms=1),
+     dict(event='scope_start', scope_id='00000000-0000-0000-0000-000000000001', parent_id='00000000-0000-0000-0000-000000000002', kind='graph', owner='GRAPH', started_ms=1)],
+    [dict(event='scope_start', scope_id='00000000-0000-0000-0000-000000000001', parent_id='00000000-0000-0000-0000-000000000002', kind='node', owner='Make', started_ms=1),
+     dict(event='scope_start', scope_id='00000000-0000-0000-0000-000000000002', parent_id=None, kind='graph', owner='GRAPH', started_ms=1)],
+    [dict(event='scope_start', scope_id='00000000-0000-0000-0000-000000000002', parent_id=None, kind='graph', owner='GRAPH', started_ms=1),
+     dict(event='scope_start', scope_id='00000000-0000-0000-0000-000000000003', parent_id='00000000-0000-0000-0000-000000000002', kind='node', owner='Make', started_ms=1),
+     dict(event='scope_start', scope_id='00000000-0000-0000-0000-000000000001', parent_id='00000000-0000-0000-0000-000000000003', kind='node', owner='Make', started_ms=1)],
+])
+def test_partial_scope_projection_rejects_invalid_ownership(events):
+    with pytest.raises(ValueError, match='ownership'):
+        scope_steps(events, allow_partial=True)
+
+
+def test_partial_scope_checks_observed_bounds_through_open_ancestor():
+    root, parent, child = (str(uuid4()) for _ in range(3))
+    graph = dict(scope_id=root, parent_id=None, kind='graph', owner='GRAPH', started_ms=1)
+    component = dict(scope_id=parent, parent_id=root, kind='component', owner='Stage', started_ms=2)
+    node = dict(scope_id=child, parent_id=parent, kind='node', owner='Make', started_ms=3)
+    events = [dict(event='scope_start', **graph), dict(event='scope_start', **component),
+              dict(event='scope_start', **node), dict(event='scope_end', stopped_ms=5, outcome='passed', **node),
+              dict(event='scope_end', stopped_ms=4, outcome='failed', **graph)]
+    with pytest.raises(ValueError, match='outside its owner'):
+        scope_steps(events, allow_partial=True)

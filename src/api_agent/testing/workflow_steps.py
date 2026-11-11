@@ -136,25 +136,25 @@ def _recover_scope_attempts(scopes, rows, attempts):
     for identifier, scope in reversed(tuple(scopes.items())):
         parent = scopes.get(scope['parent_id'])
         attempt = scope.get('attempt')
-        if (scope['kind'] != 'node' or scope['end']['outcome'] != 'failed'
+        if (scope['kind'] != 'node' or scope['end'] is None or scope['end']['outcome'] != 'failed'
                 or parent is None or parent['kind'] != 'component'
-                or parent['end']['outcome'] != 'passed'
+                or parent['end'] is None or parent['end']['outcome'] != 'passed'
                 or type(attempt) is not int or attempt < 1):
             continue
         controller = parent
         while (controller['kind'] == 'component' and controller.get('max_passes') == 1
-               and controller['end']['outcome'] == 'passed'):
+               and controller['end'] is not None and controller['end']['outcome'] == 'passed'):
             controller = scopes[controller['parent_id']]
         maximum = scope.get('max_passes')
         observed = (min(maximum, attempts.get(controller['scope_id'], 0))
                     if type(maximum) is int and maximum > 1
-                    and controller['kind'] == 'component' and controller['end']['outcome'] == 'passed'
+                    and controller['kind'] == 'component' and controller['end'] is not None and controller['end']['outcome'] == 'passed'
                     and controller.get('max_passes') == maximum else 0)
         for successor_id, successor in scopes.items():
             next_attempt = successor.get('attempt')
             if (successor['kind'] == 'node' and successor['parent_id'] == scope['parent_id']
                     and successor['owner'] == scope['owner']
-                    and successor['end']['outcome'] == 'passed'
+                    and successor['end'] is not None and successor['end']['outcome'] == 'passed'
                     and successor.get('max_passes') == maximum
                     and type(next_attempt) is int
                     and attempt < next_attempt <= observed
@@ -164,7 +164,7 @@ def _recover_scope_attempts(scopes, rows, attempts):
                 break
 
 
-def scope_steps(events):
+def scope_steps(events, *, allow_partial=False):
     """An ended scope needs a real start and explicit outcome, never a heartbeat."""
     from api_agent.workflows.tool_observations import validate_tool_events
     validate_tool_events(events)
@@ -191,7 +191,12 @@ def scope_steps(events):
         if kind == 'scope_start':
             if identifier in scopes:
                 raise ValueError('Duplicate workflow scope start')
-            scopes[identifier] = dict(event, end=None)
+            if allow_partial and parent is not None:
+                owner = scopes.get(parent)
+                if (event['kind'] == 'graph' or owner is None or owner['end'] is not None
+                        or owner['kind'] not in ('graph', 'component')):
+                    raise ValueError('Invalid workflow scope ownership')
+            scopes[identifier] = dict(event, parent_id=parent, end=None)
         else:
             previous = scopes.get(identifier)
             if (previous is None or previous['end'] is not None
@@ -203,10 +208,11 @@ def scope_steps(events):
     rows, roots = {}, []
     for identifier, scope in scopes.items():
         end = scope['end']
-        if end is None:
+        if end is None and not allow_partial:
             raise ValueError('Workflow scope has no explicit completion')
-        parameters = [dict(name='scope_id', value=identifier),
-                      dict(name='outcome', value=end['outcome'])]
+        parameters = [dict(name='scope_id', value=identifier)]
+        if end is not None:
+            parameters.append(dict(name='outcome', value=end['outcome']))
         for name in ('attempt', 'max_passes', 'declared_timeout', 'effective_timeout', 'timeout_key'):
             if scope.get(name) is not None:
                 parameters.append(dict(name=name, value=str(scope[name])))
@@ -217,9 +223,11 @@ def scope_steps(events):
         if identifier in rejections:
             parameters.append(dict(name='guard_rejections', value=str(rejections[identifier])))
         rows[identifier] = dict(name=scope['kind'] + ' ' + scope['owner'],
-            status=('failed' if end['outcome'] == 'failed' else 'broken'
+            status=('broken' if end is None else 'failed' if end['outcome'] == 'failed' else 'broken'
                     if end['outcome'] in ('cancelled', 'partial', 'unknown') or attempts.get(identifier, 0) > 1 else 'passed'),
-            start=int(scope['started_ms']), stop=int(end['stopped_ms']), steps=[], parameters=parameters)
+            start=int(scope['started_ms']), steps=[], parameters=parameters)
+        if end is not None:
+            rows[identifier]['stop'] = int(end['stopped_ms'])
         if scope['kind'] == 'node':
             for direction in ('input', 'output'):
                 _capture_status(rows[identifier], direction, 'not_observed')
@@ -231,12 +239,17 @@ def scope_steps(events):
                 raise ValueError('Workflow scope ownership is cyclic')
             ancestors.add(cursor)
             cursor = scopes[cursor]['parent_id']
+        for ancestor_id in ancestors - {identifier}:
+            ancestor = scopes[ancestor_id]
+            ancestor_end = ancestor['end']
+            if (scope['started_ms'] < ancestor['started_ms'] or (ancestor_end is not None and
+                    (scope['started_ms'] > ancestor_end['stopped_ms'] or
+                     (scope['end'] is not None and scope['end']['stopped_ms'] > ancestor_end['stopped_ms'])))):
+                raise ValueError('Workflow child interval is outside its owner')
         parent = scope['parent_id']
         if parent in rows:
             owner = rows[parent]
             row = rows[identifier]
-            if row['start'] < owner['start'] or row['stop'] > owner['stop']:
-                raise ValueError('Workflow child interval is outside its owner')
             owner['steps'].append(row)
         elif parent is None:
             roots.append(rows[identifier])
@@ -319,7 +332,7 @@ def scope_steps(events):
             status = attention_status(status, *(step['status'] for step in physical_steps))
         parent['status'] = attention_status(parent['status'], status)
         start, stop = event.get('started_ms'), event.get('stopped_ms')
-        if _time(start) and _time(stop) and parent['start'] <= start <= stop <= parent['stop']:
+        if _time(start) and _time(stop) and 'stop' in parent and parent['start'] <= start <= stop <= parent['stop']:
             parent['steps'].append(dict(name='call ' + call_id, status=status,
                                         start=int(start), stop=int(stop), steps=physical_steps, parameters=parameters))
         else:

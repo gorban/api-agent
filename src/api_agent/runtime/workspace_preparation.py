@@ -12,6 +12,15 @@ def _text(value):
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _workspace_path(value):
+    value = getattr(value, 'value', value)
+    try:
+        value = os.fspath(value)
+    except TypeError:
+        return None
+    return value if isinstance(value, str) and value.strip() and '\0' not in value else None
+
+
 def prepare_selected_workspaces(context, values, kinds, *, cancellation=None):
     """Install each selected provider's declared Node workspace once, by canonical path.
 
@@ -28,7 +37,7 @@ def prepare_selected_workspaces(context, values, kinds, *, cancellation=None):
     prepared = []
     for manifest in manifests:
         for workspace in manifest.node_workspaces:
-            selected = _text(values.get(workspace.path_field))
+            selected = _workspace_path(values.get(workspace.path_field))
             if selected is None:
                 raise ValueError(f'{workspace.path_field} must select the workspace to prepare.')
             root = Path(selected).expanduser().resolve()

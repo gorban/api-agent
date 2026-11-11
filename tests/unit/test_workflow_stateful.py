@@ -1239,6 +1239,44 @@ def _conditional(root, entry, group_edges=_WHEN_GROUP, root_edges='| group | END
                      + '| From | To | When |\n| --- | --- | --- |\n' + root_edges)
 
 
+@pytest.mark.parametrize('compiled', [False, True])
+@pytest.mark.parametrize(('pending', 'target', 'condition'), [
+    (False, 'intake', 'otherwise'),
+    (True, 'finish', '.pending'),
+])
+def test_declared_component_entry_is_recorded_and_strict(fixture_graph, tmp_path, monkeypatch,
+                                                         compiled, pending, target, condition):
+    root, entry = fixture_graph
+    _conditional(root, entry)
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    if compiled:
+        from artifact_acceptance_support import build_wheel, install
+        from api_agent.workflows.artifact import load_artifact, compiled_provenance
+        from api_agent.workflows.artifact_compile import compile_definition
+        wheel = build_wheel(tmp_path, 'entry-bindings', {'native.py': (root / 'native.py').read_bytes()})
+        monkeypatch.syspath_prepend(str(install(wheel, tmp_path / 'site')))
+        monkeypatch.delitem(sys.modules, 'native', raising=False)
+        definition = load_artifact(compile_definition(definition, [wheel]))
+        catalog = definition.load_catalog()
+        journal = WorkflowJournal(definition, source_manifest=compiled_provenance(definition))
+    else:
+        catalog = load_native_bindings(definition)
+        journal = WorkflowJournal(definition)
+    workflow = Workflow(definition, catalog=catalog, reducers={'messages': add_messages}, journal=journal)
+
+    rejected = WorkflowJournal(definition)
+    with pytest.raises(ValueError, match='Undeclared workflow observation edge'):
+        rejected.observe(dict(event='edge', owner='group', source='START', target=target,
+                             condition='always', implicit=False))
+    asyncio.run(workflow.arun({'messages': [], 'pending': pending, 'visits': 0}, thread_id='entry'))
+    envelope = journal.finalize()
+
+    assert validate_journal(envelope) is envelope
+    assert any(event.get('owner') == 'group' and event.get('source') == 'START'
+               and event.get('target') == target and event.get('condition') == condition
+               and event.get('implicit') is False for event in envelope['events'])
+
+
 def test_typed_edges_route_on_state_conditions_and_conditional_component_entry(fixture_graph):
     from api_agent.workflows.viewer_projection import project_view
     root, entry = fixture_graph

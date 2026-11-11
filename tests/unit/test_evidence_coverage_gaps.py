@@ -627,11 +627,36 @@ def test_raw_capture_duplicate_does_not_consume_budget_twice():
         assert collector['rows'] == [dict(phase='request', content=row, reason='captured')]
 
 
-def test_raw_capture_non_object_is_reported_as_truncated():
+@pytest.mark.parametrize('wire', [
+    ['unsupported root'],
+    {'nested': object()},
+    {'nested': {1: 'non-string key'}},
+])
+def test_raw_capture_unsupported_values_are_unavailable(wire):
     from api_agent.workflows.inference_capture import capture_inference, collect_inference
     with collect_inference(EmissionBoundary(ContentPolicy(True)), retain_raw=True) as collector:
-        capture_inference('input', ['unsupported root'], 'cause')
-    assert collector['rows'] == [dict(phase='request', content={}, reason='truncated')]
+        capture_inference('input', wire, 'cause', fallback=True)
+    assert collector['rows'] == [dict(phase='request', content={}, reason='unavailable', _source='fallback')]
+
+
+def test_raw_capture_cycle_is_unavailable():
+    from api_agent.workflows.inference_capture import capture_inference, collect_inference
+    cycle = []
+    cycle.append(cycle)
+    with collect_inference(EmissionBoundary(ContentPolicy(True)), retain_raw=True) as collector:
+        capture_inference('input', {'cycle': cycle}, 'cause', fallback=True)
+    assert collector['rows'] == [dict(phase='request', content={}, reason='unavailable', _source='fallback')]
+
+
+@pytest.mark.parametrize('wire', [
+    {'text': 'x' * (4 * 1024 * 1024)},
+    {'nested': [[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]},
+])
+def test_raw_capture_limits_remain_truncated(wire):
+    from api_agent.workflows.inference_capture import capture_inference, collect_inference
+    with collect_inference(EmissionBoundary(ContentPolicy(True)), retain_raw=True) as collector:
+        capture_inference('input', wire, 'cause', fallback=True)
+    assert collector['rows'] == [dict(phase='request', content={}, reason='truncated', _source='fallback')]
 
 
 def test_payload_indexes_enforce_aggregate_limit_across_independent_indexes(tmp_path):

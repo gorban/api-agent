@@ -474,6 +474,10 @@ async def prepare_capture_auth(auth):
     await register_secret_async(boundary, auth)
 
 
+class _UnsupportedCapture(ValueError):
+    """A value cannot be represented as trusted JSON capture evidence."""
+
+
 def _snapshot_raw(value, maximum):
     """Copy bounded JSON structure without serializing large strings on the loop.
 
@@ -507,7 +511,7 @@ def _snapshot_raw(value, maximum):
             charge(len(repr(item)))
             return item
         if type(item) not in (dict, list) or id(item) in active:
-            raise ValueError('Unsupported capture value')
+            raise _UnsupportedCapture('Unsupported capture value')
         charge(2 + max(0, len(item) - 1))
         active.add(id(item))
         try:
@@ -515,7 +519,7 @@ def _snapshot_raw(value, maximum):
                 result = {}
                 for key, child in item.items():
                     if type(key) is not str:
-                        raise ValueError('Unsupported capture key')
+                        raise _UnsupportedCapture('Unsupported capture key')
                     charge(len(key) + 3)
                     result[key] = copy(child, depth + 1)
                 return result
@@ -708,9 +712,12 @@ def capture_inference(direction, wire, cause_id, *, auth=None, fallback=False, p
             # once with the complete per-call union before any publication.
             try:
                 if type(wire) is not dict:
-                    raise ValueError('Unsupported capture')
+                    raise _UnsupportedCapture('Unsupported capture')
                 safe, raw_size = _snapshot_raw(wire, collector['remaining'])
                 reason = 'captured'
+            except _UnsupportedCapture:
+                safe, reason = {}, 'unavailable'
+                raw_size = 0
             except ValueError:
                 safe, reason = {}, 'truncated'
                 raw_size = 0

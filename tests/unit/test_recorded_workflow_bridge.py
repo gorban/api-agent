@@ -638,3 +638,98 @@ def test_legacy_untimed_parameter_identity_accepts_only_exact_current_leaf_enric
     assert enriched['name'] == call['name']
     assert {'name': 'outcome', 'value': 'completed'} in enriched['parameters']
     assert 'start' not in enriched and 'stop' not in enriched
+
+
+def test_partial_journal_does_not_interrupt_later_test_evidence(tmp_path, monkeypatch):
+    from api_agent.workflows.journal import WorkflowJournal
+    from test_workflow_journal import definition
+    from api_agent.testing import browser_attachments as transport
+    import base64
+
+    first = TestIdentity('base::test.py::test_first', 'base', 'test.py', 'test.py::test_first')
+    second = TestIdentity('base::test.py::test_second', 'base', 'test.py', 'test.py::test_second', tags={'requires_owned_ui_session'})
+    results = [TestResult(first, 'failed', .01), TestResult(second, 'passed', .01)]
+    partial_definition = definition()
+    partial_definition.layout.steps = [SimpleNamespace(id='Stage', kind='component', parent=None),
+                                       SimpleNamespace(id='Make', kind='node', parent='Stage')]
+    partial = WorkflowJournal(partial_definition, test_id=first.node_id)
+    partial_graph, partial_component, partial_node = (str(uuid4()) for _ in range(3))
+    partial.observe(dict(event='scope_start', scope_id=partial_graph, kind='graph',
+                         owner='GRAPH', started_ms=1))
+    partial.observe(dict(event='edge', owner='GRAPH', source='START', target='Stage', implicit=True))
+    stage = dict(scope_id=partial_component, parent_id=partial_graph, kind='component', owner='Stage', started_ms=1)
+    partial.observe(dict(event='scope_start', **stage))
+    partial.observe(dict(event='edge', owner='Stage', source='START', target='Make', implicit=True))
+    partial.observe(dict(event='scope_start', scope_id=partial_node, parent_id=partial_component,
+                         kind='node', owner='Make', started_ms=2))
+    partial.observe(dict(event='scope_end', stopped_ms=3, outcome='failed', **stage))
+    partial_packet = partial.finalize()
+    assert partial_packet['completeness'] == 'partial'
+    conversation, turn = str(uuid4()), str(uuid4())
+    complete = WorkflowJournal(definition(), test_id=second.node_id, turn_id=turn)
+    complete.admit_execution_context(dict(kind='conversation', conversation_id=conversation))
+    graph, node = str(uuid4()), str(uuid4())
+    graph_scope = dict(scope_id=graph, parent_id=None, kind='graph', owner='GRAPH', started_ms=1)
+    node_scope = dict(scope_id=node, parent_id=graph, kind='node', owner='Make', started_ms=1)
+    for event in [dict(event='scope_start', **graph_scope),
+                  dict(event='edge', owner='GRAPH', source='START', target='Make', implicit=True),
+                  dict(event='scope_start', **node_scope), dict(event='node', scope_id=node, node='Make'),
+                  dict(event='scope_end', stopped_ms=2, outcome='passed', **node_scope),
+                  dict(event='edge', owner='GRAPH', source='Make', target='END', implicit=True, visit_id=node),
+                  dict(event='scope_end', stopped_ms=3, outcome='passed', **graph_scope)]:
+        complete.observe(event)
+    complete_packet = complete.finalize()
+    assert complete_packet['completeness'] == 'complete'
+
+    channel = tmp_path / 'events'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(channel))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', second.node_id + ' (call)')
+    pixels = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=')
+    transport.publish_attachment(('UI success context 1 page 1', pixels, 'image/png'),
+        owner=dict(kind='turn', conversation_id=conversation, turn_id=turn), masked_content=True)
+    descriptor = json.loads(channel.read_text())['data']
+
+    def runner(context, tests, **hooks):
+        hooks['before_run']()
+        hooks['on_event'](RunnerEvent('workflow_evidence', 'base', first, text=json.dumps(partial_packet)))
+        hooks['on_result'](results[0])
+        hooks['on_event'](RunnerEvent('workflow_evidence', 'base', second, text=json.dumps(complete_packet)))
+        hooks['on_event'](RunnerEvent('native_invocation', 'base', second, text=json.dumps(
+            dict(invocation_id=complete_packet['invocation_id'], turn_id=turn, call_ids=[], complete=True))))
+        hooks['on_event'](RunnerEvent('browser_attachment', 'base', second, text=json.dumps(descriptor),
+            attachment=transport.read_attachment(descriptor, tmp_path)))
+        hooks['on_result'](results[1])
+        execution = IntegrationRunResult(1, tuple(results), '')
+        hooks['after_run'](execution)
+        return execution
+
+    context = SimpleNamespace(base_root=tmp_path/'base', owner_root=tmp_path/'base')
+    recorded = run_recorded_integration(context, [first, second],
+        dict(TUI_MODE='integration', ALLURE_S3_BUCKET='synthetic', ALLURE_RESULTS_DIR=tmp_path/'results',
+             LOG_CONTENT=False), accepted=True, runner=runner,
+        storage=SimpleNamespace(persist=lambda *args: None))
+    rows = [json.loads(path.read_text()) for path in recorded.directory.glob('*-result.json')]
+    first_row = next(row for row in rows if row['name'] == 'test_first')
+    second_row = next(row for row in rows if row['name'] == 'test_second')
+    assert first_row['status'] == 'failed'
+    partial_graph = next(step for root in first_row['steps'] for step in flatten(root) if step['name'] == 'graph GRAPH')
+    assert partial_graph['status'] == 'failed' and 'stop' not in partial_graph
+    assert not any(item['name'] == 'outcome' for item in partial_graph['parameters'])
+    stage_step = partial_graph['steps'][0]
+    assert stage_step['status'] == 'failed' and stage_step['stop'] == 3
+    partial_node = stage_step['steps'][0]
+    assert partial_node['name'] == 'node Make' and 'stop' not in partial_node
+    assert not any(item['name'] == 'outcome' for item in partial_node['parameters'])
+    assert second_row['status'] == 'passed'
+    assert any(step['name'] == 'graph GRAPH' for root in second_row['steps'] for step in flatten(root))
+    turn_step = next(step for root in second_row['steps'] for step in flatten(root) if step['name'] == 'User turn 1')
+    images = [item for item in turn_step.get('attachments', []) if item['type'] == 'image/png']
+    assert len(images) == 1 and (recorded.directory / images[0]['source']).read_bytes() == pixels
+    assert not any(item['type'] == 'image/png' or 'withheld' in item['name'].lower()
+                   or 'unattached' in item['name'].lower() for item in second_row['attachments'])
+    evidence = [json.loads(path.read_text()) for path in recorded.directory.glob('workflow-[0-9]*.json')]
+    assert {item['completeness'] for item in evidence} == {'partial', 'complete'}
+    accounting = json.loads((recorded.directory / 'accounting.json').read_text())
+    assert len(accounting['tests']) == 2
+    summary = json.loads((recorded.directory / 'usage-summary.json').read_text())
+    assert summary['prompt_count'] == 1
