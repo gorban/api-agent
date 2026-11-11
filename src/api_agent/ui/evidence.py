@@ -259,6 +259,12 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
     if (hasUrl(backdrop) || (backdrop.content && !['none','normal'].includes(backdrop.content)))
       return {saved, urlProperties, reason:'backdrop'};
   }
+  // Size containment on a top-layer element can crash the renderer, and a
+  // content root there escapes the clipping its mask relies on.
+  const topLayered = node => node.matches(':popover-open, :modal, :fullscreen') ||
+    getComputedStyle(node).overlay === 'auto';
+  if (isolatedRoots.some(node => (plans.get(node).contentMasked || !preserveContentFocus) && topLayered(node)))
+    return {saved, urlProperties, reason:'content_top_layer'};
   // Skipping a subtree may blur its focused control. Recover only that
   // capture-induced loss; any newer focus or user interaction takes priority.
   let focused = document.activeElement;
@@ -540,17 +546,31 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
   // Top-layer content paints outside every ancestor's opacity, and content-visibility
   // does not apply to inline or table hosts. Audit every open shadow root, owned or
   // not (closed roots are rejected earlier), rather than trusting CSS to hide it.
+  // Only the browser sets overlay: a closing element keeps it through its exit
+  // transition, and a customizable select's open picker has it too.
+  const inTopLayer = node => node.matches(':popover-open, :modal, :fullscreen') ||
+    getComputedStyle(node).overlay === 'auto' ||
+    (node.localName === 'select' && getComputedStyle(node, '::picker(select)').overlay === 'auto');
   const topLayer = [];
   let topLayerVisited = 0;
   const collectTopLayer = root => {
     for (const node of root.querySelectorAll('*')) {
       if (++topLayerVisited > 20000) return false;
-      if (node.matches(':popover-open, :modal, :fullscreen')) topLayer.push(node);
+      if (inTopLayer(node)) topLayer.push(node);
       if (node.shadowRoot && !collectTopLayer(node.shadowRoot)) return false;
     }
     return true;
   };
   if (!collectTopLayer(document)) return reject('tree_budget');
+  // A content root in the top layer escapes the clipping its mask relies on.
+  // Reject before per-node inspection, which can crash such a renderer.
+  const contentRoot = node => !!contentMaskSelector && node.matches(contentMaskSelector);
+  const isolatedAbove = node => {
+    for (let current = composedParent(node); current; current = composedParent(current))
+      if (prepared.saved.get(current)?.opaque || contentRoot(current)) return true;
+    return false;
+  };
+  if (topLayer.some(node => contentRoot(node) || isolatedAbove(node))) return reject('content_top_layer');
   for (const [parentSelector, childSelector] of contentMaskRequirements || []) {
     const children = found.filter(node => node.matches(childSelector));
     for (const parent of found.filter(node => node.matches(parentSelector)))
@@ -596,8 +616,6 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
     if (opaque && (!isolated?.opaque || style.opacity !== '0' ||
         (!prepared.preserveContentFocus && style.contentVisibility !== 'hidden') ||
         style.display === 'contents')) return reject('isolation_verify');
-    if ((opaque || contentMasked) && topLayer.some(top => top !== node && composedContains(node, top)))
-      return reject('content_top_layer');
     if (isolated && !node.isConnected) return reject('document_changed');
     if (contentMasked && (style.opacity !== '0' || (!prepared.preserveContentFocus && style.contentVisibility !== 'hidden') ||
         style.clipPath !== 'inset(0px)' ||

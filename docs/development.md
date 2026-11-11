@@ -441,7 +441,9 @@ belongs to each Python Page and closes with it; detaching after every capture
 would reset the browser's native animation rate. Masking adds no application
 DOM nodes: clipped black rectangles are applied to transient PNG bytes outside
 the authored document. Unsupported paint, changed frame identity or registered
-credentials leave pixels unavailable. The normal page budget is ten seconds,
+credentials leave pixels unavailable. Top-layer content inside a hidden or
+masked surface, including a closing popover or an open customizable select
+picker, is refused rather than trusted to CSS. The normal page budget is ten seconds,
 including audits and restoration; callers may explicitly choose one through
 twenty seconds. Capture failure remains secondary to the test's own outcome.
 
