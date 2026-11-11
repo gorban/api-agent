@@ -644,6 +644,75 @@ Limit rows and backward edges are part of the workflow identity and of compiled
 plans, and the viewer shows each limit as `Configuration: KEY` in its declaring
 diagram.
 
+### Timeout expiry routing in Bindings graphs
+
+A node or component with its own `## Timeouts` row (an `Owner` that is the step ID, not
+`GRAPH` or `<node>.<port>`) can be routed on expiry by ordinary `Edges`, using the
+engine-maintained Boolean `<step_id>.expired`. It is true while the step's latest run in
+the current turn ended because its own declared deadline passed, and false before the
+step first runs, after any run that ended otherwise, and at every restart of the step.
+Like `attempt` it is reserved: an `Output` schema may not declare a top-level `expired`.
+A condition that names `<step>.expired` for a step without its own `Timeouts` row is
+rejected at load.
+
+```markdown
+## Timeouts
+
+| Owner | Source | Key |
+| --- | --- | --- |
+| work | [config](cfg/config.toml) | WORK_TIMEOUT_SECONDS |
+
+## Edges
+
+| From | To | When |
+| --- | --- | --- |
+| work | work | work.expired and work.attempt < WORK_TIMEOUT_PASSES |
+| work | timed_out | work.expired and work.attempt >= WORK_TIMEOUT_PASSES |
+| work | next | otherwise |
+```
+
+If the step's own deadline expires and at least one of its outgoing edges reads
+`<step>.expired`, the engine records the expiry and routes by the step's edges instead of
+failing the turn:
+
+- Only the edges that read the step's expiry are considered, and `always`/`otherwise`
+  never apply to an expired run, so exactly one of those edges must match; if none does,
+  the turn fails with the `TimeoutError` as it would without expiry edges. Put
+  `<step>.expired` first in a conjunction, because the expired run's own output is absent.
+- The run produced nothing: the step's output (and, for a component, the output of every
+  step it owns) is removed from the turn's values and Session writes, so later bindings
+  use their defaults or `TURN` fallbacks. Starts are counted, so `<step>.attempt` includes
+  the expired run.
+- A route back to the step is a backward edge and needs the usual bound, as above. The
+  exhausted case is written explicitly (`>= LIMIT`) because edges must match exactly once.
+- Only the step's own row counts. An enclosing component's or `GRAPH` deadline, a
+  `TimeoutError` raised by native code before the step's deadline, and a tool port timeout
+  inside the node propagate as before; a component with its own `.expired` edges is routed
+  by those edges. Without a `.expired` edge the behavior is unchanged: the turn fails.
+- A step that dispatched an effect (`operations@1` write, `mark_effect`) fails the turn
+  instead of routing, so nothing is replayed or continued after an uncertain write. A
+  component fails when any step it owns dispatched one.
+- A node inside a guarded component is routed within the pass, and the guard and pass
+  limits apply to what follows. A guarded component's expiry abandons all its passes and
+  is routed by its own edges.
+
+Outcome labels: the expired node's or component's scope ends `failed` with
+`reason: declared_timeout_expired` (its progress ends inactive, its `scope_end` records
+the declared and effective timeout), and the turn's outcome follows the final route. If
+the routed path reaches `END`, the graph scope is `passed`, the Session is saved from the
+runs that completed (the expired run contributes nothing), and an application's own
+`execution_outcome` may still label the turn. A journal validates the route only when
+that scope end names the step's own declared timeout (an ancestor-clipped budget does
+not qualify), the edge taken reads the step's expiry, and every loop bound still holds;
+a step that finished cannot take an edge that requires its expiry. The abandoned inner
+routes of an expired component are closed with it.
+
+Removed hidden budgets: the correction-authority and capture-authority calls that run
+inside a node, and the provider-level inference budget of a provider without a
+configuration field for it, now inherit the enclosing declared budget instead of a
+hardcoded value. A provider's own configured inference timeout (for example a typed
+configuration field with a default) remains a declared provider-level budget.
+
 ## Installed declaration check
 
 Validate the root example with `python -m api_agent.workflows validate`, or the
