@@ -134,6 +134,37 @@ def test_reserved_zombie_permission_refusal_can_confirm_disposal(monkeypatch):
         processes.finalize(child)
 
 
+def test_exiting_group_refusal_is_confirmed_once_it_becomes_terminal(monkeypatch):
+    child = subprocess.Popen([sys.executable, '-c', 'pass'], start_new_session=True)
+    processes.wait_owned(child, timeout=5)
+    proof = Mock(side_effect=[False, False, True])
+    monkeypatch.setattr(processes.os, 'killpg', Mock(side_effect=PermissionError('exiting')))
+    monkeypatch.setattr(processes, '_owned_group_terminal', proof)
+    try:
+        assert processes.signal_owned_group(child, signal.SIGKILL)
+        assert proof.call_count == 3
+    finally:
+        monkeypatch.undo()
+        processes.finalize(child)
+    assert child.returncode == 0
+
+
+def test_group_refusal_that_never_becomes_terminal_is_not_confirmed(monkeypatch):
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+    refusal = PermissionError('live group')
+    monkeypatch.setattr(processes, '_TERMINAL_SETTLE_SECONDS', .05)
+    monkeypatch.setattr(processes.os, 'killpg', Mock(side_effect=refusal))
+    monkeypatch.setattr(processes, '_owned_group_terminal', Mock(return_value=False))
+    try:
+        with pytest.raises(PermissionError) as caught:
+            processes.signal_owned_group(child, signal.SIGKILL)
+        assert caught.value is refusal
+        assert not getattr(child, '_api_agent_group_disposal_complete', False)
+    finally:
+        monkeypatch.undo()
+        processes.finalize(child)
+
+
 @pytest.mark.parametrize('payload', [None, b'bytes'])
 def test_external_process_adapter_retains_communicate_contract(payload):
     adapter = SimpleNamespace(communicate=Mock(return_value=(b'output', None)))

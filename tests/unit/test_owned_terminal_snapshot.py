@@ -108,6 +108,7 @@ def test_missing_inspection_requires_exact_native_error_and_terminal_proof(monke
         assert process is reserved_child
         calls.append(process)
         return terminal
+    monkeypatch.setattr(processes, '_TERMINAL_SETTLE_SECONDS', 0)
     monkeypatch.setattr(processes, 'sys', SimpleNamespace(platform=platform))
     monkeypatch.setattr(processes, 'observe_exit', lambda process: None)
     monkeypatch.setattr(processes, '_owned_group_terminal', proof)
@@ -118,3 +119,14 @@ def test_missing_inspection_requires_exact_native_error_and_terminal_proof(monke
             processes.inspect_owned(reserved_child, inspect)
         assert caught.value is failure
     assert bool(calls) is probed
+
+
+def test_inspection_waits_for_an_exiting_child_to_become_terminal(monkeypatch, reserved_child):
+    proof = [False, False, True]
+    def inspect(pid):
+        raise OSError(3, 'child is exiting')
+    monkeypatch.setattr(processes, 'sys', SimpleNamespace(platform='darwin'))
+    monkeypatch.setattr(processes, 'observe_exit', lambda process: None)
+    monkeypatch.setattr(processes, '_owned_group_terminal', lambda process: proof.pop(0))
+    assert processes.inspect_owned(reserved_child, inspect) is None
+    assert proof == []
