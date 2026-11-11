@@ -29,8 +29,13 @@ class VerifiedCall:
 
 
 class ToolGate:
-    """One operation per selected owner; grants are ordering markers, not security tokens."""
-    def __init__(self, owner, *, invocation_id: str, timeout: float = 30,
+    """One operation per selected owner; grants are ordering markers, not security tokens.
+
+    ``timeout`` is a declared per-tool budget for preparation and execution; ``None`` runs
+    both inside the enclosing node's budget. Verification includes an independent relevance
+    review and is bounded only by that enclosing budget.
+    """
+    def __init__(self, owner, *, invocation_id: str, timeout: float | None = None,
                  tool_alias=None, tool_instance=None):
         if not isinstance(invocation_id, str) or not invocation_id or len(invocation_id) > 200:
             raise ToolGateError('Invalid invocation identity')
@@ -94,7 +99,7 @@ class ToolGate:
     async def verify(self, prepared: PreparedCall, *, relevance) -> VerifiedCall:
         """Owner validity precedes independent LLM relevance/grounding acceptance."""
         self._check(prepared)
-        async with component_timeout('Tool verification', self.timeout):
+        async with component_timeout('Tool verification'):
             try:
                 await self.owner.validate(prepared)
             except ToolValidationError as error:

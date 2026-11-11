@@ -128,7 +128,7 @@ class NodeResolver:
             raise ContractError('Implementation-declared operations are reached through context.tools[port]')
         return self._runtime.borrow_tool(instance)
 
-    def gate(self, port, *, invocation_id, timeout=30):
+    def gate(self, port, *, invocation_id, timeout=None):
         instance = self.instance(port)
         borrowed = self._runtime.borrow_tool(instance)
         tool = next(item for item in self._runtime.tool_plan.tools if item.id == instance)
@@ -141,7 +141,7 @@ class NodeResolver:
 
 class OperationsGate:
     """One borrowed operations@1 view; the implementation's declared effects bound its calls."""
-    def __init__(self, owner, operations, *, timeout=30, tool_alias=None, tool_instance=None):
+    def __init__(self, owner, operations, *, timeout=None, tool_alias=None, tool_instance=None):
         self.owner, self.operations, self.timeout = owner, operations, timeout
         self.tool_alias, self.tool_instance = tool_alias, tool_instance
 

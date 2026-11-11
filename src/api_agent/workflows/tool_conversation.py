@@ -20,7 +20,7 @@ _VERDICT = {'type': 'object', 'properties': {
 
 
 async def run_tool_conversation(*, prompt, gates, complete, selection,
-                                generation=None, max_rounds=4, timeout=300,
+                                generation=None, max_rounds=4, timeout=None,
                                 required_tools=(), verify_final=None, result_proof=None, journal=None):
     """Borrow gates and inference; retain partial content privately in ``journal``.
 
