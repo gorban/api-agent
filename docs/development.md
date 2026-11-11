@@ -180,9 +180,12 @@ authentication fields and registered credentials remain protected.
 [Progressive diagnostics](testing_diagnostics.md) covers passing tests with
 internal recovery, failed attempts, E2E confirmations and optional tracing.
 
-Select `unit`, `integration` or `e2e` through `--tui-mode`. File/node selectors
-can be repository-qualified; `tag:NAME` selects a marked group. Multiple
-selectors select their union. Unknown, ambiguous or empty matches fail.
+Select `unit`, `integration` or `e2e` through `--tui-mode`. A selector names a
+directory, file, class or test function (every parametrized case), for example
+`tests/unit/test_collection.py::test_selectors_union_and_ambiguity`, or a `*`/`?`
+glob over node IDs and files such as `'*::test_viewer_*'`. Selectors can be
+repository-qualified; `tag:NAME` selects a marked group. Multiple selectors
+select their union. Unknown, ambiguous or empty matches fail.
 ```bash
 ./launch.sh --tui-mode "<tests_type>" "<selector>"
 ./launch.sh --tui-mode "<tests_type>" --collect-only

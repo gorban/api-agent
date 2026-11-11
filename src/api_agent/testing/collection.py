@@ -1,6 +1,7 @@
 """Collect pytest identities without running tests or starting prerequisites."""
 from dataclasses import dataclass
 import base64
+from fnmatch import fnmatchcase
 from hashlib import sha256
 from importlib import metadata
 import json
@@ -122,6 +123,18 @@ def _installed_base_identity(base):
         return False
 
 
+def _selects(test, value):
+    """Match a file, node or ID, a directory/class/function above it, or a glob."""
+    if value.startswith("tag:"):
+        return value[4:] in test.tags
+    if "*" in value or "?" in value:
+        return fnmatchcase(test.node_id, value) or fnmatchcase(test.file, value)
+    if value in {test.file, test.node_id, test.id}:
+        return True
+    return (test.node_id.startswith((value + "::", value + "["))
+            or test.file.startswith(value.rstrip("/") + "/"))
+
+
 def select_tests(tests, selectors=()):
     """Resolve a de-duplicated union of repository-qualified or bare selectors."""
     tests = list(tests)
@@ -137,10 +150,7 @@ def select_tests(tests, selectors=()):
         prefix, separator, remainder = selector.partition("::")
         if separator and prefix in repos:
             repo, value = prefix, remainder
-        matches = [test for test in tests if (repo is None or test.repo == repo) and (
-            value[4:] in test.tags if value.startswith("tag:") else
-            value in {test.file, test.node_id, test.id}
-        )]
+        matches = [test for test in tests if (repo is None or test.repo == repo) and _selects(test, value)]
         if not matches:
             raise CollectionError(f"Unknown or empty test selector: {selector}")
         if repo is None and not value.startswith("tag:") and len({test.repo for test in matches}) > 1:
