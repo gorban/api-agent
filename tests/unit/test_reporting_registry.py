@@ -202,7 +202,7 @@ def test_malformed_registered_retained_compose_is_wrapped_without_losing_owner(s
         assert joined.lease is None
 
 
-@pytest.mark.parametrize('drift', ['missing-object', 'changed-hook', 'changed-compose',
+@pytest.mark.parametrize('drift', ['replaced-object', 'changed-hook', 'changed-compose',
                                    'changed-fingerprint', 'writable-bind', 'dotdot-bind'])
 def test_retained_plan_refuses_drift_without_engine_mutation(storage, drift):
     original = storage.create()
@@ -218,8 +218,9 @@ def test_retained_plan_refuses_drift_without_engine_mutation(storage, drift):
     snapshot = original.manager.snapshot_directory
     if snapshot is None:
         snapshot = Path(storage.engine.records[identifier]['Mounts'][0]['Source']).parent
-    if drift == 'missing-object':
-        storage.engine.records.clear()
+    if drift == 'replaced-object':
+        del storage.engine.records[identifier]
+        Engine.add(storage.engine, 'localstack', running=False)
     elif drift == 'changed-hook':
         (snapshot / 'localstack-ready.sh').write_bytes(b'changed')
     elif drift == 'changed-compose':
@@ -553,7 +554,7 @@ def test_retained_snapshot_change_after_read_refuses_before_reuse(storage):
     def change_after_capture(*args, **kwargs):
         manager = factory(*args, **kwargs)
         calls[0] += 1
-        if calls[0] == 2:
+        if calls[0] == 3:  # after the removal probe and the retained-plan manager
             path = snapshot / 'compose.json'
             path.unlink()
             path.write_bytes(b'changed after captured read')
@@ -565,7 +566,7 @@ def test_retained_snapshot_change_after_read_refuses_before_reuse(storage):
     with pytest.raises(p.PrerequisiteError, match='captured assets'):
         joined.acquire()
 
-    assert calls[0] == 2
+    assert calls[0] == 3
     assert mutation_commands(storage.engine) == before
 
 
@@ -598,7 +599,7 @@ def test_cancelled_owner_can_release_recovered_legacy_binding(storage):
     assert joined.lease is None and joined.pending_cleanup is None
 
 
-@pytest.mark.parametrize('change', ['bucket', 'region', 'assets', 'replaced', 'directory'])
+@pytest.mark.parametrize('change', ['bucket', 'region', 'assets', 'directory'])
 def test_incompatible_binding_refuses_before_mutation(storage, change):
     first = storage.create()
     lease = first.acquire()
@@ -607,7 +608,6 @@ def test_incompatible_binding_refuses_before_mutation(storage, change):
     config = dict(CONFIG)
     if change == 'bucket': config['ALLURE_S3_BUCKET'] = 'other-results'
     if change == 'region': config['ALLURE_S3_REGION'] = 'eu-west-1'
-    if change == 'replaced': storage.engine.records.clear()
     if change in {'assets', 'directory'}:
         path, record = binding(storage)
         if change == 'assets': record['assets'] = {}
@@ -653,6 +653,46 @@ def test_unregistered_stopped_canonical_container_is_not_adopted(storage):
     with pytest.raises(p.PrerequisiteError, match='changed or stopped'):
         storage.create().acquire()
     assert mutation_commands(storage.engine) == before
+
+
+@pytest.mark.parametrize('stopped', [False, True])
+def test_registered_container_removed_outside_api_agent_is_reprovisioned(storage, stopped):
+    first = storage.create()
+    identifier, = first.acquire().container_ids
+    first.release(retain=True)
+    if stopped:
+        storage.engine.records[identifier]['State']['Running'] = False
+    del storage.engine.records[identifier]  # e.g. `docker rm` of every stopped container
+    replacement = storage.create()
+    created, = replacement.acquire().container_ids
+    assert created != identifier
+    _, record = binding(storage)
+    assert record['state'] == 'ready' and record['ids'] == [created]
+    replacement.release(retain=True)
+
+
+def test_final_release_keeps_the_retained_reporting_network(storage):
+    owner = storage.create()
+    identifier, = owner.acquire().container_ids
+    before = len(storage.engine.commands)
+    owner.release()
+    released = [command for command, _ in storage.engine.commands[before:]]
+    assert ('docker', 'stop', '--time', '5', identifier) in released
+    assert not [command for command in released if command[1:3] in {('network', 'prune'), ('network', 'rm')}]
+
+
+def test_registered_container_replaced_by_another_project_container_still_refuses(storage):
+    first = storage.create()
+    identifier, = first.acquire().container_ids
+    first.release(retain=True)
+    path, _ = binding(storage)
+    saved = path.read_bytes()
+    del storage.engine.records[identifier]
+    Engine.add(storage.engine, 'localstack', running=False)
+    before = mutation_commands(storage.engine)
+    with pytest.raises(p.PrerequisiteError, match='changed or stopped'):
+        storage.create().acquire()
+    assert path.read_bytes() == saved and mutation_commands(storage.engine) == before
 
 
 def test_failed_provisioning_preserves_retry_owner_and_clears_settled_intent(storage):
