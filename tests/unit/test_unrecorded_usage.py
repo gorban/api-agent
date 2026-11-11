@@ -8,6 +8,11 @@ from api_agent.testing.collection import collect_tests
 from api_agent.testing.launched import run_launched_integration
 
 
+def _worker_events(forward):
+    # Parent-side preparation reports progress before any worker event exists.
+    return [call.args[0] for call in forward.call_args_list if call.args[0].kind != 'suite_progress']
+
+
 def synthetic_completion(tmp_path, usage, quote, selection='example-model'):
     suite = tmp_path / 'tests/integration'
     suite.mkdir(parents=True)
@@ -91,7 +96,7 @@ def test_malformed_usage_is_rejected_before_forwarding(tmp_path, monkeypatch):
         run_launched_integration(context, (test,),
             {'SKIP_ALLURE_REPORTING': True, 'TUI_MODE': 'integration'},
             accepted=True, on_event=forward)
-    forward.assert_not_called()
+    assert _worker_events(forward) == []
 
 
 def test_unrecorded_without_callbacks_retains_status(tmp_path, monkeypatch):
@@ -221,5 +226,5 @@ def test_raw_usage_is_rejected_before_scrubbing_can_repair_it(tmp_path, monkeypa
         run_launched_integration(context, (test,),
             {'SKIP_ALLURE_REPORTING': True, 'TUI_MODE': 'integration'}, accepted=True,
             on_event=forward, usage_output=console)
-    forward.assert_not_called()
+    assert _worker_events(forward) == []
     console.assert_not_called()
