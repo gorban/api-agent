@@ -269,7 +269,8 @@ def predicate_fields(layout, source):
     fields[_CONSTANTS] = {row['max_passes_key']: {'type': 'integer'}
                           for row in layout.tables.get('Components', ())
                           if 'max_passes_key' in row and in_component(row['ID'])}
-    # A Limits row is visible to the edges of the document that declares it.
+    # A root Limits row is visible to every edge; a component's or node's own row only to edges
+    # whose source is that step or inside it (scoped by the edge's source, not its document).
     fields[_VISITS] = {step.id: {'type': 'integer'} for step in layout.steps}
     fields[_CONSTANTS].update({row['Key']: {'type': 'integer'} for row in layout.tables.get('Limits', ())
                                if row.get('_owner_id') is None or in_component(row['_owner_id'])})
