@@ -1194,7 +1194,8 @@ def _build_view_bundle(projection: object, *, roots: Mapping[str, Path],
         body = _read_view_file(asset_root / name)
         if body is None:
             source = Path(__file__).resolve().parents[3] / ".private_resources/viewer"
-            guidance = ("run npm ci from the repository root to prepare offline frontend assets"
+            guidance = ("run ./launch.sh --tui-mode view-flow --no-std-in once from the repository root; "
+                        "the launcher prepares offline frontend assets with the project toolchain"
                         if asset_root == source else
                         "reinstall api-agent from a complete distribution; installed viewing requires no npm")
             raise RenderError("workflow viewer dependencies missing; " + guidance)
