@@ -169,28 +169,34 @@ def _jwks_uri(metadata):
     raise AuthError("invalid_issuer")
 
 
+def _eligible_key(key):
+    return (key.get("kty") == "RSA" and key.get("alg", "RS256") == "RS256"
+            and key.get("use", "sig") == "sig" and key.get("key_ops", ["verify"]) == ["verify"])
+
+
+def _verified_claims(token, jwk, client_id):
+    """Return the claims when this issuer key verifies the token, else None."""
+    try:
+        key = jwt.PyJWK.from_dict(jwk, algorithm="RS256").key
+        return jwt.decode(token, key, algorithms=["RS256"], audience=client_id, issuer=ISSUER,
+                          options={"require": ["exp", "sub", "aud", "iss"],
+                                   "verify_exp": False, "verify_iat": False, "verify_nbf": False})
+    except (jwt.PyJWTError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 async def _identity(token, client_id, nonce, client, now):
     metadata = await _request(client, "GET", METADATA)
     if (metadata.get("issuer"), metadata.get("authorization_endpoint"), metadata.get("token_endpoint")) != (ISSUER, AUTHORIZE, TOKEN):
         raise AuthError("invalid_issuer")
     keys = await _request(client, "GET", _jwks_uri(metadata))
     try:
-        header = jwt.get_unverified_header(token)
-        if header.get("alg") != "RS256":
+        eligible = [key for key in keys["keys"] if _eligible_key(key)]
+        verified = [claims for claims in (_verified_claims(token, key, client_id) for key in eligible)
+                    if claims is not None]
+        if len(verified) != 1:
             raise ValueError
-        kid = _text(header, "kid")
-        matching = [key for key in keys["keys"] if key.get("kid") == kid]
-        if len(matching) != 1:
-            raise ValueError
-        selected = matching[0]
-        if (selected.get("kty") != "RSA" or selected.get("alg", "RS256") != "RS256"
-                or selected.get("use", "sig") != "sig"
-                or selected.get("key_ops", ["verify"]) != ["verify"]):
-            raise ValueError
-        key = jwt.PyJWK.from_dict(selected, algorithm="RS256").key
-        claims = jwt.decode(token, key, algorithms=["RS256"], audience=client_id, issuer=ISSUER,
-                            options={"require": ["exp", "sub", "aud", "iss"],
-                                     "verify_exp": False, "verify_iat": False, "verify_nbf": False})
+        claims = verified[0]
         if ("azp" in claims and claims["azp"] != client_id) or (isinstance(claims["aud"], list) and len(claims["aud"]) > 1 and claims.get("azp") != client_id):
             raise ValueError
         if _number(claims["exp"]) <= now:
