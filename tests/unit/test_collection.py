@@ -59,6 +59,35 @@ def test_selectors_union_and_ambiguity():
             select_tests(tests, [selector])
 
 
+def _identity(node_id, repo='base'):
+    return TestIdentity(f'{repo}::{node_id}', repo, node_id.split('::', 1)[0], node_id, frozenset())
+
+
+def test_selectors_follow_the_pytest_hierarchy_and_globs():
+    tests = [_identity(node) for node in (
+        'tests/unit/test_a.py::test_x[1]', 'tests/unit/test_a.py::test_x[2]', 'tests/unit/test_a.py::test_xy',
+        'tests/unit/test_a.py::TestGroup::test_z', 'tests/unit/nested/test_b.py::test_y', 'tests/unit_extra/test_c.py::test_w')]
+    picked = lambda *selectors: [test.node_id.removeprefix('tests/') for test in select_tests(tests, selectors)]
+    assert picked('tests/unit/test_a.py::test_x') == ['unit/test_a.py::test_x[1]', 'unit/test_a.py::test_x[2]']
+    assert picked('tests/unit/test_a.py::TestGroup') == ['unit/test_a.py::TestGroup::test_z']
+    assert picked('tests/unit/nested') == picked('tests/unit/nested/') == ['unit/nested/test_b.py::test_y']
+    assert len(picked('tests/unit')) == 5
+    assert picked('base::tests/unit/test_a.py::test_x') == picked('tests/unit/test_a.py::test_x')
+    assert picked('*::test_x*') == ['unit/test_a.py::test_x[1]', 'unit/test_a.py::test_x[2]', 'unit/test_a.py::test_xy']
+    assert picked('tests/unit/*/test_b.py') == ['unit/nested/test_b.py::test_y']
+    for selector in ('tests/unit/test_a', 'tests/unit/test_a.py::test', 'tests/un', '*missing*'):
+        with pytest.raises(CollectionError, match='Unknown or empty'):
+            select_tests(tests, [selector])
+
+
+def test_hierarchy_and_glob_selectors_stay_ambiguous_across_repositories():
+    tests = [_identity('tests/unit/test_a.py::test_x[1]', repo) for repo in ('base', 'pack')]
+    for selector in ('tests/unit/test_a.py::test_x', 'tests/unit', '*test_x*'):
+        with pytest.raises(CollectionError, match='Ambiguous'):
+            select_tests(tests, [selector])
+    assert select_tests(tests, ['pack::tests/unit']) == [tests[1]]
+
+
 def test_missing_mode_suite_and_pytest_are_actionable(tmp_path, monkeypatch):
     ctx = context(tmp_path)
     with pytest.raises(CollectionError, match='requires unit'):
