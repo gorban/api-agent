@@ -75,3 +75,7 @@ Select **Run local** to start the app and open a managed browser with the Agent 
 ## Source frontend setup
 
 - [x] Deliver [automatic locked source frontend preparation](implementation_plan_b1a9.md) at launcher operation boundaries, preserving installed-package and verification-only behavior.
+
+## Stable provenance and reproducible rendering
+
+- [ ] Deliver [incremental generation, a canonical rendering environment and explicit CI freshness checks](implementation_plan_b1a10.md). Default generation reuses fully validated fresh diagrams; intentional rerendering uses pinned fonts, JDK and PlantUML; every owner's CI runs the read-only check.
