@@ -61,7 +61,7 @@ def problem(tables):
             return 'session field declares conflicting merges', row
         value = _types(properties[name])
         if merge == 'append':
-            if value is not None and 'array' not in value:
+            if value is not None and ('array' not in value or not value <= {'array', 'null'}):
                 return 'append session source must be an array', row
             value = {'array'}
         declared.setdefault(field, []).append(value)

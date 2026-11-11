@@ -211,7 +211,7 @@ help = "True starts the selected operation after startup configuration and permi
 [fields.TUI_MODE]
 acknowledge_default = false
 type = "str"
-enum = ["run-local", "unit", "integration", "e2e", "allure", "deployment-logs", "config-cleanup", "cleanup-containers", "unattended-auth"]
+enum = ["run-local", "unit", "integration", "e2e", "allure", "view-flow", "trace-viewer", "deployment-logs", "config-cleanup", "cleanup-containers", "unattended-auth"]
 help = "Select an operation; positional test selectors require an explicit test mode."
 [fields.TUI_MODE.required_when]
 NO_STD_IN = true

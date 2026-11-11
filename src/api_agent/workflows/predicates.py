@@ -27,6 +27,12 @@ class PredicateError(ValueError):
     pass
 
 
+class MissingPredicateField(PredicateError):
+    def __init__(self, owner, field):
+        self.owner = owner
+        super().__init__(f'condition field {owner}.{field} was not produced')
+
+
 @dataclass(frozen=True)
 class Predicate:
     text: str
@@ -215,7 +221,7 @@ def _value(node, values, owners, context, constants, counters):
     value = values.get(owner)
     for field in path:
         if type(value) is not dict or field not in value:
-            raise PredicateError(f'condition field {owner}.{field} was not produced')
+            raise MissingPredicateField(owner, field)
         value = value[field]
     if not path or type(value) not in (str, int, float, bool, type(None)):
         raise PredicateError('condition field has invalid scalar value')

@@ -872,8 +872,9 @@ def test_missing_capture_notice_waits_for_other_plan_storage_checks(synthetic, m
     if boundary == 'jaeger':
         original = manager._compatible
         def with_jaeger(*args, **kwargs):
-            return original(*args, **kwargs) | {'jaeger': SimpleNamespace(id='f' * 64)}
-        def reject_storage(identifier, deadline):
+            return original(*args, **kwargs) | {'jaeger': SimpleNamespace(id='f' * 64, running=False)}
+        def reject_storage(identifier, deadline, *, recover):
+            assert recover.id == identifier and recover.running is False
             calls.append(identifier)
             raise p.PrerequisiteError('Jaeger storage verification failed')
         monkeypatch.setattr(manager, '_compatible', with_jaeger)

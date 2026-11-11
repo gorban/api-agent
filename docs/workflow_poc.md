@@ -394,7 +394,7 @@ A root `## Session` table declares fields that survive across user turns:
   field must use the same `Merge`.
 - `Merge` is `replace` or `append`, applied to completed node runs in completion
   order. `replace` keeps the value from the last completed run of any of the field's
-  sources. `append` requires an array and extends the stored array with the value
+  sources. `append` accepts an array or null; null writes nothing. An array extends the stored array with the value
   from every completed run of every source, so a node that looped twice appends
   twice. A run of one node applies its rows in declaration order. A source whose node
   did not run, or whose output omits an optional property, writes nothing. A run

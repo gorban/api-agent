@@ -18,9 +18,10 @@ def _controllers(predicate):
     return result
 
 
-def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
+def selected_viewer_schema(schema, *, argv, environ, dotenv, anchors):
+    """Discover declarations for the selected tracing provider only."""
     if 'TRACE_PROVIDER' not in schema.fields:
-        return None
+        return schema, None
     from api_agent.config.options import parse_options
     options = parse_options(schema, argv).values
     selector = resolve_config(ConfigSchema({'TRACE_PROVIDER': schema.fields['TRACE_PROVIDER']}),
@@ -29,10 +30,19 @@ def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
     selector.raise_for_errors()
     location = selector.values.get('TRACE_PROVIDER')
     if not location:
-        return None
-    from api_agent.providers.loading import bootstrap_schema, provider_location
+        return schema, None
+    from api_agent.providers.loading import provider_schema
     owner_root = anchors.get('owner_root') or anchors.get('pack_root') or anchors.get('base_root')
-    schema = bootstrap_schema(schema, argv, environ, dotenv, owner_root=owner_root)
+    return provider_schema(location, schema, owner_root=owner_root), location
+
+
+def custom_viewer_config(schema, *, argv, environ, dotenv, anchors):
+    schema, location = selected_viewer_schema(schema, argv=argv, environ=environ, dotenv=dotenv, anchors=anchors)
+    if not location:
+        return None
+    from api_agent.config.options import parse_options
+    from api_agent.providers.loading import provider_location
+    owner_root = anchors.get('owner_root') or anchors.get('pack_root') or anchors.get('base_root')
     path, _ = provider_location(location, owner_root=owner_root)
     declaration = read_declaration(path.parent)
     options = parse_options(schema, argv)

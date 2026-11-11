@@ -30,7 +30,8 @@ from textual.widgets import Button, Checkbox, DataTable, Footer, Input, Select, 
 
 MODES = (("run-local", "Run local"), ("unit", "Unit tests w/ coverage"),
          ("integration", "Integration tests"), ("e2e", "E2E tests"),
-         ("allure", "Allure serve"), ("deployment-logs", "Deployment logs"),
+         ("allure", "Allure serve"), ("view-flow", "View workflow"),
+         ("trace-viewer", "View traces"), ("deployment-logs", "Deployment logs"),
          ("config-cleanup", "Clear .env configuration"),
          ("cleanup-containers", "Container management"),
          ("unattended-auth", "Setup unattended authentication"))
@@ -1534,7 +1535,10 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             else:
                 self.show("error", "Invalid collection mode", "Collection requires unit, integration, or e2e mode.", (("menu", "Main menu"),))
             return
-        if self.mode is None:
+        if self.mode in {"view-flow", "trace-viewer"}:
+            # Leave the TUI before handing the terminal to the existing owner.
+            self.exit(self.mode)
+        elif self.mode is None:
             self.show_menu()
         elif self.mode == "config-cleanup":
             self.review_destination = None
@@ -2940,4 +2944,4 @@ def run_tui(context, schema, argv=(), environ=None) -> int:
         print(app.console_error, file=sys.stderr)
     if getattr(app, "collected_output", None):
         print(app.collected_output)
-    return result if isinstance(result, int) else 3
+    return result if isinstance(result, int) or result in {"view-flow", "trace-viewer"} else 3

@@ -106,7 +106,13 @@ def run_trace_viewer(context, values):
         asyncio.run(view_trace(context, values))
     except KeyboardInterrupt:
         return 130
-    except Exception:
-        print('Trace viewer could not start; check the managed tracing configuration and dashboard readiness.', flush=True)
+    except Exception as error:
+        if isinstance(error, ConfigError):
+            hint = 'Check the selected tracing provider configuration.'
+        elif isinstance(error, DashboardError):
+            hint = 'Check the dashboard URL and managed collector readiness.'
+        else:
+            hint = 'Check managed tracing configuration, collector readiness, and browser prerequisites.'
+        print('Trace viewer could not start; ' + hint, flush=True)
         return 2
     return 0

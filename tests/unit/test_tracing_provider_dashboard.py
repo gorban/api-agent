@@ -284,7 +284,7 @@ def test_viewer_rejects_unavailable_conditional_controller(synthetic_provider, m
     schema = bootstrap_schema(base, (), {}, {}, config, owner_root=synthetic_provider)
     fields = dict(schema.fields)
     fields['DASHBOARD_URL'] = replace(fields['DASHBOARD_URL'], applies_when={'UNDECLARED_CONTROLLER':True})
-    monkeypatch.setattr('api_agent.providers.loading.bootstrap_schema', lambda *a, **kw: replace(schema, fields=fields))
+    monkeypatch.setattr('api_agent.providers.loading.provider_schema', lambda *a, **kw: replace(schema, fields=fields))
     with pytest.raises(ValueError, match='unavailable configuration controller'):
         custom_viewer_config(base, argv=(), environ={'TRACE_PROVIDER':config['TRACE_PROVIDER']},dotenv={},
             anchors={'base_root':BASE,'pack_root':synthetic_provider,'owner_root':synthetic_provider})

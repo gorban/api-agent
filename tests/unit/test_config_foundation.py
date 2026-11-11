@@ -405,7 +405,7 @@ def test_local_frontend_flag_retains_config_and_provenance(tmp_path,dotenv,envir
 
 
 @pytest.mark.parametrize('option,values', [
-    ('--tui-mode', ('unit', 'integration', 'e2e', 'run-local', 'allure', 'deployment-logs', 'config-cleanup', 'unattended-auth', 'cleanup-containers')),
+    ('--tui-mode', ('unit', 'integration', 'e2e', 'run-local', 'allure', 'view-flow', 'trace-viewer', 'deployment-logs', 'config-cleanup', 'unattended-auth', 'cleanup-containers')),
     ('--trace-mode', ('', 'LangFuse', 'OTEL')),
 ])
 @pytest.mark.parametrize('following', [(), ('--no-std-in',)])

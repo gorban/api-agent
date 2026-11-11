@@ -1018,8 +1018,9 @@ class PrerequisiteManager:
         except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
             raise PrerequisiteError('Reporting storage ownership or captured assets could not be verified.') from error
 
-    def verify_jaeger_storage(self, identifier, deadline, *, cleanup=False):
+    def verify_jaeger_storage(self, identifier, deadline, *, cleanup=False, recover=None):
         """Adopt only the owned immutable config bind and scoped Badger volume."""
+        restored = False
         try:
             records = json.loads(self._command((self.plan.command[0], 'inspect', identifier), deadline,
                                                cleanup=cleanup))
@@ -1036,6 +1037,30 @@ class PrerequisiteManager:
             if (bind['Type'] != 'bind' or bind.get('RW') is not False
                     or source.name != 'jaeger-config.json' or not parent.is_relative_to(self.directory)):
                 raise ValueError()
+            volume, = [item for item in mounts if item['Destination'] == '/tmp']
+            name = self.scope.project + '_jaeger-badger'
+            if (volume['Type'] != 'volume' or volume.get('Name') != name
+                    or volume.get('RW') is not True):
+                raise ValueError()
+            actual, = json.loads(self._command((self.plan.command[0], 'volume', 'inspect', name), deadline,
+                                               cleanup=cleanup))
+            if (actual['Name'] != name or any(actual['Labels'].get(key) != value
+                    for key, value in self.scope.labels('otel').items())):
+                raise ValueError()
+            if recover is not None:
+                labels = record['Config']['Labels']
+                if (record['State']['Running'] is not False or record['Config']['Image'] != recover.image
+                        or record.get('Image') != recover.image_id
+                        or labels.get(CONFIG_LABEL) != recover.fingerprint
+                        or labels.get('api-agent.profile') != recover.profile
+                        or labels.get('com.docker.compose.service') != 'jaeger'
+                        or not self.scope.owns(labels, profiles=PROFILES)):
+                    raise ValueError()
+                try:
+                    parent.lstat()
+                except FileNotFoundError:
+                    self._restore_jaeger_snapshot(parent, deadline)
+                    restored = True
             inside_count = len(parent.relative_to(self.directory).parts) + 1
             for directory in (parent, *parent.parents)[:inside_count]:
                 info = directory.lstat()
@@ -1053,18 +1078,83 @@ class PrerequisiteManager:
                         or info.st_mode & 0o022 or info.st_size > len(expected)
                         or stream.read(len(expected) + 1) != expected):
                     raise ValueError()
-            volume, = [item for item in mounts if item['Destination'] == '/tmp']
-            name = self.scope.project + '_jaeger-badger'
-            if (volume['Type'] != 'volume' or volume.get('Name') != name
-                    or volume.get('RW') is not True):
-                raise ValueError()
-            actual, = json.loads(self._command((self.plan.command[0], 'volume', 'inspect', name), deadline,
-                                               cleanup=cleanup))
-            if (actual['Name'] != name or any(actual['Labels'].get(key) != value
-                    for key, value in self.scope.labels('otel').items())):
-                raise ValueError()
         except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
             raise PrerequisiteError('Jaeger storage ownership or captured assets could not be verified.') from error
+        return restored
+
+    def _restore_jaeger_snapshot(self, parent, deadline):
+        """Restore only an entirely absent snapshot at its original owned bind."""
+        if (parent.parent != self.directory or not re.fullmatch(
+                re.escape(self.scope.id) + r'-assets-[a-z0-9_]{8}', parent.name)):
+            raise ValueError()
+        _check(deadline, self.cancelled, self.now)
+        root = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(root)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise ValueError()
+            os.mkdir(parent.name, 0o700, dir_fd=root)
+            created = os.stat(parent.name, dir_fd=root, follow_symlinks=False)
+            try:
+                child = os.open(parent.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            except OSError:
+                try:
+                    current = os.stat(parent.name, dir_fd=root, follow_symlinks=False)
+                    root_path = self.directory.lstat()
+                    if ((current.st_dev, current.st_ino) == (created.st_dev, created.st_ino)
+                            and (root_path.st_dev, root_path.st_ino) == (info.st_dev, info.st_ino)):
+                        os.rmdir(parent.name, dir_fd=root)
+                except OSError:
+                    pass
+                raise
+            try:
+                opened = os.fstat(child)
+                if (not stat.S_ISDIR(opened.st_mode) or opened.st_uid != os.getuid()
+                        or opened.st_mode & 0o022 or (opened.st_dev, opened.st_ino) != (created.st_dev, created.st_ino)):
+                    raise ValueError()
+                file_info = None
+                try:
+                    descriptor = os.open('jaeger-config.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                         0o444, dir_fd=child)
+                    with os.fdopen(descriptor, 'wb') as stream:
+                        file_info = os.fstat(stream.fileno())
+                        stream.write(self.plan.assets['jaeger-config.json'])
+                        os.fchmod(stream.fileno(), 0o444)
+                    current = os.stat(parent.name, dir_fd=root, follow_symlinks=False)
+                    root_path = self.directory.lstat()
+                    if ((current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+                            or (root_path.st_dev, root_path.st_ino) != (info.st_dev, info.st_ino)):
+                        raise ValueError()
+                except BaseException:
+                    # Remove only objects this attempt created and can still
+                    # identify; any replacement or unexpected entry stays intact.
+                    try:
+                        current = os.stat(parent.name, dir_fd=root, follow_symlinks=False)
+                        root_path = self.directory.lstat()
+                        if ((current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)
+                                and (root_path.st_dev, root_path.st_ino) == (info.st_dev, info.st_ino)):
+                            if file_info is not None:
+                                current_file = os.stat('jaeger-config.json', dir_fd=child, follow_symlinks=False)
+                                if (current_file.st_dev, current_file.st_ino) == (file_info.st_dev, file_info.st_ino):
+                                    descriptor = os.open('jaeger-config.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                                         dir_fd=child)
+                                    with os.fdopen(descriptor, 'rb') as stream:
+                                        read_info = os.fstat(stream.fileno())
+                                        expected = self.plan.assets['jaeger-config.json']
+                                        content = stream.read(len(expected) + 1)
+                                        current_file = os.stat('jaeger-config.json', dir_fd=child, follow_symlinks=False)
+                                        if ((read_info.st_dev, read_info.st_ino) == (file_info.st_dev, file_info.st_ino)
+                                                and (current_file.st_dev, current_file.st_ino) == (file_info.st_dev, file_info.st_ino)
+                                                and expected.startswith(content)):
+                                            os.unlink('jaeger-config.json', dir_fd=child)
+                            os.rmdir(parent.name, dir_fd=root)
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                os.close(child)
+        finally:
+            os.close(root)
 
     def _verified_digest_image(self, expected, actual_id, deadline, *, cleanup=False):
         """Verify a container's immutable image against the locally resolved pin."""
@@ -1207,6 +1297,10 @@ class PrerequisiteManager:
                     or (reporting_directory is None and any(not item.running for item in initial.values()))):
                 raise PrerequisiteError('Registered reporting container changed or stopped; no restart was attempted.')
             compatible = self._compatible(initial, deadline, allow_stopped=True)
+            restarted = {item.id for item in compatible.values() if not item.running}
+            protected = _leased_ids(journal)
+            if restarted & protected:
+                raise PrerequisiteError('Stopped prerequisite has an active invocation lease.')
             missing_captures = []
             for name, item in compatible.items():
                 if name in self.conditional:
@@ -1214,8 +1308,11 @@ class PrerequisiteManager:
                         self.verify_conditional_storage(name, item.id, deadline)
                     except MissingCapturedAssetsError as error:
                         missing_captures.append((item.id, error))
+            recovered_id = None
             if 'jaeger' in compatible:
-                self.verify_jaeger_storage(compatible['jaeger'].id, deadline)
+                jaeger = compatible['jaeger']
+                if self.verify_jaeger_storage(jaeger.id, deadline, recover=None if jaeger.running else jaeger):
+                    recovered_id = jaeger.id
             if reporting_directory is not None:
                 if set(compatible) != {'localstack'}:
                     raise PrerequisiteError('Registered reporting service changed; no restart was attempted.')
@@ -1228,20 +1325,18 @@ class PrerequisiteManager:
                     executable=self.plan.command[0], project=self.scope.project)) from missing_captures[0][1].__cause__
             self._prune_networks(deadline, aged=True)
             existing = {name: item for name, item in compatible.items() if item.running}
-            restarted = {item.id for item in compatible.values() if not item.running}
-            protected = _leased_ids(journal)
-            if restarted & protected:
-                raise PrerequisiteError('Stopped prerequisite has an active invocation lease.')
             newly = ()
             snapshot = None
             missing = tuple(name for name in self.plan.services if name not in existing)
             verified = dict(existing)
             try:
+                if recovered_id is not None:
+                    self._command((self.plan.command[0], 'start', recovered_id), deadline)
                 if restarted and reporting_directory is not None:
                     # Restart only the registered immutable objects. Compose up
                     # would select a fresh snapshot rather than the retained bind.
                     self._command((self.plan.command[0], 'start', *sorted(restarted)), deadline)
-                elif missing:
+                elif any(name != 'jaeger' or recovered_id is None for name in missing):
                     override = self.directory / f'{self.scope.id}-labels.json'
                     if override.is_symlink():
                         raise PrerequisiteError('Compose ownership override may not be a symlink.')
@@ -1253,7 +1348,8 @@ class PrerequisiteManager:
                     self.snapshot_directory = snapshot
                     command, environment = snapshot_compose(self.plan, snapshot)
                     self.environment = MappingProxyType({**self.environment, **environment, **self.engine_environment})
-                    fixed_missing = tuple(name for name in missing if name not in self.conditional)
+                    fixed_missing = tuple(name for name in missing if name not in self.conditional
+                                          and not (name == 'jaeger' and recovered_id is not None))
                     if fixed_missing:
                         self._command((*command, '-f', str(override), 'up', '-d',
                             '--no-recreate', *fixed_missing), deadline)
@@ -1268,6 +1364,8 @@ class PrerequisiteManager:
                     newly = tuple(item for item in inventory if (item not in initial or item in restarted)
                         and inventory[item].service in missing)
                     current = self._compatible(inventory, deadline)
+                    if recovered_id is not None and ('jaeger' not in current or current['jaeger'].id != recovered_id):
+                        raise PrerequisiteError('Recovered prerequisite changed during acquisition.')
                     if any(name not in current or current[name].id != item.id
                            for name, item in verified.items()):
                         raise PrerequisiteError('Existing prerequisite changed during acquisition.')
@@ -1310,6 +1408,7 @@ class PrerequisiteManager:
                     inventory = self._inventory(rollback_deadline, cleanup=True)
                     newly = tuple(item for item in inventory if (item not in initial or item in restarted)
                         and inventory[item].service in missing
+                        and (inventory[item].service != 'jaeger' or recovered_id is None or item == recovered_id)
                         and (inventory[item].service not in verified
                             or item == verified[inventory[item].service].id))
                     # Pin IDs while the acquisition lock still excludes other
