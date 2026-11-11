@@ -761,3 +761,12 @@ def test_runtime_history_preserves_tool_dialogue_and_isolates_each_relevance_rev
     assert len(first_review.payload.messages) == len(second_review.payload.messages)
     assert all(row.role != 'assistant' for row in second_review.payload.messages)
     assert [owner.invocations for owner in scenario[0].values()] == [['call-1'], ['call-2']]
+
+
+def test_conversation_adds_no_hidden_budget_unless_the_caller_declares_one(scenario):
+    from api_agent.providers.progress import progress_sink
+    for options, expected in (({}, {None}), ({'timeout': 600}, {600})):
+        reports = []
+        with progress_sink(reports.append):
+            run(scenario, success_script(), required_tools=ALIASES, verify_final=check_final, **options)
+        assert {report.timeout for report in reports if report.name == 'Tool conversation'} == expected
