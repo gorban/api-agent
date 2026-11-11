@@ -27,6 +27,16 @@ def resolve_timeouts(layout, config, definition=None):
     return values, keys
 
 
+def declared_timeouts(definition, config=None):
+    """The declared Timeouts rows of any admitted definition, resolved against ``config``."""
+    config = config or {}
+    if getattr(definition, 'schema_source', None) is not None:
+        values, _ = resolve_state_timeouts(definition, config)
+    else:
+        values, _ = resolve_timeouts(definition.layout, config, definition)
+    return dict(values)
+
+
 def resolve_component_passes(layout, config):
     """Resolve captured component limits against explicit effective configuration."""
     from .model import MAX_COMPONENT_PASSES

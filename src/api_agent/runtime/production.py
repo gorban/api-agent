@@ -237,7 +237,7 @@ class ProductionApplication:
         composed = compose_chat_runtime(
             context, config, callback_origin=self.settings.callback_origin, chat_origin=self.settings.chat_origin,
             tls_material=None, graph=graph, llm_factory=self.llm_factory, on_error=None,
-            required_kinds=(), requires_api=getattr(graph, 'requires_api', False),
+            required_kinds=(),
             nonce=self.settings.session_nonce, extra_services=None,
             permitted_browser_origins=self.settings.permitted_browser_origins,
             client_address_policy=self.settings.client_address_policy)

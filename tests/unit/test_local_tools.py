@@ -65,20 +65,25 @@ def test_tool_view_rejects_incomplete_selected_provider(missing):
 
 def test_bind_tools_selects_one_factory_with_frozen_values():
     runtime = SimpleNamespace(factory_plan=(), services={'emissions': object()})
-    graph = SimpleNamespace()
     config = ConfigResult({'API_PROVIDER': 'adapter.py:create', 'API_ENDPOINT': 'http://example.test/graphql'}, {}, (), (), ())
 
-    local_tools.bind_local_tools(runtime, graph, config)
+    owner = local_tools.bind_local_tools(runtime, config)
     config.values['API_ENDPOINT'] = 'http://changed.test/graphql'
 
     kind, location, values, services = runtime.factory_plan[0]
     assert (kind, location) == ('api', 'adapter.py:create')
     assert values['API_ENDPOINT'] == 'http://example.test/graphql'
     assert services is runtime.services
-    assert graph.tool_owner.runtime is runtime
+    assert isinstance(owner, local_tools.RuntimeToolOwner)
+    assert not hasattr(owner, 'runtime')
 
 
 def test_bind_tools_requires_explicit_selected_api_provider():
     with pytest.raises(ContractError, match='API_PROVIDER'):
-        local_tools.bind_local_tools(SimpleNamespace(), SimpleNamespace(),
-            ConfigResult({}, {}, (), (), ()))
+        local_tools.bind_local_tools(SimpleNamespace(), ConfigResult({}, {}, (), (), ()))
+
+
+@pytest.mark.parametrize('usages,expected', [((), False), (('declared',), True)])
+def test_api_need_follows_declared_tool_usages(usages, expected):
+    assert local_tools.requires_api(SimpleNamespace(tool_usages=usages)) is expected
+    assert local_tools.requires_api(SimpleNamespace()) is False

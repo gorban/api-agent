@@ -14,7 +14,7 @@ from api_agent.runtime.operation import local_operation
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.view_flow import _prepare_view
 from api_agent.ui.session import PreparedUISession
-from api_agent.runtime.local_tools import selected_application
+from api_agent.runtime.local_tools import requires_api as declares_api, selected_application
 
 
 def _plan(config, schema, context, scope, *, engine_environment=None, requires_api=False,
@@ -222,7 +222,7 @@ class LocalRunOwner:
             callback_origin=origin,
             tls_material=material, graph=self._graph, llm_factory=self.llm_factory,
             on_error=self._execution_error, on_status=self._workflow_event,
-            interaction_owner=self.interaction_owner, requires_api=self._requires_api,
+            interaction_owner=self.interaction_owner,
             runtime_factory=runtime_factory, nonce=nonce,
             chat_origin=config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/'),
             extra_services=lambda runtime: {
@@ -304,7 +304,7 @@ class LocalRunOwner:
                     self._stack.push(close_application)
                 selected_tools = getattr(self._config, 'tool_plan', None)
                 self._requires_api = (not (selected_tools is not None and selected_tools.tools)
-                    and getattr(self._graph, 'requires_api', False) is True)
+                    and declares_api(self._graph.definition))
                 bundled_demo = (getattr(self.context, 'pack_id', None) == 'demo'
                     and not getattr(self.context, 'external_pack', False))
                 if selected_tools is not None and selected_tools.tools:

@@ -10,7 +10,7 @@ import pytest
 
 from api_agent.auth.interaction_transport import OwnedInteraction
 from api_agent.runtime.local_run import LocalRunOwner
-from test_local_run import local
+from test_local_run import declared_when_present, local
 
 
 @pytest.mark.asyncio
@@ -123,6 +123,7 @@ async def test_shared_prompt_through_normal_app_real_owner_and_llm(tmp_path, mon
     def init_llm(self, *args, **kwargs):
         llm_init(self, *args, loader=loader, **kwargs)
     monkeypatch.setattr(local_llm.LocalLLM, '__init__', init_llm)
+    monkeypatch.setattr('api_agent.runtime.chat_composition.declared_timeouts', declared_when_present)
     monkeypatch.setattr(client_tls, 'verified_client_context', lambda value: ssl.create_default_context())
     monkeypatch.setattr(local_run, 'compose_runtime', lambda *args, **kwargs:
         NS(services={}, emissions=EmissionBoundary(ContentPolicy()), tracing=None))
@@ -141,8 +142,8 @@ async def test_shared_prompt_through_normal_app_real_owner_and_llm(tmp_path, mon
         browser = NS(session=None, flow_url='https://example.test/flow', start=AsyncMock(), aclose=AsyncMock())
         owner_init(self, *args, **kwargs, operation_factory=operation_factory,
             browser_factory=lambda *a, **k: browser,
-            application_factory=lambda *a, **k: NS(),
-            prepare_view=lambda *a, **k: (NS(definition_id='synthetic'), None, False, None, {}),
+            application_factory=lambda definition, **k: NS(definition=definition),
+            prepare_view=lambda *a, **k: (NS(definition_id='synthetic', tool_usages=()), None, False, None, {}),
             plan_factory=lambda *a, **k: NS(conditional=(), services=()))
     monkeypatch.setattr(LocalRunOwner, '__init__', init_owner)
     provider_path = tmp_path / 'synthetic.py'

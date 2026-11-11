@@ -8,23 +8,31 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from api_agent.providers.contracts import ContractError
 from api_agent.providers.control import CleanupPendingError
 from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
 from api_agent.runtime.local_run import LocalRunOwner, LocalCleanup
 from api_agent.runtime.listener import ListenerError
 
 
+def declared_when_present(definition, config):
+    """Resolve real declarations; synthetic definitions without a layout declare a 600 s GRAPH row."""
+    from api_agent.workflows.configuration import declared_timeouts
+    return declared_timeouts(definition, config) if hasattr(definition, 'layout') else {'GRAPH': 600.0}
+
+
 @pytest.fixture
-def local(tmp_path):
+def local(tmp_path, monkeypatch):
+    monkeypatch.setattr('api_agent.runtime.chat_composition.declared_timeouts', declared_when_present)
     events, calls = [], []
     from pathlib import Path
     provider = str(Path(__file__).resolve().parents[2] / 'src/api_agent/telemetry/trace_adapters/provider.py') + ':create_tracing_provider'
     config = SimpleNamespace(errors=(), missing=(), values={'RUN_UI': False, 'TRACE_PROVIDER':provider,
         'TRACE_MODE': '', 'JAEGER_VIEWER_PORT':16686, 'UI_LISTENER_URL': 'https://localhost:9443'})
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, owner_root=tmp_path)
-    definition = SimpleNamespace(definition_id='selected-definition')
+    definition = SimpleNamespace(definition_id='selected-definition', tool_usages=())
     prepared = (definition, object(), False, object(), {})
-    application_factory = Mock(return_value=SimpleNamespace(timeouts={}))
+    application_factory = Mock(return_value=SimpleNamespace(definition=definition, timeouts={}))
     runtime = SimpleNamespace(emissions=EmissionBoundary(ContentPolicy()), services={}, tracing=None)
     session = SimpleNamespace(callback=SimpleNamespace(origin='https://localhost:8443'), runtime=runtime,
                               infrastructure=None, listener=None)
@@ -470,11 +478,16 @@ def test_wait_without_start_rejected(local):
 def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local, monkeypatch, requires_api):
     from api_agent.runtime import local_run
     from api_agent.runtime import client_tls
+    from api_agent.runtime.local_tools import selected_application
+    from api_agent.workflows.definition import load_definition
     from api_agent.ui import process
     config, origin, material = local.config, 'https://localhost:8443', SimpleNamespace(ca_file=Path('/synthetic-ca'))
     config.values['LLM_REASONING_EFFORT'] = ''
     config.values['API_PROVIDER'] = 'adapter.py:create'
-    local.owner._requires_api = requires_api
+    base = Path(__file__).resolve().parents[2]
+    definition = (load_definition(base / 'demo/simple/flow.md.html', base_root=base, pack_root=base / 'demo',
+                                  entry_root='base') if requires_api else
+                  load_definition(base / 'flow.md.html', base_root=base, pack_root=base))
     runtime = SimpleNamespace(services={}, emissions=EmissionBoundary(ContentPolicy()), tracing=None, factory_plan=())
     compose = Mock(return_value=runtime)
     monkeypatch.setattr(local_run, 'compose_runtime', compose)
@@ -483,8 +496,8 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
     llm = SimpleNamespace(describe=AsyncMock(return_value=()), complete=AsyncMock(),
                           ensure_ready=AsyncMock(), aclose=AsyncMock())
     local.owner.llm_factory = Mock(return_value=llm)
-    local.owner._graph = SimpleNamespace(complete=AsyncMock(return_value='graph-result'),
-                                         timeouts={'GRAPH': 600})
+    local.owner._graph = selected_application(definition, config=config.values)
+    local.owner._graph.complete = AsyncMock(return_value='graph-result')
     async def run():
         result = local.owner._runtime(config, origin, material)
         compose.assert_called_once_with(local.owner.context, config, callback_origin=origin,
@@ -494,9 +507,9 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
         assert result.services['studio_backend'].timeout == 600
         if requires_api:
             assert runtime.factory_plan[0][:2] == ('api', 'adapter.py:create')
-            assert local.owner._graph.tool_owner.runtime is runtime
         else:
             assert runtime.factory_plan == ()
+        assert not {'tools', 'tool_owner', 'runtime', 'tool_plan'} & set(vars(local.owner._graph))
         assert result.services['ui_processes'] == 'process-owner'
         assert await result.services['studio_backend'].describe(auth=None) == ()
         context = object()
@@ -517,7 +530,7 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
     ('flow.md.html', '.', 'WORKFLOW_GRAPH_TIMEOUT_SECONDS', 480, 480),
     ('demo/simple/flow.md.html', 'demo', 'WORKFLOW_GRAPH_TIMEOUT_SECONDS', 610, 610),
     ('flow.md.html', '.', 'WORKFLOW_COMPONENT_TIMEOUT_SECONDS', 451, 451),
-    ('flow.md.html', '.', None, None, 120),
+    ('flow.md.html', '.', None, None, None),
 ])
 def test_runtime_uses_selected_application_graph_deadline(local, monkeypatch, entry, root, key, timeout, expected):
     from dataclasses import replace
@@ -547,13 +560,16 @@ def test_runtime_uses_selected_application_graph_deadline(local, monkeypatch, en
         describe=AsyncMock(return_value=()), complete=AsyncMock(), ensure_ready=AsyncMock(),
         aclose=AsyncMock()))
 
+    if key is None:
+        assert 'GRAPH' not in local.owner._graph.timeouts
+        with pytest.raises(ContractError, match='declared GRAPH timeout'):
+            local.owner._runtime(local.config, 'https://localhost:8443',
+                                 SimpleNamespace(ca_file=Path('/synthetic-ca')))
+        return
     result = local.owner._runtime(local.config, 'https://localhost:8443',
                                   SimpleNamespace(ca_file=Path('/synthetic-ca')))
 
-    if key is None:
-        assert 'GRAPH' not in local.owner._graph.timeouts
-    else:
-        assert local.owner._graph.timeouts['GRAPH'] == timeout
+    assert local.owner._graph.timeouts['GRAPH'] == timeout
     assert result.services['studio_backend'].timeout == expected
 
 
@@ -949,7 +965,7 @@ def test_api_graph_admission_preserves_external_pack_endpoint_policy(local, exte
     local.owner.context.pack_id = 'demo'
     local.owner.context.external_pack = external
     local.owner.resolve = lambda: original
-    local.application_factory.return_value.requires_api = requires_api
+    local.prepared[0].tool_usages = (object(),) if requires_api else ()
 
     async def scenario():
         await local.owner.start()
@@ -975,7 +991,7 @@ def test_simple_bundled_graph_rejects_explicit_api_activation_before_planning(lo
     local.owner.context.pack_id = 'demo'
     local.owner.context.external_pack = False
     local.owner.resolve = lambda: config
-    local.application_factory.return_value.requires_api = False
+    local.prepared[0].tool_usages = ()
 
     async def scenario():
         with pytest.raises(ValueError, match='operation_owned'):
@@ -1014,6 +1030,7 @@ def test_diagnostic_retains_runtime_boundary_before_partial_composition_fails(lo
     boundary = EmissionBoundary(ContentPolicy())
     boundary.register_secret('partial-runtime-credential')
     monkeypatch.setattr(local_run, 'compose_runtime', Mock(return_value=SimpleNamespace(emissions=boundary, tracing=None)))
+    local.owner._graph = SimpleNamespace(definition=local.prepared[0])
     local.owner.llm_factory = Mock(side_effect=RuntimeError('Connection setup failed: partial-runtime-credential\x1b[2J\r'))
     with pytest.raises(RuntimeError) as failure:
         local.owner._runtime(local.config, 'https://localhost:8443', SimpleNamespace(ca_file=Path('/synthetic-ca')))

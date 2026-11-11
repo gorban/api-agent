@@ -3,18 +3,15 @@ from api_agent.providers.contracts import ContractError
 from api_agent.providers.inference import async_request_to_wire
 from api_agent.providers.inference import result_to_wire
 from api_agent.workflows.execution import NodeFunction, Workflow, WorkflowError
-from api_agent.tooling.runtime import OwnerTools
 
 
 class UsefulDemoApplication:
     """Admit one declared planning/review/tool/render graph before acquiring services."""
-    requires_api = True
     NODE_KINDS = {'plan': 'llm', 'review': 'llm', 'execute_tool': 'deterministic', 'render': 'llm'}
 
-    def __init__(self, definition, *, config=None, observations=None, tool_owner=None):
+    def __init__(self, definition, *, config=None, observations=None):
         self.definition, self.config = definition, dict(config or {})
-        self.observations, self.tool_owner = observations, tool_owner
-        self.tools = None
+        self.observations = observations
         layout = definition.layout
         nodes = [step for step in layout.steps if step.kind == 'node']
         rows = {row['ID']: row for row in layout.tables['Functions']}
@@ -47,7 +44,7 @@ class UsefulDemoApplication:
                 self.registry[row['Registry']] = NodeFunction(catalog[row['Registry']], row['Kind'])
         self.timeouts = Workflow(definition, self.registry, config=self.config).timeouts
 
-    async def complete(self, request, *, llm, context, tool_owner=None):
+    async def complete(self, request, *, llm, context):
         await async_request_to_wire(request)
         messages = []
         for message in request.payload.messages:
@@ -59,10 +56,6 @@ class UsefulDemoApplication:
         if (request.payload.tools or request.payload.structured is not None or request.payload.response is not None
                 or request.payload.generation.temperature is not None):
             raise ContractError('Useful demo does not accept caller tools or structured output')
-        selected_owner = tool_owner or self.tool_owner
-        if selected_owner is None and self.tools is None:
-            raise ContractError('Useful demo requires a selected tool owner')
-        tools = self.tools or OwnerTools(self.definition, selected_owner)
         from .capture_authority import resolve_capture_services
         capture = resolve_capture_services({} if self.observations is None else
                                            {'observation_factory': self.observations})
@@ -72,8 +65,7 @@ class UsefulDemoApplication:
             observations = factory.create(self.definition) if factory is not None else None
             result_store = {}
             services = {**capture, 'result_store': result_store, 'selection': request.selected_llm, 'generation': request.payload.generation,
-                        'messages': messages, 'journal': observations,
-                        'tools': tools}
+                        'messages': messages, 'journal': observations}
 
             async def selected(value):
                 if value.selected_llm != request.selected_llm:

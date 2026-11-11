@@ -213,9 +213,11 @@ async def test_multiple_instances_keep_grants_separate_and_close_each_view():
         ToolUsage('run', 'runner', Path('/second.toml'), 'node', Path('/flow.md'), 1, ('execute',))))
     class Resolver:
         definition = selected
-        def instance(self, *, port, **scope):
+        def for_node(self, node):
+            return self
+        def instance(self, port):
             return port
-        def gate(self, *, port, invocation_id, **scope):
+        def gate(self, port, *, invocation_id):
             return ToolGate(first if port == 'reader' else second, invocation_id=invocation_id)
     async with invocation_tools(selected, {'tools': Resolver()}):
         assert list(node_tools('plan')) == ['reader']

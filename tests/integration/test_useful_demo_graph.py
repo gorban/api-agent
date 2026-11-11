@@ -58,10 +58,28 @@ class ControlledLLM:
         return LLMResult(Message('assistant', (TextContent(output),)), Usage(2, 3))
 
 
+class EngineBound:
+    """Run the application as composition does: the engine installs the tools."""
+    def __init__(self, app, owner):
+        object.__setattr__(self, '_app', app)
+        object.__setattr__(self, '_owner', owner)
+
+    def __getattr__(self, name):
+        return getattr(self._app, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._app, name, value)
+
+    async def complete(self, request, *, llm, context):
+        from api_agent.tooling.runtime import OwnerTools, bind_workflow_tools
+        with bind_workflow_tools(OwnerTools(self._app.definition, self._owner)):
+            return await self._app.complete(request, llm=llm, context=context)
+
+
 def run_demo(verdicts, *, render=None):
     events = []
     definition = load_definition(ENTRY, base_root=ROOT, pack_root=ROOT / 'demo', entry_root='base')
-    app = UsefulDemoApplication(definition, tool_owner=ControlledOwner(events))
+    app = EngineBound(UsefulDemoApplication(definition), ControlledOwner(events))
     outputs = [PLAN]
     for index, verdict in enumerate(verdicts):
         outputs.append(json.dumps(verdict))
@@ -119,7 +137,7 @@ def test_selected_graph_rejects_removed_review_guard_before_execution():
     altered = replace(app.definition, layout=replace(layout, tables=tables))
 
     with pytest.raises(ContractError, match='useful demo contract'):
-        UsefulDemoApplication(altered, tool_owner=ControlledOwner([]))
+        UsefulDemoApplication(altered)
 
 
 def test_selected_graph_repairs_deterministic_length_before_review_or_tool_execution():

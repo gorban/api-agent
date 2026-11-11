@@ -49,6 +49,61 @@ def test_selected_stateful_application_uses_admitted_factory(application_graph):
         'request', 'selected', 'owned')
 
 
+def application_with(application_graph, attributes):
+    root, entry, source = application_graph
+    source.write_text(f'''from types import SimpleNamespace
+
+def create_application(definition, *, config):
+    async def complete(request, *, llm, context):
+        return request
+    return SimpleNamespace(definition=definition, complete=complete{attributes})
+''')
+    return load_definition(entry, base_root=root, pack_root=root)
+
+
+@pytest.mark.parametrize('attributes', ['', ', timeouts={}, requires_api=False'])
+def test_budgets_and_api_need_are_optional_when_agreeing_with_the_declaration(application_graph, attributes):
+    definition = application_with(application_graph, attributes)
+
+    assert selected_application(definition).definition is definition
+
+
+@pytest.mark.parametrize('attributes,message', [
+    (', timeouts={"GRAPH": 120}', 'timeouts disagree'),
+    (', timeouts=[]', 'timeouts disagree'),
+    (', requires_api=True', 'requires_api disagrees'),
+])
+def test_application_cannot_choose_its_budgets_or_api_need(application_graph, attributes, message):
+    definition = application_with(application_graph, attributes)
+
+    with pytest.raises(ContractError, match=message):
+        selected_application(definition)
+
+
+def test_application_budgets_must_equal_the_declared_timeouts(application_graph):
+    root, entry, _ = application_graph
+    (root / 'limit.toml').write_text('''version = 1
+
+[fields.LIMIT]
+type = "float"
+default = 30.0
+validation = "positive"
+acknowledge_default = false
+help = "Whole workflow deadline."
+''')
+    entry.write_text(entry.read_text() + '''
+## Timeouts
+
+| Owner | Source | Key |
+| --- | --- | --- |
+| GRAPH | [config](limit.toml) | LIMIT |
+''')
+    agreeing = application_with(application_graph, ', timeouts={"GRAPH": 30.0}')
+    assert selected_application(agreeing).timeouts == {'GRAPH': 30.0}
+    with pytest.raises(ContractError, match='timeouts disagree'):
+        selected_application(agreeing, config={'LIMIT': 5})
+
+
 def test_factory_is_in_the_workflow_provenance(application_graph):
     from api_agent.workflows.viewer_projection import project_view
     root, entry, source = application_graph

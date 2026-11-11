@@ -180,7 +180,7 @@ def create_tool(config, services): return Owner(services)
     assert view.closed
 
 
-def test_port_lookup_keeps_graph_and_node_scopes_distinct_and_rejects_unknown_scope():
+def test_port_lookup_prefers_the_node_binding_and_rejects_unknown_nodes():
     from types import SimpleNamespace
     from api_agent.providers.contracts import ContractError
     definition = SimpleNamespace(definition_id='definition', graph_id='same',
@@ -190,12 +190,12 @@ def test_port_lookup_keeps_graph_and_node_scopes_distinct_and_rejects_unknown_sc
     runtime = Runtime('demo', tool_plan=Plan((), bindings, (definition,)))
     tools = runtime.tools_for(definition)
 
-    assert tools.instance(scope_kind='node', scope='same', port='primary') == 'demo/root'
-    assert tools.instance(scope_kind='node', scope='same', port='local') == 'demo/node'
+    assert tools.for_node('same').instance('primary') == 'demo/root'
+    assert tools.for_node('same').instance('local') == 'demo/node'
     with pytest.raises(ContractError, match='port is unavailable'):
-        tools.instance(scope_kind='graph', scope='same', port='local')
+        tools.for_node('same').instance('absent')
     with pytest.raises(ContractError, match='scope is unavailable'):
-        tools.instance(scope_kind='node', scope='unknown', port='primary')
+        tools.for_node('unknown')
 
 
 def test_unadmitted_workflow_cannot_borrow_another_graph_binding():
@@ -483,7 +483,7 @@ async def test_nested_scope_resolves_nearest_declared_ancestor_without_parent_ow
         tool_owners={'demo/first': SimpleNamespace(require_tool=lambda: owner, aclose=owner.aclose)})
     runtime.start()
     tools = runtime.tools_for(definition)
-    view = tools.for_port(scope_kind='node', scope='read', port='primary')
+    view = tools.for_node('read').borrow('primary')
     assert await view.describe() == 'ancestor selected'
     await view.aclose()
     assert events == []

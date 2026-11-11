@@ -136,7 +136,7 @@ def test_local_runtime_gives_graph_named_tools_before_studio_invocation(local, m
         result = local.owner._runtime(local.config, 'https://localhost:8443',
                                       SimpleNamespace(ca_file=Path('/synthetic-ca')))
         assert result.tool_plan is selected
-        assert local.owner._graph.tools is resolver
+        assert not hasattr(local.owner._graph, 'tools')
         runtime.tools_for.assert_called_once_with(definition)
         assert result.factory_plan == ()
         assert await result.services['studio_backend'].complete('request', auth=None, context='context') == 'answer'

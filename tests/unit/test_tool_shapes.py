@@ -29,10 +29,10 @@ class Owner:
 def create_tool(config, services): return Owner(config, services)
 '''
 NATIVE = '''async def execute(inputs, context):
-    gate = context.services['tools'].gate(scope_kind='node',scope='read',port='reader',invocation_id='shape-call')
-    prepared = await gate.prepare({})
-    verified = await gate.verify(prepared, relevance=lambda candidate: {'relevant':True,'grounded':True})
-    return (await gate.execute(verified)).data
+    reader = context.tools['reader']
+    prepared = await reader.prepare({})
+    verified = await reader.verify(prepared, relevance=lambda candidate: {'relevant':True,'grounded':True})
+    return (await reader.execute(verified)).data
 '''
 
 
@@ -68,7 +68,7 @@ def shape_plan(root, with_config, with_prerequisite):
           '| execute | deterministic | [source](native.py) |\n\n## Functions\n\n'
           '| ID | Registry | Input | Output |\n| --- | --- | --- | --- |\n'
           '| read | execute | [input](empty.json) | [output](output.json) |\n\n## Tools\n\n'
-          '| Port | Instance |\n| --- | --- |\n| reader | [instance](instance.toml) |\n')
+          '| Port | Instance | Operations |\n| --- | --- | --- |\n| reader | [instance](instance.toml) | prepare, verify, execute |\n')
     entry = write(root, 'flow.md.html', '# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| shape |\n\n'
                   '## Flow\n\n1.  [node read](node.md.html)\n')
     instance = 'version=1\nid="fixture/shape"\ninterface="verified-read@1"\nimplementation="implementation.toml"\n'

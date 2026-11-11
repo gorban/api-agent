@@ -52,7 +52,7 @@ def test_loads_compiled_plan_once_at_startup_and_delegates_http(monkeypatch, tmp
         permitted_browser_origins=('https://console.example.test',),
         client_address_policy='any',
     )
-    definition, graph = object(), SimpleNamespace(requires_api=False)
+    definition, graph = object(), SimpleNamespace()
     load = Mock(return_value=definition)
     compose = Mock(return_value=SimpleNamespace(runtime=SimpleNamespace(
         astart=AsyncMock(), aclose=AsyncMock(), started=True, ready=True)))
@@ -77,7 +77,7 @@ def test_loads_compiled_plan_once_at_startup_and_delegates_http(monkeypatch, tmp
     assert load.call_count == 1
     assert compose.call_args.kwargs['graph'] is graph
     assert compose.call_args.kwargs['required_kinds'] == ()
-    assert compose.call_args.kwargs['requires_api'] is False
+    assert 'requires_api' not in compose.call_args.kwargs
     assert compose.call_args.kwargs['extra_services'] is None
     assert compose.call_args.kwargs['permitted_browser_origins'] == ('https://console.example.test',)
     assert compose.call_args.kwargs['client_address_policy'] == 'any'
@@ -112,7 +112,7 @@ def test_shutdown_is_bounded_when_cleanup_hangs(monkeypatch, tmp_path):
 
     runtime = SimpleNamespace(astart=AsyncMock(), aclose=hang, started=True, ready=True)
     monkeypatch.setattr(production, 'load_artifact', Mock(return_value=object()))
-    monkeypatch.setattr(production, 'selected_application', Mock(return_value=SimpleNamespace(requires_api=False)))
+    monkeypatch.setattr(production, 'selected_application', Mock(return_value=SimpleNamespace()))
     monkeypatch.setattr(production, 'compose_chat_runtime',
                         Mock(return_value=SimpleNamespace(runtime=runtime)))
     monkeypatch.setattr(production, 'create_application', Mock(return_value=AsyncMock()))
@@ -351,7 +351,7 @@ def test_generic_shutdown_failure_and_factory_cli(monkeypatch, tmp_path):
     runtime = SimpleNamespace(astart=AsyncMock(), aclose=AsyncMock(side_effect=RuntimeError('close')),
                               started=True, ready=True)
     monkeypatch.setattr(production, 'load_artifact', Mock(return_value=object()))
-    monkeypatch.setattr(production, 'selected_application', Mock(return_value=SimpleNamespace(requires_api=True)))
+    monkeypatch.setattr(production, 'selected_application', Mock(return_value=SimpleNamespace()))
     composed = SimpleNamespace(runtime=runtime)
     compose = Mock(return_value=composed)
     monkeypatch.setattr(production, 'compose_chat_runtime', compose)
@@ -360,7 +360,7 @@ def test_generic_shutdown_failure_and_factory_cli(monkeypatch, tmp_path):
         {'type': 'lifespan.startup.complete'},
         {'type': 'lifespan.shutdown.failed', 'message': 'runtime_shutdown_failed'},
     ]
-    assert compose.call_args.kwargs['requires_api'] is True
+    assert 'requires_api' not in compose.call_args.kwargs
 
     monkeypatch.setattr(production, 'settings_from_environment', Mock(return_value=settings))
     assert isinstance(production.application(), production.ProductionApplication)
