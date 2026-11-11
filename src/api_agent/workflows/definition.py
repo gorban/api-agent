@@ -308,6 +308,12 @@ def _tool_operations(path, row, scope_kind):
     return operations
 
 
+def _names_owner(owner, cell):
+    """Whether ``cell`` names the enclosing owner; a node's Timeouts may also name its ``<node>.<port>``."""
+    column, kind, identifier = owner
+    return cell == identifier or (column, kind) == ('Owner', 'node') and cell.startswith(identifier + '.')
+
+
 def _table(path, body, columns, implied=(), owner=None):
     """Parse a fixed-column table.
 
@@ -350,7 +356,7 @@ def _table(path, body, columns, implied=(), owner=None):
     rows = []
     for item in nonempty[2:]:
         values = dict(zip(columns, cells(item)))
-        if owner is not None and owner[0] in values and values[owner[0]] != owner[2]:
+        if owner is not None and owner[0] in values and not _names_owner(owner, values[owner[0]]):
             raise LayoutError(f"{path}:{item[0]}: {owner[0]} must name the enclosing {owner[1]} '{owner[2]}'")
         rows.append({name: values[name] if name in values else implied[name] for name in full} | {'line': item[0]})
     return rows
@@ -742,7 +748,11 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
             except UnicodeError:
                 raise LayoutError(f'{path}:1: prompt slot text must be UTF-8') from None
     layout = Layout(entry, tuple(execution_steps), tables, tuple(sorted(captured, key=str)))
-    _validate(layout, {path: data for path, (_, data) in captured.items()})
+    tool_ports = {}
+    for use in tool_usages:
+        if use.scope_kind == 'node':
+            tool_ports.setdefault(use.scope, set()).add(use.port)
+    _validate(layout, {path: data for path, (_, data) in captured.items()}, tool_ports)
     layout = Layout(entry, layout.steps, _freeze(tables), layout.files)
     resources = []
     for path, (kind, data) in captured.items():

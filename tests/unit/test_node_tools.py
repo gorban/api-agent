@@ -217,7 +217,7 @@ async def test_multiple_instances_keep_grants_separate_and_close_each_view():
             return self
         def instance(self, port):
             return port
-        def gate(self, port, *, invocation_id):
+        def gate(self, port, *, invocation_id, timeout=None):
             return ToolGate(first if port == 'reader' else second, invocation_id=invocation_id)
     async with invocation_tools(selected, {'tools': Resolver()}):
         assert list(node_tools('plan')) == ['reader']

@@ -264,6 +264,7 @@ class NodeContext:
                    for use in getattr(invocation.definition, 'tool_usages', ())):
             raise ContractError('Node tool port is not declared')
         borrowed = invocation.resolver.for_node(self.node_id).borrow(port)
+        timeout = invocation.timeouts.get(f'{self.node_id}.{port}')
         context = self
         class EffectTool:
             def __getattr__(self, name):
@@ -272,7 +273,8 @@ class NodeContext:
                 return getattr(borrowed, name)
             async def invoke(self, prepared):
                 context.mark_effect()
-                return await borrowed.invoke(prepared)
+                async with component_timeout('Tool execution', timeout):
+                    return await borrowed.invoke(prepared)
         return EffectTool()
 
     def record_call(self, *, usage=None, selection=None, elapsed=None, outcome='completed', call_id=None):
@@ -1465,7 +1467,7 @@ class Workflow:
                     usage_context):
                 async with component_timeout('Workflow GRAPH', self.timeouts.get('GRAPH')) as budget:
                     from api_agent.tooling.runtime import invocation_tools
-                    async with invocation_tools(self.definition, selected_services), self._scope_graph(budget, session):
+                    async with invocation_tools(self.definition, selected_services, timeouts=self.timeouts), self._scope_graph(budget, session):
                         yield
             completed = True
         finally:

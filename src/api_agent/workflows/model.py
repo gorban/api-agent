@@ -89,6 +89,31 @@ class ToolUsage:
     operations: tuple[str, ...] = ()
 
 
+def timeout_owner_problem(rows, steps, tool_ports):
+    """The first Timeouts row with an invalid owner or key as ``(row, message)``, else ``None``.
+
+    An owner is GRAPH, a step, or ``<node>.<port>`` naming a port of that node's own Tools table.
+    ``steps`` maps ids to steps; ``tool_ports`` maps each node to its declared ports.
+    """
+    seen = set()
+    for row in rows:
+        owner = row['Owner']
+        node, dotted, port = owner.partition('.')
+        bad_key = _ID.fullmatch(row['Key'].lower()) is None
+        if dotted:
+            message = ('timeout port owner must name a node' if node not in steps or steps[node].kind != 'node'
+                       else 'timeout port is not declared in the node Tools table' if port not in tool_ports.get(node, ())
+                       else 'duplicate timeout port' if owner in seen
+                       else 'invalid timeout key' if bad_key else None)
+        else:
+            message = ('unknown or duplicate timeout owner/key'
+                       if owner not in {'GRAPH', *steps} or owner in seen or bad_key else None)
+        if message is not None:
+            return row, message
+        seen.add(owner)
+    return None
+
+
 def freeze(value):
     """Recursively replace dicts with read-only mappings and lists with tuples."""
     if isinstance(value, dict):
@@ -180,4 +205,4 @@ class StateDefinition(Definition, Protocol):
 
 
 __all__ = ['MAX_COMPONENT_PASSES', 'LayoutError', 'Step', 'Layout', 'Replacement', 'Resource',
-           'InlinePromptRef', 'ToolUsage', 'freeze', 'declares_source', 'require_source_provenance', 'Definition', 'GraphDefinition', 'StateDefinition', 'NativeCatalog']
+           'InlinePromptRef', 'ToolUsage', 'timeout_owner_problem', 'freeze', 'declares_source', 'require_source_provenance', 'Definition', 'GraphDefinition', 'StateDefinition', 'NativeCatalog']
