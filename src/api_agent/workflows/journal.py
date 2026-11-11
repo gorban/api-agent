@@ -12,7 +12,7 @@ from uuid import uuid4, UUID
 
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary, _COUNTS
 from .model import MAX_COMPONENT_PASSES
-from .predicates import PredicateError, loop_edges, native_condition_id, parse_predicate
+from .predicates import PredicateError, edge_expiry, loop_edges, native_condition_id, parse_predicate
 
 _CAPTURE_CALLBACKS = ContextVar('workflow_capture_callbacks', default=None)
 
@@ -212,6 +212,17 @@ def projection(definition, *, component_passes=None, limits=None):
     return result
 
 
+def _own_expiry(end):
+    """Whether a scope ended at its own declared timeout; an ancestor's clipped budget never counts."""
+    return (end.get('outcome') == 'failed' and end.get('reason') == 'declared_timeout_expired'
+            and end.get('declared_timeout') is not None and end.get('effective_timeout') == end['declared_timeout'])
+
+
+def _expiry_route(end, source, event):
+    """Whether a step's end and the edge taken from it are a declared-timeout expiry routed by its edges."""
+    return _own_expiry(end) and edge_expiry(event.get('condition', 'always'), source) is not None
+
+
 def _routes_complete(projection_data, events):
     """Validate the causal scope tree and each owner's sequential route."""
     steps = {row['id']: row for row in projection_data['steps']}
@@ -226,7 +237,7 @@ def _routes_complete(projection_data, events):
             limits[row['bound']['key']] + row['bound']['inclusive']
             for row in projection_data['edges'] if 'bound' in row}
     starts = {}
-    scopes, open_scopes, routes, pending = {}, [], {}, {}
+    scopes, open_scopes, routes, pending, trail = {}, [], {}, {}, {}
     passes, node_outcomes, component_outcomes = {}, {}, {}
     graph_roots = 0
     call_ids = set()
@@ -278,6 +289,13 @@ def _routes_complete(projection_data, events):
                 return False
             start['end'] = event
             open_scopes.pop()
+            if _own_expiry(event):
+                # The abandoned run's inner routes stop where the expiry cut them off.
+                started = list(scopes)
+                for abandoned in started[started.index(sid):]:
+                    for key in trail.pop((abandoned,), ()):
+                        routes.pop(key, None)
+                        pending.pop(key, None)
         elif kind == 'edge':
             owner, source, target = event.get('owner'), event.get('source'), event.get('target')
             attempt = event.get('attempt_id')
@@ -295,6 +313,7 @@ def _routes_complete(projection_data, events):
                 if source != 'START':
                     return False
                 routes[key] = 'START'
+                trail.setdefault(tuple(open_scopes[-1:]), []).append(key)
             if routes[key] != source or key in pending or routes[key] == 'END':
                 return False
             if source == 'START':
@@ -316,7 +335,9 @@ def _routes_complete(projection_data, events):
                                     and node_outcomes.get(sid) == scope['end'].get('outcome')
                                 or scope['kind'] == 'component'
                                     and component_outcomes.get(sid) == scope['end'].get('outcome')
-                                    and routes.get((source, attempt)) == 'END'))
+                                    and routes.get((source, attempt)) == 'END'
+                                or _expiry_route(scope['end'], source, event)))
+                        or (scope['end'].get('outcome') == 'passed' and edge_expiry(event.get('condition', 'always'), source) == 'requires')
                         or (sid in node_outcomes and node_outcomes[sid] != scope['end'].get('outcome'))
                         or (sid in component_outcomes and component_outcomes[sid] != scope['end'].get('outcome'))
                         or scope['owner'] != source
