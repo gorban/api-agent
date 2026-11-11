@@ -82,9 +82,12 @@ def _run(argv: list[str], timeout: float, *, classify_login=None, cancel_event=N
         raise CredentialError("Credential CLI timeout must be positive.")
     try:
         from .owned_process import OwnedProcess
-        factory = OwnedProcess if os.name == "posix" else subprocess.Popen
-        process = factory(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, shell=False)
+        if os.name == "posix":
+            process = OwnedProcess(argv, keep_session=True, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        else:
+            process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, shell=False)
     except OSError:
         raise CredentialError("Unable to start configured credential CLI.") from None
     terminated = False

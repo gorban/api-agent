@@ -41,14 +41,16 @@ def kill_owned_group(pid: int) -> None:
 
 
 class OwnedProcess:
-    def __init__(self, argv, **streams):
+    def __init__(self, argv, *, keep_session=False, **streams):
+        # keep_session: own a process group inside the caller's session, so CLIs
+        # that scope authorization to the terminal session (1Password) reuse it.
         reader, self.writer = os.pipe()
         self.process = None
         try:
             try:
                 self.process = subprocess.Popen(
-                    [sys.executable, __file__, str(reader), *argv],
-                    pass_fds=(reader,), start_new_session=True, **streams)
+                    [sys.executable, __file__, str(reader), '1' if keep_session else '0', *argv],
+                    pass_fds=(reader,), **_isolation(keep_session), **streams)
             finally:
                 # Never retry close after EINTR: the descriptor may be reused.
                 os.close(reader)
@@ -94,12 +96,16 @@ def _reap_descendants():
             time.sleep(.01)
 
 
-def _guard(reader, argv):
+def _isolation(keep_session):
+    return {'process_group': 0} if keep_session else {'start_new_session': True}
+
+
+def _guard(reader, argv, keep_session=False):
     # The helper never receives the lifetime pipe. Its argv and terminal setup
     # remain exactly those supplied by the adapter/recovery bootstrap.
     try:
         _enable_subreaper()
-        helper = subprocess.Popen(argv, start_new_session=True, close_fds=True)
+        helper = subprocess.Popen(argv, close_fds=True, **_isolation(keep_session))
     except OSError:
         return 127
     selector = None
@@ -124,4 +130,4 @@ def _guard(reader, argv):
 
 
 if __name__ == '__main__':
-    sys.exit(_guard(int(sys.argv[1]), sys.argv[2:]))
+    sys.exit(_guard(int(sys.argv[1]), sys.argv[3:], sys.argv[2] == '1'))
