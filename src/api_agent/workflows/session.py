@@ -4,6 +4,7 @@ Parser-free, so source admission and compiled-plan loading share one contract.
 """
 
 MERGES = ('replace', 'append')
+COMMITS = ('passed', 'partial')
 
 
 def source_parts(source):
@@ -64,6 +65,9 @@ def problem(tables):
                 return 'append session source must be an array', row
             value = {'array'}
         declared.setdefault(field, []).append(value)
+    invalid = _commit_problem(tables.get('Session Commit'), rows)
+    if invalid is not None:
+        return invalid
     for row in tables['Bindings']:
         if row['From'] not in ('SESSION', 'TURN'):
             continue
@@ -84,6 +88,31 @@ def problem(tables):
         if not all(_overlap(value, target) for value in produced):
             return f'{"turn" if turn else "session"} value type does not match the input schema', row
     return None
+
+
+def _commit_problem(commit, session):
+    """The first invalid ``Session Commit`` row as ``(message, row)``, else ``None``."""
+    if commit is None:
+        return None
+    if session is None:
+        return 'Session Commit requires a Session table', commit[0] if commit else {'line': 1}
+    if not commit:
+        return 'Session Commit requires at least one row', {'line': 1}
+    seen = set()
+    for row in commit:
+        if row['Outcome'] not in COMMITS:
+            return 'session commit outcome must be passed or partial', row
+        if row['Outcome'] in seen:
+            return 'duplicate session commit outcome', row
+        seen.add(row['Outcome'])
+    if 'passed' not in seen:
+        return 'session commit must list passed', commit[-1]
+    return None
+
+
+def commit_outcomes(tables):
+    """The turn outcomes that save the session: the declared ``Session Commit`` rows, else ``passed``."""
+    return tuple(row['Outcome'] for row in tables.get('Session Commit', ())) or ('passed',)
 
 
 def writes(rows, runs):

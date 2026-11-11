@@ -24,6 +24,7 @@ _COLUMNS = {
     'Limits': ('Key', 'Source'),
 }
 _SESSION_COLUMNS = ('Field', 'Source', 'Merge')
+_SESSION_COMMIT_COLUMNS = ('Outcome',)
 _RESPONSE_COLUMNS = (*_COLUMNS['Functions'], 'Response schema', 'Output mode', 'Fallback')
 _SUMMARY_COLUMNS = (*_RESPONSE_COLUMNS, 'Display summary')
 

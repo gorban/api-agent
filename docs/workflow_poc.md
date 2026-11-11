@@ -429,6 +429,35 @@ separate sessions (graph IDs never contain `:`). Fields in a stored session that
 back. The table is part of the declaration identity and compiled plans, and diagrams
 mark each node that reads or writes a session field.
 
+### Declaring which outcomes commit the session
+
+By default the session is saved only when the turn's final outcome is `passed`. A
+root `## Session Commit` table widens that policy to turns an application labels
+`partial`:
+
+```markdown
+## Session Commit
+
+| Outcome |
+| --- |
+| passed |
+| partial |
+```
+
+- `Outcome` is `passed` or `partial`. Rows are unique, and `passed` must be listed
+  whenever the table exists, so the table only ever adds outcomes to the default and a
+  turn that finishes normally keeps committing. `failed`, `cancelled`, `unknown`, a
+  timeout or any other value is rejected at load with an error at the offending row,
+  because those turns must leave the session untouched. An empty table, a repeated
+  outcome, a table without `passed`, or a `## Session Commit` without a `## Session`
+  is rejected the same way.
+- A `partial` turn is one whose `execution_outcome` service returns the `partial`
+  state. It commits exactly like a passed turn: same merge, same write inside the graph
+  scope, same restore if journal finalization or publication then fails. A turn that
+  raises, times out or is cancelled never commits, whatever the table lists.
+- The table is part of the declaration identity, and of compiled plans, which decode
+  it as strictly as `## Session`. A graph without the table keeps its previous identity.
+
 A thread runs one turn at a time. Within one `Workflow` instance a second `arun` for a
 thread whose turn is still running is refused at once with `RuntimeError` rather than
 queued: two overlapping turns would start from the same stored session, and one would

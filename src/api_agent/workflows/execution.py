@@ -417,7 +417,7 @@ class Workflow:
                              journal=journal, checkpointer=checkpointer, config=config)
             self.layout = layout.layout
             self.component_passes = {}
-            self.session_rows = ()
+            self.session_rows, self.session_commit = (), ('passed',)
         else:
             sessions = bool(layout.layout.tables.get('Session'))
             if catalog is not None or reducers or (checkpointer is not None and not sessions):
@@ -445,6 +445,7 @@ class Workflow:
         self._predicates = {}
         self.functions = {row['ID']: row for row in layout.tables['Functions']}
         self.session_rows = tuple(layout.tables.get('Session', ()))
+        self.session_commit = session_contract.commit_outcomes(layout.tables)
         self.components = {row['ID']: row for row in layout.tables['Components']}
         self.timeouts, self.timeout_keys = resolve_timeouts(layout, self.config, self.definition)
         self.limit_values = resolve_state_limits(self.definition, self.config)
@@ -1366,7 +1367,7 @@ class Workflow:
                     outcome = {'success': 'passed', 'failure': 'failed',
                                'cancelled': 'cancelled', 'partial': 'partial',
                                'unknown': 'unknown'}[final.state.value]
-                if session is not None and outcome == 'passed':
+                if session is not None and outcome in self.session_commit:
                     await session.save()
                 if final is not None:
                     report_outcome(final, runtime=getattr(self._journal.get(), 'trace', None))
