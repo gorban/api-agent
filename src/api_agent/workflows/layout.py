@@ -10,7 +10,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
 from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID
-from .predicates import PredicateError, backward_bound, parse_predicate, predicate_fields
+from .predicates import PredicateError, backward_bound, parse_predicate, predicate_fields, unbounded_edge_message
 from . import session
 
 
@@ -127,13 +127,13 @@ def _validate(layout, resource_bytes=None):
                 layout.error(str(error), row['line'])
     for key, row in functions.items():
         if 'attempt' in row['Output schema'].get('properties', {}):
-            raise LayoutError(f'{row.get("_owner", layout.path)}:{row["line"]}: Output schema declares '
-                              'reserved field attempt; <step>.attempt is the engine start counter')
+            layout.row_error(row, 'Output schema declares reserved field attempt; '
+                                  '<step>.attempt is the engine start counter')
         if not set(row['Input schema'].get('required', ())) <= bound[key]:
             layout.error('required inputs must have declared bindings', row['line'])
     invalid = session.problem(layout.tables)
     if invalid is not None:
-        layout.error(*invalid)
+        layout.row_error(invalid[1], invalid[0])
     seen = set()
     edge_groups = {}
     for row in layout.tables['Edges']:
@@ -156,9 +156,7 @@ def _validate(layout, resource_bytes=None):
                 layout.error(str(error), row['line'])
         if (target != 'END' and ordered.index(target) <= ordered.index(source)
                 and (predicate is None or backward_bound(predicate, target, limit_keys) is None)):
-            layout.error(f'backward edge to {target} requires a bounded When: a conjunction (and) containing '
-                         f'{target}.attempt < LIMIT or {target}.attempt <= LIMIT for a declared Limits key; '
-                         'other edges must advance', row['line'])
+            layout.row_error(row, unbounded_edge_message(target))
     for rows in edge_groups.values():
         whens = {row['When'] for row in rows}
         if ('always' in whens and len(rows) > 1) or ('otherwise' in whens and 'always' in whens):
@@ -179,7 +177,7 @@ def validate_limit_rows(layout, pass_sources):
     seen = set()
     for row in layout.tables.get('Limits', ()):
         def reject(message, row=row):
-            raise LayoutError(f'{row.get("_owner", layout.path)}:{row["line"]}: {message}')
+            layout.row_error(row, message)
         if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', row['Key']):
             reject('invalid limit key')
         if row['Key'] in seen:

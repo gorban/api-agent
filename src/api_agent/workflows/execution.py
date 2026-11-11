@@ -32,8 +32,8 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
-from .predicates import (backward_bound, component_controller, component_decision, native_condition_id,
-                         parse_predicate, predicate_fields, state_predicate_fields)
+from .predicates import (component_controller, component_decision, loop_edges, native_condition_id,
+                         parse_predicate, predicate_fields, state_predicate_fields, unbounded_edge_message)
 
 
 _PROMPT_SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
@@ -477,13 +477,12 @@ class Workflow:
         An edge bounded by ``target.attempt < LIMIT`` re-enters at most LIMIT times (one more
         for ``<=``), and a re-entry can re-run every step of the graph.
         """
-        order = [step.id for step in layout.steps]
         reentries = 0
-        for row in layout.tables['Edges']:
-            if row['To'] != 'END' and order.index(row['To']) <= order.index(row['From']):
-                key, inclusive = backward_bound(self._predicates[row['From'], row['When']], row['To'], self.limit_values)
-                reentries += self.limit_values[key] + inclusive
-        return len(order) * (1 + reentries) + 1
+        for row, bound in loop_edges(layout):
+            if bound is None:
+                layout.row_error(row, unbounded_edge_message(row['To']))
+            reentries += self.limit_values[bound[0]] + bound[1]
+        return len(layout.steps) * (1 + reentries) + 1
 
 
     def _init_state(self, definition, *, catalog, reducers, services=None, journal=None, checkpointer=None,

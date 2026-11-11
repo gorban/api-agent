@@ -39,6 +39,10 @@ class Layout:
     def error(self, message, line=1):
         raise LayoutError(f'{self.path}:{line}: {message}')
 
+    def row_error(self, row, message):
+        """Raise ``message`` at ``row``, in the document that declares it."""
+        raise LayoutError(f'{row.get("_owner", self.path)}:{row["line"]}: {message}')
+
 
 @dataclass(frozen=True)
 class Replacement:
