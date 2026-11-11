@@ -191,7 +191,30 @@ def test_owned_native_trace_setup_failure_warns_and_keeps_original_factory(monke
             assert scoped is original
     asyncio.run(run())
     runtime.aclose.assert_awaited_once()
-    assert capsys.readouterr().err == 'WARNING: Tracing setup failed; continuing without tracing.\n'
+    assert capsys.readouterr().err == 'WARNING: Tracing setup failed at startup; continuing without tracing.\n'
+
+
+def test_owned_trace_setup_failure_does_not_chain_to_scenario_error(monkeypatch, capsys):
+    from api_agent.testing import workflow_trace
+    from pathlib import Path
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    runtime = SimpleNamespace(astart=AsyncMock(side_effect=RuntimeError('setup failure')),
+                              aclose=AsyncMock())
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: runtime)
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2]) as scoped:
+            assert scoped is original
+            raise TimeoutError('scenario timeout')
+
+    with pytest.raises(TimeoutError, match='scenario timeout') as caught:
+        asyncio.run(run())
+    assert caught.value.__context__ is None
+    runtime.aclose.assert_awaited_once()
+    assert capsys.readouterr().err == 'WARNING: Tracing setup failed at startup; continuing without tracing.\n'
 
 
 def test_owned_native_trace_acquires_collector_before_export_and_releases_after_flush(monkeypatch):
@@ -476,7 +499,38 @@ def test_owned_trace_binding_admission_failure_warns_without_allocating_runtime(
                 owner_root=Path(__file__).resolve().parents[2]) as scoped:
             assert scoped is original
     asyncio.run(run())
-    assert capsys.readouterr().err == 'WARNING: Tracing setup failed; continuing without tracing.\n'
+    assert capsys.readouterr().err == 'WARNING: Tracing setup failed at binding; continuing without tracing.\n'
+
+
+@pytest.mark.parametrize('stage', ['runtime', 'collector snapshot', 'collector acquisition'])
+def test_owned_trace_setup_reports_fixed_failure_stage(monkeypatch, capsys, stage):
+    from pathlib import Path
+    from time import monotonic
+    from api_agent.testing import workflow_trace
+    from api_agent.runtime import tracing_collector_snapshot
+
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    runtime = SimpleNamespace(astart=AsyncMock(), aclose=AsyncMock())
+    def fail(*_args, **_kwargs):
+        raise RuntimeError('private setup detail')
+    manager = SimpleNamespace(timeout=1, now=monotonic, acquire=fail, release=lambda **_kwargs: None)
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', fail if stage == 'runtime' else lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(tracing_collector_snapshot, 'verify_collector_binding',
+                        fail if stage == 'collector snapshot' else lambda *_args: None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'collector_from_snapshot', lambda *_args: manager)
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2],
+                collector_snapshot={'trace_collector_plan': {'version': 2}}) as scoped:
+            assert scoped is original
+
+    asyncio.run(run())
+    assert capsys.readouterr().err == f'WARNING: Tracing setup failed at {stage}; continuing without tracing.\n'
+    if stage != 'runtime':
+        runtime.aclose.assert_awaited_once()
 
 
 def test_owned_trace_external_collector_receipt_needs_no_managed_lease(monkeypatch):
@@ -558,7 +612,7 @@ def test_owned_native_trace_scope_warns_and_disables_changed_collector_receipt(p
             assert scoped is original
 
     asyncio.run(run())
-    assert capsys.readouterr().err == 'WARNING: Tracing setup failed; continuing without tracing.\n'
+    assert capsys.readouterr().err == 'WARNING: Tracing setup failed at collector snapshot; continuing without tracing.\n'
 
 
 @pytest.mark.parametrize('log,trace', [(False,False),(False,True),(True,False),(True,True)])

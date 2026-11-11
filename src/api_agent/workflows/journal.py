@@ -159,7 +159,15 @@ def projection(definition, *, component_passes=None, limits=None):
         if not children:
             continue
         owner = parent or 'GRAPH'
-        edges.append(dict(owner=owner, source='START', target=children[0].id, condition='always', implicit=True))
+        entering = [row for row in definition.layout.tables['Edges']
+                    if parent is not None and row['From'] == 'START'
+                    and row['To'] in {child.id for child in children}]
+        if entering:
+            edges.extend(dict(owner=owner, source='START', target=row['To'],
+                              condition=row['When'], implicit=False) for row in entering)
+        else:
+            edges.append(dict(owner=owner, source='START', target=children[0].id,
+                              condition='always', implicit=True))
         for index, step in enumerate(children):
             declared = [row for row in definition.layout.tables['Edges'] if row['From'] == step.id]
             if declared:

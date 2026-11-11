@@ -97,8 +97,9 @@ class _WorkflowStepBridge:
         # Keep validated originals: later invocation claims may make an earlier
         # legacy attribution ambiguous. Never use an already merged projection
         # as the source when rebuilding that attribution.
-        steps = scope_steps(packet.get('events', []))
         authoritative = packet.get('version') == 1 and 'projection' in packet
+        steps = scope_steps(packet.get('events', []), allow_partial=(
+            authoritative and packet.get('completeness') == 'partial'))
         invocation = packet['invocation_id'] if authoritative else None
         if authoritative:
             for step in steps:

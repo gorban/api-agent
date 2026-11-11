@@ -112,13 +112,16 @@ async def _owned_workflow_trace_locked(factory, config, *, owner_root, environ,
         yield factory
         return
     binding = owner = None
+    stage = 'binding'
     try:
         binding = admit_binding(config, owner_root=owner_root, boundary=factory.boundary,
                                 environ=environ, explicit_fields=explicit_fields)
         if binding is not None:
+            stage = 'runtime'
             runtime = TraceRuntime(config, boundary=factory.boundary, binding=binding)
             owner = _TraceResources(runtime)
             if collector_snapshot is not None:
+                stage = 'collector snapshot'
                 if not collector_snapshot.get('trace_collector_plan'):
                     raise ValueError('Captured tracing collector is unavailable')
                 from api_agent.runtime.tracing_collector_snapshot import verify_collector_binding
@@ -126,17 +129,18 @@ async def _owned_workflow_trace_locked(factory, config, *, owner_root, environ,
                 from api_agent.runtime.tracing_collector_snapshot import collector_from_snapshot
                 manager = owner.manager = collector_from_snapshot(collector_snapshot, config.values)
                 if manager is not None:
+                    stage = 'collector acquisition'
                     async with report_timeout('Owned workflow trace collector readiness', manager.timeout) as budget:
                         await offload(manager.acquire, _deadline=manager.now() + budget.remaining)
+            stage = 'startup'
             await runtime.astart()
     except BaseException as error:
         if isinstance(error, Exception):
-            _warning('Tracing setup failed; continuing without tracing.')
+            _warning(f'Tracing setup failed at {stage}; continuing without tracing.')
         await _close_owned(owner)
         if not isinstance(error, Exception):
             raise
-        yield factory
-        return
+        binding = None
     if binding is None:
         yield factory
         return

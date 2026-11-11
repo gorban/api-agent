@@ -34,6 +34,28 @@ def test_declared_workspace_is_prepared_with_named_credentials_only(provider, mo
     assert dict(options['environment']) == {'SKIP_HOOKS': '1'}
 
 
+def test_resolved_workspace_default_uses_owner_anchor(provider, monkeypatch, tmp_path):
+    from api_agent.config.declarations import ConfigSchema, FieldDeclaration
+    from api_agent.config.resolve import resolve_config
+
+    context, values = provider
+    owner = tmp_path / 'owner'
+    owner.mkdir()
+    context.owner_root = owner
+    schema = ConfigSchema({'WORKSPACE_DIR': FieldDeclaration(
+        'WORKSPACE_DIR', 'path', default='../workspace', anchor='owner_root')})
+    resolved = resolve_config(schema, environ={}, anchors={'owner_root': owner})
+    values.update(resolved.values)
+    calls = []
+    monkeypatch.setattr('api_agent.runtime.node_workspace.ensure_node_workspace',
+                        lambda root, **options: calls.append(root))
+
+    prepared = preparation.prepare_selected_workspaces(context, values, frozenset({'ui'}))
+
+    assert prepared == ((tmp_path / 'workspace').resolve(),)
+    assert calls == list(prepared)
+
+
 def test_wrapped_and_blank_values_are_read_by_declared_name(provider, monkeypatch):
     context, values = provider
     values['WORKSPACE_DIR'] = SimpleNamespace(value=values['WORKSPACE_DIR'])
@@ -43,6 +65,22 @@ def test_wrapped_and_blank_values_are_read_by_declared_name(provider, monkeypatc
                         lambda root, **options: calls.append(options))
     preparation.prepare_selected_workspaces(context, values, frozenset({'ui'}))
     assert calls[0]['credentials'] == {'REGISTRY_TOKEN': None}
+
+
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_pathlike_workspace_is_accepted_without_coercing_credentials(provider, monkeypatch, tmp_path, wrapped):
+    context, values = provider
+    path = tmp_path / 'workspace'
+    values['WORKSPACE_DIR'] = SimpleNamespace(value=path) if wrapped else path
+    values['REGISTRY_TOKEN'] = path
+    calls = []
+    monkeypatch.setattr('api_agent.runtime.node_workspace.ensure_node_workspace',
+                        lambda root, **options: calls.append((root, options)))
+
+    preparation.prepare_selected_workspaces(context, values, frozenset({'ui'}))
+
+    assert calls[0][0] == path.resolve()
+    assert calls[0][1]['credentials'] == {'REGISTRY_TOKEN': None}
 
 
 def test_nothing_is_prepared_without_kinds_or_declarations(provider, monkeypatch):
@@ -61,13 +99,27 @@ def test_missing_workspace_selection_is_a_named_error(provider):
         preparation.prepare_selected_workspaces(context, values, frozenset({'ui'}))
 
 
+@pytest.mark.parametrize('invalid', ['', '  ', 'bad\0path', 42, b'bytes'])
+def test_invalid_workspace_selection_is_a_named_error(provider, invalid):
+    context, values = provider
+    values['WORKSPACE_DIR'] = invalid
+    with pytest.raises(ValueError, match='WORKSPACE_DIR must select'):
+        preparation.prepare_selected_workspaces(context, values, frozenset({'ui'}))
+
+
 def test_two_providers_naming_one_workspace_install_it_once(provider, monkeypatch, tmp_path):
     context, values = provider
     second = tmp_path / 'second'
     second.mkdir()
     (second / 'factory.py').write_text('')
-    (second / 'provider-dependencies.toml').write_text((tmp_path / 'provider/provider-dependencies.toml').read_text())
+    (second / 'provider-dependencies.toml').write_text(
+        (tmp_path / 'provider/provider-dependencies.toml').read_text().replace('WORKSPACE_DIR', 'OTHER_DIR'))
     values['LLM_PROVIDER'] = f'{second / "factory.py"}:create'
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    alias = tmp_path / 'alias'
+    alias.symlink_to(workspace, target_is_directory=True)
+    values['OTHER_DIR'] = alias
     calls = []
     monkeypatch.setattr('api_agent.runtime.node_workspace.ensure_node_workspace',
                         lambda root, **options: calls.append(root))
