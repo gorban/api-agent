@@ -103,11 +103,15 @@ def test_an_expiry_that_no_expired_edge_accepts_fails_the_turn(tmp_path):
     assert isinstance(error, TimeoutError) and calls == ['work', 'work']
 
 
-def test_the_graph_deadline_is_not_the_nodes_expiry(tmp_path):
-    entry = expiring(tmp_path, *ROUTE, owners=(('GRAPH', 'GRAPH_TIMEOUT'), ('work', 'NODE_TIMEOUT')))
+@pytest.mark.parametrize('step', ['hang', 'swallow'])
+def test_the_graph_deadline_is_not_the_nodes_expiry(tmp_path, step):
+    # Routing straight to END would let the turn pass if the graph's deadline were taken for the node's.
+    rows = (('work', 'END', 'work.expired'), ('work', 'finish', 'otherwise'))
+    entry = expiring(tmp_path, *rows, owners=(('GRAPH', 'GRAPH_TIMEOUT'), ('work', 'NODE_TIMEOUT')))
 
-    calls, error = calls_after(entry, {'work': ['hang']}, config={'GRAPH_TIMEOUT': 0.1, 'NODE_TIMEOUT': 30})
+    calls, error = calls_after(entry, {'work': [step]}, config={'GRAPH_TIMEOUT': 0.1, 'NODE_TIMEOUT': 30})
 
+    # A node that turns the graph's cancellation into its own TimeoutError still did not expire itself.
     assert isinstance(error, TimeoutError) and calls == ['work']
 
 
@@ -125,10 +129,10 @@ def test_a_node_that_dispatched_an_effect_fails_the_turn_instead_of_routing(tmp_
         assert isinstance(error, TimeoutError) and calls == ['work']
 
 
-def group(tmp_path, *rows, inner=(), children=('prepare', 'work'), owners=(('group', 'GROUP_TIMEOUT'),)):
+def group(tmp_path, *rows, inner=(), children=('prepare', 'work'), owners=(('group', 'GROUP_TIMEOUT'),), extra=''):
     flow = [('component', 'group'), ('node', 'finish'), ('node', 'timed_out')]
     components = {'group': (list(children), edges(*inner) if inner else '')}
-    return expiring(tmp_path, *rows, flow=flow, owners=owners, components=components)
+    return expiring(tmp_path, *rows, flow=flow, owners=owners, components=components, extra=extra)
 
 
 GROUP_ROUTE = (('group', 'timed_out', 'group.expired'), ('group', 'finish', 'otherwise'))
@@ -191,7 +195,7 @@ def test_the_enclosing_component_deadline_is_not_the_nodes_expiry(tmp_path):
 
     unrouted = group(tmp_path, ('group', 'finish', 'always'), inner=inner, children=('work', 'after', 'recover'),
                      owners=owners)
-    calls, error = calls_after(unrouted, {'work': ['hang']}, config=config)
+    calls, error = calls_after(unrouted, {'work': ['swallow']}, config=config)
     assert isinstance(error, TimeoutError) and calls == ['work']
 
     (tmp_path / 'routed').mkdir()
@@ -215,6 +219,19 @@ def test_an_expired_and_routed_turn_persists_the_session_of_the_runs_that_comple
 
     assert native['CALLS'] == ['prepare', 'work', 'timed_out']
     assert stored(saver) == {'prepared': True, 'note': False}
+
+
+def test_an_expired_component_contributes_nothing_to_the_session(tmp_path):
+    fields = [('prepared', 'prepare.ok', 'replace'), ('note', 'timed_out.ok', 'replace')]
+    entry = group(tmp_path, *GROUP_ROUTE, extra=table('Session', ('Field', 'Source', 'Merge'), fields))
+    saver = InMemorySaver()
+    workflow, native, _ = build(entry, checkpointer=saver)
+    native['SCRIPT']['work'] = ['hang']
+
+    asyncio.run(workflow.arun({'accept_at': 1}, thread_id='t'))
+
+    assert native['CALLS'] == ['prepare', 'work', 'timed_out']
+    assert stored(saver) == {'note': False}
 
 
 def test_a_failed_expiry_leaves_the_session_untouched(tmp_path):
