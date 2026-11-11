@@ -352,6 +352,11 @@ def _check_session(tables):
                and all(type(row[key]) is str for key in ('Field', 'Source', 'Merge'))
                and type(row['line']) is int for row in rows):
         raise ValueError('invalid session row')
+    commit = tables.get('Session Commit', ())
+    if not (type(commit) is tuple and all(
+            isinstance(row, MappingProxyType) and set(row) == {'Outcome', 'line'}
+            and type(row['Outcome']) is str and type(row['line']) is int for row in commit)):
+        raise ValueError('invalid session commit row')
     invalid = session.problem(tables)
     if invalid is not None:
         raise ValueError(f'invalid session: {invalid[0]}')
@@ -444,8 +449,8 @@ def _decode_plan(value, typed):
     tables, files = _decode(encoded_layout['tables']), _decode(encoded_layout['files'])
     layout = Layout(entry, tuple(steps), tables, files)
     expected_tables = {'Components', 'Functions', 'Bindings', 'Edges', 'Prompts', 'Timeouts'} if not typed else {'Edges'}
-    # A graph without Session or Limits has no such table.
-    optional = set() if typed else {'Session', 'Limits'}
+    # A graph without Session, Session Commit or Limits has no such table.
+    optional = set() if typed else {'Session', 'Session Commit', 'Limits'}
     if not isinstance(tables, MappingProxyType) or set(tables) - optional != expected_tables:
         raise ValueError('invalid layout tables')
     if not typed:

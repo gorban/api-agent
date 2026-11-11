@@ -128,6 +128,8 @@ class _Snapshot:
                     normalized[name].append(self.row(row))
             if 'Session' in tables:
                 normalized['Session'] = [self.row(row) for row in tables['Session']]
+            if 'Session Commit' in tables:
+                normalized['Session Commit'] = [self.row(row) for row in tables['Session Commit']]
             result['tables'] = normalized
             if getattr(d, 'application_binding', None) is not None:
                 result['application'] = [d.application_binding[0], self.logical(d.application_binding[1])]
