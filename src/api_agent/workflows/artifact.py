@@ -20,7 +20,7 @@ from types import MappingProxyType
 from typing import ClassVar
 
 from . import session
-from .model import InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage
+from .model import InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage, timeout_owner_problem
 from .predicates import loop_edges, unbounded_edge_message
 from .prompt_slots import slot_text, used_slots
 
@@ -387,6 +387,15 @@ def _decode_slots(value, resources, contents):
     return slots
 
 
+def _timeout_row(row, configured):
+    return (isinstance(row, MappingProxyType)
+            and set(row) in ({'Owner', 'Source', 'Key', 'line'}, {'Owner', 'Source', 'Key', 'line', '_owner', '_owner_id'})
+            and type(row['Owner']) is str and type(row['Key']) is str
+            and row['Source'] in configured and type(row['line']) is int and row['line'] >= 1
+            and ('_owner' not in row or isinstance(row['_owner'], PurePosixPath)
+                 and type(row['_owner_id']) is str))
+
+
 def _limit_row(row, configured):
     return (isinstance(row, MappingProxyType)
             and set(row) in ({'Key', 'Source', 'line'}, {'Key', 'Source', 'line', '_owner', '_owner_id'})
@@ -442,6 +451,17 @@ def _decode_plan(value, typed):
     if not typed:
         _check_session(tables)
     configured = {_virtual(item.logical_path) for item in resources if item.kind == 'configuration'}
+    tool_usages = tuple(ToolUsage(*_row(row, 7, 'tool usage')[:6], tuple(_row(row, 7, 'tool usage')[6]))
+                        for row in _decode(value['tool_usages']))
+    if not typed:
+        ports = {}
+        for use in tool_usages:
+            if use.scope_kind == 'node':
+                ports.setdefault(use.scope, set()).add(use.port)
+        timeouts = tables['Timeouts']
+        if not (type(timeouts) is tuple and all(_timeout_row(row, configured) for row in timeouts)
+                and timeout_owner_problem(timeouts, {step.id: step for step in steps}, ports) is None):
+            raise ValueError('invalid timeout rows')
     limits = tables.get('Limits', ())
     if not (type(limits) is tuple and all(_limit_row(row, configured) for row in limits)
             and len({row['Key'] for row in limits}) == len(limits)
@@ -459,9 +479,7 @@ def _decode_plan(value, typed):
         compiled_plan_identity=value['compiled_plan_identity'], layout=layout,
         contents=MappingProxyType(contents), selected_declarations=_decode(value['selected_declarations']),
         declaration_fragments=_decode(value['declaration_fragments']),
-        tool_usages=tuple(ToolUsage(*_row(row, 7, 'tool usage')[:6],
-                                    tuple(_row(row, 7, 'tool usage')[6]))
-                          for row in _decode(value['tool_usages'])),
+        tool_usages=tool_usages,
     )
     if typed:
         state = value['state']
