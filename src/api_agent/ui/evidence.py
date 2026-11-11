@@ -1025,7 +1025,7 @@ _SHIFT_KINDS = frozenset({'opaque', 'content', 'effect', 'none'})
 _STRUCTURAL_NAME = re.compile(r'[A-Za-z0-9_-]+')
 
 
-def _layout_shift(value):
+def _layout_shift(value, boundary):
     """Admit only the bounded structural description a browser reports."""
     def text(item, limit):
         return item if (type(item) is str and len(item) <= limit and
@@ -1043,7 +1043,10 @@ def _layout_shift(value):
     if (value.get('kind') not in _SHIFT_KINDS or type(shifted) is not int or shifted < 1
             or before is None or after is None):
         return None
-    return {'tag': value['tag'], 'testid': text(value.get('testid'), 64), 'kind': value['kind'],
+    testid = text(value.get('testid'), 64)
+    if testid is not None and boundary.content_export({'text': testid}).get('text') != testid:
+        testid = None
+    return {'tag': value['tag'], 'testid': testid, 'kind': value['kind'],
             'shifted': shifted, 'before': before, 'after': after}
 
 
@@ -1146,11 +1149,12 @@ async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/
     capture: opacity and clipping preserve focus while application callbacks wait.
     Unpaused content roots retain strong subtree suppression, including transient
     top-layer painting. Native animation time is leased without losing callbacks.
-    Browser strings remain transient and are never attachment metadata. The
-    caller owns exception isolation.
+    Browser strings remain transient and are never attachment metadata, except
+    a moved element's bounded tag and test id, which the live credential
+    boundary screens. The caller owns exception isolation.
     """
     def reject(reason, shift=None):
-        unavailable(reason, _layout_shift(shift))
+        unavailable(reason, _layout_shift(shift, boundary))
         return None
 
     started = monotonic()
