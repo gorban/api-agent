@@ -4,9 +4,7 @@ from pathlib import Path
 import pytest
 
 from api_agent.workflows import LayoutError, WorkflowError
-from api_agent.workflows.execution import _latest_turn_value
 from api_agent.workflows.identity import declaration_identity
-from api_agent.workflows.model import freeze
 
 from session_workflow_support import load_session, session_entry, session_workflow, turn
 
@@ -40,22 +38,6 @@ def test_latest_completed_writer_wins_on_the_branch_that_ran(tmp_path):
     assert taken_b['finish']['saw_extra'] == 'none'
 
 
-def test_latest_turn_value_follows_completion_order_not_flow_order():
-    values = freeze({'first': {'x': 1}, 'second': {'x': 2}, 'third': {'y': 3}})
-
-    assert _latest_turn_value({'x': ['second', 'first']}, values, 'x') == (True, 1)
-    assert _latest_turn_value({'x': ['first', 'second', 'third']}, values, 'x') == (True, 2)
-    assert _latest_turn_value({'x': ['first', 'third']}, values, 'x') == (True, 1)
-
-
-def test_latest_turn_value_skips_cleared_nodes_and_reports_absence():
-    values = {'first': {'x': 1}}
-
-    assert _latest_turn_value({'x': ['first', 'cleared']}, values, 'x') == (True, 1)
-    assert _latest_turn_value({'x': ['cleared']}, values, 'x') == (False, None)
-    assert _latest_turn_value({}, values, 'x') == (False, None)
-
-
 def test_default_is_used_when_no_node_has_written_the_field(tmp_path):
     values = run(tmp_path, 'b1')
 
@@ -74,8 +56,8 @@ def test_required_turn_field_fails_loudly_when_nothing_wrote_it(tmp_path):
 def test_rejected_pass_values_are_not_visible_to_the_next_pass(tmp_path):
     values = run(tmp_path, 'a1')
 
-    # Pass 1 wrote scratch and hint; the engine clears the component's outputs for
-    # pass 2, so scratch is absent and hint falls back to the earlier writer, intake.
+    # Pass 1 wrote scratch and hint; the engine discards that pass's runs, so scratch is
+    # absent and hint falls back to the earlier writer, intake.
     assert values['draft']['saw_scratch'] == 'none'
     assert values['draft']['saw_hint'] == 'seed'
     assert values['draft']['draft'] == 'A(a1)#2'

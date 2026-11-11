@@ -478,29 +478,36 @@ turns themselves, and the checkpointer is not a transaction across them.
 ### Per-turn values with `TURN`
 
 A binding `| finish | extra | TURN | extra | "none" |` reads output property
-`extra` from whichever node most recently completed in the current turn with that
-property in its output. It suits a shared step reached from several branches, which should read a
-value whichever predecessor produced it. The value is the newest by completion
-order, so a node that ran later overrides an earlier writer; a node that did not
-run, or whose output omits the property, writes nothing. If no completed node has
-written the field, `Default` applies, and `-` fails with
-`Missing required turn value FIELD for node.input`.
+`extra` from the most recently completed run in the current turn whose output has
+that property. It suits a shared step reached from several branches, which should read a
+value whichever predecessor produced it. TURN resolves against the same per-turn record
+of completed runs that `## Session` merges fold, in completion order: a node that ran
+later overrides an earlier writer, a run whose output omits the property writes nothing,
+and a node that runs again without rewriting the property leaves its own earlier write
+in place rather than exposing an older writer. If no completed run has written the
+field, `Default` applies, and `-` fails with `Missing required turn value FIELD for node.input`.
 
 Loading requires at least one node `Output` schema to declare `FIELD`, rejects `*`,
 and checks that every declaring node's property type can satisfy the input schema
 where both declare a `type`. Declaring nodes need not be earlier in the flow, so
 the check does not constrain ordering.
 
-Guarded components: the engine clears a component's node outputs when a new pass
-starts, and TURN follows that. A value written only in a rejected pass is not
-visible to any node in the next pass, nor after the component; if an earlier node
-outside the component also wrote the field, that earlier value is what TURN returns
-again. Use `PREVIOUS` and `FEEDBACK` to read prior-pass data deliberately.
+Which runs count follows the record, not the node outputs that currently exist:
 
-TURN never sees an earlier turn; use `## Session` for that. The tracker is a
-per-turn map from field to the nodes that wrote it, in completion order, resolved
-against the node outputs that currently exist, so a node that runs again
-contributes its latest output.
+- A run superseded by re-entry still counts. When a bounded backward edge re-enters a
+  node or component, the engine clears the re-entered steps' current outputs (so their
+  `<node>.<field>` bindings and conditions see only the new run), but a value an earlier
+  run wrote stays visible to `TURN` until a newer run writes that field. A step can read
+  its own previous pass this way without a carry-forward node.
+- A run discarded by a rejected guarded pass does not count. A value written only in a
+  rejected pass is not visible to any node in the next pass, nor after the component; if
+  an earlier run outside the component also wrote the field, that earlier value is what
+  TURN returns again. Likewise the runs of a component abandoned at its own declared
+  timeout are dropped. Use `PREVIOUS` and `FEEDBACK` to read prior-pass data deliberately.
+
+TURN never sees an earlier turn; use `## Session` for that. Because both read one
+record, the value TURN returns for a field and the value a `replace` Session row
+for the same sources commits agree.
 
 ## Typed execution timeouts
 
