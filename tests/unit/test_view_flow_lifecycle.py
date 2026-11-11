@@ -18,7 +18,7 @@ from api_agent.workflows import viewer_projection, viewer_render
 from api_agent.workflows.viewer_render import ViewBundle, ViewFile, ViewRoute, ViewSource
 
 ROOT = Path(__file__).resolve().parents[2]
-pytestmark = pytest.mark.usefixtures('isolated_renderer_cache')
+pytestmark = pytest.mark.usefixtures('isolated_renderer_preparation')
 
 
 def test_selected_view_uses_original_page_and_retries_browser_cleanup(tmp_path, monkeypatch):
@@ -161,9 +161,10 @@ def test_run_view_flow_sigint_during_entered_renderer_returns_130(tmp_path):
         'import sys; from pathlib import Path; from types import SimpleNamespace\n'
         f'sys.path.insert(0,{str(ROOT / "src")!r})\n'
         'from api_agent.runtime import view_flow as flow\n'
-        'from api_agent.workflows import viewer_projection, viewer_render\n'
+        'from api_agent.workflows import viewer_build, viewer_projection, viewer_render\n'
         'from hashlib import sha256\n'
         'viewer_render.PLANTUML_SHA256=sha256(b"fake-renderer").hexdigest()\n'
+        f'viewer_build.prepare_renderer=lambda: Path({str(jar)!r})\n'
         f'flow.load_selected_definition=lambda context: SimpleNamespace(entry=Path({str(tmp_path / "flow.md.html")!r}),entry_root="base",roots={{"base":Path({str(tmp_path)!r})}},replacements=(object(),))\n'
         'viewer_projection.project_view=lambda definition: SimpleNamespace(documents=())\n'
         f'viewer_render.build_view_bundle=lambda *a,**kw: viewer_render.PlantUMLRenderer(Path({str(jar)!r}),java={str(java)!r},timeout=20).render(b"@startuml\\nA-->B\\n@enduml\\n")\n'

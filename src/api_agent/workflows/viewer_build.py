@@ -8,7 +8,6 @@ import secrets
 import sys
 from hashlib import sha256
 import json
-import multiprocessing
 import os
 from pathlib import Path
 import re
@@ -16,7 +15,6 @@ import shutil
 import stat
 import tempfile
 import subprocess
-from urllib.request import Request, urlopen
 
 from .viewer_repository import CONFIG_PATH, read_repository_identity, RepositoryIdentity, identity_from_origin, repository_config_bytes
 
@@ -26,96 +24,23 @@ from .viewer_render import (
 )
 
 
-PLANTUML_URL = "https://github.com/plantuml/plantuml/releases/download/v1.2026.9/plantuml-mit-1.2026.9.jar"
-_MAX_JAR = 30_000_000
 _MAX_VIEW_FILE = 8 * 1024 * 1024
 _RECOVERY_SLOTS: dict[int, dict[str, tuple[int, int]]] = {}
 
 
-def _download_renderer(temporary: Path, timeout: float, url: str, max_bytes: int, channel) -> None:
-    """Perform the blocking transfer in a process the caller can terminate."""
-    try:
-        request = Request(url, headers={"User-Agent": "api-agent-workflow-viewer/1"})
-        size = 0
-        with urlopen(request, timeout=timeout) as response, temporary.open("wb") as output:
-            while chunk := response.read(65536):
-                size += len(chunk)
-                if size > max_bytes:
-                    raise RenderError("PlantUML artifact exceeds size limit")
-                output.write(chunk)
-            output.flush()
-            os.fsync(output.fileno())
-        channel.send(None)
-    except BaseException as exc:
-        channel.send(str(exc)[:256])
-    finally:
-        channel.close()
-
-
-def prepare_renderer(*, cache: Path | None = None) -> Path:
-    """Install only the pinned optional development JAR in an owned cache."""
+def prepare_renderer() -> Path:
+    """Install Java and the pinned PlantUML JAR through the project mise configuration."""
     from api_agent.providers.progress import report_timeout_sync
+    from api_agent.runtime.mise_tools import ensure_tools
 
-    with report_timeout_sync("Workflow renderer preparation", 60) as budget:
-        return _prepare_renderer(cache=cache, budget=budget)
-
-
-def _prepare_renderer(*, cache: Path | None, budget: object) -> Path:
-    location = cache or (Path.home() / ".cache/api-agent/plantuml")
-    location.mkdir(parents=True, exist_ok=True)
-    target = location / "plantuml-mit-1.2026.9.jar"
-    if location.is_symlink() or target.is_symlink():
-        raise RenderError("renderer cache symlink rejected")
-    if target.exists():
-        if sha256(_read_regular_jar(target)).hexdigest() != PLANTUML_SHA256:
-            raise RenderError("cached PlantUML digest mismatch")
-        return target
-    with tempfile.NamedTemporaryFile(dir=location, prefix=".plantuml-", delete=False) as scratch:
-        temporary = Path(scratch.name)
-    try:
-        # Spawn is safe when the caller already has browser or UI threads.
-        context = multiprocessing.get_context("spawn")
-        parent, child = context.Pipe(duplex=False)
-        process = context.Process(target=_download_renderer,
-                                  args=(temporary, min(20, budget.remaining or 0.001), PLANTUML_URL,
-                                        _MAX_JAR, child))
-        try:
-            process.start()
-        except BaseException:
-            parent.close()
-            child.close()
-            raise
-        child.close()
-        try:
-            while True:
-                remaining = budget.remaining
-                if remaining is not None and remaining <= 0:
-                    raise RenderError("renderer preparation timed out")
-                if parent.poll(min(0.05, remaining if remaining is not None else 0.05)):
-                    break
-            try:
-                error = parent.recv()
-            except EOFError as exc:
-                raise RenderError("renderer preparation worker exited without a result") from exc
-            process.join(timeout=max(0, budget.remaining or 0))
-            if process.is_alive():
-                raise RenderError("renderer preparation timed out")
-            if process.exitcode != 0 or error is not None:
-                raise RenderError(error or "renderer preparation failed")
-        finally:
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=0.05)
-                if process.is_alive():
-                    process.kill()
-                    process.join()
-            parent.close()
-        if sha256(temporary.read_bytes()).hexdigest() != PLANTUML_SHA256:
-            raise RenderError("PlantUML artifact digest mismatch")
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return target
+    with report_timeout_sync("Workflow renderer preparation", 300):
+        jar = ensure_tools("java", "plantuml").get("plantuml")
+    if jar is None:
+        raise RenderError("PlantUML is installed through the project mise configuration; "
+                          "run through ./launch.sh or set API_AGENT_PLANTUML_JAR")
+    if sha256(_read_regular_jar(jar)).hexdigest() != PLANTUML_SHA256:
+        raise RenderError("PlantUML artifact digest mismatch")
+    return jar
 
 
 def _projection(root: Path, entry: Path | None = None, *, roots=None, entry_root="base", replacements=()):

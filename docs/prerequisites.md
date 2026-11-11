@@ -121,7 +121,7 @@ confirmation before accepting. The launcher does not perform that broad cleanup.
 
 Other downloadable tools are prepared at their existing operation boundaries,
 including browsers, mkcert, Java/Allure for the report viewer, and Java plus the
-pinned PlantUML renderer for live workflow views. Host browser
+pinned PlantUML renderer JAR (a lazy mise tool) for live workflow views. Host browser
 libraries, a graphical session, OpenSSL, certificate-trust approval, credentials,
 and service access may need your attention when relevant; the app reports these
 requirements where they are used.

@@ -70,17 +70,9 @@ def _view_context(context, entry):
 
 def _live_renderer(renderer_path):
     """Render views the saved diagrams do not cover: an explicitly configured JAR,
-    otherwise the pinned one prepared on first use, run by the project's Java."""
-    from api_agent.runtime.mise_tools import ensure_tools
-    from api_agent.workflows.viewer_build import prepare_renderer
-    from api_agent.workflows.viewer_render import PlantUMLRenderer, RenderError, default_renderer
-    ensure_tools('java')
-    try:
-        return default_renderer(renderer_path)
-    except RenderError:
-        if renderer_path:
-            raise
-    return PlantUMLRenderer(prepare_renderer())
+    otherwise the pinned one installed through mise, run by the project's Java."""
+    from api_agent.workflows.viewer_render import default_renderer
+    return default_renderer(renderer_path)
 
 
 def prepare_view_tools(context):

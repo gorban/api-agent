@@ -22,11 +22,16 @@ pytestmark = pytest.mark.feature('Workflow viewer')
 @pytest.mark.parametrize('stop', ['page-close', 'ctrl-c'])
 def test_view_flow_opens_original_managed_browser_and_cleans_up(stop):
     from playwright.sync_api import sync_playwright
+    from api_agent.workflows.viewer_build import prepare_renderer
+    from api_agent.workflows.viewer_render import RenderError
 
-    jar = Path(os.environ.get('API_AGENT_PLANTUML_JAR') or
-               Path.home() / '.cache/api-agent/plantuml/plantuml-mit-1.2026.9.jar')
+    configured = os.environ.get('API_AGENT_PLANTUML_JAR')
+    try:
+        jar = Path(configured) if configured else prepare_renderer()
+    except RenderError as error:
+        pytest.fail(f'Viewer QA requires the pinned PlantUML JAR and Java: {error}')
     if not jar.is_file() or not shutil.which('java'):
-        pytest.fail('Viewer QA requires the pinned PlantUML JAR and Java; run python -m api_agent.workflows.viewer_build prepare.')
+        pytest.fail('Viewer QA requires the pinned PlantUML JAR and Java; set API_AGENT_PLANTUML_JAR to an existing JAR.')
     if sys.platform.startswith('linux') and not os.environ.get('DISPLAY'):
         if not shutil.which('xvfb-run'):
             pytest.fail('Viewer QA on headless Linux requires xvfb-run; install Xvfb or supply DISPLAY.')
