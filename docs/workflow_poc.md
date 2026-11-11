@@ -428,7 +428,8 @@ persist beyond the process; the default is in-memory. A workflow without
 separate sessions (graph IDs never contain `:`). Fields in a stored session that the
 `## Session` table no longer declares are dropped when it loads and are not written
 back. The table is part of the declaration identity and compiled plans, and diagrams
-mark each node that reads or writes a session field.
+mark each node that reads or writes session fields with one `Session read:` and one
+`Session write:` box (`TURN` reads are not drawn).
 
 ### Declaring which outcomes commit the session
 

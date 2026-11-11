@@ -22,10 +22,12 @@ A node's `Functions` row, in either grammar, adds linked `Input:`, `Output:` and
 Browsers lacking the required overlay APIs keep ordinary standalone SVG navigation.
 The shared enhancement uses local packaged assets and needs no additional service.
 
-A node that reads a `SESSION` binding or writes a declared `## Session` field shows
-an unlinked `Session read: FIELD` or `Session write: FIELD` box beside it (a `TURN`
-binding shows `Turn read: FIELD`), in the
-diagram of the document that owns the node.
+A node that reads `SESSION` bindings or writes declared `## Session` fields shows at
+most two compact, unlinked boxes beside it, in the diagram of the document that owns the
+node: `Session read: A, B` listing the session fields it reads and `Session write: C, D`
+listing the fields it writes (each in declaration order). Session data is the only data
+source a node diagram shows. `TURN` bindings, which read values from earlier steps of the
+same turn, draw nothing, so a node with many such inputs does not make its diagram taller.
 
 Configuration-backed budgets appear as linked boxes in the diagram of the document
 that declares them, for both declaration grammars. A timeout shows as
