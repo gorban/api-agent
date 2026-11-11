@@ -72,13 +72,17 @@ def test_expired_parent_closes_never_started_local_coroutine(tmp_path, monkeypat
 
 def test_local_setup_waiter_uses_parent_deadline_and_owned_cleanup(tmp_path, slow_provider):
     local = provider_setup.IntegrationLLM({'LLM_PROVIDER': 'synthetic', 'NO_STD_IN': True}, tmp_path)
+    # Hold setup open so the parent deadline, not setup's own duration, ends the
+    # wait; the deadline leaves a loaded host time to reach setup first.
+    slow_provider.gate.clear()
     try:
-        with report_timeout_sync('Workflow integration test', .05):
+        with report_timeout_sync('Workflow integration test', 2):
             with pytest.raises(TimeoutError):
                 local.describe()
         assert slow_provider.entered.is_set()
         assert slow_provider.calls == ['setup']
     finally:
+        slow_provider.gate.set()
         local.close()
     assert slow_provider.released.is_set()
     slow_provider.loaded.aclose.assert_awaited_once()

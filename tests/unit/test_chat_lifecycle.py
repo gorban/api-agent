@@ -16,6 +16,13 @@ def registry(**options):
     return ChatLifecycle(heartbeat_interval=.01, expiry=.04, cleanup_timeout=.01, **options)
 
 
+def patient(*engines):
+    """Keep lease expiry and disposal budgets from being the observable under load."""
+    for engine in engines:
+        engine.expiry = engine.cleanup_timeout = EVENTUAL
+    return engines[0] if len(engines) == 1 else engines
+
+
 def test_disconnected_invocation_failure_is_reported_without_a_response_consumer():
     async def exercise():
         reported = []
@@ -671,7 +678,7 @@ def test_retry_transfers_grouped_cleanup_duties_before_reusing_parent(mixed_fail
 @pytest.mark.parametrize('nested', [False, True])
 def test_grouped_current_duty_remains_pending_without_replaying_retired_children(include_new, nested):
     async def exercise():
-        engine = registry()
+        engine = patient(registry())
         calls = []
         ready = False
         entered, release = asyncio.Event(), asyncio.Event()
@@ -963,7 +970,7 @@ def test_watchdog_fail_stop_survives_settlement_scheduler_rejection(monkeypatch)
 @pytest.mark.parametrize('pruning', ['ttl', 'capacity'])
 def test_captured_response_cleanup_preserves_reused_session(pruning):
     async def exercise():
-        engine = registry(max_terminal=1)
+        engine = patient(registry(max_terminal=1))
         entered, drained = asyncio.Event(), asyncio.Event()
         async def completed(context):
             return 'original'
@@ -999,7 +1006,7 @@ def test_captured_response_cleanup_preserves_reused_session(pruning):
 @pytest.mark.parametrize('operation', ['disconnect_turn', 'wait_turn'])
 def test_captured_response_cleanup_enforces_backend_owner(invalid, operation):
     async def exercise():
-        engine, other = registry(), registry()
+        engine, other = patient(registry(), registry())
         entered, drained = asyncio.Event(), asyncio.Event()
         async def invoke(context):
             entered.set()
