@@ -443,9 +443,14 @@ DOM nodes: clipped black rectangles are applied to transient PNG bytes outside
 the authored document. Unsupported paint, changed frame identity or registered
 credentials leave pixels unavailable. Top-layer content inside a hidden or
 masked surface, including a closing popover or an open customizable select
-picker, is refused rather than trusted to CSS. The normal page budget is ten seconds,
-including audits and restoration; callers may explicitly choose one through
-twenty seconds. Capture failure remains secondary to the test's own outcome.
+picker, is refused rather than trusted to CSS. After transient page changes
+such as moved layout or changed paint, the whole capture is redone on the
+restored page, up to three attempts one second apart, while the slowest attempt
+plus that delay still fits its retry window (eight seconds by default, clipped
+by enclosing deadlines). Deterministic refusals are not retried, and only the
+final refusal is reported. The normal page budget is ten seconds, including
+audits, retries and restoration; callers may explicitly choose one through
+thirty seconds. Capture failure remains secondary to the test's own outcome.
 
 A host command prefix can be configured as `ALLURE_CLI="distrobox-host-exec /absolute/host/path/to/allure"`. Check the same command with `--version` first. A noninteractive host PATH may differ from an interactive shell’s PATH, so a bare host command can exit 127 despite working in a terminal. An explicit host executable path avoids depending on shell startup files. Quotes group arguments containing spaces; shell variables, pipelines and substitutions are not expanded.
 
