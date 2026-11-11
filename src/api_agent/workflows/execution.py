@@ -121,7 +121,7 @@ async def project_correction(feedback, *, services=None):
     capability = services.get('capture_authority')
     if capability is not None:
         try:
-            async with component_timeout('Workflow correction authority', 30):
+            async with component_timeout('Workflow correction authority'):
                 async with capability() as boundary:
                     return scrub_correction(feedback, boundary=boundary)
         except TimeoutError:

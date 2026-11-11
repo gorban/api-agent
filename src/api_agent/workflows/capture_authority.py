@@ -91,7 +91,7 @@ async def capture_node(journal, services, *, visit_id, direction, values, schema
     with defer_capture_callbacks(callbacks):
         async with AsyncExitStack() as owned:
             try:
-                async with component_timeout('Workflow capture authority', 30):
+                async with component_timeout('Workflow capture authority'):
                     boundary = await owned.enter_async_context(capability())
                 if type(boundary) is not EmissionBoundary:
                     raise TypeError('Workflow capture credential authority unavailable')
