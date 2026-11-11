@@ -252,6 +252,17 @@ def _reference_sources(projection: object) -> dict[str, bytes]:
     return sources
 
 
+def _session_labels(access, fields):
+    """Session access labels that each fit the diagram label limit, keeping field order."""
+    prefix, labels, current = f'Session {access}: ', [], []
+    for field in fields:
+        if current and len(prefix + ', '.join([*current, field])) > _MAX_LABEL:
+            labels.append(prefix + ', '.join(current))
+            current = []
+        current.append(field)
+    return [*labels, prefix + ', '.join(current)]
+
+
 def _label(value: object) -> str:
     text = str(value)
     if len(text) > _MAX_LABEL or any(ord(c) < 32 or ord(c) == 127 for c in text):
@@ -379,10 +390,10 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
                     if reference.kind == 'session' and reference.owner_id == step.id]
         for access in ('read', 'write'):
             fields = list(dict.fromkeys(item['field'] for item in accesses if item['access'] == access))
-            if fields:
+            for text in _session_labels(access, fields) if fields else ():
                 alias = f'session{reference_index}'
                 reference_index += 1
-                lines.append(f'rectangle "{_label(f'Session {access}: ' + ', '.join(fields))}" as {alias}')
+                lines.append(f'rectangle "{_label(text)}" as {alias}')
                 lines.append(f'{aliases[step.id]} .. {alias}')
     tool_bindings = getattr(projection, 'tool_bindings', ())
     tool_resources = {resource.logical_path: resource for resource in projection.resources}

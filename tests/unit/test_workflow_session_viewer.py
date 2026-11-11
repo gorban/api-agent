@@ -46,3 +46,15 @@ def test_turn_reads_are_not_drawn(tmp_path):
     for path in ('turn_chat.md.html', 'refine.md.html'):
         assert 'Turn' not in diagram(projection, path)
     assert _label('Session read: last_extra') in diagram(projection, 'turn_chat.md.html')
+
+
+def test_long_session_field_lists_split_into_labels_within_the_limit():
+    from api_agent.workflows.viewer_render import _MAX_LABEL, _session_labels
+    fields = [f'retained_field_{index:02d}_with_a_long_descriptive_name' for index in range(20)]
+
+    labels = _session_labels('read', fields)
+
+    assert len(labels) > 1
+    assert all(len(label) <= _MAX_LABEL and label.startswith('Session read: ') for label in labels)
+    assert [field for label in labels for field in label.removeprefix('Session read: ').split(', ')] == fields
+    assert _session_labels('write', ['topic']) == ['Session write: topic']
