@@ -242,6 +242,22 @@ def test_suite_preparation_clock_is_visible_while_test_is_pending(tmp_path):
     asyncio.run(run())
 
 
+def test_suite_progress_without_component_or_after_cancellation_is_ignored(tmp_path):
+    async def run():
+        app = fixture(tmp_path)
+        async with app.run_test(size=(130, 40)) as pilot:
+            await pilot.pause()
+            phase = ComponentProgress('storage', 'Prepare reporting prerequisites', None, 25, True)
+            app.unit_event(RunnerEvent('suite_progress'))
+            assert app.suite_components == {}
+            app.unit_event(RunnerEvent('suite_progress', component=phase))
+            assert app.suite_components == {'storage': phase}
+            app.collection_cancel.set()
+            app.unit_event(RunnerEvent('suite_progress', component=replace(phase, active=False)))
+            assert app.suite_components == {'storage': phase}
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
 def test_parallel_component_clocks_stay_in_their_rows(tmp_path, mode):
     async def run():

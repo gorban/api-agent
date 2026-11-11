@@ -601,6 +601,24 @@ def test_invalid_disposal_observer_cannot_launch_native_command(tmp_path):
             deadline=time.monotonic()+5, cancelled=lambda: False, on_disposed=True)
 
 
+def test_invalid_no_start_observer_cannot_launch_native_command(tmp_path):
+    from api_agent.runtime.prerequisites import run_command
+    import time
+    with pytest.raises(ValueError, match='no-start observer'):
+        run_command(('/usr/bin/true',), environment={}, directory=tmp_path,
+            deadline=time.monotonic()+5, cancelled=lambda: False, on_not_started=True)
+
+
+def test_command_that_closes_its_output_before_exiting_is_still_awaited(tmp_path):
+    from api_agent.runtime.prerequisites import run_command
+    import sys
+    import time
+    started = time.monotonic()
+    assert run_command((sys.executable, '-c', 'import os, time; os.close(1); os.close(2); time.sleep(.5)'),
+        environment={}, directory=tmp_path, deadline=time.monotonic()+30, cancelled=lambda: False) == ''
+    assert time.monotonic() - started >= .5
+
+
 def test_recovery_accepts_activity_file_before_command_directory_exists(tmp_path):
     from api_agent.testing.native_recovery import _quiescent
     descriptor = os.open(tmp_path / 'activity.lock', os.O_CREAT | os.O_RDWR, 0o600)

@@ -350,3 +350,61 @@ def test_other_scope_pruning_waits_for_network_creation_on_same_engine(setup, mo
         startup.result(timeout=5)
         cleanup.result(timeout=5)
     assert pruning.is_set()
+
+
+@pytest.mark.parametrize('inspection,aged', [('null', False), ('[]', False), ('[{"Name": "other"}]', False),
+                                             ('invalid-id', False), ('invalid-created', True)])
+def test_unverifiable_network_inventory_preserves_networks(setup, inspection, aged):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    original = engine.run
+    def inventory(command, **options):
+        response = original(command, **options)
+        if command[1:3] != ('network', 'inspect'):
+            return response
+        if inspection not in {'invalid-id', 'invalid-created'}:
+            return inspection
+        records = json.loads(response)
+        records[0]['Id' if inspection == 'invalid-id' else 'Created'] = 'not-valid'
+        return json.dumps(records)
+    manager.runner = inventory
+
+    with pytest.raises(PrerequisiteError, match='Network cleanup inventory could not be verified'):
+        manager._prune_networks(clock.now() + 120, aged=aged)
+
+    assert scope.project + '_default' in engine.networks
+    assert not any(command[1:3] == ('network', 'rm') for command, _ in engine.commands)
+
+
+def test_unverifiable_saved_container_identifiers_block_cleanup(setup):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    original = engine.run
+    def listing(command, **options):
+        if command[1:] == ('ps', '-a', '--no-trunc', '--format', '{{.ID}}'):
+            return 'not-a-container-id\n'
+        return original(command, **options)
+    manager.runner = listing
+
+    with pytest.raises(PrerequisiteError, match='Container network references could not be verified'):
+        manager._prune_networks(clock.now() + 120)
+
+    assert scope.project + '_default' in engine.networks
+
+
+def test_saved_definition_without_network_details_still_protects_by_name(setup):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    network = scope.project + '_default'
+    entry = engine.records[engine.add(next(iter(manager.specs)), running=False, foreign=True)]
+    entry['NetworkSettings'] = {'Networks': {network: None, 'other': {'NetworkID': 'b' * 64}}}
+    entry['HostConfig'] = {'NetworkMode': ''}
+    engine.commands.clear()
+
+    manager._prune_networks(clock.now() + 120)
+
+    assert network in engine.networks
+    assert not any(command[1:3] == ('network', 'rm') for command, _ in engine.commands)
