@@ -35,6 +35,50 @@ def _extract_option(argv, names, *, multiple=False, allow_empty=False):
     return remaining, selected
 
 
+
+def _extract_tui_mode(argv):
+    """Consume the mode option using the canonical key spelling rules."""
+    remaining, selected = [], None
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        index += 1
+        if token == '--':
+            remaining.extend([token, *argv[index:]])
+            break
+        key, separator, value = token.partition('=')
+        if not key.startswith('--') or key[2:].replace('-', '_').upper() != 'TUI_MODE':
+            remaining.append(token)
+            continue
+        if selected is not None:
+            raise ValueError('Duplicate option --tui-mode')
+        if not separator:
+            if index == len(argv) or argv[index].startswith('--'):
+                raise ValueError('--tui-mode requires a value')
+            value = argv[index]
+            index += 1
+        selected = value
+    return remaining, selected
+
+
+def _has_viewer_mode(argv, modes):
+    """Detect an explicit viewer mode without interpreting positional selectors."""
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        index += 1
+        if token == '--':
+            break
+        key, separator, value = token.partition('=')
+        if key.startswith('--') and key[2:].replace('-', '_').upper() == 'TUI_MODE':
+            if not separator and index < len(argv) and not argv[index].startswith('--'):
+                value = argv[index]
+                index += 1
+            if value in modes:
+                return True
+    return False
+
+
 def _extract_view_flow(argv):
     """Select the standalone viewer before unrelated execution configuration."""
     remaining = []
@@ -82,6 +126,52 @@ def _validate_view_flow_arguments(argv):
             continue
         raise ValueError(f'--view-flow conflicts with {token.partition("=")[0]}')
     return entry
+
+
+
+def _viewer_boolean_arguments(schema, argv, name, *, environ, dotenv, anchors, skip=False):
+    """Resolve a viewer control through its declaration and remove its CLI arguments."""
+    from api_agent.config import ConfigSchema, resolve_config
+    selected, remaining = [], []
+    args = list(argv)
+    index = 0
+    while index < len(args):
+        token = args[index]
+        index += 1
+        if token == '--':
+            remaining.extend([token, *args[index:]])
+            break
+        key = token.partition('=')[0]
+        if (key.startswith('--') and key[2:].replace('-', '_').upper() == name) or (name == 'HELP' and token == '-h'):
+            option, separator, value = token.partition('=')
+            if separator and value.lower() in ('true', 'false'):
+                token = option + '=' + value.title()
+            selected.append(token)
+            if token != '-h' and not separator and index < len(args) and args[index].lower() in ('true', 'false'):
+                selected.append(args[index].title())
+                index += 1
+        else:
+            remaining.append(token)
+    if skip:
+        return remaining, False
+    result = resolve_config(ConfigSchema({name: schema.fields[name]}),
+                            argv=selected, environ=environ, dotenv=dotenv, anchors=anchors)
+    result.raise_for_errors()
+    return remaining, result.values.get(name, False)
+
+
+def _viewer_handoff_arguments(schema, argv, selection, *, viewer_schema=None):
+    """Keep viewer-relevant options, discarding previous selectors and controls."""
+    from api_agent.config.options import parse_options
+    options = parse_options(schema, argv).values
+    if selection == 'view-flow':
+        names = {'DEBUG', 'API_AGENT_PLANTUML_JAR', 'API_AGENT_DIR'}
+    else:
+        names = set(options) & set((viewer_schema or schema).fields)
+        names -= {'TUI_MODE', 'START', 'NO_STD_IN', 'COLLECT_ONLY',
+                                'HELP', 'SKIP_UNATTENDED_SETUP'}
+    return ['--' + name.lower().replace('_', '-') + '=' + value
+            for name, value in options.items() if name in names]
 
 
 def _bind_runtime_directory(context, argv, environ):
@@ -200,6 +290,15 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
     try:
         argv, view_flow_requested = _extract_view_flow(argv)
         argv, trace_viewer_requested = _extract_trace_viewer(argv)
+        viewer_modes = {'view-flow', 'trace-viewer'}
+        mode_arguments, explicit_mode = (_extract_tui_mode(argv)
+                                         if _has_viewer_mode(argv, viewer_modes) else (argv, None))
+        if explicit_mode in {'view-flow', 'trace-viewer'}:
+            if view_flow_requested or trace_viewer_requested:
+                raise ValueError('Viewer mode conflicts with a standalone viewer flag')
+            argv = mode_arguments
+            view_flow_requested = explicit_mode == 'view-flow'
+            trace_viewer_requested = explicit_mode == 'trace-viewer'
         if view_flow_requested and trace_viewer_requested:
             raise ValueError('--trace-viewer conflicts with --view-flow')
         argv, origin = _extract_option(argv, {'--_launcher-root'})
@@ -228,18 +327,50 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         if not _worktrees_verified:
             verify_worktrees(list(dict.fromkeys([context.base_root, *[layer.pack_root for layer in context.pack_layers], *[layer.owner_root for layer in context.pack_layers], context.pack_root, context.owner_root])), stdin=sys.stdin, stdout=sys.stdout,
                              resource_pack_name=context.pack_id if context.external_pack else None)
+        viewer_dotenv = {}
+        for path in dict.fromkeys((context.base_root / '.env', *context.shared_dotenv_paths,
+                                   (context.launcher_root or context.base_root) / '.env', context.dotenv_path)):
+            viewer_dotenv.update(read_dotenv(path))
+        configured_mode = os.environ.get('TUI_MODE', viewer_dotenv.get('TUI_MODE'))
+        if not (view_flow_requested or trace_viewer_requested) and configured_mode in viewer_modes:
+            mode_arguments, cli_mode = _extract_tui_mode(argv)
+            if cli_mode is None or cli_mode == configured_mode:
+                from api_agent.config import ConfigSchema
+                from api_agent.config.options import parse_options
+                viewer_schema = load_context_schema(context, load_shared_schema(context.base_root))
+                options = parse_options(viewer_schema, argv).values
+                no_stdin = resolve_config(ConfigSchema({'NO_STD_IN': viewer_schema.fields['NO_STD_IN']}),
+                    environ=os.environ, dotenv=viewer_dotenv, anchors=context.anchors,
+                    overrides={'NO_STD_IN': options['NO_STD_IN']} if 'NO_STD_IN' in options else None)
+                no_stdin.raise_for_errors()
+                if no_stdin.values.get('NO_STD_IN'):
+                    argv = mode_arguments
+                    view_flow_requested = configured_mode == 'view-flow'
+                    trace_viewer_requested = configured_mode == 'trace-viewer'
+        if view_flow_requested or trace_viewer_requested:
+            from api_agent.config.declarations import shared_declaration_path
+            viewer_schema = load_context_schema(context, load_declarations(shared_declaration_path(context.base_root)))
+            argv, viewer_help = _viewer_boolean_arguments(viewer_schema, argv, 'HELP',
+                environ=os.environ, dotenv=viewer_dotenv, anchors=context.anchors)
+            argv, collect = _viewer_boolean_arguments(viewer_schema, argv, 'COLLECT_ONLY',
+                environ=os.environ, dotenv=viewer_dotenv, anchors=context.anchors, skip=viewer_help)
+            if viewer_help:
+                if trace_viewer_requested:
+                    print('Usage: ./launch.sh --trace-viewer [tracing options]\n'
+                          'Open the configured managed local trace dashboard in a headed browser.')
+                else:
+                    print('Usage: ./launch.sh --view-flow [FLOW.md.html] [--resource-pack-dir PATH] [--api-agent-plantuml-jar PATH] [--debug] [--no-std-in]\n'
+                          'Open the selected workflow in a managed headed browser without app or provider startup.\n'
+                          'Omit the flow path for the selected application; relative paths use the current directory.\n'
+                          'Requires mise; browser prerequisites are prepared only when viewing.')
+                return 0
+            if collect:
+                raise ValueError('COLLECT_ONLY requires unit, integration, or e2e mode.')
         if trace_viewer_requested:
             trace_arguments, _ = _extract_option(argv, {'--api-agent-dir', '--api_agent_dir'})
-            if '--help' in trace_arguments or '-h' in trace_arguments:
-                print('Usage: ./launch.sh --trace-viewer [tracing options]\n'
-                      'Open the configured managed local trace dashboard in a headed browser.')
-                return 0
             shared = load_shared_schema(context.base_root)
             schema = load_context_schema(context, shared)
-            dotenv = {}
-            for path in dict.fromkeys((context.base_root / '.env', *context.shared_dotenv_paths,
-                                       (context.launcher_root or context.base_root) / '.env', context.dotenv_path)):
-                dotenv.update(read_dotenv(path))
+            dotenv = viewer_dotenv
             from api_agent.runtime.trace_viewer import resolve_viewer_config
             values = resolve_viewer_config(schema, argv=trace_arguments, environ=os.environ,
                                            dotenv=dotenv, anchors=context.anchors)
@@ -259,12 +390,6 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             view_arguments, renderer_override = _extract_option(
                 view_arguments, {'--api-agent-plantuml-jar', '--api_agent_plantuml_jar', '--API_AGENT_PLANTUML_JAR'}, allow_empty=True)
             view_entry = _validate_view_flow_arguments(view_arguments)
-            if '--help' in view_arguments or '-h' in view_arguments:
-                print('Usage: ./launch.sh --view-flow [FLOW.md.html] [--resource-pack-dir PATH] [--api-agent-plantuml-jar PATH] [--debug] [--no-std-in]\n'
-                      'Open the selected workflow in a managed headed browser without app or provider startup.\n'
-                      'Omit the flow path for the selected application; relative paths use the current directory.\n'
-                      'Requires mise; browser prerequisites are prepared only when viewing.')
-                return 0
             from api_agent.runtime.dependencies import ensure_environment
             status = ensure_environment(context, ['--view-flow', *argv], groups=('browser',), **handoff_options)
             if status is not None:
@@ -277,12 +402,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
             return run_view_flow(context, **renderer_options) if view_entry is None else run_view_flow(context, entry=view_entry, **renderer_options)
         shared = load_shared_schema(context.base_root)
         schema = load_context_schema(context, shared)
-        dotenv = {}
-        for path in dict.fromkeys((context.base_root / '.env',
-                                  *context.shared_dotenv_paths,
-                                  (context.launcher_root or context.base_root) / '.env',
-                                  context.dotenv_path)):
-            dotenv.update(read_dotenv(path))
+        dotenv = viewer_dotenv
         foundation_schema = schema
         from api_agent.runtime.pack_admission import configuration_inputs
         from api_agent.providers.loading import bootstrap_schema
@@ -554,7 +674,19 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         if status is not None:
             return status
         from api_agent.tui.app import run_tui
-        return run_tui(context, foundation_schema, argv, os.environ.copy())
+        selection = run_tui(context, foundation_schema, argv, os.environ.copy())
+        if selection in {'view-flow', 'trace-viewer'}:
+            viewer_schema = None
+            if selection == 'trace-viewer':
+                from api_agent.runtime.tracing_viewer_config import selected_viewer_schema
+                viewer_schema, _ = selected_viewer_schema(foundation_schema, argv=argv,
+                    environ=os.environ, dotenv=dotenv, anchors=context.anchors)
+            remaining = _viewer_handoff_arguments(schema, argv, selection, viewer_schema=viewer_schema)
+            return main([*remaining, '--' + selection], base_root=base_root,
+                        resource_pack_dir=resource_pack_dir, launcher_root=launcher_root,
+                        _worktrees_verified=True, _replace_process=_replace_process,
+                        _composition_identity=_composition_identity)
+        return selection
     except KeyboardInterrupt as error:
         if _retains_cleanup(error):
             raise

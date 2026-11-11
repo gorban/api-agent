@@ -123,7 +123,7 @@ browser or authenticating an LLM. To use the same operation without the TUI:
 Press Ctrl+C to stop the terminal operation; use Stop or Quit in the TUI.
 Shutdown waits for owned requests and resources to finish cleanup.
 [Tracing configuration](docs/tracing.md) enables a ready Jaeger or LangFuse dashboard;
-LangFuse dashboard login uses its separately configured admin account. To inspect a managed local collector without starting the app or a provider, run `./launch.sh --trace-viewer`; the command prints its viewer/CDP URLs and, for LangFuse, the configured dashboard username and password unmasked for login from another browser. Closing its browser leaves the collector available; press Ctrl+C in the terminal to release the collector lease.
+LangFuse dashboard login uses its separately configured admin account. To inspect a managed local collector without starting the app or a provider, run `./launch.sh --tui-mode trace-viewer --no-std-in` (or the `--trace-viewer` alias); the command prints its viewer/CDP URLs and, for LangFuse, the configured dashboard username and password unmasked for login from another browser. Closing its browser leaves the collector available; press Ctrl+C in the terminal to release the collector lease.
 UI-process logs show safe activity messages rather than
 arbitrary child output, which may contain credentials even with `LOG_CONTENT=True`.
 
@@ -219,7 +219,10 @@ baseline. The [API demonstration](docs/api_demo.md) uses its own declared flow;
 the root remains the small one-call chat example.
 
 Open [flow.md.html](flow.md.html) directly to view the saved declaration and SVG,
-or run `./launch.sh --view-flow` for the selected application's managed view.
+or run `./launch.sh --tui-mode view-flow --no-std-in` for the selected application's managed view.
+The main menu also offers both viewers; choosing one closes the menu and hands
+the terminal to the viewer. Press Ctrl+C to stop it and finish owned cleanup.
+The standalone `--view-flow` and `--trace-viewer` flags remain available.
 Supply one path, such as `./launch.sh --view-flow "demo/contrived/flow.md.html"`,
 to inspect another flow; relative paths use the current directory.
 [Diagram maintenance](docs/workflow_viewer.md) explains markup freshness checks,

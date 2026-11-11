@@ -58,6 +58,7 @@ def isolated_headed_display(monkeypatch):
     try:
         number = _display_number(process)
         monkeypatch.setenv('DISPLAY', ':' + number)
+        monkeypatch.setenv('XDG_SESSION_TYPE', 'x11')
         monkeypatch.delenv('WAYLAND_DISPLAY', raising=False)
         monkeypatch.delenv('XAUTHORITY', raising=False)
         yield process, ':' + number
@@ -71,6 +72,22 @@ def isolated_headed_display(monkeypatch):
                 process.wait(timeout=5)
         process.stdout.close()
         process.stderr.close()
+
+
+@pytest.mark.unit_platform('linux')
+@pytest.mark.skipif(sys.platform != 'linux', reason='Xvfb isolation is Linux-specific')
+def test_isolated_display_uses_x11_even_in_wayland_session(monkeypatch):
+    monkeypatch.setenv('XDG_SESSION_TYPE', 'wayland')
+    monkeypatch.setenv('WAYLAND_DISPLAY', 'unavailable-wayland-socket')
+    fixture = isolated_headed_display.__wrapped__(monkeypatch)
+    try:
+        process, display = next(fixture)
+        assert process.poll() is None
+        assert os.environ['DISPLAY'] == display
+        assert os.environ['XDG_SESSION_TYPE'] == 'x11'
+        assert 'WAYLAND_DISPLAY' not in os.environ
+    finally:
+        fixture.close()
 
 
 @pytest.mark.unit_platform('linux')

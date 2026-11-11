@@ -112,6 +112,9 @@ class Engine:
             if self.fail_stop: raise p.PrerequisiteError('stop failed')
             for identifier in command[4:]: self.records[identifier]['State']['Running'] = False
             return ''
+        if command[1] == 'start':
+            for identifier in command[2:]: self.records[identifier]['State']['Running'] = True
+            return ''
         if command[1] == 'exec':
             if self.fail_hook: raise p.PrerequisiteError('bucket hook failed')
             return ''
@@ -177,6 +180,409 @@ def test_reuse_exact_existing_and_retained_tests(setup):
     assert not any('up' in command for command, _ in engine.commands)
     assert manager.release(retain=True) == ()
     assert engine.records[identifier]['State']['Running']
+
+
+def test_stopped_jaeger_recovers_deleted_snapshot_before_restart(setup):
+    create, engine, _, _, _ = setup
+    original = create()
+    lease = original.acquire()
+    identifier, = lease.container_ids
+    mounts = deepcopy(engine.records[identifier]['Mounts'])
+    source = Path(mounts[0]['Source'])
+    original.release()
+    shutil.rmtree(source.parent)
+
+    restarted = create().acquire()
+
+    assert restarted.container_ids == (identifier,)
+    assert engine.records[identifier]['State']['Running']
+    assert engine.records[identifier]['Mounts'] == mounts
+    assert not any(command[1] == 'rm' for command, _ in engine.commands)
+    assert source.read_bytes() == original.plan.assets['jaeger-config.json']
+    assert not source.stat().st_mode & 0o222
+
+
+def test_jaeger_recovery_preserves_readable_config_under_restrictive_umask(setup):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    mounts = deepcopy(engine.records[identifier]['Mounts'])
+    source = Path(mounts[0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    previous_umask = os.umask(0o077)
+    try:
+        lease = create().acquire()
+    finally:
+        os.umask(previous_umask)
+
+    assert source.stat().st_mode & 0o777 == 0o444
+    assert lease.container_ids == (identifier,)
+    assert engine.records[identifier]['Mounts'] == mounts
+
+
+@pytest.mark.parametrize('damage', ['foreign', 'fingerprint', 'volume', 'writable', 'running', 'noncanonical'])
+def test_deleted_jaeger_snapshot_is_not_restored_without_ownership_proof(setup, damage):
+    create, engine, _, _, _ = setup
+    original = create()
+    identifier, = original.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    original.release()
+    shutil.rmtree(source.parent)
+    record = engine.records[identifier]
+    if damage == 'foreign':
+        record['Config']['Labels']['api-agent.scope'] = 'f' * 16
+    elif damage == 'fingerprint':
+        record['Config']['Labels'][p.CONFIG_LABEL] = 'changed'
+    elif damage == 'volume':
+        engine.volume_labels = {**original.scope.labels('otel'), 'api-agent.scope': 'f' * 16}
+    elif damage == 'writable':
+        record['Mounts'][0]['RW'] = True
+    elif damage == 'running':
+        record['State']['Running'] = True
+    else:
+        source = source.parent.with_name('other-assets-12345678') / source.name
+        record['Mounts'][0]['Source'] = str(source)
+
+    with pytest.raises(p.PrerequisiteError):
+        create().acquire()
+
+    assert not source.parent.exists()
+
+
+def test_deleted_jaeger_snapshot_with_active_lease_is_not_restored(setup):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    engine.records[identifier]['State']['Running'] = False
+    shutil.rmtree(source.parent)
+
+    with pytest.raises(p.PrerequisiteError, match='active invocation lease'):
+        create().acquire()
+
+    assert not source.parent.exists()
+
+
+def test_jaeger_recovery_refuses_snapshot_replaced_before_open(setup, monkeypatch):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    original_open = os.open
+
+    def replace_child(path, flags, *args, **kwargs):
+        if path == source.parent.name and kwargs.get('dir_fd') is not None:
+            source.parent.rename(source.parent.with_name('displaced'))
+            source.parent.mkdir(mode=0o700)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', replace_child)
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+        create().acquire()
+
+    assert not source.exists()
+
+
+def test_jaeger_recovery_refuses_writable_prerequisite_root(setup):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    manager.directory.chmod(0o770)
+    try:
+        with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+            create().acquire()
+        assert not source.parent.exists()
+    finally:
+        manager.directory.chmod(0o700)
+
+
+def test_jaeger_recovery_refuses_snapshot_replaced_after_write(setup, monkeypatch):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    original_stat = os.stat
+    checks = 0
+
+    def replace_after_write(path, *args, **kwargs):
+        nonlocal checks
+        if path == source.parent.name and kwargs.get('dir_fd') is not None:
+            checks += 1
+            if checks == 2:
+                source.parent.rename(source.parent.with_name('displaced'))
+                source.parent.mkdir(mode=0o700)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'stat', replace_after_write)
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+        create().acquire()
+
+    assert not source.exists()
+
+
+@pytest.mark.parametrize('interference', ['none', 'extra', 'replacement', 'changed', 'cleanup_replacement'])
+def test_failed_jaeger_recovery_cleans_only_its_owned_files(setup, monkeypatch, interference):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    real_fdopen = os.fdopen
+    failed = False
+
+    class FailedWrite:
+        def __init__(self, stream): self.stream = stream
+        def __enter__(self): return self
+        def __exit__(self, *args): self.stream.close()
+        def fileno(self): return self.stream.fileno()
+        def write(self, content):
+            nonlocal failed
+            self.stream.write(content[:1])
+            if interference == 'extra':
+                (source.parent / 'unexpected').write_text('preserve')
+            elif interference == 'replacement':
+                source.unlink()
+                source.write_text('preserve')
+            elif interference == 'changed':
+                source.chmod(0o600)
+                source.write_text('unexpected-content')
+                source.chmod(0o444)
+            failed = True
+            raise OSError('simulated write failure')
+
+    class ReplacedRead:
+        def __init__(self, stream): self.stream = stream
+        def __enter__(self): return self
+        def __exit__(self, *args): self.stream.close()
+        def fileno(self): return self.stream.fileno()
+        def read(self, size):
+            content = self.stream.read(size)
+            source.unlink()
+            source.write_text('preserve')
+            return content
+
+    def failed_fdopen(descriptor, mode, *args, **kwargs):
+        stream = real_fdopen(descriptor, mode, *args, **kwargs)
+        if mode == 'rb' and failed and interference == 'cleanup_replacement':
+            return ReplacedRead(stream)
+        return FailedWrite(stream) if mode == 'wb' else stream
+
+    monkeypatch.setattr(os, 'fdopen', failed_fdopen)
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+        create().acquire()
+    monkeypatch.setattr(os, 'fdopen', real_fdopen)
+
+    if interference == 'extra':
+        assert not source.exists()
+        assert (source.parent / 'unexpected').read_text() == 'preserve'
+        with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+            create().acquire()
+    elif interference in {'replacement', 'cleanup_replacement'}:
+        assert source.read_text() == 'preserve'
+        with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+            create().acquire()
+    elif interference == 'changed':
+        assert not manager.plan.assets['jaeger-config.json'].startswith(source.read_bytes())
+        with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+            create().acquire()
+    else:
+        assert not source.exists()
+        assert not source.parent.exists()
+        assert create().acquire().container_ids == (identifier,)
+
+
+def test_jaeger_recovery_retries_after_snapshot_open_failure(setup, monkeypatch):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    original_open = os.open
+
+    def fail_child_open(path, flags, *args, **kwargs):
+        if path == source.parent.name and kwargs.get('dir_fd') is not None:
+            raise OSError('simulated open failure')
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', fail_child_open)
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+        create().acquire()
+    assert not source.parent.exists()
+    monkeypatch.setattr(os, 'open', original_open)
+
+    assert create().acquire().container_ids == (identifier,)
+
+
+def test_jaeger_recovery_preserves_a_replacement_when_snapshot_open_fails(setup, monkeypatch):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    original_open = os.open
+    displaced = source.parent.with_name('displaced-snapshot')
+    replacements = []
+
+    def replace_before_failed_open(path, flags, *args, **kwargs):
+        if path == source.parent.name and kwargs.get('dir_fd') is not None:
+            source.parent.rename(displaced)
+            source.parent.mkdir()
+            replacements.append(source.parent.stat().st_ino)
+            raise OSError('snapshot replaced before open')
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', replace_before_failed_open)
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership') as caught:
+        create().acquire()
+
+    assert str(caught.value.__cause__) == 'snapshot replaced before open'
+    assert source.parent.stat().st_ino == replacements[0]
+    assert not tuple(source.parent.iterdir())
+    assert displaced.is_dir() and not tuple(displaced.iterdir())
+    assert not source.exists()
+    assert not engine.records[identifier]['State']['Running']
+
+
+def test_jaeger_recovery_never_starts_a_replacement_container(setup):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    retry = create()
+    run = engine.run
+    replacement = []
+
+    def replace_before_start(command, **kwargs):
+        if command[1:] == ('start', identifier):
+            del engine.records[identifier]
+            replacement.append(engine.add('jaeger', running=False))
+            raise p.PrerequisiteError('original container disappeared')
+        return run(command, **kwargs)
+
+    retry.runner = replace_before_start
+    with pytest.raises(p.PrerequisiteError, match='original container disappeared'):
+        retry.acquire()
+
+    assert not engine.records[replacement[0]]['State']['Running']
+    assert not any(command[1] == 'stop' and replacement[0] in command for command, _ in engine.commands)
+
+
+def test_jaeger_recovery_leaves_a_replacement_running_after_restart(setup):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    retry = create()
+    run = engine.run
+    replacements = []
+
+    def replace_after_start(command, **kwargs):
+        output = run(command, **kwargs)
+        if command[1:] == ('start', identifier):
+            del engine.records[identifier]
+            replacements.append(engine.add('jaeger', running=True))
+        return output
+
+    retry.runner = replace_after_start
+    with pytest.raises(p.PrerequisiteError, match='Recovered prerequisite changed'):
+        retry.acquire()
+
+    replacement, = replacements
+    assert engine.records[replacement]['State']['Running']
+    assert not any(command[1] in {'stop', 'rm'} and replacement in command
+                   for command, _ in engine.commands)
+
+
+@pytest.mark.parametrize('failure', ['parent_open_and_rollback', 'config_create'])
+def test_jaeger_recovery_preserves_the_storage_error_before_creating_config(setup, monkeypatch, failure):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    original_open = os.open
+    original_rmdir = os.rmdir
+
+    def failed_open(path, flags, *args, **kwargs):
+        target = source.parent.name if failure == 'parent_open_and_rollback' else source.name
+        if path == target and kwargs.get('dir_fd') is not None:
+            raise OSError('simulated storage open failure')
+        return original_open(path, flags, *args, **kwargs)
+
+    def failed_rollback(path, *args, **kwargs):
+        if path == source.parent.name and kwargs.get('dir_fd') is not None:
+            raise OSError('simulated rollback failure')
+        return original_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', failed_open)
+    if failure == 'parent_open_and_rollback':
+        monkeypatch.setattr(os, 'rmdir', failed_rollback)
+
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership') as caught:
+        create().acquire()
+
+    assert str(caught.value.__cause__) == 'simulated storage open failure'
+    assert not source.exists()
+    assert source.parent.exists() == (failure == 'parent_open_and_rollback')
+    assert not engine.records[identifier]['State']['Running']
+    monkeypatch.setattr(os, 'open', original_open)
+    monkeypatch.setattr(os, 'rmdir', original_rmdir)
+    if source.parent.exists():
+        source.parent.rmdir()
+    assert create().acquire().container_ids == (identifier,)
+
+
+@pytest.mark.parametrize('change', ['running', 'image', 'image_id', 'fingerprint', 'profile', 'service', 'scope'])
+def test_jaeger_recovery_rechecks_inspected_identity_before_restoring(setup, change):
+    create, engine, _, _, _ = setup
+    manager = create()
+    identifier, = manager.acquire().container_ids
+    source = Path(engine.records[identifier]['Mounts'][0]['Source'])
+    manager.release()
+    shutil.rmtree(source.parent)
+    run = engine.run
+    inspections = 0
+
+    def changed_inspection(command, **kwargs):
+        nonlocal inspections
+        output = run(command, **kwargs)
+        if command[1:] == ('inspect', identifier):
+            inspections += 1
+            if inspections == len(manager.scope.legacy_ids) + 2:
+                record, = json.loads(output)
+                labels = record['Config']['Labels']
+                if change == 'running': record['State']['Running'] = True
+                elif change == 'image': record['Config']['Image'] = 'other'
+                elif change == 'image_id': record['Image'] = 'other'
+                elif change == 'fingerprint': labels[p.CONFIG_LABEL] = 'other'
+                elif change == 'profile': labels['api-agent.profile'] = 'localstack'
+                elif change == 'service': labels['com.docker.compose.service'] = 'other'
+                else: labels['api-agent.scope'] = 'other'
+                return json.dumps([record])
+        return output
+
+    retry = create()
+    retry.runner = changed_inspection
+    with pytest.raises(p.PrerequisiteError, match='Jaeger storage ownership'):
+        retry.acquire()
+
+    assert not source.parent.exists()
 
 
 @pytest.mark.parametrize('unrelated_change', ['missing_asset', 'changed_compose', 'both'])

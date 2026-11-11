@@ -33,7 +33,7 @@ from langgraph.graph import END, START, StateGraph
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
 from .predicates import (component_controller, component_decision, edge_expiry, edge_source, entry_source, loop_edges,
-                         native_condition_id, parse_predicate, predicate_fields, state_predicate_fields,
+                         MissingPredicateField, native_condition_id, parse_predicate, predicate_fields, state_predicate_fields,
                          unbounded_edge_message)
 
 
@@ -743,19 +743,30 @@ class Workflow:
         """
         expired = state.get('expired', {})
         own = bool(expired.get(source))
+        # Expired components discard their descendants, but retain a result
+        # from an earlier completed visit. A node discards its own prior output.
+        abandoned = ({step.id for step in self.layout.steps if self._owned_by(step, source)}
+                     if own and source in self.components else {source} if own else set())
+        def matches(row):
+            try:
+                return self._condition(row['When'], state['values'], source=source, ancestry=state['ancestry'],
+                                       visits=state.get('starts'), expired=expired, abandoned=abandoned)
+            except MissingPredicateField as error:
+                if error.owner not in abandoned:
+                    raise
+                return False
         choices = [row for row in edges if row['When'] not in ('always', 'otherwise')
-                   and (not own or row['When'] in self._expiry[source])
-                   and self._condition(row['When'], state['values'], source=source, ancestry=state['ancestry'],
-                                       visits=state.get('starts'), expired=expired)]
+                   and (not own or row['When'] in self._expiry[source]) and matches(row)]
         if not own:
             choices = choices or [row for row in edges if row['When'] in ('always', 'otherwise')]
         return choices
 
-    def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None, expired=None):
+    def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None, expired=None, abandoned=()):
         if (source, identifier) in self._predicates:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
-            result = predicate.evaluate({**values, **self._turn_state.get()['results']}, attempt=attempt,
+            results = {key: value for key, value in self._turn_state.get()['results'].items() if key not in abandoned}
+            result = predicate.evaluate({**values, **results}, attempt=attempt,
                                         max_passes=maximum, visits=visits, expired=expired,
                                         constants={**self.pass_constants, **self.limit_values})
         else:
@@ -1656,6 +1667,8 @@ class Workflow:
         for row, value in session_contract.writes(self.session_rows, runs):
             if row['Merge'] == 'replace':
                 merged[row['Field']] = deepcopy(value)
+            elif value is None:
+                continue
             elif type(value) is list:
                 merged[row['Field']] = [*merged.get(row['Field'], ()), *deepcopy(value)]
             else:

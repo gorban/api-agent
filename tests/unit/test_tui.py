@@ -926,7 +926,7 @@ def test_button_directional_navigation_and_edges(tmp_path):
                                   ("up", "mode-run-local")):
                 await pilot.press(key)
                 assert app.focused.id == expected
-            for expected in ("mode-integration", "mode-allure", "mode-config-cleanup", "mode-unattended-auth"):
+            for expected in ("mode-integration", "mode-allure", "mode-trace-viewer", "mode-config-cleanup", "mode-unattended-auth"):
                 await pilot.press("down")
                 assert app.focused.id == expected
             for key in ("down", "j", "right", "l"):
