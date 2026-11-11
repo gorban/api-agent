@@ -335,14 +335,15 @@ class _SessionCommit:
     scope (journal finalization, evidence publication) fails the same turn.
     """
 
-    def __init__(self, session, config):
-        self.session, self.config = session, config
+    def __init__(self, session, config, fields):
+        self.session, self.config, self.fields = session, config, fields
         self.before, self.merged, self.saved = {}, None, False
 
     async def load(self):
-        """The stored session as this turn starts, as a copy the turn may read from."""
+        """The stored session as this turn starts, minus fields the Session table dropped."""
         snapshot = await self.session.aget_state(self.config)
-        self.before = deepcopy(snapshot.values.get('session', {}))
+        stored = snapshot.values.get('session', {})
+        self.before = deepcopy({field: value for field, value in stored.items() if field in self.fields})
         return deepcopy(self.before)
 
     async def save(self):
@@ -1516,7 +1517,12 @@ class Workflow:
         if not self.typed_state and self._session is None and thread_id is not None:
             raise WorkflowError('Conversation checkpoints require a declared State or Session contract')
         config = {'configurable': {'thread_id': thread_id}}
-        commit = _SessionCommit(self._session, config) if self._session is not None else None
+        commit = None
+        if self._session is not None:
+            # Graph IDs never contain ':', so the prefix keeps graphs that share a checkpointer apart.
+            commit = _SessionCommit(
+                self._session, {'configurable': {'thread_id': f'{self.definition.graph_id}:{thread_id}'}},
+                {row['Field'] for row in self.session_rows})
         async with self._turn(thread_id or str(uuid4()), request, services, journal, turn_id, turn_kind,
                               session=commit):
             if self.typed_state:
