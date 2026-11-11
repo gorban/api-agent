@@ -21,6 +21,7 @@ from typing import ClassVar
 
 from . import session
 from .model import InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage
+from .predicates import loop_edges, unbounded_edge_message
 from .prompt_slots import slot_text, used_slots
 
 PLAN_FORMAT = 'api-agent-workflow-plan'
@@ -432,6 +433,7 @@ def _decode_plan(value, typed):
             raise ValueError('invalid layout step')
         steps.append(Step(row['id'], row['kind'], row['parent'], _virtual(row['source']), row['line']))
     tables, files = _decode(encoded_layout['tables']), _decode(encoded_layout['files'])
+    layout = Layout(entry, tuple(steps), tables, files)
     expected_tables = {'Components', 'Functions', 'Bindings', 'Edges', 'Prompts', 'Timeouts'} if not typed else {'Edges'}
     # A graph without Session or Limits has no such table.
     optional = set() if typed else {'Session', 'Limits'}
@@ -442,14 +444,19 @@ def _decode_plan(value, typed):
     configured = {_virtual(item.logical_path) for item in resources if item.kind == 'configuration'}
     limits = tables.get('Limits', ())
     if not (type(limits) is tuple and all(_limit_row(row, configured) for row in limits)
-            and len({row['Key'] for row in limits}) == len(limits)):
+            and len({row['Key'] for row in limits}) == len(limits)
+            and ('Limits' not in tables or limits)):
         raise ValueError('invalid limit rows')
+    if not typed:
+        for row, bound in loop_edges(layout):
+            if bound is None:
+                raise ArtifactRejected(f'invalid layout: {unbounded_edge_message(row["To"])}')
     decoded = dict(
         graph_id=graph_id, entry=entry, entry_root=entry_root,
         imports=imports, declaration_entry=declaration_entry,
         roots=MappingProxyType({root: ARTIFACT_ROOT / root for root in ('base', 'pack')}),
         replacements=replacements, resources=resources, definition_id=definition_id,
-        compiled_plan_identity=value['compiled_plan_identity'], layout=Layout(entry, tuple(steps), tables, files),
+        compiled_plan_identity=value['compiled_plan_identity'], layout=layout,
         contents=MappingProxyType(contents), selected_declarations=_decode(value['selected_declarations']),
         declaration_fragments=_decode(value['declaration_fragments']),
         tool_usages=tuple(ToolUsage(*_row(row, 7, 'tool usage')[:6],
@@ -481,6 +488,8 @@ def _decode_plan(value, typed):
         )
     else:
         decoded['application_binding'] = _decode_application(value.get('application_binding'), resources)
+        if decoded['application_binding'] is None and 'application_binding' in value:
+            raise ValueError('invalid application binding')
         used = {slot for row in tables['Prompts'] for slot in used_slots(contents[row['File']])}
         if used != set(slot_files):
             raise ValueError('prompt slots differ from the slots the prompts use')

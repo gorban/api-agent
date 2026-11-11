@@ -297,6 +297,12 @@ def backward_bound(predicate, target, limits):
     return None
 
 
+def unbounded_edge_message(target):
+    return (f'backward edge to {target} requires a bounded When: a conjunction (and) containing '
+            f'{target}.attempt < LIMIT or {target}.attempt <= LIMIT for a declared Limits key; '
+            'other edges must advance')
+
+
 def loop_edges(layout):
     """Yield ``(row, bound)`` for each declared edge back to the same or an earlier step.
 

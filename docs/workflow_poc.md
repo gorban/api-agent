@@ -581,8 +581,13 @@ only when its `When` is a conjunction containing `<target>.attempt < LIMIT` or
 With `PLAN_PASSES` of 2, `draft` runs at most twice; the `failed` route is an ordinary
 edge. `<` allows LIMIT runs of the target and `<=` allows one more; a limit of 0 disables
 the loop. `always`, `otherwise`, registered condition names, literal bounds, `or`, negated
-or reversed comparisons are not bounds, and the edge is rejected with a located error.
-A bound refers to a limit key, never a literal, so the bound is visible configuration.
+or reversed comparisons are not bounds, and the edge is rejected with an error that
+names the document declaring the row. A bound refers to a limit key, never a literal,
+so the bound is visible configuration. A compiled plan is held to the same rule when it
+loads: a plan whose backward edge has no such bound is rejected, and so is a plan with
+an empty `Limits` table or a null `application_binding`, which the compiler never emits.
+The same located errors apply to a bad `SESSION` or `TURN` binding declared in a
+component or node document.
 
 Re-entering a step re-runs it with fresh bindings, and each run's output replaces the
 previous output in the turn's values, so later steps and conditions see the latest run.
