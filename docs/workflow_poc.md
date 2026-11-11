@@ -736,9 +736,11 @@ An edge outside a component reads its result as `<component_id>.<field>`:
   run: the child that took an edge to `END` inside it, the last child when its flow ends
   implicitly, or the guard of a guarded component's accepted pass. When that child is a
   component, its own result is used in turn. The latest run wins, so a component re-entered
-  by a backward edge reads its newest exit; a run abandoned at its own declared timeout, or
-  one whose exiting child produced no output, leaves no result, and a rejected guarded
-  pass is replaced by the next pass.
+  by a backward edge reads its newest exit. A run abandoned at its own declared timeout
+  never completes, so an earlier completed run's result stays readable; a run whose exiting
+  child produced no output (for example a node routed to `END` by its own expiry) leaves the
+  component with no result. A rejected guarded pass contributes nothing, and the results of
+  components nested in a pass that was rejected or abandoned are dropped.
 - Load requires `field` to appear in the `Output` schema of every node that can exit the
   component, with the same JSON `type` in each. The error names the nodes. A field only some
   exits declare is rejected, and so is any field of a component with no exit. This is the
