@@ -78,7 +78,7 @@ class GPTProvider:
     credential_protection_version = 1
     captures_effective_payload = True
     version = 1
-    inference_timeout = 120
+    inference_timeout = None
     capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"))
 
     @property
