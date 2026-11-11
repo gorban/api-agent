@@ -95,6 +95,92 @@ async def test_paused_capture_withholds_top_layer_opened_inside_an_isolated_surf
             await browser.close()
 
 
+async def _exit_popover(page):
+    await page.locator('#pop').evaluate('node => node.showPopover()')
+    await page.wait_for_timeout(50)
+    await page.locator('#pop').evaluate('node => node.hidePopover()')
+    assert await page.locator('#pop').evaluate("node => !node.matches(':popover-open')")
+
+
+async def _open_picker(page):
+    await page.locator('#pick').click()
+    assert await page.locator('#pick').evaluate("node => node.matches(':open')")
+
+
+_TOP_LAYER_SURFACES = {
+    # A closing popover stays in the top layer for its exit transition, and
+    # captures freeze transitions, but it no longer matches :popover-open.
+    'exiting-popover': (f'''<span id="host" style="background-image:url({_PIXEL})"><span id="pop"
+        popover style="transition:overlay 60s allow-discrete,display 60s allow-discrete;
+        background:rgb(255,0,0);width:200px;height:100px;border:0">Confidential escape</span></span>''',
+        _exit_popover),
+    # A customizable select paints its open picker in the top layer.
+    'select-picker': (f'''<style>select, ::picker(select) {{ appearance: base-select; }}</style>
+        <div id="host" style="background-image:url({_PIXEL})"><select id="pick">
+        <option style="background:rgb(255,0,0);height:100px">Confidential option</option></select></div>''',
+        _open_picker),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('paused', [True, False], ids=['paused', 'live'])
+@pytest.mark.parametrize('surface', sorted(_TOP_LAYER_SURFACES))
+async def test_top_layer_without_an_open_state_is_withheld(surface, paused):
+    from playwright.async_api import async_playwright
+    markup, open_surface = _TOP_LAYER_SURFACES[surface]
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            if paused:
+                page = await _owned_frame_page(browser, markup)
+            else:
+                page = await browser.new_page()
+                await page.route(_ORIGIN + '/', lambda route: route.fulfill(
+                    content_type='text/html', body='<body style="margin:0">' + markup + '</body>'))
+                await page.goto(_ORIGIN + '/')
+            await open_surface(page)
+            reasons = []
+            if paused:
+                assert await _capture(page, reasons) is None
+                assert reasons == ['content_top_layer']
+            else:
+                # Live size containment on the host already ends top-layer painting.
+                image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)), _ORIGIN,
+                    unavailable=reasons.append)
+                assert image is not None, reasons
+                assert not (await _pixels(page, image, {'x': 0, 'y': 0, 'width': 1280, 'height': 720}))['red']
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('surface', ['content-root', 'opaque'])
+async def test_live_isolated_root_in_the_top_layer_is_refused_before_containment(surface):
+    from playwright.async_api import async_playwright
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            style = 'background:rgb(255,0,0)' + (
+                '' if surface == 'content-root' else f';background-image:url({_PIXEL})')
+            # Containment on these crashed the renderer and stalled capture cleanup.
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body=f'''
+              <body style="margin:0"><main id="panel"><section id="private">Confidential answer</section>
+              <div id="top" popover style="{style}">Confidential top</div>
+              <button id="send">Send</button></main></body>'''))
+            await page.goto(_ORIGIN + '/')
+            await page.locator('#top').evaluate('node => node.showPopover()')
+            reasons = []
+            assert await asyncio.wait_for(capture_studio_viewport(page,
+                EmissionBoundary(ContentPolicy(False)), _ORIGIN,
+                content_mask_selector='#private' + (', #top' if surface == 'content-root' else ''),
+                content_mask_anchor='#panel', unavailable=reasons.append), 20) is None
+            assert reasons == ['content_top_layer']
+            assert await page.locator('#top').get_attribute('style') == style
+        finally:
+            await browser.close()
+
+
 _SHADOW_HOSTS = {
     'block': '<div id="host" style="width:50px;height:20px"></div>',
     'inline-custom': '<x-card id="host">card</x-card>',
