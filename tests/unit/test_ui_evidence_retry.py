@@ -330,7 +330,8 @@ def test_deterministic_refusal_is_reported_without_retrying(monkeypatch):
 
 
 def test_changing_layout_shifts_use_every_attempt(monkeypatch):
-    first, second = (evidence._layout_shift(dict(_SHIFT, shifted=count)) for count in (1, 2))
+    first, second = (evidence._layout_shift(dict(_SHIFT, shifted=count),
+                                            EmissionBoundary(ContentPolicy(True))) for count in (1, 2))
     calls = _scripted_attempts(monkeypatch, [('content_layout', first, None),
         ('content_layout', second, None), ('content_layout', second, None)])
     _, reasons, details = _run()
@@ -456,8 +457,16 @@ _SHIFT = {'tag': 'section', 'testid': 'chat-card', 'kind': 'opaque', 'shifted': 
     ({**_SHIFT, 'after': {**_BOX, 'x': '1'}}, None),
 ])
 def test_layout_shift_admits_only_bounded_structure(value, expected):
-    result = evidence._layout_shift(value)
+    result = evidence._layout_shift(value, EmissionBoundary(ContentPolicy(True)))
     if expected == 'no-testid':
         assert result is not None and result['testid'] is None and result['tag'] == 'section'
     else:
         assert result == expected
+
+
+@pytest.mark.parametrize('secret', ['chat-card', 'card'])
+def test_layout_shift_drops_a_test_id_the_credential_boundary_redacts(secret):
+    boundary = EmissionBoundary(ContentPolicy(True))
+    boundary.register_secret(secret)
+    shift = evidence._layout_shift(_SHIFT, boundary)
+    assert shift['testid'] is None and shift['tag'] == 'section'
