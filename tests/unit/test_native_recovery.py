@@ -475,7 +475,7 @@ def test_native_command_runner_holds_activity_lock_and_passes_exact_descriptor(t
     from api_agent.testing.native_recovery import run_native_command, _quiescent
     state = tmp_path / 'acquisition'
     state.mkdir(mode=0o700)
-    def runner(command, *, inherited_fds):
+    def runner(command, *, inherited_fds, on_not_started):
         from api_agent.testing.native_recovery import _read, _write, _request_digest
         intent = Path(command[-2])
         request = _read(intent / 'request.json')
@@ -491,6 +491,25 @@ def test_native_command_runner_holds_activity_lock_and_passes_exact_descriptor(t
     assert run_native_command(state, runner, ('selected-command',)) == 'completed'
     with _quiescent(state):
         assert (state / 'activity.lock').is_file()
+
+
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_native_intent_is_acknowledged_when_supervisor_is_rejected_before_spawn(tmp_path, monkeypatch, cancelled):
+    import time
+    from api_agent.runtime import prerequisites
+    from api_agent.testing.native_recovery import run_native_command, _quiescent
+    state = tmp_path / 'acquisition'
+    state.mkdir(mode=0o700)
+    monkeypatch.setattr(prerequisites.subprocess, 'Popen',
+        lambda *args, **kwargs: pytest.fail('rejected supervisor launched'))
+
+    with pytest.raises(prerequisites.PrerequisiteError):
+        run_native_command(state, prerequisites.run_command, ('selected-command',),
+            environment={}, directory=tmp_path,
+            deadline=time.monotonic() + (5 if cancelled else -1), cancelled=lambda: cancelled)
+
+    with _quiescent(state):
+        assert len(list((state / 'commands').glob('*/complete.json'))) == 1
 
 
 def test_canonical_command_inherits_only_explicit_native_descriptor(tmp_path):

@@ -48,6 +48,8 @@ class Engine:
         self.image_inspections = {}
         self.volume_labels = None
         self.networks = set()
+        self.network_labels = {}
+        self.network_created = {}
         # Queried only for a bind source carrying Docker Desktop's VM prefix.
         self.operating_system = None
 
@@ -87,13 +89,26 @@ class Engine:
             return name if name in self.networks else ''
         if command[1:3] == ('network', 'create'):
             self.networks.add(command[-1])
+            self.network_labels[command[-1]] = dict(command[index + 1].split('=', 1)
+                for index, value in enumerate(command) if value == '--label')
             return 'a' * 64
         if command[1:3] == ('network', 'inspect'):
-            return json.dumps([{'Name': command[3], 'Labels': {
+            return json.dumps([{'Name': command[3], 'Id': 'a' * 64,
+                'Created': self.network_created.get(command[3], '2000-01-01T00:00:00Z'),
+                'Labels': self.network_labels.get(command[3], {
                 'com.docker.compose.project': self.owner.scope.project,
-                'com.docker.compose.network': 'default'}}])
+                'com.docker.compose.network': 'default'})}])
+        if command[1:3] == ('network', 'rm'):
+            self.networks.clear()
+            return ''
         if command[1] == 'ps': return '\n'.join(self.records)
-        if command[1] == 'inspect': return json.dumps([self.records[item] for item in command[2:]])
+        if command[1] == 'inspect':
+            if command[2] == '--format':
+                return '\n'.join(json.dumps({'networks': self.records[item].get('NetworkSettings', {}).get('Networks',
+                    {self.owner.scope.project + '_default': {'NetworkID': 'a' * 64}}),
+                    'mode': self.records[item].get('HostConfig', {}).get('NetworkMode', 'bridge')})
+                    for item in command[4:])
+            return json.dumps([self.records[item] for item in command[2:]])
         if command[1:] == ('info', '--format', '{{json .OperatingSystem}}') and self.operating_system is not None:
             return json.dumps(self.operating_system)
         if command[1:3] == ('image', 'inspect'):

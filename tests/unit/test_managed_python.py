@@ -45,6 +45,36 @@ def test_matching_environment_is_reused(existing_environment, monkeypatch):
     assert dependencies.ensure_environment(context, []) is None
 
 
+def test_matching_interpreter_is_reused_through_filesystem_alias(existing_environment, monkeypatch, tmp_path):
+    context, _ = existing_environment
+    selected = tmp_path / 'selected-python'
+    selected.write_bytes(b'project interpreter')
+    alias = tmp_path / 'mounted-python'
+    alias.hardlink_to(selected)
+    assert selected.resolve() != alias.resolve()
+    assert selected.samefile(alias)
+    monkeypatch.setattr(dependencies.sys, '_base_executable', str(selected))
+    monkeypatch.setattr(dependencies, '_interpreter_base_executable', lambda _: str(alias))
+    monkeypatch.setattr(dependencies, 'requirements', lambda *a, **k: ())
+    monkeypatch.setattr(dependencies, 'active_environment', lambda *a: True)
+
+    assert dependencies.ensure_environment(context, []) is None
+
+
+def test_identical_bytes_do_not_admit_a_different_interpreter(existing_environment, monkeypatch, tmp_path):
+    context, _ = existing_environment
+    selected = tmp_path / 'selected-python'
+    selected.write_bytes(b'project interpreter')
+    other = tmp_path / 'other-python'
+    other.write_bytes(selected.read_bytes())
+    monkeypatch.setattr(dependencies.sys, '_base_executable', str(selected))
+    monkeypatch.setattr(dependencies, '_interpreter_base_executable', lambda _: str(other))
+    monkeypatch.setattr(dependencies, 'requirements', lambda *a, **k: pytest.fail('different runtime admitted'))
+
+    with pytest.raises(OSError, match='different or unavailable Python'):
+        dependencies.ensure_environment(context, [])
+
+
 @pytest.mark.parametrize('broken_root', [False, True])
 def test_broken_environment_is_not_passed_to_uv_clear(tmp_path, monkeypatch, broken_root):
     environment = tmp_path / '.venv'

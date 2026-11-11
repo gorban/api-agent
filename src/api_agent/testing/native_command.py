@@ -44,7 +44,7 @@ def main():
             output = run_command(tuple(request['command']), environment=request['environment'],
                 directory=request['directory'], deadline=request['deadline'], cancelled=cancelled.is_set,
                 combine_output=request['combine_output'], output_limit=request['output_limit'],
-                inherited_fds=(descriptor,), on_disposed=disposed)
+                inherited_fds=(descriptor,), on_disposed=disposed, on_not_started=disposed)
         except BaseException as failure:
             error = failure
             if not confirmed:

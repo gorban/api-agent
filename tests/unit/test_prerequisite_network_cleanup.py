@@ -93,9 +93,9 @@ def test_acquisition_reclaims_only_aged_explicitly_managed_networks(setup):
 
     manager.acquire()
 
-    commands = [command for command, _ in engine.commands if command[1:3] == ('network', 'prune')]
-    assert commands == [('docker', 'network', 'prune', '--force', '--filter', 'label=' + LABEL,
-                         '--filter', 'until=24h')]
+    commands = [command for command, _ in engine.commands if command[1:3] == ('network', 'ls')
+                and 'label=' + LABEL in command]
+    assert commands == [('docker', 'network', 'ls', '--filter', 'label=' + LABEL, '--format', '{{.Name}}')]
     assert engine.commands.index(next(item for item in engine.commands if item[0] == commands[0])) < next(
         index for index, (command, _) in enumerate(engine.commands) if 'up' in command)
 
@@ -114,9 +114,10 @@ def test_release_and_failed_start_prune_only_current_scope_without_removing_cont
         engine.commands.clear()
         manager.release()
 
-    assert ('docker', 'network', 'prune', '--force', '--filter', 'label=' + LABEL + '=' + scope.id) in [command for command, _ in engine.commands]
+    assert ('docker', 'network', 'ls', '--filter', 'label=' + LABEL + '=' + scope.id,
+            '--format', '{{.Name}}') in [command for command, _ in engine.commands]
     assert not any(command[1] in {'rm', 'volume'} or 'down' in command for command, _ in engine.commands)
-    assert engine.records
+    assert engine.records and scope.project + '_default' in engine.networks
 
 
 def test_retain_does_not_prune_the_current_scope(setup):
@@ -130,6 +131,172 @@ def test_retain_does_not_prune_the_current_scope(setup):
     assert not any(command[1] == 'network' for command, _ in engine.commands)
 
 
+def test_stopped_retained_container_keeps_its_restart_network(setup):
+    create, engine, _, scope, _ = setup
+    manager = create()
+    original = engine.run
+    def endpoint_only_prune(command, **options):
+        if command[1:3] == ('network', 'prune') and not any(
+                record['State']['Running'] for record in engine.records.values()):
+            engine.networks.clear()
+        return original(command, **options)
+    manager.runner = endpoint_only_prune
+    manager.acquire()
+
+    manager.release()
+
+    assert engine.records and not any(record['State']['Running'] for record in engine.records.values())
+    assert scope.project + '_default' in engine.networks
+
+
+@pytest.mark.parametrize('aged,young,referenced,removed', [
+    (False, False, False, True), (True, False, False, True),
+    (True, True, False, False), (True, False, True, False),
+    (False, False, True, False), (False, True, False, True)])
+def test_only_unreferenced_owned_networks_are_reclaimed(setup, aged, young, referenced, removed):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    if young:
+        from datetime import datetime, timezone
+        engine.network_created[scope.project + '_default'] = datetime.now(timezone.utc).isoformat()
+    if referenced:
+        engine.add(next(iter(manager.specs)), running=False)
+    engine.commands.clear()
+
+    manager._prune_networks(clock.now() + 120, aged=aged)
+
+    assert (scope.project + '_default' not in engine.networks) is removed
+    assert not any(command[1:3] == ('network', 'prune') for command, _ in engine.commands)
+    if removed:
+        assert ('docker', 'network', 'rm', 'a' * 64) in [command for command, _ in engine.commands]
+
+
+@pytest.mark.parametrize('field,value', [
+    ('api-agent.managed', 'false'), ('api-agent.scope', 'foreign'),
+    ('com.docker.compose.project', 'foreign'), ('com.docker.compose.network', 'other'),
+    (LABEL, 'foreign')])
+def test_cleanup_preserves_networks_with_unverified_ownership(setup, field, value):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    engine.network_labels[scope.project + '_default'][field] = value
+    engine.commands.clear()
+
+    manager._prune_networks(clock.now() + 120)
+
+    assert scope.project + '_default' in engine.networks
+    assert not any(command[1:3] == ('network', 'rm') for command, _ in engine.commands)
+
+
+@pytest.mark.parametrize('binding', ['name', 'id', 'created-name', 'created-id'])
+def test_saved_foreign_container_definitions_protect_network_without_live_endpoints(setup, binding):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    identifier = engine.add(next(iter(manager.specs)), running=False, foreign=True)
+    network = scope.project + '_default'
+    entry = engine.records[identifier]
+    if binding.startswith('created'):
+        entry['NetworkSettings'] = {'Networks': {}}
+        entry['HostConfig'] = {'NetworkMode': network if binding == 'created-name' else 'a' * 64}
+    else:
+        entry['NetworkSettings'] = {'Networks': {network: {'NetworkID': ''}} if binding == 'name'
+            else {'other-alias': {'NetworkID': 'a' * 64}}}
+    engine.commands.clear()
+
+    manager._prune_networks(clock.now() + 120)
+
+    assert network in engine.networks
+    assert not any(command[1:3] == ('network', 'rm') for command, _ in engine.commands)
+    assert all(not any(value.startswith('network=') for value in command)
+               for command, _ in engine.commands if command[1] == 'ps')
+
+
+@pytest.mark.parametrize('response', ['', 'not-json', 'null', '[]', '{}',
+    '{"networks":[],"mode":"bridge"}', '{"networks":{},"mode":false}',
+    '{"networks":{"saved":[]},"mode":"bridge"}',
+    '{"networks":{"saved":{"NetworkID":null}},"mode":"bridge"}'])
+def test_unverifiable_saved_container_networks_block_cleanup(setup, response):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    engine.add(next(iter(manager.specs)), running=False)
+    original = engine.run
+    def invalid_inspection(command, **options):
+        if command[1:3] == ('inspect', '--format'):
+            return response
+        return original(command, **options)
+    manager.runner = invalid_inspection
+
+    with pytest.raises(PrerequisiteError, match='Container network references could not be verified'):
+        manager._prune_networks(clock.now() + 120)
+
+    assert scope.project + '_default' in engine.networks
+
+
+def test_container_network_inspections_are_batched(setup):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    for _ in range(35):
+        engine.add(next(iter(manager.specs)), running=False)
+
+    references = manager._container_network_references(clock.now() + 120, cleanup=True)
+
+    assert scope.project + '_default' in references
+    inspections = [command for command, _ in engine.commands if command[1:3] == ('inspect', '--format')]
+    assert [len(command[4:]) for command in inspections] == [32, 3]
+
+
+def test_old_network_candidates_are_inspected_in_batches(setup):
+    from datetime import datetime, timezone
+    create, _, clock, _, _ = setup
+    manager, inspections = create(), []
+    names = [f'sa-{index:016x}_default' for index in range(35)]
+    def inventory(command, **options):
+        if command[1:3] == ('network', 'ls'):
+            return '\n'.join(names)
+        assert command[1:3] == ('network', 'inspect')
+        inspections.append(command[3:])
+        return json.dumps([{'Name': name, 'Id': 'a' * 64,
+            'Created': datetime.now(timezone.utc).isoformat(), 'Labels': {
+                LABEL: name[3:19], 'api-agent.managed': 'true', 'api-agent.scope': name[3:19],
+                'com.docker.compose.project': name.removesuffix('_default'),
+                'com.docker.compose.network': 'default'}} for name in command[3:]])
+    manager.runner = inventory
+
+    manager._prune_networks(clock.now() + 120, aged=True)
+
+    assert [len(batch) for batch in inspections] == [32, 3]
+
+
+def test_old_unreferenced_networks_are_removed_in_pinned_batches(setup):
+    create, _, clock, _, _ = setup
+    manager, removals = create(), []
+    names = [f'sa-{index:016x}_default' for index in range(35)]
+    identifiers = {name: f'{index + 1:064x}' for index, name in enumerate(names)}
+    def inventory(command, **options):
+        if command[1:3] == ('network', 'ls'):
+            return '\n'.join(names)
+        if command[1] == 'ps':
+            return ''
+        if command[1:3] == ('network', 'rm'):
+            removals.append(command[3:])
+            return ''
+        assert command[1:3] == ('network', 'inspect')
+        return json.dumps([{'Name': name, 'Id': identifiers[name],
+            'Created': '2000-01-01T00:00:00Z', 'Labels': {
+                LABEL: name[3:19], 'api-agent.managed': 'true', 'api-agent.scope': name[3:19],
+                'com.docker.compose.project': name.removesuffix('_default'),
+                'com.docker.compose.network': 'default'}} for name in command[3:]])
+    manager.runner = inventory
+
+    manager._prune_networks(clock.now() + 120, aged=True)
+
+    assert [len(batch) for batch in removals] == [32, 3]
+    assert {identifier for batch in removals for identifier in batch} == set(identifiers.values())
+
+
 def test_failed_network_cleanup_preserves_lease_for_retry(setup):
     create, engine, _, _, _ = setup
     manager = create()
@@ -137,7 +304,7 @@ def test_failed_network_cleanup_preserves_lease_for_retry(setup):
     original = engine.run
 
     def fail_cleanup(command, **options):
-        if command[1:3] == ('network', 'prune'):
+        if command[1:3] == ('network', 'ls'):
             raise PrerequisiteError('network cleanup failed')
         return original(command, **options)
 

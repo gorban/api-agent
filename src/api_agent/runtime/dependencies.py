@@ -274,7 +274,9 @@ def ensure_environment(context, argv, *, collect=False, groups=(), selected_prov
     if os.environ.get('API_AGENT_MISE') == '1' and (environment.exists() or environment.is_symlink()):
         # Do not let an older checkout environment bypass the selected runtime.
         try:
-            matches = Path(_interpreter_base_executable(python)).resolve() == Path(sys._base_executable).resolve()
+            existing = Path(_interpreter_base_executable(python)).resolve()
+            selected = Path(sys._base_executable).resolve()
+            matches = existing == selected or existing.samefile(selected)
         except (OSError, subprocess.SubprocessError):
             matches = False
         if not matches:

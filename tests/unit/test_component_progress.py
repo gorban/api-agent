@@ -207,6 +207,41 @@ def test_nested_component_display_and_late_events(tmp_path):
     assert component_timing((ComponentProgress('x', 'Short step', .02, .001, True),)) == '0s elapsed; timeout 0.02s — Short step'
 
 
+def test_confirmation_label_remains_visible_with_its_component_clock(tmp_path):
+    async def run():
+        app, test = fixture(tmp_path), identity()
+        async with app.run_test(size=(130, 40)) as pilot:
+            await pilot.pause()
+            app.mode = 'e2e'
+            app.unit_event(RunnerEvent('test_started', identity=test, text='Confirmation 1/2'))
+            assert app.unit_rows[test.id][2] == 'Confirmation 1/2'
+            app.show_unit_results('Running')
+            await pilot.pause()
+            app.unit_event(RunnerEvent('component_progress', identity=test, text='Confirmation 1/2',
+                component=ComponentProgress('scenario', 'Original scenario', 240, 12, True)))
+            assert app.unit_rows[test.id][2] == 'Confirmation 1/2; 12s elapsed; timeout 4m — Original scenario'
+            assert len(app.unit_rows) == 1
+    asyncio.run(run())
+
+
+def test_suite_preparation_clock_is_visible_while_test_is_pending(tmp_path):
+    async def run():
+        app, test = fixture(tmp_path), identity()
+        async with app.run_test(size=(130, 40)) as pilot:
+            await pilot.pause()
+            app.mode = 'e2e'
+            app.unit_rows[test.id] = ('PENDING', test.id, '')
+            app.show_unit_results(app.unit_progress())
+            await pilot.pause()
+            phase = ComponentProgress('storage', 'Prepare reporting prerequisites', None, 25, True)
+            app.unit_event(RunnerEvent('suite_progress', component=phase))
+            assert '25s elapsed — Prepare reporting prerequisites' in app.unit_progress().plain
+            assert app.unit_rows[test.id][0] == 'PENDING'
+            app.unit_event(RunnerEvent('suite_progress', component=replace(phase, active=False)))
+            assert 'Prepare reporting prerequisites' not in app.unit_progress().plain
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
 def test_parallel_component_clocks_stay_in_their_rows(tmp_path, mode):
     async def run():

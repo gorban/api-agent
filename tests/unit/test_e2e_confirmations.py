@@ -129,6 +129,34 @@ def test_recorder_recovers_only_complete_e2e_protocol(tmp_path):
     assert manifest['status'] == 'completed'
 
 
+def test_confirmation_progress_keeps_the_logical_row_and_attempt_label(monkeypatch):
+    from api_agent.providers.progress import ComponentProgress
+    test = identity()
+    events, outcomes = [], iter(['failed', 'passed', 'passed'])
+    def execute(context, tests, **options):
+        options['before_run']()
+        options['on_event'](RunnerEvent('test_started', test.repo, test))
+        options['on_event'](RunnerEvent('component_progress', test.repo, test,
+            component=ComponentProgress('scenario', 'Original scenario', 240, 12, True)))
+        outcome = TestResult(test, next(outcomes))
+        options['on_result'](outcome)
+        options['on_event'](RunnerEvent('component_progress', test.repo, test,
+            component=ComponentProgress('cleanup', 'Owned cleanup', 30, 1, True)))
+        return integration.IntegrationRunResult(int(outcome.status != 'passed'), (outcome,), '')
+    monkeypatch.setattr(integration, '_run_integration_tests', execute)
+
+    result = integration.run_integration_tests(object(), [test], accepted=True,
+        config={'TUI_MODE': 'e2e', 'E2E_RERUNS': 2}, on_event=events.append)
+
+    progress = [row for row in events if row.kind == 'component_progress']
+    assert result.tests[0].status == 'passed'
+    assert [row.identity.id for row in progress] == [test.id] * 6
+    assert [row.text for row in progress] == ['', '', 'Confirmation 1/2', 'Confirmation 1/2',
+        'Confirmation 2/2', 'Confirmation 2/2']
+    assert [row.text for row in events if row.kind == 'test_started'] == [
+        '', 'Confirmation 1/2', 'Confirmation 2/2']
+
+
 def test_recorder_cannot_complete_incomplete_confirmations(tmp_path):
     recorder = RunRecorder(tmp_path / 'results', RunIdentity.create('suite', 'e2e'))
     recorder.record_test(TestResult(identity(), 'failed'))

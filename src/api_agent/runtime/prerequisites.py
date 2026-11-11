@@ -5,6 +5,7 @@ import asyncio
 import base64
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import fcntl
 from hashlib import sha256
 from http.client import HTTPConnection, HTTPException, HTTPResponse
@@ -135,7 +136,7 @@ def _check(deadline, cancelled, now):
 
 def run_command(command, *, environment, directory, deadline, cancelled,
                 now=time.monotonic, combine_output=False, output_scrubber=None, output_limit=None,
-                inherited_fds=(), on_disposed=None):
+                inherited_fds=(), on_disposed=None, on_not_started=None):
     """Bound combined output while running; always reap the owned process group."""
     if (type(inherited_fds) is not tuple
             or any(type(fd) is not int or fd < 0 for fd in inherited_fds)
@@ -145,6 +146,8 @@ def run_command(command, *, environment, directory, deadline, cancelled,
         os.fstat(descriptor)
     if on_disposed is not None and not callable(on_disposed):
         raise ValueError('Invalid prerequisite disposal observer')
+    if on_not_started is not None and not callable(on_not_started):
+        raise ValueError('Invalid prerequisite no-start observer')
     if output_limit is not None and (type(output_limit) is not int or output_limit < 256):
         raise ValueError('Invalid combined output byte limit')
     captured = {'stdout': bytearray(), 'stderr': bytearray()}
@@ -182,6 +185,10 @@ def run_command(command, *, environment, directory, deadline, cancelled,
         _check(deadline, cancelled, now)
     except PrerequisiteError as error:
         error.local_details = evidence()
+        # This check precedes Popen. Unlike process-exit observation, it proves
+        # that no process group was ever reserved for this command.
+        if on_not_started is not None:
+            on_not_started()
         raise
     try:
         process = subprocess.Popen(command, cwd=directory, env=dict(environment),
@@ -697,19 +704,21 @@ class PrerequisiteManager:
         # per-user lock is deliberately more conservative than engine_id here.
         # Age is creation time, not last use: even an old empty network
         # may be in the middle of being reattached by another Compose invocation.
-        changes_networks = (args[1:3] == ('network', 'prune')
-                            or (args[1] == 'compose' and 'up' in args))
-        lock = (_locked(Path.home() / '.cache/api-agent/network-locks',
-                    SimpleNamespace(id='managed-networks'),
-                    deadline=time.monotonic() + max(0, deadline - self.now()),
-                    cancelled=(lambda: False) if cleanup else self.cancelled,
-                    now=time.monotonic, sleep=time.sleep) if changes_networks else nullcontext())
+        changes_networks = args[1] == 'compose' and 'up' in args
+        lock = self._network_guard(deadline, cleanup=cleanup) if changes_networks else nullcontext()
         with lock:
             self._verify_engine(cleanup=cleanup)
             if args[1] == 'compose' and 'up' in args:
                 self._prepare_network(deadline)
             return self.runner(tuple(args), environment=self.environment, directory=self.plan.directory,
                 deadline=deadline, cancelled=(lambda: False) if cleanup else self.cancelled, now=self.now)
+
+    def _network_guard(self, deadline, *, cleanup=False):
+        return _locked(Path.home() / '.cache/api-agent/network-locks',
+            SimpleNamespace(id='managed-networks'),
+            deadline=time.monotonic() + max(0, deadline - self.now()),
+            cancelled=(lambda: False) if cleanup else self.cancelled,
+            now=time.monotonic, sleep=time.sleep)
 
     def _prepare_network(self, deadline):
         # Keep the Compose declaration unchanged: adding labels there changes its
@@ -744,16 +753,100 @@ class PrerequisiteManager:
     def _prune_networks(self, deadline, *, aged=False):
         if not self.plan.enabled:
             return
-        # Engine pruning atomically excludes networks referenced by containers,
-        # including stopped ones. Never use name prefixes as ownership evidence.
-        # Across scopes, leave a full day for in-progress Compose creation. The
-        # immediate current-scope cleanup runs under its acquisition/release lock.
-        # Docker ORs repeated label filters; encode scope and opt-in in ONE label.
-        label = 'label=api-agent.network-cleanup-v1'
-        command = (self.plan.command[0], 'network', 'prune', '--force', '--filter',
-                   label if aged else label + '=' + self.scope.id)
-        self._command(command + (('--filter', 'until=24h') if aged else ()),
-                      deadline, cleanup=not aged)
+        # Stopped definitions still need their networks for restart, even when
+        # the engine considers a network with no live endpoints pruneable.
+        # Hold the creation lock over inspection and deletion, and remove only
+        # pinned, explicitly opted-in networks with NO container references.
+        executable, marker = self.plan.command[0], 'api-agent.network-cleanup-v1'
+        cleanup = not aged
+        with self._network_guard(deadline, cleanup=cleanup):
+            references = None
+            removable = []
+            selected = marker if aged else marker + '=' + self.scope.id
+            names = self._command((executable, 'network', 'ls', '--filter',
+                'label=' + selected, '--format', '{{.Name}}'), deadline, cleanup=cleanup).split()
+            names = sorted({name for name in names if re.fullmatch(r'sa-[0-9a-f]{16}_default', name)})
+            for record in self._network_records(names, deadline, cleanup=cleanup):
+                name = record.get('Name', record.get('name'))
+                try:
+                    labels = record.get('Labels', record.get('labels'))
+                    scope = labels.get(marker) if isinstance(labels, dict) else None
+                    if (not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{16}', scope)
+                            or name != 'sa-' + scope + '_default'
+                            or record.get('Name', record.get('name')) != name
+                            or labels.get('api-agent.managed') != 'true'
+                            or labels.get('api-agent.scope') != scope
+                            or labels.get('com.docker.compose.project') != 'sa-' + scope
+                            or labels.get('com.docker.compose.network') != 'default'
+                            or (not aged and scope != self.scope.id)):
+                        continue
+                    identifier = record.get('Id', record.get('id'))
+                    if not isinstance(identifier, str) or not _ID.fullmatch(identifier):
+                        raise ValueError()
+                    if aged:
+                        created = datetime.fromisoformat(record.get('Created', record.get('created')))
+                        if created.tzinfo is None or (datetime.now(timezone.utc) - created).total_seconds() < 86400:
+                            continue
+                except (ValueError, TypeError, AttributeError) as error:
+                    raise PrerequisiteError('Network cleanup inventory could not be verified; remaining networks were preserved.') from error
+                if references is None:
+                    references = self._container_network_references(deadline, cleanup=cleanup)
+                if name in references or identifier in references:
+                    continue
+                removable.append(identifier)
+            for offset in range(0, len(removable), 32):
+                self._command((executable, 'network', 'rm', *removable[offset:offset + 32]),
+                    deadline, cleanup=cleanup)
+
+    def _network_records(self, names, deadline, *, cleanup):
+        """Amortize supervised CLI startup across bounded inspection batches."""
+        for offset in range(0, len(names), 32):
+            batch = names[offset:offset + 32]
+            try:
+                records = json.loads(self._command(
+                    (self.plan.command[0], 'network', 'inspect', *batch), deadline, cleanup=cleanup))
+                if (not isinstance(records, list) or len(records) != len(batch)
+                        or any(not isinstance(record, dict) for record in records)
+                        or {record.get('Name', record.get('name')) for record in records} != set(batch)):
+                    raise ValueError()
+            except (ValueError, TypeError) as error:
+                raise PrerequisiteError('Network cleanup inventory could not be verified; remaining networks were preserved.') from error
+            yield from records
+
+    def _container_network_references(self, deadline, *, cleanup):
+        """Inspect saved definitions; network filters may only see live endpoints."""
+        executable = self.plan.command[0]
+        identifiers = self._command((executable, 'ps', '-a', '--no-trunc', '--format', '{{.ID}}'),
+            deadline, cleanup=cleanup).split()
+        references = set()
+        try:
+            if any(not _ID.fullmatch(identifier) for identifier in identifiers):
+                raise ValueError()
+            template = '{"networks":{{json .NetworkSettings.Networks}},"mode":{{json .HostConfig.NetworkMode}}}'
+            for offset in range(0, len(identifiers), 32):
+                batch = identifiers[offset:offset + 32]
+                rows = self._command((executable, 'inspect', '--format', template, *batch),
+                    deadline, cleanup=cleanup).splitlines()
+                if len(rows) != len(batch):
+                    raise ValueError()
+                for row in rows:
+                    entry = json.loads(row)
+                    networks, mode = entry['networks'], entry['mode']
+                    if ((networks is not None and not isinstance(networks, dict))
+                            or (mode is not None and not isinstance(mode, str))):
+                        raise ValueError()
+                    if mode:
+                        references.add(mode)
+                    for name, network in (networks or {}).items():
+                        references.add(name)
+                        if network is not None:
+                            identifier = network.get('NetworkID', '')
+                            if not isinstance(identifier, str):
+                                raise ValueError()
+                            references.add(identifier)
+        except (ValueError, TypeError, AttributeError, KeyError) as error:
+            raise PrerequisiteError('Container network references could not be verified; remaining networks were preserved.') from error
+        return references
 
     def _inventory(self, deadline, *, cleanup=False):
         executable = self.plan.command[0]

@@ -52,6 +52,20 @@ def test_supervisor_records_disposal_even_when_command_failed(intent, monkeypatc
     assert 'confirmed disposal' in capsys.readouterr().err
 
 
+def test_supervisor_acknowledges_expired_command_that_never_started(intent, monkeypatch):
+    from api_agent.runtime import prerequisites
+    request = {**intent.request, 'deadline': time.monotonic() - 1}
+    (intent.directory / 'request.json').write_text(json.dumps(request))
+    monkeypatch.setattr(prerequisites.subprocess, 'Popen',
+        lambda *args, **kwargs: pytest.fail('expired native command launched'))
+
+    with pytest.raises(SystemExit) as caught:
+        native_command.main()
+
+    assert caught.value.code == 1
+    native_recovery._completed(intent.directory)
+
+
 def test_success_without_disposal_observation_stays_pending(intent, monkeypatch):
     monkeypatch.setattr(native_command, 'run_command', lambda *a, **kw: '')
     with pytest.raises(ValueError, match='not confirmed'):

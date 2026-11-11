@@ -599,7 +599,10 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 detail = str(error) if type(error) is StorageError else _diagnostic(error, 'Allure publication')
                 message = scrub(f'Allure publication failed: {detail}\n'
                                 'Local evidence availability and integrity are unverified.\n')
-                if sys.stderr.write(message) != len(message):
+                # Textual's print capture accepts the text but returns None.
+                # A numeric short write still means the warning was not delivered.
+                written = sys.stderr.write(message)
+                if written is not None and written != len(message):
                     raise OSError('Could not record Allure publication failure diagnostic.')
                 sys.stderr.flush()
             else:

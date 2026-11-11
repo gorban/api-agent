@@ -1023,6 +1023,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.test_run = None
         self.unit_rows = {}
         self.test_components = {}
+        self.suite_components = {}
         from api_agent.runtime.containers import ContainerRuntime
         from api_agent.runtime.ownership import StackScope
         self.container_runtime = container_runtime or ContainerRuntime(
@@ -1867,6 +1868,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
 
     async def _run_integrations(self):
         self.finished_test_results.clear()
+        self.suite_components.clear()
         from api_agent.testing.launched import run_launched_integration
         runner = self.integration_runner or run_launched_integration
         self.discard_finished_inspection()
@@ -2005,6 +2007,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                           + ''.join(format_exception(error)),
                           (("menu", "Main menu"),))
         finally:
+            self.suite_components.clear()
             self.finish_test_run()
 
     def reporting_runner_options(self, runner):
@@ -2172,6 +2175,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
 
     def unit_progress(self):
         result = progress_summary(self.mode or "unit", self.unit_rows)
+        if self.suite_components:
+            result.append('\n' + component_timing(self.suite_components.values()))
         if self.starting_quota is not None:
             from .test_results import append_usage_line
             result.append('\n')
@@ -2179,6 +2184,16 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return result
 
     def unit_event(self, event):
+        if event.kind == 'suite_progress':
+            if event.component is None or self.collection_cancel.is_set():
+                return
+            if event.component.active:
+                self.suite_components[event.component.id] = event.component
+            else:
+                self.suite_components.pop(event.component.id, None)
+            if self.screen_stack and isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'test-results':
+                self.screen.query_one('#body', Static).update(self.unit_progress())
+            return
         if event.kind in {'inspection_closed', 'inspection_lost', 'inspection_cleanup_pending'}:
             if event.kind != 'inspection_closed':
                 self.inspection_failed = True
@@ -2215,11 +2230,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     components[event.component.id] = event.component
                 else:
                     components.pop(event.component.id, None)
-                self.unit_rows[key] = ('RUNNING', key, component_timing(components.values()))
+                timing = component_timing(components.values())
+                self.unit_rows[key] = ('RUNNING', key, '; '.join(filter(None, (event.text, timing))))
             else:
                 self.test_components.pop(key, None)
                 self.unit_rows[key] = ((event.status or "RUNNING").upper(), key,
-                                       f"{event.duration:.3f}s" if event.kind == "test_finished" else "")
+                                       f"{event.duration:.3f}s" if event.kind == "test_finished" else event.text)
             if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "test-results" and self.screen.query(DataTable) and self.screen.query("#body"):
                 table = self.screen.query_one(DataTable)
                 self.screen.query_one("#body", Static).update(self.unit_progress())
