@@ -250,6 +250,28 @@ table rather than on the diagram edges. These references describe permitted call
 conditional consumers, without claiming that a call actually occurred. Tool
 request/response evidence retains the actual consuming node, port and instance.
 
+### Tool call timeouts
+
+A tool call has no timeout of its own. Preparation, verification and execution
+run inside the budget of the node that makes the call: its declared node,
+component and `GRAPH` timeouts (see [timeouts](workflow_poc.md#tool-call-timeouts)),
+and nothing else. To bound one port more tightly, add a `Timeouts` row whose
+`Owner` is `<node>.<port>`:
+
+```markdown
+## Timeouts
+
+| Owner | Source | Key |
+| --- | --- | --- |
+| review.primary | [config](cfg/config.toml) | PRIMARY_TOOL_TIMEOUT_SECONDS |
+```
+
+Preparation and execution of that port's calls are then capped at the resolved
+seconds, still clipped by every enclosing deadline. Verification includes the
+independent relevance review and keeps only the enclosing budget. The port must be
+declared in that node's own Tools table. Leaving the configuration value unset
+leaves the port untimed.
+
 ## Implementation-declared operations
 
 The `verified-read@1` interface always offers the four fixed operations above.
