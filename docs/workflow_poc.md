@@ -176,9 +176,18 @@ its bytes join the workflow identity, the viewer references and the compiled pla
 (which needs the source in a wheel, like any native source). The factory contract
 is the [stateful application adapter](resource-packs.md#stateful-application-adapters)
 contract: `create_application(definition, *, config)` returns an object retaining
-that `definition` with `complete`, `timeouts` and `requires_api`. When the section
-is present `selected_application` uses it; without it the bundled chat and
-useful-demo applications are selected as before.
+that `definition` with an asynchronous `complete`. When the section is present
+`selected_application` uses it; without it the bundled chat and useful-demo
+applications are selected as before.
+
+An application gets no tool access of its own. Tools are reached only through
+`context.tools[port]` inside the workflow's nodes, bound to the running node and
+limited to its declared ports and operations. Whether the selected API provider
+is needed follows from the declared tool usages, and the chat request deadline is
+the declared `GRAPH` row of `## Timeouts` resolved against the effective
+configuration. A workflow without a `GRAPH` timeout value cannot be composed for
+chat. An application may still expose `timeouts` or `requires_api`, but admission
+rejects a value that disagrees with the declaration.
 
 ## Typed node Functions
 

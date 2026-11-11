@@ -36,10 +36,10 @@ def run_independent(workflow_tools, llm_provider, llm_selection, integration_con
                 assert not operation.plan.shared_primary
                 selected = {tool.id: tool for tool in operation.plan.tools}
                 assert set(selected) == set(INSTANCES.values())
-                primary_gate = operation.tools.gate(scope_kind='node', scope='conversation',
-                    port='primary', invocation_id='ownership-check')
-                secondary_gate = operation.tools.gate(scope_kind='node', scope='conversation',
-                    port='secondary', invocation_id='ownership-check')
+                primary_gate = operation.tools.for_node('conversation').gate(
+                    'primary', invocation_id='ownership-check')
+                secondary_gate = operation.tools.for_node('conversation').gate(
+                    'secondary', invocation_id='ownership-check')
                 assert primary_gate.owner.owner is not secondary_gate.owner.owner
                 endpoints = {alias: operation.endpoint_for(identity) for alias, identity in INSTANCES.items()}
                 assert endpoints['primary_read'] != endpoints['secondary_read']

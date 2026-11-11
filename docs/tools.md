@@ -348,3 +348,16 @@ verified call, so replay and candidate-correction protections apply. `read`
 operations are not recorded. Calls to these operations do not go through the
 verified-read tool conversation or schema/evidence capture: the owner is
 responsible for validating its arguments and results.
+
+### Who can reach a tool
+
+Tool handles exist only while a node of the admitted workflow runs. The engine
+binds the resolver to the running node, so the node cannot choose another scope:
+`context.tools[port]` and the compatibility `context.tool(port)` (fixed-operation
+tools only) resolve that node's own declared ports and nothing else. The resolver
+is not in `context.services`, and `WorkflowTools` exposes no scope-taking lookup,
+runtime or raw view. An application selected with `## Application` receives no
+tool handle: neither the composed runtime nor the API provider bridge is set on
+the application object, so code outside a node cannot call a tool. The runtime
+installs the resolver around `complete(...)`; nested workflows of another
+definition get none.

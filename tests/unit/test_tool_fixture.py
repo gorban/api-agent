@@ -91,8 +91,8 @@ async def test_normal_runtime_preserves_two_graphql_owners_and_rejects_cross_ins
         try:
             definition, = plan.definitions
             tools = runtime.tools_for(definition)
-            primary_gate = tools.gate(scope_kind='node', scope='conversation', port='primary', invocation_id='first-call')
-            secondary_gate = tools.gate(scope_kind='node', scope='conversation', port='secondary', invocation_id='second-call')
+            primary_gate = tools.for_node('conversation').gate('primary', invocation_id='first-call')
+            secondary_gate = tools.for_node('conversation').gate('secondary', invocation_id='second-call')
             assert primary_gate.owner.owner is not secondary_gate.owner.owner
             prepared = await primary_gate.prepare({'query': '{ hello }'})
             verified = await primary_gate.verify(prepared, relevance=lambda candidate: {'relevant': True, 'grounded': True})

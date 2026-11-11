@@ -56,8 +56,8 @@ async def test_selected_independent_consumer_uses_actual_schemas_headers_and_own
         try:
             definition, = plan.definitions
             tools = runtime.tools_for(definition)
-            primary = tools.gate(scope_kind='node', scope='conversation', port='primary', invocation_id='grant')
-            secondary = tools.gate(scope_kind='node', scope='conversation', port='secondary', invocation_id='grant')
+            primary = tools.for_node('conversation').gate('primary', invocation_id='grant')
+            secondary = tools.for_node('conversation').gate('secondary', invocation_id='grant')
             assert primary.owner.owner is not secondary.owner.owner
             if alternate:
                 with pytest.raises(ToolGateError, match='selected schema'):

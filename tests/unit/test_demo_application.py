@@ -57,15 +57,34 @@ class LLM:
         return LLMResult(Message('assistant', (TextContent(self.outputs.pop(0)),)), Usage(2, 3))
 
 
+class EngineBound:
+    """Run the application as composition does: the engine, not the application, installs tools."""
+    def __init__(self, app, owner):
+        object.__setattr__(self, '_app', app)
+        object.__setattr__(self, '_owner', owner)
+
+    def __getattr__(self, name):
+        return getattr(self._app, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._app, name, value)
+
+    async def complete(self, request, *, llm, context):
+        from api_agent.tooling.runtime import OwnerTools, bind_workflow_tools
+        tools = OwnerTools(self._app.definition, self._owner) if self._owner is not None else None
+        with bind_workflow_tools(tools):
+            return await self._app.complete(request, llm=llm, context=context)
+
+
 def application(owner):
     definition = load_definition(ENTRY, base_root=ROOT, pack_root=ROOT / 'demo', entry_root='base')
-    return UsefulDemoApplication(definition, tool_owner=owner)
+    return EngineBound(UsefulDemoApplication(definition), owner)
 
 
 def test_compiled_demo_uses_verified_callables_without_declaration_catalog(monkeypatch):
     from api_agent.workflows import definition as declarations
     source = load_definition(ENTRY, base_root=ROOT, pack_root=ROOT / 'demo', entry_root='base')
-    source_registry = UsefulDemoApplication(source, tool_owner=Owner()).registry
+    source_registry = UsefulDemoApplication(source).registry
     compiled = SimpleNamespace(
         origin='compiled', layout=source.layout, contents=source.contents, resources=source.resources,
         definition_id=source.definition_id, graph_id=source.graph_id, entry=source.entry,
@@ -76,7 +95,7 @@ def test_compiled_demo_uses_verified_callables_without_declaration_catalog(monke
     monkeypatch.setattr(declarations, 'load_native_catalog',
                         lambda *args, **kwargs: pytest.fail('compiled application parsed declarations'))
 
-    application = UsefulDemoApplication(compiled, tool_owner=Owner())
+    application = UsefulDemoApplication(compiled)
 
     assert application.registry == source_registry
 
@@ -574,13 +593,13 @@ def test_unsupported_messages_are_rejected_before_provider(invalid):
     assert llm.requests == []
 
 
-def test_missing_owner_is_rejected_before_provider():
-    app = application(Owner())
-    app.tool_owner = None
-    llm = LLM([])
-    with pytest.raises(ContractError, match='tool owner'):
+def test_application_holds_no_tool_handles_and_tools_unbound_by_the_engine_fail_at_the_node():
+    app = application(None)
+    assert not {'tool_owner', 'tools', 'requires_api'} & set(vars(app._app))
+    llm = LLM([json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}),
+               verdict()])
+    with pytest.raises(Exception, match='admitted tool bindings'):
         asyncio.run(app.complete(request(), llm=llm, context=OperationContext('request')))
-    assert llm.requests == []
 
 
 def test_selected_graph_requires_review_guard_and_optional_branch():
@@ -700,13 +719,11 @@ def test_existing_one_call_node_rejects_incomplete_or_empty_model_output(output,
 
 def test_named_tool_binding_runs_selected_port_and_closes_borrowed_view():
     owner = Owner()
-    graph = application(None)
-    from api_agent.tooling.runtime import OwnerTools
     class OwnerWithView(Owner):
         def for_invocation(self):
             return owner
     parent = OwnerWithView()
-    graph.tools = OwnerTools(graph.definition, parent)
+    graph = application(parent)
     llm = LLM([json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}),
                verdict(), 'Ada'])
 

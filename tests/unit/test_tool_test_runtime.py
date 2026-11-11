@@ -138,7 +138,7 @@ def test_real_runtime_and_real_empty_infrastructure_need_no_engine(packet, monke
             assert operation.endpoint_for('fixture/one') == 'external'
             with pytest.raises(ContractError, match='no ready endpoint'):
                 operation.endpoint_for('fixture/two')
-            view = operation.tools.for_port(scope_kind='node', scope='read', port='reader')
+            view = operation.tools.for_node('read').borrow('reader')
             assert await view.invoke(None) == 'one'
             with pytest.raises(ContractError, match='already owned'):
                 async with prepared.open(prepared.definition):
@@ -574,7 +574,7 @@ def test_case(workflow_tools):
         operation=None
         try:
             async with workflow_tools.open(workflow_tools.definition) as operation:
-                result=await operation.tools.for_port(scope_kind='node',scope='read',port='reader').invoke(None)
+                result=await operation.tools.for_node('read').borrow('reader').invoke(None)
                 journal['calls']=[{'tool':'reader','invocation':'worker-call','status':'success','result':result}]
                 raise ValueError('Controlled failure after a completed tool')
         finally:
@@ -650,7 +650,7 @@ def test_normal_resolved_tracing_never_becomes_tool_infrastructure(packet,monkey
     prepared=owner(packet,manager_factory=captured_manager)
     async def scenario():
         async with prepared.open(prepared.definition) as operation:
-            assert await operation.tools.for_port(scope_kind='node',scope='read',port='reader').invoke(None)=='one'
+            assert await operation.tools.for_node('read').borrow('reader').invoke(None)=='one'
             assert operation.receipt['service_count']==(2 if managed_tools else 0)
             assert not set(plans[0].profiles) & {'otel','langfuse'}
         assert operation.receipt['released'] is True

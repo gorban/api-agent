@@ -1,5 +1,6 @@
 """Selected local demonstration policy and borrowed API tool access."""
 from api_agent.providers.contracts import ContractError
+from api_agent.workflows.configuration import declared_timeouts
 from api_agent.workflows.local_application import LocalChatApplication
 
 
@@ -12,6 +13,11 @@ def selected_application(definition, *, config=None):
         from api_agent.workflows.demo_application import UsefulDemoApplication
         return UsefulDemoApplication(definition, config=config)
     return LocalChatApplication(definition, config=config)
+
+
+def requires_api(definition):
+    """An application needs the selected API provider exactly when its declaration consumes tools."""
+    return bool(getattr(definition, 'tool_usages', ()))
 
 
 def _declared_application(definition, *, config=None):
@@ -29,20 +35,26 @@ def _declared_application(definition, *, config=None):
         raise ContractError('Selected application factory must be callable.')
     application = factory(definition, config=dict(config or {}))
     if (getattr(application, 'definition', None) is not definition
-            or not callable(getattr(application, 'complete', None))
-            or not isinstance(getattr(application, 'timeouts', None), Mapping)
-            or type(getattr(application, 'requires_api', None)) is not bool):
+            or not callable(getattr(application, 'complete', None))):
         raise ContractError('Selected application factory returned an invalid application.')
+    # Budgets and API need come from the declaration; an application may only agree with it.
+    timeouts = getattr(application, 'timeouts', None)
+    if timeouts is not None and (not isinstance(timeouts, Mapping)
+                                 or dict(timeouts) != declared_timeouts(definition, config)):
+        raise ContractError('Selected application timeouts disagree with the declared Timeouts.')
+    needs_api = getattr(application, 'requires_api', None)
+    if needs_api is not None and needs_api is not requires_api(definition):
+        raise ContractError('Selected application requires_api disagrees with its declared tools.')
     return application
 
 
 class RuntimeToolOwner:
     """Borrow optional typed tool methods; Runtime owns start and disposal."""
     def __init__(self, runtime):
-        self.runtime = runtime
+        self._runtime = runtime
 
     def _selected(self):
-        provider = self.runtime.require_provider('api', 'invoke')
+        provider = self._runtime.require_provider('api', 'invoke')
         if any(not callable(getattr(provider, name, None))
                for name in ('describe', 'validate', 'invoke')):
             raise ContractError('Selected API provider does not implement the tool contract.')
@@ -71,12 +83,14 @@ class RuntimeToolOwner:
         return factory()
 
 
-def bind_local_tools(runtime, graph, config):
-    """Declare exactly the selected API factory without enabling API routes."""
+def bind_local_tools(runtime, config):
+    """Declare exactly the selected API factory without enabling API routes; return its borrowed owner."""
     location = config.values.get('API_PROVIDER')
     if not location:
         raise ContractError('Select API_PROVIDER for the API demonstration.')
     from types import MappingProxyType
     runtime.factory_plan = (*runtime.factory_plan,
         ('api', location, MappingProxyType(dict(config.values)), runtime.services))
-    graph.tool_owner = RuntimeToolOwner(runtime)
+    return RuntimeToolOwner(runtime)
+
+

@@ -310,10 +310,13 @@ bundled chat and demo applications are selected as before.
 ```
 
 The synchronous factory receives the admitted `definition` and resolved
-`config`. Its object retains that same definition, provides asynchronous
-`complete(request, *, llm, context)`, a `timeouts` mapping and a boolean
-`requires_api`. The runtime supplies observation ownership and the selected
-identity-bound LLM. Adapters can read the existing task-local execution and turn
+`config`. Its object retains that same definition and provides asynchronous
+`complete(request, *, llm, context)`. The runtime supplies observation ownership
+and the selected identity-bound LLM, but no tool handle: tools are reached only
+by workflow nodes through their declared `context.tools[port]`. The chat
+deadline comes from the declared `GRAPH` timeout and API need from the declared
+tool usages; optional `timeouts` and `requires_api` attributes must agree with
+them or admission fails. Adapters can read the existing task-local execution and turn
 context; they must not invent conversation identities from prompt text.
 An optional asynchronous `aclose()` releases application-owned resources. Run
 local retains it immediately after construction and closes it after the serving

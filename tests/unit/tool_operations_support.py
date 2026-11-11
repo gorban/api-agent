@@ -19,7 +19,7 @@ def table(rows):
 
 
 def build(root, grammar, *, reader='introspect, query', writer='mutate', interface='operations@1',
-          implementation='tool/tool.toml'):
+          implementation='tool/tool.toml', graph_timeout=None):
     """Write one graph whose `reader` and `writer` nodes share one tool instance."""
     shutil.copytree(FIXTURE, root / 'tool')
     (root / 'instance.toml').write_text(
@@ -45,9 +45,17 @@ def build(root, grammar, *, reader='introspect, query', writer='mutate', interfa
              '\n## Edges\n\n| From | To | Router | Source |\n| --- | --- | --- | --- |\n'
              '| reader | writer | - | - |\n| writer | END | - | - |\n| work | END | - | - |\n'
              if grammar == 'typed' else '')
+    timeouts = ''
+    if graph_timeout is not None:
+        (root / 'timeouts.toml').write_text(
+            'version = 1\n\n[fields.GRAPH_TIMEOUT]\ntype = "float"\n'
+            f'default = {graph_timeout}\nvalidation = "positive"\nacknowledge_default = false\n'
+            'help = "Whole workflow deadline in seconds."\n')
+        timeouts = ('\n## Timeouts\n\n| Owner | Source | Key |\n| --- | --- | --- |\n'
+                    '| GRAPH | [configuration](timeouts.toml) | GRAPH_TIMEOUT |\n')
     entry = root / 'flow.md.html'
     entry.write_text('# Workflow\n\n## Graph ID\n\n| ID |\n| --- |\n| sample |\n'
-                     '\n## Flow\n\n1.  [component work](component.md.html)\n' + typed)
+                     '\n## Flow\n\n1.  [component work](component.md.html)\n' + typed + timeouts)
     return entry
 
 

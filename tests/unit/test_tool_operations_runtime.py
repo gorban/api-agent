@@ -1,4 +1,7 @@
 """Nodes reach only the implementation-declared operations they list themselves."""
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from api_agent.api.application import Runtime
@@ -131,7 +134,7 @@ async def test_the_earlier_tool_resolver_cannot_reach_implementation_declared_op
     runtime, definition, events = await started(tmp_path, grammar)
     try:
         async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}) as invocation:
-            context = NodeContext('writer', (), (), {'tools': runtime.tools_for(definition)})
+            context = NodeContext('writer', (), (), {})
             with pytest.raises(ContractError, match=r'context\.tools\[port\]'):
                 context.tool('store')
             assert invocation.effects == []
@@ -140,30 +143,48 @@ async def test_the_earlier_tool_resolver_cannot_reach_implementation_declared_op
     assert ('mutate', {'id': 7}) not in events
 
 
+def declared(node, port):
+    from pathlib import Path
+    from api_agent.workflows.definition import ToolUsage
+    return SimpleNamespace(definition_id='d', tool_usages=(
+        ToolUsage(node, port, Path('/tool.toml'), 'node', Path('/flow.md'), 1, ('invoke',)),))
+
+
 def test_the_earlier_tool_resolver_does_not_expose_the_raw_borrowed_tool():
     borrowed = type('Borrowed', (), {'description': 'kept', 'call': None, 'view': None, 'owner': None})()
-    context = NodeContext('read', (), (), {'tools': type('Resolver', (), {'for_port': lambda self, **kwargs: borrowed})()})
-    tool = context.tool('primary')
+    definition = declared('read', 'primary')
+    resolver = SimpleNamespace(definition=definition,
+                               for_node=lambda node: SimpleNamespace(borrow=lambda port: borrowed))
 
-    assert tool.description == 'kept'
-    for name in ('call', 'view', 'owner'):
-        with pytest.raises(ContractError, match='not available'):
-            getattr(tool, name)
+    async def scenario():
+        async with invocation_tools(definition, {'tools': resolver}):
+            tool = NodeContext('read', (), (), {}).tool('primary')
+            assert tool.description == 'kept'
+            for name in ('call', 'view', 'owner'):
+                with pytest.raises(ContractError, match='not available'):
+                    getattr(tool, name)
+    asyncio.run(scenario())
 
 
 def test_the_earlier_tool_resolver_still_reaches_fixed_operation_tools_of_a_runtime():
-    import asyncio
-    from types import SimpleNamespace
+    from api_agent.tooling.runtime import NodeResolver
     calls = []
     async def invoke(prepared):
         calls.append(prepared)
         return 'done'
     tools = (SimpleNamespace(id='sample/other', interface='operations@1'),
              SimpleNamespace(id='sample/tool', interface='tool@1'))
-    resolver = SimpleNamespace(for_port=lambda **kwargs: SimpleNamespace(invoke=invoke),
-                               instance=lambda **kwargs: 'sample/tool',
-                               runtime=SimpleNamespace(tool_plan=SimpleNamespace(tools=tools)))
-    context = NodeContext('read', (), (), {'tools': resolver})
+    definition = SimpleNamespace(definition_id='d', graph_id='g', layout=SimpleNamespace(
+        steps=(SimpleNamespace(id='read', kind='node', parent=None),)), tool_usages=declared('read', 'primary').tool_usages)
+    runtime = SimpleNamespace(tool_plan=SimpleNamespace(tools=tools, bindings={('d', 'node', 'read', 'primary'): 'sample/tool'}),
+                              borrow_tool=lambda instance: SimpleNamespace(invoke=invoke))
+    resolver = SimpleNamespace(definition=definition,
+                               for_node=lambda node: NodeResolver(runtime, definition, node))
+    contexts = []
 
-    assert asyncio.run(context.tool('primary').invoke('request')) == 'done'
-    assert calls == ['request'] and context._effects == [True]
+    async def scenario():
+        async with invocation_tools(definition, {'tools': resolver}):
+            contexts.append(NodeContext('read', (), (), {}))
+            return await contexts[0].tool('primary').invoke('request')
+    assert asyncio.run(scenario()) == 'done'
+    assert calls == ['request'] and contexts[0]._effects == [True]

@@ -82,26 +82,35 @@ class BorrowedTool:
 
 
 class WorkflowTools:
-    """Resolve lexical port bindings for one admitted workflow definition."""
+    """Admitted tool bindings of one workflow; only the engine resolves ports, per running node."""
     def __init__(self, runtime, definition, *, endpoints=None):
         admitted = next((item for item in runtime.tool_plan.definitions
                          if item.definition_id == definition.definition_id), None)
         if admitted is None:
             raise ContractError('Workflow definition has no admitted tool plan')
-        self.runtime, self.definition = runtime, admitted
+        self._runtime, self.definition = runtime, admitted
         self.endpoints = endpoints or {}
 
-    def instance(self, *, scope_kind, scope, port):
-        definition, bindings = self.definition, self.runtime.tool_plan.bindings
-        steps = {step.id: step for step in definition.layout.steps}
-        if (scope_kind == 'graph' and scope != definition.graph_id
-                or scope_kind != 'graph' and (scope not in steps or steps[scope].kind != scope_kind)):
+    def for_node(self, node):
+        step = next((item for item in self.definition.layout.steps if item.id == node), None)
+        if step is None or step.kind != 'node':
             raise ContractError('Selected workflow tool scope is unavailable')
-        key = (definition.definition_id, scope_kind, scope, port)
+        return NodeResolver(self._runtime, self.definition, node)
+
+
+class NodeResolver:
+    """Ports of one declared node; the node is fixed at creation, never by the caller."""
+    def __init__(self, runtime, definition, node):
+        self._runtime, self._definition, self._node = runtime, definition, node
+
+    def instance(self, port):
+        definition, bindings = self._definition, self._runtime.tool_plan.bindings
+        steps = {step.id: step for step in definition.layout.steps}
+        key = (definition.definition_id, 'node', self._node, port)
         if key in bindings:
             return bindings[key]
-        current = steps.get(scope) if scope_kind != 'graph' else None
-        while current is not None and current.parent is not None:
+        current = steps[self._node]
+        while current.parent is not None:
             key = (definition.definition_id, 'component', current.parent, port)
             if key in bindings:
                 return bindings[key]
@@ -111,13 +120,18 @@ class WorkflowTools:
             raise ContractError('Selected workflow tool port is unavailable')
         return bindings[key]
 
-    def for_port(self, *, scope_kind, scope, port):
-        return self.runtime.borrow_tool(self.instance(scope_kind=scope_kind, scope=scope, port=port))
+    def borrow(self, port):
+        """A raw view of a fixed-operation tool; implementation-declared operations stay gated."""
+        instance = self.instance(port)
+        if any(item.id == instance and item.interface == OPERATIONS_INTERFACE
+               for item in self._runtime.tool_plan.tools):
+            raise ContractError('Implementation-declared operations are reached through context.tools[port]')
+        return self._runtime.borrow_tool(instance)
 
-    def gate(self, *, scope_kind, scope, port, invocation_id, timeout=30):
-        instance = self.instance(scope_kind=scope_kind, scope=scope, port=port)
-        borrowed = self.for_port(scope_kind=scope_kind, scope=scope, port=port)
-        tool = next(item for item in self.runtime.tool_plan.tools if item.id == instance)
+    def gate(self, port, *, invocation_id, timeout=30):
+        instance = self.instance(port)
+        borrowed = self._runtime.borrow_tool(instance)
+        tool = next(item for item in self._runtime.tool_plan.tools if item.id == instance)
         if tool.interface == OPERATIONS_INTERFACE:
             return OperationsGate(borrowed, tool.operations, timeout=timeout, tool_alias=port,
                                   tool_instance=instance)
@@ -142,12 +156,13 @@ class OperationsGate:
 
 
 # Invocation state follows async task context, never an executor or operation owner.
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from collections.abc import Mapping
 from uuid import uuid4
 
 _CURRENT_TOOLS = ContextVar('workflow_node_tools', default=None)
+_ADMITTED_TOOLS = ContextVar('workflow_admitted_tools', default=None)
 
 
 class NodeTools(Mapping):
@@ -183,14 +198,18 @@ class NodeTool:
         return call
 
 
+def _matches(resolver, definition):
+    admitted = getattr(resolver, 'definition', None)
+    return admitted is definition or (
+        admitted is not None and getattr(admitted, 'definition_id', None) is not None
+        and admitted.definition_id == getattr(definition, 'definition_id', None))
+
+
 class ToolInvocation:
     def __init__(self, definition, resolver):
         self.definition, self.resolver = definition, resolver
-        if resolver is not None and getattr(resolver, 'definition', None) is not definition:
-            admitted = getattr(resolver, 'definition', None)
-            if (admitted is None or getattr(admitted, 'definition_id', None) is None
-                    or admitted.definition_id != getattr(definition, 'definition_id', None)):
-                raise ContractError('Tool resolver does not match workflow definition')
+        if resolver is not None and not _matches(resolver, definition):
+            raise ContractError('Tool resolver does not match workflow definition')
         self.id, self.closed, self.gates = str(uuid4()), False, {}
         self.calls = {}
         self.effects = []
@@ -203,10 +222,10 @@ class ToolInvocation:
         self.check()
         if self.resolver is None:
             raise ContractError('Workflow has no admitted tool bindings')
-        instance = self.resolver.instance(scope_kind='node', scope=use.scope, port=use.port)
+        resolver = self.resolver.for_node(use.scope)
+        instance = resolver.instance(use.port)
         if instance not in self.gates:
-            self.gates[instance] = self.resolver.gate(scope_kind='node', scope=use.scope,
-                port=use.port, invocation_id=self.id)
+            self.gates[instance] = resolver.gate(use.port, invocation_id=self.id)
         return instance, self.gates[instance]
 
     async def dispatch(self, use, operation, /, *args, **kwargs):
@@ -270,9 +289,24 @@ def node_tools(node):
     return NodeTools(invocation, node)
 
 
+@contextmanager
+def bind_workflow_tools(resolver):
+    """Install the admitted resolver for workflows run here; applications never receive it."""
+    token = _ADMITTED_TOOLS.set(resolver)
+    try:
+        yield
+    finally:
+        _ADMITTED_TOOLS.reset(token)
+
+
 @asynccontextmanager
 async def invocation_tools(definition, services):
-    invocation = ToolInvocation(definition, services.get('tools'))
+    admitted, supplied = _ADMITTED_TOOLS.get(), services.get('tools')
+    if admitted is not None and not _matches(admitted, definition):
+        admitted = None
+    if admitted is not None and supplied is not None:
+        raise ContractError('Workflow tools are supplied by the engine, not the application')
+    invocation = ToolInvocation(definition, admitted if admitted is not None else supplied)
     token = _CURRENT_TOOLS.set(invocation)
     try:
         yield invocation
@@ -293,12 +327,15 @@ class OwnerTools:
         self._instance = next(iter(instances))
         self.owner = owner
 
-    def instance(self, **scope):
+    def for_node(self, node):
+        return self
+
+    def instance(self, port=None):
         import tomllib
         body = getattr(self.definition, 'contents', {}).get(self._instance)
         return tomllib.loads(body.decode('utf-8'))['id'] if body is not None else str(self._instance)
 
-    def gate(self, *, invocation_id, port, **scope):
+    def gate(self, port, *, invocation_id):
         factory = getattr(self.owner, 'for_invocation', None)
         if factory is not None and (not callable(factory) or inspect.iscoroutinefunction(factory)):
             raise ContractError('Tool invocation factory must be synchronous')

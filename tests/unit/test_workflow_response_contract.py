@@ -361,10 +361,10 @@ def test_legacy_contrived_build_keeps_captured_schema_and_native_request(legacy_
 def test_legacy_useful_application_keeps_plain_native_calls(legacy_demo_root):
     from api_agent.providers.control import OperationContext
     from api_agent.workflows.demo_application import UsefulDemoApplication
-    from test_demo_application import LLM, Owner, request
+    from test_demo_application import EngineBound, LLM, Owner, request
     definition = load_definition(legacy_demo_root / 'demo/simple/flow.md.html',
         base_root=legacy_demo_root, pack_root=legacy_demo_root / 'demo', entry_root='base')
-    app = UsefulDemoApplication(definition, tool_owner=Owner())
+    app = EngineBound(UsefulDemoApplication(definition), Owner())
     llm = LLM(['{"use_tool":false,"arguments":{},"answer":"hello"}',
                '{"correct":true,"grounded":true,"relevant":true,"preference":true,"details":""}', 'hello'])
 

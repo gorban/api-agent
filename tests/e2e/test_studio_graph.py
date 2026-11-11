@@ -5,6 +5,7 @@ import pytest
 
 from api_agent.runtime.local_tools import selected_application
 from api_agent.testing.studio_browser import browser_prompt
+from api_agent.tooling.runtime import bind_workflow_tools
 from api_agent.testing.studio_http import studio_backend_factory
 
 pytestmark = [pytest.mark.feature('Studio application E2E'),
@@ -22,9 +23,9 @@ def ui_provider_backend(integration_config, llm_provider, llm_selection, workflo
     @asynccontextmanager
     async def backend(values):
         async with workflow_tools.open(workflow_tools.definition) as operation:
-            application.tools = operation.tools
-            async with selected_backend(values) as binding:
-                yield binding
+            with bind_workflow_tools(operation.tools):
+                async with selected_backend(values) as binding:
+                    yield binding
     backend.retire_test = selected_backend.retire_test
     return backend
 

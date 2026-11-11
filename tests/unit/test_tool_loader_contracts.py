@@ -173,7 +173,15 @@ def test_runtime_rejects_invalid_view_before_it_can_be_invoked(factory):
         runtime.borrow_tool('sample/tool')
 
 
+def declared(node, port):
+    from pathlib import Path
+    from api_agent.workflows.definition import ToolUsage
+    return SimpleNamespace(definition_id='d', tool_usages=(
+        ToolUsage(node, port, Path('/tool.toml'), 'node', Path('/flow.md'), 1, ('invoke',)),))
+
+
 def test_node_context_resolves_its_named_port_in_node_scope():
+    from api_agent.tooling.runtime import invocation_tools
     calls = []
     marker = object()
     async def invoke(prepared):
@@ -181,18 +189,24 @@ def test_node_context_resolves_its_named_port_in_node_scope():
         calls.append(prepared)
         return marker
     selected = SimpleNamespace(invoke=invoke, description='forwarded')
-    def resolve(**kwargs):
-        calls.append(kwargs)
-        return selected
-    resolver = SimpleNamespace(for_port=resolve)
-    context = NodeContext('read', (), (), {'tools': resolver})
+    context = None
+    class Resolver:
+        definition = declared('read', 'primary')
+        def for_node(self, node):
+            calls.append(node)
+            return SimpleNamespace(borrow=lambda port: calls.append(port) or selected)
 
     with pytest.raises(ValueError, match="active workflow invocation"):
-        _ = context.tools
-    borrowed = context.tool('primary')
-    assert borrowed.description == 'forwarded'
-    assert asyncio.run(borrowed.invoke(marker)) is marker
-    assert calls == [{'scope_kind': 'node', 'scope': 'read', 'port': 'primary'}, marker]
+        _ = NodeContext('read', (), (), {}).tools
+    async def scenario():
+        async with invocation_tools(Resolver.definition, {'tools': Resolver()}):
+            nonlocal context
+            context = NodeContext('read', (), (), {})
+            borrowed = context.tool('primary')
+            assert borrowed.description == 'forwarded'
+            assert await borrowed.invoke(marker) is marker
+    asyncio.run(scenario())
+    assert calls == ['read', 'primary', marker]
 
 
 def test_node_context_without_admission_rejects_tool_access():

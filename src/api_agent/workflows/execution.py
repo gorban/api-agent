@@ -254,19 +254,16 @@ class NodeContext:
         return self._tools
 
     def tool(self, port):
-        # Compatibility for callers using the earlier explicit resolver API.
-        resolver = self.services.get('tools')
-        if resolver is None:
+        # Compatibility for fixed-operation tools; only this node's declared ports resolve.
+        invocation = self._tools._invocation if self._tools is not None else None
+        if invocation is None or invocation.resolver is None:
             raise WorkflowError('Workflow has no admitted tool bindings')
         from api_agent.providers.contracts import ContractError
-        from api_agent.tooling.operations import OPERATIONS_INTERFACE
-        runtime, instance = getattr(resolver, 'runtime', None), getattr(resolver, 'instance', None)
-        if runtime is not None and instance is not None:
-            selected = instance(scope_kind='node', scope=self.node_id, port=port)
-            if any(item.id == selected and item.interface == OPERATIONS_INTERFACE
-                   for item in runtime.tool_plan.tools):
-                raise ContractError('Implementation-declared operations are reached through context.tools[port]')
-        borrowed = resolver.for_port(scope_kind='node', scope=self.node_id, port=port)
+        invocation.check()
+        if not any(use.scope_kind == 'node' and use.scope == self.node_id and use.port == port
+                   for use in getattr(invocation.definition, 'tool_usages', ())):
+            raise ContractError('Node tool port is not declared')
+        borrowed = invocation.resolver.for_node(self.node_id).borrow(port)
         context = self
         class EffectTool:
             def __getattr__(self, name):
@@ -1444,8 +1441,10 @@ class Workflow:
             self._active_threads.add(thread_id)
         current_journal_token = _CURRENT_JOURNAL.set(journal if recorded else selected_journal)
         token = self._request.set(request)
-        services_token = self._services.set(dict(selected_services))
-        capture_token = self._capture_services_context.set(selected_services)
+        node_services = MappingProxyType({key: value for key, value in selected_services.items()
+                                          if key != 'tools'})
+        services_token = self._services.set(dict(node_services))
+        capture_token = self._capture_services_context.set(node_services)
         journal_token = self._journal.set(journal if recorded else selected_journal)
         from .inference_history import InferenceHistory
         history = InferenceHistory()

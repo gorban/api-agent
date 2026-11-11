@@ -7,7 +7,7 @@ import pytest
 
 
 @pytest.mark.parametrize(('tool_plan', 'requires_api', 'timeout', 'interaction'), [
-    (None, False, None, None),
+    (None, False, 120, None),
     (SimpleNamespace(tools=()), True, 17, object()),
     (SimpleNamespace(tools=('primary',)), False, 17, None),
 ])
@@ -23,8 +23,9 @@ def test_composes_backend_runtime_tools_llm_and_observations(
     emissions = Mock()
     runtime = SimpleNamespace(services=MappingProxyType({'base': 'service'}), emissions=emissions,
                               tracing='trace', factory_plan=(), tools_for=Mock(return_value='workflow-tools'))
-    graph = SimpleNamespace(definition='definition', timeouts={} if timeout is None else {'GRAPH': timeout},
+    graph = SimpleNamespace(definition=SimpleNamespace(tool_usages=(object(),) if requires_api else ()),
                             complete=AsyncMock(return_value='completed'))
+    monkeypatch.setattr(chat_composition, 'declared_timeouts', Mock(return_value={'GRAPH': timeout}))
     llm = SimpleNamespace(describe=AsyncMock(return_value=('model',)), ensure_ready=AsyncMock())
     runtime_factory = Mock(return_value=runtime)
     llm_factory = Mock(return_value=llm)
@@ -32,14 +33,16 @@ def test_composes_backend_runtime_tools_llm_and_observations(
     backend = Mock()
     monkeypatch.setattr(chat_composition, 'WorkflowObservationFactory', observations)
     monkeypatch.setattr(chat_composition, 'StudioBackend', backend)
-    bind_tools = Mock()
+    bind_tools = Mock(return_value='api-owner')
+    owner_tools = Mock(return_value='owner-tools')
     monkeypatch.setattr(chat_composition, 'bind_local_tools', bind_tools)
+    monkeypatch.setattr(chat_composition, 'OwnerTools', owner_tools)
 
     composed = chat_composition.compose_chat_runtime(
         SimpleNamespace(owner_root='owner'), config, callback_origin='https://localhost:8443',
         tls_material='tls', graph=graph, llm_factory=llm_factory, on_error='error',
         on_status='status', interaction_owner=interaction, required_kinds=('llm',),
-        requires_api=requires_api, runtime_factory=runtime_factory, nonce='n' * 32,
+        runtime_factory=runtime_factory, nonce='n' * 32,
         extra_services={'local': 'only'})
 
     runtime_factory.assert_called_once_with(
@@ -47,12 +50,15 @@ def test_composes_backend_runtime_tools_llm_and_observations(
         tls_material='tls', required_kinds=('llm',))
     if tool_plan is not None and tool_plan.tools:
         assert runtime.tool_plan is tool_plan
-        runtime.tools_for.assert_called_once_with('definition')
+        runtime.tools_for.assert_called_once_with(graph.definition)
         bind_tools.assert_not_called()
     elif requires_api:
-        bind_tools.assert_called_once_with(runtime, graph, config)
+        bind_tools.assert_called_once_with(runtime, config)
+        owner_tools.assert_called_once_with(graph.definition, 'api-owner')
     else:
         bind_tools.assert_not_called()
+        owner_tools.assert_not_called()
+    assert not {'tools', 'tool_owner', 'runtime', 'tool_plan'} & set(vars(graph))
     assert llm_factory.call_args.kwargs['emissions'] is emissions
     assert llm_factory.call_args.kwargs['trace'] == 'trace'
     assert llm_factory.call_args.kwargs['on_status'] == 'status'
@@ -66,7 +72,7 @@ def test_composes_backend_runtime_tools_llm_and_observations(
     emissions.register_secret.assert_called_once_with('n' * 32)
     assert backend.call_args.kwargs['owner'] is llm
     assert backend.call_args.kwargs['policy'].allowed.fullmatch('model') is not None
-    assert backend.call_args.kwargs['timeout'] == (timeout or 120)
+    assert backend.call_args.kwargs['timeout'] == timeout
     assert backend.call_args.kwargs['reasoning_default'] is None
     assert backend.call_args.kwargs['max_output_tokens'] == 99
 
@@ -83,7 +89,9 @@ def test_composition_preserves_selected_application_and_result_projection(monkey
     from api_agent.runtime import chat_composition
 
     projection = (lambda result: result) if has_projection else None
-    graph = SimpleNamespace(complete=AsyncMock(), project_result=projection)
+    graph = SimpleNamespace(definition=SimpleNamespace(tool_usages=()), complete=AsyncMock(),
+                            project_result=projection)
+    monkeypatch.setattr(chat_composition, 'declared_timeouts', Mock(return_value={'GRAPH': 5}))
     runtime = SimpleNamespace(services={}, emissions=Mock(), tracing=None)
     config = SimpleNamespace(values={}, tool_plan=None)
     monkeypatch.setattr(chat_composition, 'WorkflowObservationFactory', Mock())
