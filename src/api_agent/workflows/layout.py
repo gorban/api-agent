@@ -126,9 +126,10 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
             except (ValueError, ValidationError) as error:
                 layout.error(str(error), row['line'])
     for key, row in functions.items():
-        if 'attempt' in row['Output schema'].get('properties', {}):
-            layout.row_error(row, 'Output schema declares reserved field attempt; '
-                                  '<step>.attempt is the engine start counter')
+        for reserved, meaning in (('attempt', 'the engine start counter'), ('expired', 'the engine timeout expiry flag')):
+            if reserved in row['Output schema'].get('properties', {}):
+                layout.row_error(row, f'Output schema declares reserved field {reserved}; '
+                                      f'<step>.{reserved} is {meaning}')
         if not set(row['Input schema'].get('required', ())) <= bound[key]:
             layout.error('required inputs must have declared bindings', row['line'])
     invalid = session.problem(layout.tables)

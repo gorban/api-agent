@@ -78,7 +78,7 @@ def test_one_pass_restores_outer_context_without_changing_child_values(monkeypat
             observed.append(deepcopy(state))
             return dict(state, values={**state['values'], 'llm_call': {'answer': 'kept'}})
     monkeypatch.setattr(workflow, '_compile', lambda parent: Child())
-    monkeypatch.setattr(workflow, '_turn_state', SimpleNamespace(get=lambda: {'runs': []}))
+    monkeypatch.setattr(workflow, '_turn_state', SimpleNamespace(get=lambda: {'runs': [], 'contexts': {}}))
     execute = workflow._component(workflow.layout.steps[0])
 
     result = asyncio.run(execute(deepcopy(outer)))
