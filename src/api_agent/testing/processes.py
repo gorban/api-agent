@@ -11,6 +11,9 @@ import time
 import sys
 
 _Popen = subprocess.Popen
+# A child that is still exiting can refuse a signal or inspection before the
+# system lists it as a zombie. Its exit is bounded by this settling window.
+_TERMINAL_SETTLE_SECONDS = 5
 
 
 def _process_snapshot(*, timeout=5):
@@ -117,6 +120,18 @@ def _owned_group_terminal(process, *, timeout=5):
         return all(state.startswith('Z') for _, _, group, state in rows if group == process.pid)
 
 
+def _settled_group_terminal(process):
+    """Prove terminal ownership, allowing an exit already in flight to finish."""
+    deadline = time.monotonic() + _TERMINAL_SETTLE_SECONDS
+    while True:
+        if _owned_group_terminal(process):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(.01, remaining))
+
+
 def inspect_owned(process, inspector):
     """Inspect the actual child only while its identity remains reserved."""
     if isinstance(process, asyncio.subprocess.Process):
@@ -129,7 +144,7 @@ def inspect_owned(process, inspector):
         except OSError as error:
             if sys.platform == 'darwin' and error.errno == errno.ESRCH:
                 try:
-                    terminal = _owned_group_terminal(process)
+                    terminal = _settled_group_terminal(process)
                 except RuntimeError:
                     raise error from None
                 if terminal:
@@ -158,7 +173,7 @@ def signal_owned_group(process, signum):
             process._api_agent_group_disposal_complete = True
             return True
         except PermissionError:
-            if not _owned_group_terminal(process):
+            if not _settled_group_terminal(process):
                 raise
             process._api_agent_group_disposal_complete = True
             return True
