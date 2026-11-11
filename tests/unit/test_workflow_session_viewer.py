@@ -5,6 +5,10 @@ from api_agent.workflows.viewer_render import _label, _projection_source
 from session_workflow_support import load_session, session_entry
 
 
+def wrapped(*lines):
+    return '\\n'.join(_label(line) for line in lines)
+
+
 def diagram(projection, path):
     document = next(item for item in projection.documents if item.logical_path.endswith(path))
     return _projection_source(projection, document)[0].decode()
@@ -29,12 +33,12 @@ def test_diagrams_show_one_compact_session_box_per_node_and_access(tmp_path):
     root = diagram(projection, 'chat.md.html')
     component = diagram(projection, 'refine.md.html')
 
-    assert _label('Session read: history, draft_lines, last_text') in root
-    assert _label('Session write: history, topic, last_text') in root
-    assert _label('Session read: topic') in component
-    assert _label('Session write: draft_lines, last_text') in component
+    assert wrapped('Session read:', 'history, draft_lines, last_text') in root
+    assert wrapped('Session write:', 'history, topic, last_text') in root
+    assert wrapped('Session read:', 'topic') in component
+    assert wrapped('Session write:', 'draft_lines, last_text') in component
     assert root.count('"Session ') == 2 and component.count('"Session ') == 2
-    assert 'Session read: topic' not in root and 'Session write: history' not in component
+    assert wrapped('Session read:', 'topic') not in root
 
 
 def test_turn_reads_are_not_drawn(tmp_path):
@@ -45,7 +49,7 @@ def test_turn_reads_are_not_drawn(tmp_path):
     assert not [ref for ref in projection.references if ref.kind == 'turn']
     for path in ('turn_chat.md.html', 'refine.md.html'):
         assert 'Turn' not in diagram(projection, path)
-    assert _label('Session read: last_extra') in diagram(projection, 'turn_chat.md.html')
+    assert wrapped('Session read:', 'last_extra') in diagram(projection, 'turn_chat.md.html')
 
 
 def test_long_session_field_lists_split_into_labels_within_the_limit():
@@ -58,3 +62,21 @@ def test_long_session_field_lists_split_into_labels_within_the_limit():
     assert all(len(label) <= _MAX_LABEL and label.startswith('Session read: ') for label in labels)
     assert [field for label in labels for field in label.removeprefix('Session read: ').split(', ')] == fields
     assert _session_labels('write', ['topic']) == ['Session write: topic']
+
+
+def test_session_boxes_wrap_three_fields_per_line_under_their_heading():
+    from api_agent.workflows.viewer_render import _session_box_label
+    label = _session_box_label('Session read: one, two, three, four, five')
+
+    assert label == wrapped('Session read:', 'one, two, three', 'four, five')
+
+
+def test_boxes_attached_to_one_node_hang_progressively_lower(tmp_path):
+    import re
+    projection = project_view(load_session(session_entry(tmp_path)))
+    source = diagram(projection, 'chat.md.html')
+    owner = re.search(r'rectangle "reply" as (n\d+)', source).group(1)
+    links = re.findall(rf'^{owner} (\.+) (?:ref|session|timeout|limit)\d+$', source, re.MULTILINE)
+
+    assert len(links) >= 3
+    assert [len(dots) for dots in links] == list(range(2, len(links) + 2))

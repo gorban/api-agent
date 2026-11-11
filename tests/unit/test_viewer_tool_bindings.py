@@ -344,3 +344,15 @@ def test_consumer_operations_are_not_graph_availability(selected):
     binding = replace(view.tool_bindings[0], operations=('execute',))
     with pytest.raises(RenderError, match='invalid captured tool operations'):
         _projection_source(replace(view, tool_bindings=(binding,)), view.documents[0])
+
+
+def test_tool_boxes_join_the_progressively_lower_boxes_of_their_consuming_node(consuming):
+    import re
+    view = admit(consuming)
+    document = next(item for item in view.documents if item.stable_id == 'work')
+    text = unescape(_projection_source(view, document)[0].decode())
+    owner = re.search(r'rectangle "work" as (n\d+)', text).group(1)
+    links = re.findall(rf'^{owner} (\.+)>? (\w+)', text, re.MULTILINE)
+
+    assert any(alias.startswith('toolbinding') for _, alias in links)
+    assert [len(dots) for dots, _ in links] == list(range(2, len(links) + 2))

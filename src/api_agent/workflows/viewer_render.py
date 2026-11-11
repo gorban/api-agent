@@ -263,6 +263,14 @@ def _session_labels(access, fields):
     return [*labels, prefix + ', '.join(current)]
 
 
+def _session_box_label(text):
+    """A session label as its heading line followed by three fields per line."""
+    heading, fields = text.split(': ', 1)
+    fields = fields.split(', ')
+    rows = [', '.join(fields[index:index + 3]) for index in range(0, len(fields), 3)]
+    return '\\n'.join(_label(row) for row in (heading + ':', *rows))
+
+
 def _label(value: object) -> str:
     text = str(value)
     if len(text) > _MAX_LABEL or any(ord(c) < 32 or ord(c) == 127 for c in text):
@@ -292,6 +300,13 @@ def _diagram_targets(projection: object, document: object) -> frozenset[tuple[st
 
 def _diagram(projection: object, document: object, *, repositories: Mapping[str, RepositoryIdentity] | None = None) -> tuple[bytes, frozenset[str], frozenset[tuple[str, str]]]:
     all_steps = {step.id: step for step in projection.steps}
+    attached = {}
+
+    def attach(owner, alias, head='', label=''):
+        # Each further box on one owner gets a longer link, so PlantUML stacks
+        # them a rank lower instead of widening a single row.
+        attached[owner] = attached.get(owner, 0) + 1
+        return f'{owner} {"." * (attached[owner] + 1)}{head} {alias}' + (f' : {label}' if label else '')
     if document.logical_path == projection.entry_path or getattr(document, 'executable_bytes', b'').startswith(b'# Workflow\n'):
         owner = "GRAPH"
         steps = [step for step in projection.steps if step.parent is None]
@@ -382,7 +397,7 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
             alias = f'ref{reference_index}'
             reference_index += 1
             lines.append(f'rectangle "{_label(field)}: {_label(name)}" as {alias} [[{reference_href(reference)}]]')
-            lines.append(f'{aliases[step.id]} .. {alias}')
+            lines.append(attach(aliases[step.id], alias))
             if prior_schema_alias is not None:
                 lines.append(f'{prior_schema_alias} -[hidden]down-> {alias}')
             prior_schema_alias = alias
@@ -393,8 +408,8 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
             for text in _session_labels(access, fields) if fields else ():
                 alias = f'session{reference_index}'
                 reference_index += 1
-                lines.append(f'rectangle "{_label(text)}" as {alias}')
-                lines.append(f'{aliases[step.id]} .. {alias}')
+                lines.append(f'rectangle "{_session_box_label(text)}" as {alias}')
+                lines.append(attach(aliases[step.id], alias))
     tool_bindings = getattr(projection, 'tool_bindings', ())
     tool_resources = {resource.logical_path: resource for resource in projection.resources}
     tool_scopes = {}
@@ -475,9 +490,9 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
                 lines.append(f'{alias} .. {timeout_alias}')
                 tool_records += 1
         if operations:
-            lines.append(f'{source_alias} ..> {alias}')
+            lines.append(attach(source_alias, alias, '>'))
         else:
-            lines.append(f'{source_alias} .. {alias} : {_label("declares port " + binding.port)}')
+            lines.append(attach(source_alias, alias, label=_label("declares port " + binding.port)))
 
     scope_ids = set(visible)
     cursor = owner if owner != 'GRAPH' else None
@@ -494,7 +509,7 @@ def _diagram(projection: object, document: object, *, repositories: Mapping[str,
         reference_index += 1
         lines.append(f'rectangle "Timeout: {_label(key)}" as {alias} [[{reference_href(reference)}]]')
         if reference.owner_id in aliases:
-            lines.append(f'{aliases[reference.owner_id]} .. {alias}')
+            lines.append(attach(aliases[reference.owner_id], alias))
 
     declared_limits = [ref for ref in projection.references
                        if ref.kind == 'limit' and ref.owner_id == (None if owner == 'GRAPH' else owner)
