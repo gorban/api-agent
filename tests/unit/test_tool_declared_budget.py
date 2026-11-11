@@ -45,6 +45,14 @@ def fixed_definition():
         ('prepare', 'verify', 'execute')),))
 
 
+@pytest.fixture(autouse=True)
+def instant_schema_verdicts(monkeypatch):
+    # Budget assertions must not depend on how fast the isolated schema process starts.
+    async def verdict(schema, value):
+        return True
+    monkeypatch.setattr('api_agent.workflows.tool_gate.async_isolated_schema_verdict', verdict)
+
+
 @pytest.fixture
 def progress():
     reports = []
