@@ -36,7 +36,7 @@ names its owner, because the enclosing document already does:
 | --- | --- | --- |
 | Node (`# Node:` or inline `## Node:`) | `Functions` | `ID`, and `Registry` (defaults to the node ID) |
 | Node | `Bindings`, `Prompts` | `Node` |
-| Node | `Timeouts` | `Owner` |
+| Node | `Timeouts` | `Owner` (a present cell may also name the node's own `<node>.<port>`) |
 | Component | `Components` | `ID` |
 | Component | `Timeouts` | `Owner` |
 
@@ -486,6 +486,33 @@ its own timeout. Coverage records the resolved workflow budget identity; legacy
 maintenance includes resolved settings in its historical sampling fingerprint. Unit tests cover typed defaults/environment/CLI,
 linked numeric declarations, nested clipping, invalid values before inference and
 swallowed cancellation; removing the post-call deadline check fails its test.
+
+### Tool call timeouts
+
+Every timeout in a workflow run is a declared `Timeouts` row; the engine adds no
+hidden per-call budget. A tool call (`context.tools[port]`, or `context.tool(port)`
+for the earlier fixed-operation view) runs in the budget of the node that makes it,
+clipped by its component and `GRAPH` deadlines. To cap one port, name it in the
+`Owner` column as `<node>.<port>`:
+
+```markdown
+## Timeouts
+
+| Owner | Source | Key |
+| --- | --- | --- |
+| first_draft.search | [configuration](cfg/config.toml) | WORKFLOW_SEARCH_TIMEOUT_SECONDS |
+```
+
+The row resolves like any other (positive finite seconds, or unset for no cap) and
+caps that port's preparation and execution inside the node budget; the diagram shows
+`Timeout: KEY` on the port's tool binding. Port rows load only in the bindings
+grammar, where `Owner` is required for them: the node must exist, the port must
+appear in that node's own `Tools` table, the key must be a configuration field,
+and an owner may appear once. A node document names its own port with the full
+`<node>.<port>`; the bare port is not an owner. Port rows are part of the
+declaration and workflow identity and are checked again when a compiled plan loads.
+Runtime lifecycle limits (starting and closing the tool runtime) stay outside the
+workflow run and are not declared here.
 
 ### Typed limits, component timeouts and expiry routing
 
