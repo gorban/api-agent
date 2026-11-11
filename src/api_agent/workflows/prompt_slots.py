@@ -30,6 +30,17 @@ def fill_slots(text, slots):
     return _SLOT.sub(lambda match: match.group(0)[1:] if match.group(1) else slots[match.group(2)], text)
 
 
+def check_prompt_file(where, resolved, root, *, text_only):
+    """A prompt file, even through a symlink, stays inside the root declaring it.
+
+    Pack-supplied slot files and typed-grammar prompts must also be Markdown or text.
+    """
+    if text_only and resolved.suffix not in _SUFFIXES:
+        raise LayoutError(f'{where}: prompt file must be a Markdown or text file')
+    if root is None or not resolved.is_relative_to(root):
+        raise LayoutError(f'{where}: prompt file must stay inside its resource root')
+
+
 def slot_paths(document, where):
     """The validated ``slot -> relative path`` table of a parsed pack declaration."""
     table = document.get('prompt_slots', {})

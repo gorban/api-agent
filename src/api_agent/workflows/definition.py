@@ -20,7 +20,7 @@ from .layout import _COLUMNS, _RESPONSE_COLUMNS, _SESSION_COLUMNS, _SUMMARY_COLU
 from .model import (InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage,
                     declares_source, freeze as _freeze, _MAX_SNAPSHOT_BYTES, _PY_ID)
 from .document_format import extract_document, validate_presentation_location
-from .prompt_slots import slot_paths, slot_text, used_slots
+from .prompt_slots import check_prompt_file, slot_paths, slot_text, used_slots
 from api_agent.tooling.operations import FIXED_OPERATIONS, name_problem
 
 
@@ -466,10 +466,15 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
     root_map = MappingProxyType(roots)
     captured = {}
     origins = {}
-    def capture(path, kind, root_id=None):
-        path = (Path(os.path.normpath(path)) if kind == 'tool_instance' else resolve_path(path))
+    def capture(path, kind, root_id=None, *, slot=False):
+        lexical = Path(os.path.normpath(path))
+        path = lexical if kind == 'tool_instance' else resolve_path(path)
         if not any(path.is_relative_to(root) for root in roots.values()):
             raise LayoutError(f'{path}:1: missing resource or outside declared roots')
+        if kind == 'prompt':
+            declaring = next((roots[name] for name in (root_id, 'pack', 'base')
+                              if name is not None and lexical.is_relative_to(roots[name])), None)
+            check_prompt_file(f'{lexical}:1', path, declaring, text_only=slot)
         if root_id is None or not path.is_relative_to(roots[root_id]):
             root_id = 'base' if path.is_relative_to(roots['base']) else 'pack'
         if (path in captured and 'tool_instance' in (kind, captured[path][0])
@@ -731,7 +736,7 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
                 raise LayoutError(f'{row.get("_owner", entry)}:{row["line"]}: prompt uses slot {slot} that no '
                                   'consulted resource pack supplies; consulted: '
                                   + ', '.join(f'{root_id} {root}' for root_id, root in consulted))
-            path = slot_files[slot] = capture(root / manifests[root_id][slot], 'prompt', root_id)
+            path = slot_files[slot] = capture(root / manifests[root_id][slot], 'prompt', root_id, slot=True)
             try:
                 slot_text(captured[path][1])
             except UnicodeError:

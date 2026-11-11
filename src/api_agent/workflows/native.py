@@ -21,6 +21,7 @@ from .configuration import resolve_state_limits as _validated_limits
 from .configuration import resolve_state_timeouts as _validated_timeouts
 from .execution import _source_manifest
 from .predicates import PredicateError, condition_constants, parse_predicate
+from .prompt_slots import check_prompt_file
 from .model import (NativeCatalog, Layout, LayoutError, Replacement, Resource, Step, ToolUsage, freeze as _freeze,
                     _ID, _PY_ID, _MAX_SNAPSHOT_BYTES)
 
@@ -334,8 +335,10 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
                 text = inline[prompt_id]
             else:
                 path = linked(dict(row, Source=row['File'], _owner=declaration))
-                if path.suffix not in ('.md', '.txt'):
-                    raise LayoutError(f'{declaration}:{row["line"]}: prompt file must be Markdown or text')
+                declared = linked(dict(row, Source=row['File'], _owner=declaration), resolve=False)
+                check_prompt_file(f'{declaration}:{row["line"]}', path, max(
+                    (root for root in roots.values() if declared.is_relative_to(root)),
+                    key=lambda root: len(root.parts)), text_only=True)
                 if path not in contents:
                     contents[path] = read(path)
                 if kinds.get(path, 'prompt') != 'prompt':
