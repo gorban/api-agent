@@ -682,7 +682,7 @@ def test_bundle_missing_dependencies_provides_source_or_installed_guidance(tmp_p
     source = Path(viewer_render.__file__).resolve().parents[3] / '.private_resources/viewer'
     monkeypatch.setattr(viewer_render, '_asset_root', lambda: tmp_path if installed else source)
     monkeypatch.setattr(viewer_render, '_read_view_file', lambda path: None)
-    expected = 'reinstall api-agent' if installed else 'run npm ci from the repository root'
+    expected = 'reinstall api-agent' if installed else r'run \./launch\.sh --tui-mode view-flow --no-std-in once'
     with pytest.raises(RenderError, match=expected):
         build_view_bundle(projection, roots={}, renderer=object(), verify=False)
 
