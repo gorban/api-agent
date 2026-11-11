@@ -138,6 +138,9 @@ def test_concurrent_actions_share_recovery_and_retain_usage(recovery):
 
 def test_active_completion_finishes_before_generation_retirement(recovery):
     owner, generations, events, loader = recovery
+    # Recovery waits for the active call to be released; a short budget would
+    # let a loaded host expire it first and leave the old generation pending.
+    owner._timeout = 30
     async def run():
         await owner.describe()
         old = generations[0].implementation

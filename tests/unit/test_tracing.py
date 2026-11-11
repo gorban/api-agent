@@ -8,6 +8,9 @@ from api_agent.config.resolve import ConfigResult, ResolvedValue
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 from api_agent.telemetry.tracing import TraceDeliveryError, TraceError, TraceRuntime, TRACE_DELIVERY_WARNING, _sdk_factory
 
+# Waits for an expected event; they bound only a hung test on a slow host.
+EVENTUAL = 30
+
 
 def config(mode='OTEL', content=None, **values):
     from pathlib import Path
@@ -111,14 +114,14 @@ async def test_concurrent_first_calls_share_one_exporter_startup():
     entered, release = Event(), Event()
     def create(*args, **kwargs):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(EVENTUAL)
         return provider, tracer
     factory = Mock(side_effect=create)
     runtime = TraceRuntime(config(), factory=factory)
     first = asyncio.create_task(runtime.astart())
     second = None
     try:
-        assert await asyncio.to_thread(entered.wait, 5)
+        assert await asyncio.to_thread(entered.wait, EVENTUAL)
         second = asyncio.create_task(runtime.astart())
         await asyncio.sleep(0)
         assert not second.done(), 'A concurrent caller must wait for the shared exporter'
@@ -138,13 +141,13 @@ async def test_close_waits_for_exporter_startup_before_disposal():
     entered, release = Event(), Event()
     def create(*args, **kwargs):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(EVENTUAL)
         return provider, tracer
     runtime = TraceRuntime(config(), factory=Mock(side_effect=create))
     starting = asyncio.create_task(runtime.astart())
     closing = None
     try:
-        assert await asyncio.to_thread(entered.wait, 5)
+        assert await asyncio.to_thread(entered.wait, EVENTUAL)
         closing = asyncio.create_task(runtime.aclose())
         await asyncio.sleep(0)
         assert not closing.done()
@@ -164,14 +167,14 @@ async def test_startup_failure_is_reported_to_queued_callers():
     entered, release = Event(), Event()
     def create(*args, **kwargs):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(EVENTUAL)
         raise RuntimeError('private SDK diagnostic')
     factory = Mock(side_effect=create)
     runtime = TraceRuntime(config(), factory=factory)
     first = asyncio.create_task(runtime.astart())
     second = None
     try:
-        assert await asyncio.to_thread(entered.wait, 5)
+        assert await asyncio.to_thread(entered.wait, EVENTUAL)
         second = asyncio.create_task(runtime.astart())
         await asyncio.sleep(0)
         release.set()
@@ -192,13 +195,13 @@ async def test_cancelled_startup_is_not_success_for_a_queued_caller():
     entered, release = Event(), Event()
     def create(*args, **kwargs):
         entered.set()
-        assert release.wait(5)
+        assert release.wait(EVENTUAL)
         return provider, tracer
     runtime = TraceRuntime(config(), factory=Mock(side_effect=create))
     first = asyncio.create_task(runtime.astart())
     second = None
     try:
-        assert await asyncio.to_thread(entered.wait, 5)
+        assert await asyncio.to_thread(entered.wait, EVENTUAL)
         second = asyncio.create_task(runtime.astart())
         await asyncio.sleep(0)
         first.cancel()
