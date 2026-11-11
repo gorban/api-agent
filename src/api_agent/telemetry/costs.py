@@ -3,8 +3,40 @@ from copy import deepcopy
 import math
 from datetime import datetime, timezone
 
-from api_agent.providers.costs import validate_quote, period_seconds
-from .estimation import quota_reset_observed
+from api_agent.providers.costs import validate_quote, period_seconds, qualified_charge
+from .estimation import quota_reset_observed, reported_charge
+
+
+def retain_quota_estimate(summary, artifact, *, selected_count):
+    """Keep account-boundary estimates without inventing model-price weights.
+
+    Only a sole selected and recorded owner can receive the whole estimate.
+    Call inventory completeness and historical price eligibility stay unchanged.
+    """
+    amount = summary.get('raw_quota_cost_usd')
+    if summary['estimated_cost_usd'] is not None or amount is None:
+        return
+    policy = artifact['quota']['payment_policy']
+    calls = [call for row in artifact['tests'] for call in row['calls']]
+    if not calls or policy is None or any(
+            (call.get('quote') or {}).get('payment') != policy
+            or reported_charge({'calls_complete': True, 'calls': [call]}) is not None
+            or any(qualified_charge(attempt['billing'], attempt['usage'] or {}) is not None
+                   for attempt in (call.get('transport_attempts') or {}).get('attempts', ()))
+            for call in calls):
+        return
+    summary.update(estimated_cost_usd=amount, cost_basis='quota_payment')
+    if selected_count != 1 or len(artifact['tests']) != 1:
+        return
+    test = artifact['tests'][0]
+    own = summary['test_costs'][test['test_id']]
+    if not own.get('prompt_count', 0):
+        return
+    own.update(estimated_cost_usd=amount, basis='quota_payment',
+               raw_quota_cost_usd=amount, cost_per_prompt_usd=amount / own['prompt_count'])
+    test['raw_quota_cost_usd'] = amount
+    test['stabilized_estimate'].update(estimated_cost_usd=amount, basis='quota_payment')
+    summary['unallocated_cost_usd'] = 0.0
 
 
 class CostLedger:

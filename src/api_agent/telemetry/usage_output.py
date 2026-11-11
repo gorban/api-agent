@@ -67,7 +67,7 @@ def historical_average(costs):
 def displayed_cost(value, report):
     """Explain an unpriced unchanged quota without discarding known estimates."""
     delta = report.get('pct_point_delta')
-    if (not number(value) and number(delta) and delta == 0
+    if ((not number(value) or value == 0 and report.get('cost_basis') == 'quota_payment') and number(delta) and delta == 0
             and not report.get('quota_unavailable_reason') and not quota_reset_observed(report)):
         return 'quota did not change'
     return money(value)
@@ -191,6 +191,8 @@ def tokens_text(report, test_id=None):
     visible_costs = {field: value for field, value in costs.items() if any(
         type(row.get(field)) is int and row[field] > 0 for row in rows)}
     prices = _rounded_costs(visible_costs, total)
+    if total == 0 and scope.get('basis', scope.get('cost_basis')) == 'quota_payment':
+        prices = {field: displayed_cost(0, dict(report, cost_basis='quota_payment')) for field in prices}
     for field, label in TOKEN_LABELS:
         values = [row.get(field) for row in rows]
         known = [value for value in values if type(value) is int and value >= 0]
@@ -231,5 +233,7 @@ def final_usage_text(report):
         lines.append(QUOTA_RESET_NOTE)
     if report.get('cost_basis') and report['cost_basis'] != 'unavailable':
         lines.append(f"Cost basis: {report['cost_basis']}")
+        if report['cost_basis'] == 'quota_payment':
+            lines.append('Selected-suite quota estimate; rounded percentages may conceal smaller spend.')
     lines.append(tokens_text(report))
     return '\n'.join(lines)

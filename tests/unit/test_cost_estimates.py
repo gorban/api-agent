@@ -15,6 +15,63 @@ from api_agent.providers.llm import LLMRequest, CompletionRequest, Message, Text
 PAYMENT = {'usd':100,'quota_seconds':604800,'period':'calendar_month'}
 
 
+@pytest.mark.parametrize('selected,recorded,prompts,estimated,raw,expected', [
+    (1,1,1,None,1,(1,1,0)), (2,1,1,None,1,(1,None,1)), (1,2,1,None,1,(1,None,1)),
+    (1,1,0,None,1,(1,None,1)), (1,1,1,.25,1,(.25,.25,1)), (1,1,1,None,None,(None,None,None)),
+])
+def test_quota_fallback_preserves_only_unambiguous_owner_estimates(selected, recorded, prompts, estimated, raw, expected):
+    from api_agent.telemetry.costs import retain_quota_estimate
+    artifact = {'quota':{'payment_policy':PAYMENT},
+                'tests':[{'test_id':str(i),'calls_complete':False,
+                         'calls':[{'quote':{'list_cost_usd':None,'payment':PAYMENT}}],
+                         'stabilized_estimate':{'estimated_cost_usd':estimated}}
+                        for i in range(recorded)]}
+    summary = {'raw_quota_cost_usd':raw,'estimated_cost_usd':estimated,
+               'unallocated_cost_usd':raw,'test_costs':{
+                   str(i):{'prompt_count':prompts,'estimated_cost_usd':estimated}
+                   for i in range(recorded)}}
+    retain_quota_estimate(summary, artifact, selected_count=selected)
+    assert (summary['estimated_cost_usd'], summary['test_costs']['0']['estimated_cost_usd'],
+            summary['unallocated_cost_usd']) == expected
+    assert all(row['calls_complete'] is False for row in artifact['tests'])
+
+
+@pytest.mark.parametrize('case', ['no_calls','no_policy','other_payment','charge','transport_charge'])
+def test_quota_fallback_never_relabels_mixed_billing(case):
+    from copy import deepcopy
+    from api_agent.telemetry.accounting import compatibility
+    from api_agent.telemetry.costs import retain_quota_estimate
+    quote = {'list_cost_usd':None,'payment':dict(PAYMENT), 'accounting':{
+        'version':1,'requested_model':'synthetic','catalog_model':'synthetic',
+        'actual_model':None,'serving_revision':None,'service_tier':None,
+        'rate_card':None,'compatibility':compatibility({}),'billing_mode':'metered',
+        'billing':{'usd':.25,'request_id':None,'generation_id':None}}}
+    call = {'quote':quote,'usage':{'input_tokens':1,'output_tokens':1}}
+    artifact = {'quota':{'payment_policy':PAYMENT}, 'tests':[{'test_id':'t',
+        'calls':[call],'stabilized_estimate':{'estimated_cost_usd':None}}]}
+    if case == 'no_calls':
+        artifact['tests'][0]['calls'] = []
+    elif case == 'no_policy':
+        artifact['quota']['payment_policy'] = None
+    elif case == 'other_payment':
+        quote['payment'] = None
+    elif case == 'transport_charge':
+        from api_agent.providers.generation_attempts import TransportAttemptLedger
+        from api_agent.providers.llm import Usage
+        billing = quote['accounting'].pop('billing')
+        quote.pop('accounting')
+        ledger = TransportAttemptLedger(1, quote=lambda _: {'list_cost_usd':None,'payment':PAYMENT})
+        token = ledger.begin(1)
+        ledger.finish(token, result=SimpleNamespace(usage=Usage(1,1,0,0), billing=billing))
+        call['transport_attempts'] = ledger.snapshot()
+    validate_quote(quote)
+    summary = {'raw_quota_cost_usd':1,'estimated_cost_usd':None,'cost_basis':'unavailable',
+               'test_costs':{'t':{'prompt_count':1,'estimated_cost_usd':None}}}
+    expected = deepcopy(summary)
+    retain_quota_estimate(summary, artifact, selected_count=1)
+    assert summary == expected
+
+
 @pytest.mark.parametrize('year,month,days', [(2026,10,31),(2026,4,30),(2026,2,28),(2028,2,29)])
 def test_monthly_quota_uses_real_calendar_days_and_matches_payment_conversion(year, month, days):
     from api_agent.telemetry.estimation import payment_per_point
