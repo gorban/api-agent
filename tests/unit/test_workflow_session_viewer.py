@@ -23,31 +23,26 @@ def test_projection_records_session_reads_and_writes_per_node(tmp_path):
         ('draft', 'write', 'draft_lines'), ('draft', 'write', 'last_text')}
 
 
-def test_diagrams_show_a_session_note_on_the_reading_and_writing_node(tmp_path):
+def test_diagrams_show_one_compact_session_box_per_node_and_access(tmp_path):
     projection = project_view(load_session(session_entry(tmp_path)))
 
     root = diagram(projection, 'chat.md.html')
     component = diagram(projection, 'refine.md.html')
 
-    assert _label('Session read: history') in root
-    assert _label('Session write: topic') in root
-    assert _label('Session write: draft_lines') in component
+    assert _label('Session read: history, draft_lines, last_text') in root
+    assert _label('Session write: history, topic, last_text') in root
     assert _label('Session read: topic') in component
-    assert _label('Session read: draft_lines') in root
-    assert _label('Session write: draft_lines') not in root
+    assert _label('Session write: draft_lines, last_text') in component
+    assert root.count('"Session ') == 2 and component.count('"Session ') == 2
+    assert 'Session read: topic' not in root and 'Session write: history' not in component
 
 
-def test_diagram_notes_which_nodes_read_turn_values(tmp_path):
+def test_turn_reads_are_not_drawn(tmp_path):
     from test_workflow_turn import FIXTURE
     projection = project_view(load_session(session_entry(
         tmp_path, fixture=FIXTURE, flow='turn_chat.md.html')))
 
-    reads = {(ref.owner_id, dict(ref.attributes)['field'])
-             for ref in projection.references if ref.kind == 'turn'}
-
-    assert reads == {('path_a', 'topic'), ('path_b', 'topic'), ('draft', 'topic'), ('draft', 'hint'),
-                     ('draft', 'scratch'), ('finish', 'topic'), ('finish', 'extra'),
-                     ('finish', 'scratch'), ('finish', 'hint')}
-    assert _label('Turn read: topic') in diagram(projection, 'turn_chat.md.html')
-    assert _label('Turn read: scratch') in diagram(projection, 'refine.md.html')
+    assert not [ref for ref in projection.references if ref.kind == 'turn']
+    for path in ('turn_chat.md.html', 'refine.md.html'):
+        assert 'Turn' not in diagram(projection, path)
     assert _label('Session read: last_extra') in diagram(projection, 'turn_chat.md.html')
