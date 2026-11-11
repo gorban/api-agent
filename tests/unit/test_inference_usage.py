@@ -17,6 +17,35 @@ def row():
     return {'call_id':str(uuid4()),'selection':'gpt-example','usage':None}
 
 
+@pytest.mark.parametrize('case', ['single','same','mixed','missing','incomplete','empty','priced','no_policy'])
+def test_transport_payment_requires_complete_consistent_attempt_quotes(case):
+    from api_agent.providers.generation_attempts import TransportAttemptLedger
+    from api_agent.providers.control import OperationalError
+    from api_agent.providers.llm import Usage
+    policy = {'usd':100,'quota_seconds':86400,'period':'day'}
+    ledger = TransportAttemptLedger(2, quote=lambda _: {'list_cost_usd':1.0 if case == 'priced' else None,
+        'payment': None if case == 'no_policy' else policy})
+    result = SimpleNamespace(usage=Usage(2,1,0,0))
+    if case != 'empty':
+        first = ledger.begin(1)
+        ledger.observe_result(result)
+        if case in ('same','mixed','missing'):
+            ledger.finish(first, error=OperationalError('network'), retry_delay_seconds=0)
+            ledger.quote = lambda _: {'list_cost_usd':None,
+                'payment': None if case == 'missing' else dict(policy,usd=200) if case == 'mixed' else policy}
+            second = ledger.begin(2)
+            ledger.finish(second, result=result)
+        else:
+            ledger.finish(first, result=result)
+    packet = ledger.snapshot()
+    if case == 'incomplete':
+        packet['complete'] = False
+    tracker = SuiteUsage('run')
+    capture(event(row() | {'transport_attempts':packet}), tracker)
+    assert tracker.report().get('payment_policy') == (policy if case in ('single','same','priced') else None)
+    assert tracker.report().get('list_cost_usd') == (0 if case == 'empty' else 1 if case == 'priced' else None)
+
+
 def test_publish_inert_without_operation_event_file(monkeypatch):
     monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS',raising=False)
     assert publish(REQUEST) is None

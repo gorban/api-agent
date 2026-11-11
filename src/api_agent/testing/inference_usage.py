@@ -322,6 +322,11 @@ def capture(event, tracker):
             quote = None
         else:
             quote = {'list_cost_usd': summary['list_cost_usd'], 'payment': None}
+        payments = [(attempt['quote'] or {}).get('payment') for attempt in ledger['attempts']]
+        if (ledger['complete'] and payments and payments[0] is not None
+                and all(payment == payments[0] for payment in payments)):
+            quote = {'list_cost_usd': None if quote is None else quote['list_cost_usd'],
+                     'payment': payments[0]}
         tracker.add_cost(identifier, event.identity.id, quote, known_subtotal=summary['list_cost_usd'])
     else:
         if usage is None:

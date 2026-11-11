@@ -512,6 +512,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             usage_summary['estimated_cost_usd'] = None if any(value is None for value in amounts) else math.fsum(amounts)
             bases = {row.get('basis') for row in test_costs.values() if not row.get('known_zero')}
             usage_summary['cost_basis'] = next(iter(bases)) if len(bases) == 1 else 'mixed' if bases else 'no_llm_calls'
+            from api_agent.telemetry.costs import retain_quota_estimate
+            retain_quota_estimate(usage_summary, artifact, selected_count=len(tests))
             total, prompts = usage_summary['estimated_cost_usd'], usage_summary['prompt_count']
             usage_summary['cost_per_prompt_usd'] = None if total is None or not prompts else total / prompts
             from api_agent.telemetry.usage_costs import attach_category_costs

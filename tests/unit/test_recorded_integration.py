@@ -396,6 +396,59 @@ def test_worker_quota_observation_is_frozen_with_cost_shares_and_start_output(tm
     assert result.elapsed>=0
 
 
+@pytest.mark.parametrize('delta', [0, 1])
+@pytest.mark.parametrize('owned_ui', [False, True])
+@pytest.mark.parametrize('transport', [False, True])
+def test_single_owner_unpriced_quota_estimate_survives_recording(tmp_path, delta, owned_ui, transport):
+    from dataclasses import replace
+    from api_agent.testing.contracts import RunnerEvent
+    from api_agent.telemetry.usage import _snapshot_json
+    context, test, config = fixture(tmp_path)
+    if owned_ui:
+        test = replace(test, tags=('requires_owned_ui_session',))
+    config.update(LOG_CONTENT=False, TRACELOOP_TRACE_CONTENT=False)
+    now = datetime.now(timezone.utc)
+    reset = now + timedelta(days=1)
+    def run(context, tests, **hooks):
+        hooks['before_run']()
+        data = {'call_id':'00000000-0000-0000-0000-000000000001',
+                'selection':'unpriced-model', 'usage':{'input_tokens':3124,'output_tokens':345,
+                                                    'cached_input_tokens':None,'reasoning_tokens':None},
+                'quote':{'list_cost_usd':None,
+                         'payment':{'usd':100,'quota_seconds':86400,'period':'day'}}}
+        if transport:
+            from api_agent.providers.generation_attempts import TransportAttemptLedger
+            from api_agent.providers.llm import Usage
+            ledger = TransportAttemptLedger(1, quote=lambda result:data['quote'])
+            token = ledger.begin(1)
+            ledger.finish(token, result=SimpleNamespace(usage=Usage(
+                input_tokens=3124, output_tokens=345,
+                cached_input_tokens=None, reasoning_tokens=None)))
+            data['transport_attempts'] = ledger.snapshot()
+        hooks['on_event'](RunnerEvent('inference_usage', identity=test, text=json.dumps(data)))
+        for phase, pct, captured in [('before',0,now), ('after',delta,now+timedelta(seconds=2))]:
+            snapshot = QuotaSnapshot(pct, 'daily', reset, captured, allocation_id='a'*64)
+            hooks['on_event'](RunnerEvent('quota_snapshot', identity=test,
+                text=json.dumps({'phase':phase,'snapshot':_snapshot_json(snapshot)})))
+        result = IntegrationRunResult(0, (TestResult(test,'passed'),), '')
+        hooks['on_result'](result.tests[0])
+        hooks['after_run'](result)
+        return result
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+        storage=Storage(), runner=run)
+    assert result.persisted
+    assert result.usage['estimated_cost_usd'] == delta
+    assert result.usage['cost_basis'] == 'quota_payment'
+    assert result.usage['test_costs'][test.id]['estimated_cost_usd'] == delta
+    summary = json.loads((result.directory/'usage-summary.json').read_text())
+    assert summary['estimated_cost_usd'] == delta
+    row = json.loads(next(result.directory.glob('*-result.json')).read_text())
+    attachment = next(a for a in row['attachments'] if a['name']=='Test cost estimate')
+    assert json.loads((result.directory/attachment['source']).read_text())['estimated_cost_usd'] == delta
+    artifact = json.loads((result.directory/'accounting.json').read_text())
+    assert artifact['tests'][0]['calls_complete'] is (not owned_ui)
+
+
 def test_real_worker_quota_events_reach_recorded_suite(tmp_path):
     context,test,config=fixture(tmp_path)
     root=context.owner_root;root.mkdir()

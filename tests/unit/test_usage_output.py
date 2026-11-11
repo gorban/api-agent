@@ -395,3 +395,18 @@ def test_completed_history_replaces_advance_comparison_in_suite_and_test_details
     assert 'Historical average: $0.0000036' in test_details(result, report, cost).plain
     assert historical_average((dict(cost, historical_average=None),)) is None
     assert cost['advance_prediction']['estimated_cost_usd'] is None
+
+
+@pytest.mark.parametrize('basis,delta,expected', [('quota_payment',0,'quota did not change'),
+    ('reported_charge',0,'$0.000'), ('quota_payment',1,'$0.000')])
+def test_rounded_zero_quota_estimate_is_not_a_zero_charge(basis, delta, expected):
+    from api_agent.telemetry.usage_output import tokens_text
+    report = {'pct_point_delta':delta, 'estimated_cost_usd':0,
+              'cost_per_prompt_usd':0, 'prompt_count':1, 'cost_basis':basis,
+              'usage_rows':[{'session_id':'t','input_tokens':2,'output_tokens':1,'total_tokens':3}],
+              'test_costs':{'t':{'estimated_cost_usd':0,'basis':basis}}}
+    text = final_usage_text(report)
+    assert 'This suite cost: ' + expected in text
+    assert ('Selected-suite quota estimate' in text) is (basis == 'quota_payment')
+    assert 'total: 3 — ' + expected in tokens_text(report)
+    assert 'total: 3 — ' + expected in tokens_text(report, 't')
