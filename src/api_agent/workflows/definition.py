@@ -708,7 +708,7 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
                 if column == 'File' and value.startswith('@'):
                     prompt_id = value[1:]
                     if prompt_id not in inline_prompts:
-                        raise LayoutError(f'{entry}:{row["line"]}: unknown inline prompt')
+                        raise LayoutError(f'{owner}:{row["line"]}: unknown inline prompt')
                     prompt_owner, prompt_bytes = inline_prompts[prompt_id]
                     row_scope = row.get('_owner_id')
                     if ((row_scope is not None and not belongs_to(row_scope, row['Node']))

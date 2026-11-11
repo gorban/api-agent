@@ -456,12 +456,12 @@ class Workflow:
             if (not isinstance(function, NodeFunction) or function.kind not in ('llm', 'deterministic')
                     or not callable(function.invoke)
                     or function.kind != row['Kind']):
-                layout.error('unknown or invalid registered node function', row['line'])
+                layout.row_error(row, 'unknown or invalid registered node function')
             if 'Output mode' in row and ((function.kind == 'deterministic') != (row['Output mode'] == '-')):
-                layout.error('response declaration must match registered node kind', row['line'])
+                layout.row_error(row, 'response declaration must match registered node kind')
             rejected = self.definition.native_rejection(function.invoke, steps[row['ID']])
             if rejected is not None:
-                layout.error(rejected, row['line'])
+                layout.row_error(row, rejected)
         for row in (*layout.tables['Edges'], *layout.tables['Prompts']):
             when = row['When']
             if when == 'always' or (when == 'otherwise' and row in layout.tables['Edges']):
@@ -469,11 +469,11 @@ class Workflow:
             if native_condition_id(when) and callable(self.conditions.get(when)):
                 continue
             if row in layout.tables['Prompts']:
-                layout.error('unknown registered condition', row['line'])
+                layout.row_error(row, 'unknown registered condition')
             try:
                 self._predicates[row['From'], when] = parse_predicate(when, predicate_fields(layout, row['From']))
             except ValueError as error:
-                layout.error(str(error), row['line'])
+                layout.row_error(row, str(error))
         self._recursion_limit = self._loop_recursion_limit(layout)
         self._expiry = {}
         for source, when in self._predicates:

@@ -15,13 +15,13 @@ def resolve_timeouts(layout, config, definition=None):
                             else row['Source'].read_bytes())
             schema = schema_from_dict(tomllib.loads(source_bytes.decode('utf-8')))
         except (OSError, UnicodeError, ValueError) as error:
-            layout.error(str(error), row['line'])
+            layout.row_error(row, str(error))
         field = schema.fields.get(row['Key'])
         if field is None or field.type not in ('int', 'float'):
-            layout.error('timeout must reference a numeric configuration declaration', row['line'])
+            layout.row_error(row, 'timeout must reference a numeric configuration declaration')
         value = config.get(row['Key'], None if field.default is UNSET else field.default)
         if value is not None and (type(value) not in (int, float) or not 0 < value < float('inf')):
-            layout.error('timeout must be finite positive seconds or omitted', row['line'])
+            layout.row_error(row, 'timeout must be finite positive seconds or omitted')
         values[row['Owner']] = value
         keys[row['Owner']] = row['Key']
     return values, keys
@@ -49,9 +49,9 @@ def resolve_component_passes(layout, config):
             default = int(row['Max passes'])
         value = config.get(key, default) if key is not None else default
         if type(value) is not int or not 1 <= value <= MAX_COMPONENT_PASSES:
-            layout.error(f'Max passes must be an integer from 1 to {MAX_COMPONENT_PASSES}', row.get('line'))
+            layout.row_error(row, f'Max passes must be an integer from 1 to {MAX_COMPONENT_PASSES}')
         if row['Guard'] == '-' and value != 1:
-            layout.error('unguarded component requires one pass', row.get('line'))
+            layout.row_error(row, 'unguarded component requires one pass')
         passes[row['ID']] = value
         if key is not None:
             constants[key] = value
