@@ -249,11 +249,13 @@ def provider_integration_suites(context, config):
     return suites
 
 
-def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None, timeout=None):
+def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None, timeout=None, include_marked=False):
     """Collect each owner's suites using its working directory and pytest config.
 
     Each suite root's deadline is timeout, else the configured
-    TEST_COLLECTION_TIMEOUT_SECONDS, else the declared default.
+    TEST_COLLECTION_TIMEOUT_SECONDS, else the declared default. A marker a pack
+    declares under `tests.prerequisites` stays out of unit collection until a
+    `tag:marker` selector (or include_marked) names it.
     """
     if timeout is None:
         timeout = (config or {}).get('TEST_COLLECTION_TIMEOUT_SECONDS', _COLLECTION_TIMEOUT)
@@ -312,6 +314,10 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
             for layer in getattr(context, 'pack_layers', ()) or (context,):
                 if Path(layer.owner_root).resolve() == root:
                     unit_exclusions.update(getattr(layer, 'unit_exclude_markers', ()))
+                    unit_exclusions.difference_update(
+                        marker for marker, _, _ in getattr(layer, 'test_prerequisites', ())
+                        if include_marked or any(selector.rpartition('::')[2] == f'tag:{marker}'
+                                                 for selector in selectors))
         with tempfile.TemporaryDirectory(prefix="api-agent-collect-") as temporary:
             output = Path(temporary) / "collection.json"
             args = [sys.executable, "-c", _PLUGIN, str(output), "--collect-only", "-q", "-o", "addopts=", "--rootdir", str(root)]

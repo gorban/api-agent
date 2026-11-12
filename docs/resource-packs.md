@@ -183,6 +183,23 @@ A pack with mixed unit and integration modules can declare
 identifiers affect only that owner's unit collection, including when composed;
 they do not change other owners, integration/E2E selection or coverage targets.
 
+A marker that needs a service can also be declared under `tests.prerequisites`; it
+must be one of the owner's excluded markers:
+```toml
+[tests]
+unit_exclude_markers = ["needs_store"]
+[tests.prerequisites]
+needs_store = "tests/services/store.py:acquire"
+```
+Those tests stay out of ordinary unit runs and join a run only when `tag:needs_store`
+(or the repository-qualified form) selects them. The function, found relative to the
+owner, receives `{"owner_root", "environment", "directory", "output"}` and returns a
+context manager whose value is a mapping of environment variables for the test
+processes. The launcher enters it once for the whole run, inside the suite lock and
+before any test process starts, and exits it after the run, also on failure. A run that
+selects none of the marker's tests never imports the file. A partial selection reports
+coverage as informational, as for any selector.
+
 Put generic integrations in api-agent, provider-specific assertions with their
 provider, and application-specific assertions with the pack. Test parameters
 should have readable IDs. See [configuration coverage](development.md#configuration-coverage)

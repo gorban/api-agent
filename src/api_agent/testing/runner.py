@@ -271,7 +271,17 @@ def _test_environment(values):
 
 
 @suite_locked
-def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, coverage_owner_only=False, successful_test_diagnostics_level='warning', evidence_boundary=None, test_environment=None, unit_timeout=None, unit_idle_timeout=None, collection_timeout=None, frontend_timeout=None):
+def run_unit_tests(context, tests, *, output=None, test_environment=None, **options):
+    """Run the selection once, with any services its markers declare held for the whole run."""
+    from .marker_services import acquired_test_services
+    environment = {**os.environ, **{name: value for name, value in _test_environment(test_environment).items()
+                                    if value is not None}}
+    with acquired_test_services(context, tests, environment, output=output) as services:
+        return _run_unit_tests(context, tests, output=output,
+                               test_environment={**_test_environment(test_environment), **services}, **options)
+
+
+def _run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=None, parallel_jobs=0, require_full_coverage=True, coverage_full=False, coverage_owner_only=False, successful_test_diagnostics_level='warning', evidence_boundary=None, test_environment=None, unit_timeout=None, unit_idle_timeout=None, collection_timeout=None, frontend_timeout=None):
     """Run selected collected identities once; preserve owner configs and coverage scope.
 
     Callbacks run on the calling thread. Cancellation terminates and reaps only
@@ -290,7 +300,7 @@ def run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=N
     # Validate against actual mandatory base/optional pack discovery, preventing
     # callers from passing fabricated node IDs or bypassing a missing base suite.
     available = {test.id: test for test in collect_tests(context, 'unit', cancel_event=cancel_event,
-                                                          timeout=collection_timeout)}
+                                                          timeout=collection_timeout, include_marked=True)}
     if any(available.get(test.id) != test for test in tests):
         raise CollectionError('Unit selection contains identities outside the collected suites')
     base, owner = Path(context.base_root).resolve(), Path(context.owner_root).resolve()
