@@ -417,3 +417,179 @@ def test_scenario_base_tag_mismatch_fails_before_build_and_is_cleaned(monkeypatc
         module['_runtime_qualification'](tmp_path, tmp_path, tag='runtime', base_image=image_id)
     assert not any(command[:2] == ('docker', 'build') for command in commands)
     assert commands[-1] == ('docker', 'image', 'rm', commands[0][3])
+
+
+DEMO_RESULTS = {
+    'plan_digest': 'a' * 64, 'compiled_digest': 'a' * 64,
+    'chat': {'status': 200, 'body': 'deterministic demo answer: qualification-stub-greeting'},
+    'stub_requests': [{'query': 'query { __schema { types { name } } }', 'authorized': True},
+                      {'query': '{ greeting }', 'authorized': True}],
+    'unconfigured': {'exit_code': 3, 'logs': 'API_ENDPOINT: selected tool input requires a nonempty string'},
+}
+
+
+def test_demo_tool_guard_accepts_a_complete_transcript():
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+
+    module['assert_demo_tool_results'](DEMO_RESULTS)
+
+
+@pytest.mark.parametrize(('change', 'message'), (
+    (lambda results: results.update(plan_digest='b' * 64), 'fresh compile'),
+    (lambda results: results['chat'].update(status=502), 'chat response'),
+    (lambda results: results['chat'].update(body='deterministic response'), 'tool result'),
+    (lambda results: results.update(stub_requests=[]), 'configured endpoint'),
+    (lambda results: results['stub_requests'].pop(0), 'configured endpoint'),
+    (lambda results: results['stub_requests'].pop(1), 'configured endpoint'),
+    (lambda results: results['stub_requests'][0].update(authorized=False), 'configured headers'),
+    (lambda results: results['unconfigured'].update(exit_code=0), 'without its configured endpoint'),
+    (lambda results: results['unconfigured'].update(logs='crashed'), 'without its configured endpoint'),
+    (lambda results: results.pop('unconfigured'), 'without its configured endpoint'),
+))
+def test_demo_tool_guard_rejects_each_regression(change, message):
+    import copy
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    results = copy.deepcopy(DEMO_RESULTS)
+
+    change(results)
+
+    with pytest.raises(RuntimeError, match=message):
+        module['assert_demo_tool_results'](results)
+
+
+def test_unconfigured_demo_start_withholds_only_the_endpoint_binding(monkeypatch):
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs))
+        return SimpleNamespace(returncode=3, stdout='out', stderr='err')
+
+    monkeypatch.setattr(module['subprocess'], 'run', run)
+
+    result = module['_unconfigured_demo_start']('image', ('API_ENDPOINT=http://stub', 'API_HEADERS={}', 'OTHER=1'))
+
+    assert result == {'exit_code': 3, 'logs': 'outerr'}
+    assert commands[0][0] == ('docker', 'run', '--rm', '--read-only', '-e', 'API_HEADERS={}', '-e', 'OTHER=1', 'image')
+    assert commands[0][1]['timeout'] == module['timeouts']()['ready']
+
+
+def test_stub_wait_retries_until_the_endpoint_listens_and_is_bounded(monkeypatch):
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    attempts = iter((1, 1, 0))
+    monkeypatch.setattr(module['subprocess'], 'run', lambda *a, **k: SimpleNamespace(returncode=next(attempts)))
+    monkeypatch.setattr(module['time'], 'sleep', lambda _: None)
+
+    module['_wait_stub']('container')
+
+    monkeypatch.setattr(module['subprocess'], 'run', lambda *a, **k: SimpleNamespace(returncode=1))
+    ticks = iter((0, 0, 1000))
+    monkeypatch.setattr(module['time'], 'monotonic', lambda: next(ticks))
+    with pytest.raises(RuntimeError, match='stub endpoint never started'):
+        module['_wait_stub']('container')
+
+
+def test_demo_scenario_starts_the_shipped_plan_with_its_endpoint_and_headers_bound(monkeypatch, tmp_path):
+    import json
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    scope = module['_demo_tool_qualification'].__globals__
+    state = tmp_path / 'state'
+    state.mkdir()
+    calls = []
+
+    def run(*command, cwd=None):
+        calls.append(command)
+        if command[:2] == ('docker', 'exec') and command[3:5] == ('python', '-c'):
+            return SimpleNamespace(stdout=module['hashlib'].sha256(b'plan').hexdigest() + '\n')
+        if command[:2] == ('docker', 'exec') and command[3] == 'cat':
+            return SimpleNamespace(stdout=json.dumps({'query': '{ greeting }', 'authorized': True}) + '\n')
+        return SimpleNamespace(stdout='', stderr='')
+
+    monkeypatch.setitem(scope, '_run', run)
+    monkeypatch.setitem(scope, '_build_qualification_image', lambda *_: 'image')
+    monkeypatch.setitem(scope, '_published_port', lambda _: 8080)
+    monkeypatch.setitem(scope, '_wait_stub', lambda _: None)
+    monkeypatch.setitem(scope, '_wait_ready_external', lambda _: {'status': 200, 'body': ''})
+    monkeypatch.setitem(scope, '_external_http', lambda *_a, **_k: {'status': 200, 'body': 'chat'})
+    monkeypatch.setitem(scope, '_unconfigured_demo_start', lambda *_: {'exit_code': 3, 'logs': 'API_ENDPOINT'})
+    monkeypatch.setitem(scope, 'assert_demo_tool_results', lambda results: calls.append(('asserted', results)))
+    monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda **_kwargs: str(state))
+    import api_agent.workflows.artifact_plans as plans
+    monkeypatch.setattr(plans, 'compile_selected_plan', lambda _: b'plan')
+
+    results = module['_demo_tool_qualification'](ROOT, tmp_path, tag='custom')
+
+    run_command = next(command for command in calls if command[:2] == ('docker', 'run'))
+    assert 'API_ENDPOINT=http://127.0.0.1:18080/graphql' in run_command
+    assert 'API_HEADERS={"Authorization": "Bearer qualification-token"}' in run_command
+    assert not any('API_PROVIDER' in item for item in run_command)
+    assert results['stub_requests'] == [{'query': '{ greeting }', 'authorized': True}]
+    assert json.loads((tmp_path / 'demo-tool-scenario.json').read_text())['chat'] == {'status': 200, 'body': 'chat'}
+    assert ('docker', 'rm', '--force') == next(c for c in calls if c[:2] == ('docker', 'rm'))[:3]
+
+
+def test_demo_scenario_removes_its_container_even_when_cleanup_fails(monkeypatch, tmp_path):
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    scope = module['_demo_tool_qualification'].__globals__
+    state = tmp_path / 'state'
+    state.mkdir()
+    calls = []
+
+    def run(*command, cwd=None):
+        calls.append(command)
+        if command[:2] == ('docker', 'rm'):
+            raise module['subprocess'].CalledProcessError(1, command)
+        if command[:2] == ('docker', 'run'):
+            raise RuntimeError('stop here')
+        return SimpleNamespace(stdout='')
+
+    monkeypatch.setitem(scope, '_run', run)
+    monkeypatch.setitem(scope, '_build_qualification_image', lambda *_: 'image')
+    monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda **_kwargs: str(state))
+
+    with pytest.raises(RuntimeError, match='stop here'):
+        module['_demo_tool_qualification'](ROOT, tmp_path, tag='custom')
+
+    assert any(command[:3] == ('docker', 'rm', '--force') for command in calls)
+
+
+def test_stub_endpoint_serves_introspection_and_the_greeting_and_records_each_request(tmp_path):
+    import json
+    import socket
+    import subprocess
+    import sys
+    import time
+    import urllib.request
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+    log = tmp_path / 'requests.jsonl'
+    server = subprocess.Popen((sys.executable, str(ROOT / 'qualification/stub_graphql.py'), str(port), str(log),
+                               'Bearer expected'))
+    try:
+        def post(query, token):
+            request = urllib.request.Request(
+                f'http://127.0.0.1:{port}/graphql', json.dumps({'query': query}).encode(),
+                {'Content-Type': 'application/json', 'Authorization': token})
+            for _ in range(100):
+                try:
+                    return json.load(urllib.request.urlopen(request, timeout=5))
+                except OSError:
+                    time.sleep(.1)
+            raise AssertionError('stub did not start')
+
+        assert post('{ greeting }', 'Bearer expected') == {'data': {'greeting': 'qualification-stub-greeting'}}
+        assert 'queryType' in json.dumps(post('{ __schema { queryType { name } } }', 'Bearer other'))
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+    assert [json.loads(line)['authorized'] for line in log.read_text().splitlines()] == [True, False]
+
+
+def test_qualification_image_ships_the_stub_endpoint_and_both_plans():
+    dockerfile = (ROOT / 'Dockerfile.qualification').read_text()
+
+    assert 'COPY qualification/stub_graphql.py /opt/api-agent/providers/stub_graphql.py' in dockerfile
+    assert 'COPY qualification/simple_chat.json /opt/api-agent/plans/simple_chat.json' in dockerfile
+    assert 'useful_api_demo.json /opt/api-agent/plans/useful_api_demo.json' in (ROOT / 'Dockerfile').read_text()
