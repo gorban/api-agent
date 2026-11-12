@@ -185,7 +185,7 @@ def test_node_context_resolves_its_named_port_in_node_scope():
     calls = []
     marker = object()
     async def invoke(prepared):
-        assert context._effects == [True]
+        assert context._effects == []
         calls.append(prepared)
         return marker
     selected = SimpleNamespace(invoke=invoke, description='forwarded')

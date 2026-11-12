@@ -190,4 +190,4 @@ def test_the_earlier_tool_resolver_still_reaches_fixed_operation_tools_of_a_runt
             contexts.append(NodeContext('read', (), (), {}))
             return await contexts[0].tool('primary').invoke('request')
     assert asyncio.run(scenario()) == 'done'
-    assert calls == ['request'] and contexts[0]._effects == [True]
+    assert calls == ['request'] and contexts[0]._effects == []

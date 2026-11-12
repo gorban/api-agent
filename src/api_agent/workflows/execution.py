@@ -277,7 +277,9 @@ class NodeContext:
                     raise ContractError(f'Tool attribute {name} is not available to nodes')
                 return getattr(borrowed, name)
             async def invoke(self, prepared):
-                context.mark_effect()
+                from api_agent.tooling.operations import FIXED_IDEMPOTENT
+                if 'execute' not in FIXED_IDEMPOTENT:
+                    context.mark_effect()
                 async with component_timeout('Tool execution', timeout):
                     return await borrowed.invoke(prepared)
         return EffectTool()

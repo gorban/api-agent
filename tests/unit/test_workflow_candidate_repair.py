@@ -283,8 +283,12 @@ def test_semantic_guard_cannot_restart_effectful_prefix():
 
 
 @pytest.mark.asyncio
-async def test_actual_tool_dispatch_receipt_is_early_monotonic_and_node_specific():
+async def test_actual_tool_dispatch_receipt_is_early_monotonic_and_node_specific(monkeypatch):
+    from api_agent.tooling import operations, runtime
     from api_agent.workflows.execution import NodeContext
+    # The fixed operations are idempotent; this exercises the receipt for a vocabulary that is not.
+    monkeypatch.setattr(operations, 'FIXED_IDEMPOTENT', frozenset())
+    monkeypatch.setattr(runtime, 'FIXED_IDEMPOTENT', frozenset())
     from api_agent.tooling.runtime import OwnerTools, invocation_tools, node_tools
     from test_node_tools import definition
     from test_tool_gate import Owner

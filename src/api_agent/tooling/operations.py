@@ -1,6 +1,7 @@
 """Operation vocabularies for tool interfaces.
 
-``verified-read@1`` keeps its fixed four-operation vocabulary. ``operations@1``
+``verified-read@1`` keeps its fixed four-operation vocabulary, all idempotent:
+the interface is read-only, so any implementation of it must not write. ``operations@1``
 lets an implementation declare its own named operations, each optionally marked
 idempotent, which nodes then select by name. An operation that is not declared
 idempotent is non-idempotent: a node that called it is never replayed.
@@ -12,6 +13,7 @@ from api_agent.workflows.model import LayoutError
 
 OPERATIONS_INTERFACE = 'operations@1'
 FIXED_OPERATIONS = ('describe', 'prepare', 'verify', 'execute')
+FIXED_IDEMPOTENT = frozenset(FIXED_OPERATIONS)
 _NAME = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
 # Owner and dispatch method names can never double as declared operations.
 _RESERVED = frozenset((*FIXED_OPERATIONS, 'invoke', 'aclose', 'astart', 'for_invocation'))

@@ -426,10 +426,9 @@ def test_exhaustion_exception_never_exports_authored_feedback_content(scenario):
 
 
 @pytest.mark.parametrize('later', ['typed', 'schema', 'semantic'])
-def test_successful_legacy_conversation_effect_cannot_replay_its_native_node(scenario, later):
+def test_native_node_is_corrected_after_a_conversation_that_only_ran_read_only_tools(scenario, later):
     import asyncio
     from test_workflow_candidate_repair import workflow, replace_node, draft
-    from api_agent.workflows.execution import WorkflowError
     from api_agent.workflows.tool_conversation import run_tool_conversation
     flow = workflow()
     visits = []
@@ -438,14 +437,15 @@ def test_successful_legacy_conversation_effect_cannot_replay_its_native_node(sce
         script = Script([tool_call(ALIASES[0], 'legacy-' + str(context.attempt)), verdict(), reply('done')])
         await run_tool_conversation(prompt='Read once', gates=scenario[1], complete=script,
                                     selection='synthetic', max_rounds=2)
+        if context.attempt > 1:
+            return draft()
         if later == 'typed':
             raise CandidateCorrection({'reason': 'native output needs correction'})
         if later == 'schema':
             return {}
         return dict(draft(), ready=False)
     replace_node(flow, 'first_draft', producer)
-    with pytest.raises(WorkflowError, match='cannot replay dispatched effects'):
-        asyncio.run(flow.arun({'user_input': 'user'}))
-    assert visits == [1]
-    assert scenario[0][ALIASES[0]].invocations == ['legacy-1']
+    asyncio.run(flow.arun({'user_input': 'user'}))
+    assert visits == [1, 2]
+    assert scenario[0][ALIASES[0]].invocations == ['legacy-1', 'legacy-2']
     assert not scenario[0][ALIASES[1]].invocations
