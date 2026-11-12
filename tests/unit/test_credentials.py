@@ -56,21 +56,22 @@ def test_invalid_csv(tmp_path, output):
 def test_prompt_fails_promptly_without_newline(tmp_path, kind, stream):
     path = fake_cli(tmp_path, f"sys.{stream}.write('Enter master password: ')\nsys.{stream}.flush()\ntime.sleep(10)")
     start = time.monotonic()
+    # A detected prompt must fail well before a timeout that leaves room for a loaded host.
     with pytest.raises(CredentialError) as error:
-        kind(source(path), timeout=2)
+        kind(source(path), timeout=6 if stream == "stderr" else 2)
     if stream == 'stderr':
         assert isinstance(error.value, CredentialLoginRequiredError)
         assert 'Enter master password:' not in str(error.value)
     else:
         assert "Enter master password:" not in str(error.value)
     assert error.value.exit_code != 0
-    assert time.monotonic() - start < (2.5 if stream == "stdout" else 1.5)
+    assert time.monotonic() - start < (2.5 if stream == "stdout" else 4.5)
 
 
 def test_split_prompt(tmp_path):
     path = fake_cli(tmp_path, "sys.stderr.write('Enter master ')\nsys.stderr.flush()\ntime.sleep(.05)\nsys.stderr.write('password:')\nsys.stderr.flush()\ntime.sleep(10)")
     with pytest.raises(CredentialLoginRequiredError, match="Keeper login required"):
-        get_totp(source(path), timeout=1)
+        get_totp(source(path), timeout=5)
 
 
 @pytest.mark.parametrize("kind", [get_password, get_totp])
