@@ -284,6 +284,9 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
         context = _bind_runtime_directory(context, argv, os.environ)
         from api_agent.runtime.hook_assurance import assure_hook
         assure_hook(context.base_root)
+        from api_agent.runtime.pack_hooks import assure_pack_hooks
+        for layer in {layer.owner_root: layer for layer in (context.pack_layers or (context,))}.values():
+            assure_pack_hooks(layer.owner_root, layer.hooks)
         if not _worktrees_verified:
             verify_worktrees(list(dict.fromkeys([context.base_root, *[layer.pack_root for layer in context.pack_layers], *[layer.owner_root for layer in context.pack_layers], context.pack_root, context.owner_root])), stdin=sys.stdin, stdout=sys.stdout,
                              resource_pack_name=context.pack_id if context.external_pack else None)

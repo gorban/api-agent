@@ -256,3 +256,37 @@ def test_distribution_identity_unreadable_provider_fails_closed(tmp_path, monkey
         patch.setattr(Path, 'stat', unavailable)
         identity = resource_pack._distribution_identity(distribution)
     assert identity is None
+
+
+def test_declared_hooks_are_owner_relative_executable_scripts(tmp_path):
+    base, pack = tmp_path / 'base', tmp_path / 'external'
+    base.mkdir()
+    make_pack(pack)
+    (pack / 'git/hooks').mkdir(parents=True)
+    (pack / 'git/hooks/pre-commit').write_text('#!/bin/sh\n')
+    manifest = pack / 'pack.toml'
+    manifest.write_text('hooks = {pre-commit = "git/hooks/pre-commit"}\n' + manifest.read_text())
+    assert load_launch_context(base, pack).hooks == (('pre-commit', 'git/hooks/pre-commit'),)
+    make_pack(pack)
+    assert load_launch_context(base, pack).hooks == ()
+
+
+@pytest.mark.parametrize('entry', [
+    'hooks = 7', 'hooks = {unknown = "git/hook"}', 'hooks = {pre-commit = 7}',
+    'hooks = {pre-commit = ""}', 'hooks = {pre-commit = "/etc/hook"}',
+    'hooks = {pre-commit = "../hook"}', 'hooks = {pre-commit = "a/../hook"}',
+    'hooks = {pre-commit = "missing"}', 'hooks = {pre-commit = "bad name"}',
+    'hooks = {pre-commit = "dir"}', 'hooks = {pre-commit = "link"}',
+])
+def test_invalid_hook_declarations_are_rejected(tmp_path, entry):
+    base, pack = tmp_path / 'base', tmp_path / 'external'
+    base.mkdir()
+    make_pack(pack)
+    (pack / 'dir').mkdir()
+    (pack / 'bad name').write_text('#!/bin/sh\n')
+    (pack / 'hook').write_text('#!/bin/sh\n')
+    (pack / 'link').symlink_to(pack / 'hook')
+    manifest = pack / 'pack.toml'
+    manifest.write_text(entry + '\n' + manifest.read_text())
+    with pytest.raises(ResourcePackError, match='hooks'):
+        load_launch_context(base, pack)
