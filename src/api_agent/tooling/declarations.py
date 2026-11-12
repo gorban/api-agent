@@ -10,7 +10,7 @@ import tomllib
 
 from api_agent.workflows.definition import _read_bounded
 from .models import ToolSelectionError
-from .operations import EFFECTS, OPERATIONS_INTERFACE, name_problem
+from .operations import OPERATIONS_INTERFACE, name_problem
 
 MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_CAPTURE_FILES = 4096
@@ -300,5 +300,5 @@ def _operations(data):
             raise ToolSelectionError(f'Tool operation {name!r}: {problem}')
         if type(row) is not dict:
             raise ToolSelectionError(f'Tool operation {name} must be a table')
-        if set(row) != {'effect'} or row['effect'] not in EFFECTS:
-            raise ToolSelectionError(f'Tool operation {name} requires exactly effect = "read" or "write"')
+        if set(row) - {'idempotent'} or type(row.get('idempotent', False)) is not bool:
+            raise ToolSelectionError(f'Tool operation {name} may only declare idempotent = true')

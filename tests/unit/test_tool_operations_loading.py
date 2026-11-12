@@ -26,7 +26,7 @@ class Selected:
     admission: object
     local_values: object = field(default_factory=dict)
     interface: str = OPERATIONS_INTERFACE
-    operations: object = field(default_factory=lambda: {'run': 'read'})
+    operations: object = field(default_factory=lambda: {'run': True})
     pending: object = ()
     service_bindings: object = ()
     service_capabilities: object = ()

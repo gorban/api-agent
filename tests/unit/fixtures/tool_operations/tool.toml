@@ -3,10 +3,9 @@ interface = "operations@1"
 factory = "factory.py:create_tool"
 
 [operations.introspect]
-effect = "read"
+idempotent = true
 
 [operations.query]
-effect = "read"
+idempotent = true
 
 [operations.mutate]
-effect = "write"

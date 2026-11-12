@@ -1,8 +1,9 @@
 """Operation vocabularies for tool interfaces.
 
 ``verified-read@1`` keeps its fixed four-operation vocabulary. ``operations@1``
-lets an implementation declare its own named operations, each marked as a read
-or a write, which nodes then select by name.
+lets an implementation declare its own named operations, each optionally marked
+idempotent, which nodes then select by name. An operation that is not declared
+idempotent is non-idempotent: a node that called it is never replayed.
 """
 import keyword
 import re
@@ -11,7 +12,6 @@ from api_agent.workflows.model import LayoutError
 
 OPERATIONS_INTERFACE = 'operations@1'
 FIXED_OPERATIONS = ('describe', 'prepare', 'verify', 'execute')
-EFFECTS = ('read', 'write')
 _NAME = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
 # Owner and dispatch method names can never double as declared operations.
 _RESERVED = frozenset((*FIXED_OPERATIONS, 'invoke', 'aclose', 'astart', 'for_invocation'))
@@ -27,10 +27,10 @@ def name_problem(name):
 
 
 def declared_operations(data):
-    """Map each declared operation name to its effect for an operations@1 declaration."""
+    """Map each declared operation name to whether it is idempotent for an operations@1 declaration."""
     if data.get('interface') != OPERATIONS_INTERFACE:
         return {}
-    return {name: row['effect'] for name, row in data['operations'].items()}
+    return {name: row.get('idempotent', False) for name, row in data['operations'].items()}
 
 
 def check_use(use, interface, declared, implementation):

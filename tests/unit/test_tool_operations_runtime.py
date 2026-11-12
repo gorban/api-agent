@@ -41,7 +41,7 @@ async def test_declared_operations_dispatch_to_the_owner(tmp_path, grammar):
 
 
 @pytest.mark.asyncio
-async def test_only_write_operations_mark_the_active_node_as_effectful(tmp_path, grammar):
+async def test_only_non_idempotent_operations_mark_the_active_node_as_effectful(tmp_path, grammar):
     runtime, definition, _ = await started(tmp_path, grammar)
     try:
         async with invocation_tools(definition, {'tools': runtime.tools_for(definition)}):
@@ -51,6 +51,8 @@ async def test_only_write_operations_mark_the_active_node_as_effectful(tmp_path,
                 with _node_effect_owner(context):
                     await getattr(node_tools(node)[port], operation)()
                 assert context._effects == effects
+                # Only a call to an operation that is not declared idempotent blocks replay.
+                assert context._dispatched() is bool(effects)
     finally:
         await runtime.aclose()
 
