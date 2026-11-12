@@ -2,6 +2,7 @@
 import os
 import errno
 import asyncio
+import math
 from pathlib import Path
 import signal
 import selectors
@@ -291,7 +292,7 @@ def communicate_owned(process, payload=None, *, timeout=None, check=None):
         check()
     if os.name != 'posix' or not isinstance(process, _Popen):
         return process.communicate(timeout=timeout) if payload is None else process.communicate(payload, timeout=timeout)
-    deadline = None if timeout is None else time.monotonic() + timeout
+    deadline = math.inf if timeout is None else time.monotonic() + timeout
     output = {name: bytearray() for name in ('stdout', 'stderr')}
     selector = selectors.DefaultSelector()
     data = payload.encode(process.encoding or 'utf-8') if isinstance(payload, str) else payload or b''
@@ -311,10 +312,13 @@ def communicate_owned(process, payload=None, *, timeout=None, check=None):
         while selector.get_map() or observe_exit(process) is None:
             if check is not None:
                 check()
-            if deadline is not None and time.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
                 raise subprocess.TimeoutExpired(process.args, timeout)
             if observe_exit(process) is not None:
+                # Disposal has its own bounded clock; it must not spend the time left to drain output.
+                disposal_started = time.monotonic()
                 finalize(process)
+                deadline += time.monotonic() - disposal_started
             events = selector.select(.01)
             for key, _ in events:
                 if key.data == 'stdin':
@@ -347,6 +351,9 @@ def communicate_owned(process, payload=None, *, timeout=None, check=None):
                         output[key.data].extend(chunk)
                     else:
                         selector.unregister(key.fileobj)
+        # A result is late only if the exchange itself ran past its deadline, never because disposal did.
+        if time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(process.args, timeout)
         finalize(process)
         result = []
         for name in ('stdout', 'stderr'):
@@ -364,6 +371,4 @@ def communicate_owned(process, payload=None, *, timeout=None, check=None):
                 pipe = getattr(process, name)
                 if pipe is not None:
                     pipe.close()
-    if deadline is not None and time.monotonic() >= deadline:
-        raise subprocess.TimeoutExpired(process.args, timeout)
     return captured_result

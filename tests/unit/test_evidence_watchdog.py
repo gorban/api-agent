@@ -339,7 +339,7 @@ def test_direct_owned_spawn_cancellation_retains_and_disposes_created_child(monk
 
 
 
-def test_watchdog_rejects_success_after_disposal_crosses_deadline(monkeypatch):
+def test_watchdog_keeps_a_result_completed_before_the_deadline_when_disposal_crosses_it(monkeypatch):
     async def scenario():
         class Process:
             returncode = 0
@@ -351,8 +351,7 @@ def test_watchdog_rejects_success_after_disposal_crosses_deadline(monkeypatch):
                 self.disposed = True
         process = Process()
         monkeypatch.setattr(watchdog, '_WALL_SECONDS', .03)
-        with pytest.raises(ContractError, match='timed out'):
-            await watchdog.communicate(process, b'')
+        assert await watchdog.communicate(process, b'') == (b'[]', None)
         assert process.disposed
     asyncio.run(scenario())
 

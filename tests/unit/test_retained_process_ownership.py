@@ -234,7 +234,7 @@ def test_async_child_watcher_cannot_grant_reserved_process_authority(monkeypatch
 
 
 @pytest.mark.parametrize('captured', [False, True])
-def test_exchange_rejects_deadline_crossed_only_by_final_disposal(monkeypatch, captured):
+def test_exchange_keeps_a_result_completed_in_time_when_only_final_disposal_crosses_the_deadline(monkeypatch, captured):
     child = subprocess.Popen([sys.executable, '-c', 'import os; os.close(1); os.close(2)'],
         stdout=subprocess.PIPE if captured else subprocess.DEVNULL,
         stderr=subprocess.PIPE if captured else subprocess.DEVNULL, start_new_session=True)
@@ -249,10 +249,31 @@ def test_exchange_rejects_deadline_crossed_only_by_final_disposal(monkeypatch, c
     monkeypatch.setattr(processes, 'time', SimpleNamespace(monotonic=lambda: ticks[0], sleep=lambda _: None))
     monkeypatch.setattr(processes, 'finalize', slow_disposal)
     try:
-        with pytest.raises(subprocess.TimeoutExpired):
-            processes.communicate_owned(child, timeout=.03)
+        assert processes.communicate_owned(child, timeout=.03) == ((b'', b'') if captured else (None, None))
         assert child.returncode == 0
         assert processes.disposal_complete(child)
         assert all(pipe is None or pipe.closed for pipe in (child.stdin, child.stdout, child.stderr))
     finally:
         original_finalize(child)
+
+
+def test_exchange_still_rejects_output_that_finished_draining_after_the_deadline(monkeypatch):
+    child = subprocess.Popen([sys.executable, '-c', 'import os; os.close(1); os.close(2)'],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    processes.wait_owned(child, timeout=5)
+    ticks = [0.0]
+    descriptors = {child.stdout.fileno(), child.stderr.fileno()}
+    original_read = os.read
+    def late_read(fd, count):
+        chunk = original_read(fd, count)
+        if fd in descriptors and not chunk:
+            ticks[0] = .08
+        return chunk
+    monkeypatch.setattr(processes, 'time', SimpleNamespace(monotonic=lambda: ticks[0], sleep=lambda _: None))
+    monkeypatch.setattr(processes, 'os', SimpleNamespace(**(vars(os) | {'read': late_read})))
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            processes.communicate_owned(child, timeout=.03)
+        assert child.returncode == 0 and processes.disposal_complete(child)
+    finally:
+        processes.finalize(child)
