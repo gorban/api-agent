@@ -193,10 +193,18 @@ needs_store = "tests/services/store.py:acquire"
 ```
 Those tests stay out of ordinary unit runs and join a run only when `tag:needs_store`
 (or the repository-qualified form) selects them. The function, found relative to the
-owner, receives `{"owner_root", "environment", "directory", "output"}` and returns a
-context manager whose value is a mapping of environment variables for the test
-processes. The launcher enters it once for the whole run, inside the suite lock and
-before any test process starts, and exits it after the run, also on failure. A run that
+owner, receives `{"owner_root", "environment", "directory", "output", "deadline",
+"cancelled"}` and returns a context manager whose value is a mapping of environment
+variables for the test processes. The launcher enters it once for the whole run, inside
+the suite lock and before any test process starts, and exits it after the run, also on
+failure. Starting every declared service, including any image build, shares one budget,
+`TEST_SERVICES_TIMEOUT_SECONDS`: `deadline` is its end as a `time.monotonic()` value and
+`cancelled()` turns true once it passes or the run is cancelled. A provider must stop
+waiting then and release what it started; the launcher then fails the run with a
+timeout (or an interruption for a cancelled run) after exiting the services already
+started, and also rejects a provider that returns after the deadline. A provider that
+starts an engine container should make its owner process remove it when the launcher
+dies, for example by holding it from a child whose stdin closes with the launcher. A run that
 selects none of the marker's tests never imports the file. A partial selection reports
 coverage as informational, as for any selector.
 
