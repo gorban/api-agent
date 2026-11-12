@@ -333,10 +333,10 @@ def test_production_image_installs_the_extras_that_cover_each_bundled_provider_r
 
 def test_production_image_prepares_the_graphql_mcp_assets_where_the_provider_reads_them():
     dockerfile = (ROOT / 'Dockerfile').read_text()
-    prepared = '/build/owner/.api-agent/graphql-mcp'
 
-    assert prepared in dockerfile
-    assert 'COPY --from=compile /build/owner/.api-agent /opt/api-agent/plans/.api-agent' in dockerfile
-    assert 'COPY --from=compile /opt/node/bin/node /opt/api-agent/bin/node' in dockerfile
-    assert 'Path(owner_root) / ".api-agent" / "graphql-mcp"' in (
+    assert 'GRAPHQL_MCP_ASSETS_DIR=/opt/api-agent/graphql-mcp' in dockerfile
+    assert 'COPY --from=compile --chown=10001:10001 /build/graphql-mcp /opt/api-agent/graphql-mcp' in dockerfile
+    assert ' /build/graphql-mcp && ' in dockerfile
+    assert 'COPY --from=compile --chown=10001:10001 /opt/node/bin/node /opt/api-agent/bin/node' in dockerfile
+    assert 'process_setting("GRAPHQL_MCP_ASSETS_DIR")' in (
         ROOT / 'src/api_agent/api_providers/graphql_mcp/factory.py').read_text()

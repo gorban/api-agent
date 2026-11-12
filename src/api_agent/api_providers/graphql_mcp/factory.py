@@ -8,6 +8,7 @@ from typing import Mapping
 
 from api_agent.api_providers.graphql_mcp import GraphQLMcpOwner, GraphQLMcpError, installed_script, prepare_assets
 from api_agent.api_providers.graphql_mcp.owner import header_secret_values
+from api_agent.config.process_settings import process_setting
 from api_agent.providers.contracts import APIRequest, APIResult, ProviderCapabilities
 from api_agent.providers.tools import PreparedCall
 from api_agent.providers.control import CleanupPendingError
@@ -36,8 +37,11 @@ class GraphQLMcpAPIProvider:
                 # The factory is synchronous. Defer owner validation and all
                 # provider use until asynchronous admission in astart.
                 deferred = True
+        configured = process_setting("GRAPHQL_MCP_ASSETS_DIR")
+        if configured and not Path(configured).is_absolute():
+            raise GraphQLMcpError("assets_dir_invalid")
         owner_root = services.get("owner_root")
-        if owner_root is None:
+        if owner_root is None and not configured:
             raise GraphQLMcpError("owner_root_missing")
         root_fields = config.get("ROOT_FIELDS")
         if root_fields is not None:
@@ -45,7 +49,8 @@ class GraphQLMcpAPIProvider:
                 any(type(field) is not str or not field for field in root_fields)):
                 raise GraphQLMcpError("root_fields_invalid")
             root_fields = frozenset(root_fields)
-        self._assets_dir = Path(owner_root) / ".api-agent" / "graphql-mcp"
+        self._assets_dir = Path(configured) if configured else Path(owner_root) / ".api-agent" / "graphql-mcp"
+        self._assets_prepared = bool(configured)
         self._deferred = (endpoint, dict(headers), root_fields) if deferred else None
         self._owner = None if deferred else GraphQLMcpOwner(endpoint, headers=headers, assets_dir=self._assets_dir,
                                                            root_fields=root_fields)
@@ -87,6 +92,8 @@ class GraphQLMcpAPIProvider:
         try:
             installed_script(self._assets_dir)
         except GraphQLMcpError:
+            if self._assets_prepared:
+                raise
             await prepare_assets(self._assets_dir)
         self._check_open()
         self._ready = True

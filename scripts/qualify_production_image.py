@@ -40,7 +40,7 @@ BASE_STDLIB_PATH_ALLOWLIST = (
 # the forbidden names above.
 PROVIDER_ASSET_PATH_ALLOWLIST = (
     'opt/api-agent/venv/lib/python*/site-packages/api_agent/api_providers/graphql_mcp/licenses/*',
-    'opt/api-agent/plans/.api-agent/graphql-mcp/*',
+    'opt/api-agent/graphql-mcp/*',
 )
 
 
