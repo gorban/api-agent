@@ -51,6 +51,21 @@ def _prepare_suite_prerequisites(context, config, output, cancel_event=None):
         owner.start(cancelled=cancel_event)
 
 
+def _start_credential_relay(context, config):
+    """Serve the suite's configured password-manager reads from this process."""
+    if not config.get('UNATTENDED_AUTH'):
+        return
+    from api_agent.auth.managers import registry_for_context
+    from .credential_relay import CredentialRelay, configured_sources
+    sources = configured_sources(config, registry_for_context(context))
+    if not sources:
+        return
+    relay = CredentialRelay(sources)
+    relay.start()
+    _RUNNER_OPERATION.credential_relay = relay
+    relay.warm()
+
+
 def _close_suite_prerequisites(inspections=()):
     if any(callable(getattr(item, '_when_closed', None)) and not item.closed for item in inspections):
         return
@@ -80,6 +95,7 @@ def _admit_operation(function):
             recovery.prepare()
             _RUNNER_OPERATION.recovery = recovery
             _RUNNER_OPERATION.prerequisites = None
+            _RUNNER_OPERATION.credential_relay = None
             result = None
             recovered = False
             try:
@@ -135,6 +151,10 @@ def _admit_operation(function):
                     pending.cleanup_pending = getattr(primary, 'cleanup_pending', None)
                     primary.cleanup_pending = pending
         finally:
+            relay = getattr(_RUNNER_OPERATION, 'credential_relay', None)
+            if relay is not None:
+                relay.close()
+            _RUNNER_OPERATION.credential_relay = None
             _RUNNER_OPERATION.recovery = None
             _RUNNER_OPERATION.prerequisites = None
             _RUNNER_OPERATION.active = False
@@ -501,6 +521,10 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 from .inference_content import EvidenceFailureChannel
                 with directory as temporary, EvidenceFailureChannel(selected) as failure_channel:
                     env['API_AGENT_EVIDENCE_FAILURE_CHANNEL'] = failure_channel.descriptor
+                    relay = getattr(_RUNNER_OPERATION, 'credential_relay', None)
+                    if relay is not None:
+                        from .credential_relay import ENVIRONMENT
+                        env[ENVIRONMENT] = relay.descriptor
                     if config is not None:
                         from .provider_setup import write_launch_snapshot
                         env['API_AGENT_INTEGRATION_CONTEXT'] = str(write_launch_snapshot(Path(temporary), context, config,
@@ -1104,6 +1128,7 @@ def run_integration_tests(context, tests, **options):
                 if not prepared:
                     if callbacks['before_run'] is not None:
                         callbacks['before_run']()
+                    _start_credential_relay(context, config)
                     _prepare_suite_prerequisites(context, config, options.get('output'), options.get('cancel_event'))
                     prepared = True
             wave_options = dict(options)

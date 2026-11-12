@@ -207,6 +207,22 @@ def _run(argv: list[str], timeout: float, *, classify_login=None, cancel_event=N
 
 
 def _retrieve(source: CredentialSource | Mapping[str, object], kind: str, timeout: float, *, interaction=None, recovery_timeout=None) -> str:
+    if type(kind) is str and kind in {"username", "password", "totp"} and os.environ.get("API_AGENT_CREDENTIAL_RELAY"):
+        # A suite launcher reads in its own approved CLI session for its tests.
+        from api_agent.testing.credential_relay import relayed
+        try:
+            value = relayed(source if isinstance(source, CredentialSource) else CredentialSource.from_mapping(source),
+                            kind, timeout)
+        except CredentialLoginRequiredError:
+            if interaction is None:
+                raise
+            value = None  # Attended recovery runs here, where its interaction is.
+        if value is not None:
+            return value
+    return _retrieve_locally(source, kind, timeout, interaction=interaction, recovery_timeout=recovery_timeout)
+
+
+def _retrieve_locally(source: CredentialSource | Mapping[str, object], kind: str, timeout: float, *, interaction=None, recovery_timeout=None) -> str:
     if isinstance(kind, LoginCredentialRequest):
         from .selected_login import retrieve
         return retrieve(source, kind, timeout, interaction=interaction, recovery_timeout=recovery_timeout)
