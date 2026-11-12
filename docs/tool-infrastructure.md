@@ -89,6 +89,8 @@ declare an API depending on a database with `dependencies = ["example/database"]
 provided that service is declared with valid Compose assets, readiness and any
 seed completion contract. Recursive planning starts prerequisites before their
 consumers, rejects missing/cyclic or disabled dependencies and waits for
-readiness/seed completion before handing endpoints to factories. The fixture's
+readiness/seed completion before handing endpoints to factories. A service whose
+container stops during that wait fails at once instead of exhausting its readiness
+timeout; its logs carry the cause. The fixture's
 backing service illustrates that dependency join; it does not qualify a real
 database or durable-storage deployment.

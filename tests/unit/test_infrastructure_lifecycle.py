@@ -489,6 +489,19 @@ def test_explicit_retain_preserves_conditional_services_after_concurrent_release
     assert all(item['State']['Running'] for item in engine.records.values())
 
 
+def test_stopped_service_fails_without_waiting_out_its_readiness(synthetic):
+    manager, engine, clock, _, _ = synthetic
+    manager.acquire()
+    current = manager._compatible(manager._inventory(10), 10)
+    name = next(iter(manager.conditional))
+    engine.records[current[name].id]['State']['Running'] = False
+    started = clock.value
+    with pytest.raises(p.PrerequisiteError, match='stopped before it became ready'):
+        manager._wait_conditional(name, started + 600,
+                                  {key: item for key, item in current.items() if key != name})
+    assert clock.value == started
+
+
 def test_wait_supports_readiness_without_seed_completion(synthetic):
     manager, _, _, _, _ = synthetic
     manager.acquire()
