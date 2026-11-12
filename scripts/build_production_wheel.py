@@ -1,9 +1,12 @@
 """Build the parser-free production wheel from a clean temporary source tree."""
 import ast
+import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 
 
 _EXCLUDED_DIRECTORIES = frozenset({
@@ -29,6 +32,10 @@ _EXCLUDED_MODULE_FILES = frozenset({
     'workflows/viewer_repository.py',
 })
 
+# Project dependencies imported only by the excluded declaration parser.
+_PARSER_DISTRIBUTIONS = frozenset({'markdown-it-py'})
+_DISTRIBUTION_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*')
+
 _PYPROJECT = '''\
 [build-system]
 requires = ["hatchling>=1.26,<2"]
@@ -39,17 +46,7 @@ name = "api-agent-runtime"
 version = "0.1.0"
 description = "Compiled-workflow API agent runtime"
 requires-python = ">=3.13"
-dependencies = [
-  "Django>=5.2.17,<5.3",
-  "uvicorn>=0.53,<0.54",
-  "packaging>=24,<27",
-  "regex>=2024.11.6,<2027",
-  "httpx>=0.28.1,<0.29",
-  "PyJWT[crypto]>=2.10.1,<3",
-  "langgraph==1.2.14",
-  "langchain-core==1.6.9",
-  "jsonschema==4.26.0",
-]
+dependencies = {dependencies}
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/api_agent"]
@@ -58,6 +55,20 @@ packages = ["src/api_agent"]
 "src/api_agent/cfg/config.toml" = "api_agent/cfg/config.toml"
 "src/api_agent/telemetry/trace_adapters/otel/cfg/config.toml" = "api_agent/telemetry/trace_adapters/otel/cfg/config.toml"
 '''
+
+
+def _normalized(name):
+    return re.sub(r'[-_.]+', '-', name).lower()
+
+
+def runtime_dependencies(root):
+    """The project's declared requirements, verbatim, without the parser-only distributions."""
+    declared = tomllib.loads((Path(root) / 'pyproject.toml').read_text())['project']['dependencies']
+    named = [(_normalized(_DISTRIBUTION_NAME.match(item).group()), item) for item in declared]
+    stale = sorted(_PARSER_DISTRIBUTIONS - {name for name, _ in named})
+    if stale:
+        raise RuntimeError(f'parser-only distributions are not project dependencies: {stale}')
+    return [item for name, item in named if name not in _PARSER_DISTRIBUTIONS]
 
 
 def _module_source(package_root, module):
@@ -128,10 +139,9 @@ def _ignore(directory, names):
 def build(root, output):
     """Return one deterministic runtime wheel in ``output`` without dev assets."""
     root, output = Path(root).resolve(), Path(output).resolve()
-    retained = production_import_closure(root) & {
-        'api_agent.' + module[:-3].replace('/', '.')
-        for module in _EXCLUDED_MODULE_FILES
-    }
+    excluded_files = {'api_agent.' + module[:-3].replace('/', '.') for module in _EXCLUDED_MODULE_FILES}
+    retained = {module for module in production_import_closure(root)
+                if module in excluded_files or _EXCLUDED_DIRECTORIES & set(module.split('.'))}
     if retained:
         raise RuntimeError(f'production import closure requires excluded modules: {sorted(retained)}')
     output.mkdir(parents=True, exist_ok=True)
@@ -146,7 +156,8 @@ def build(root, output):
         shutil.copytree(root / 'workflows' / 'contracts',
                         source / 'src' / 'api_agent' / 'workflows' / 'contracts')
         shutil.copy2(root / 'LICENSE', source / 'LICENSE')
-        (source / 'pyproject.toml').write_text(_PYPROJECT)
+        (source / 'pyproject.toml').write_text(
+            _PYPROJECT.replace('{dependencies}', json.dumps(runtime_dependencies(root))))
         # Run from the checkout so a project-scoped uv (for example a mise shim) resolves.
         subprocess.run(('uv', 'build', '--wheel', '--out-dir', str(output), str(source)),
                        cwd=root, check=True, capture_output=True, text=True)
