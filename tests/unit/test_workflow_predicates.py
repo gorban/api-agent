@@ -477,6 +477,16 @@ def test_compiled_format_rejection_exhausts_declared_passes():
     assert next(event for event in events if event['event'] == 'scope_end' and event['owner'] == 'first')['outcome'] == 'failed'
 
 
+@pytest.mark.parametrize('counter', ['attempt', 'expired'])
+def test_a_step_counter_shadowed_by_a_declared_output_field_is_rejected(counter):
+    fields = {'__route_visits__': {'draft': {'type': 'integer'}}, '__route_expiring__': {'draft'},
+              'draft': {counter: {'type': 'boolean'}}}
+
+    with pytest.raises(PredicateError, match=(
+            f'^draft.{counter} is ambiguous: draft also declares an output field named {counter}; rename that field$')):
+        parse_predicate(f'draft.{counter} == 1', fields)
+
+
 def test_condition_lines_split_a_multiline_condition_at_its_own_alternatives():
     from api_agent.workflows.predicates import condition_lines
 

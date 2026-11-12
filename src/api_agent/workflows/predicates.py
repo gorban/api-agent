@@ -113,6 +113,10 @@ def parse_predicate(text, fields):
 
     def contract(node):
         owner, path = _reference(node)
+        if (len(path) == 1 and path[0] in ('attempt', 'expired') and owner in steps
+                and path[0] in fields.get(owner, {})):
+            raise PredicateError(f'{owner}.{path[0]} is ambiguous: {owner} also declares an output field '
+                                 f'named {path[0]}; rename that field')
         if path == ('attempt',) and owner in steps:
             return {'type': 'integer'}
         if path == ('expired',) and owner in steps:
