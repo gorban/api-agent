@@ -1,5 +1,6 @@
 """Lazy personal subscription authentication through the provider boundary."""
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -76,6 +77,7 @@ class OwnedSubscriptionSession(SubscriptionSession):
 
 
 class GPTProvider:
+    _credentials = None
     credential_protection_version = 1
     captures_effective_payload = True
     version = 1
@@ -139,15 +141,45 @@ class GPTProvider:
             raise ContractError('GPT credential authority must be bound before setup.')
         self.emissions = authority
 
+    def _credential_scope(self):
+        """Owner of the rotating subscription tokens; a refresh retires the tokens it replaces."""
+        if self._credentials is None:
+            self._credentials = self.emissions.credential_owner()
+        return self._credentials
+
     async def _register_connection(self, connection):
         if self.emissions is not None:
-            from api_agent.telemetry.privacy import register_secret_async
-            for name in ("access_token", "refresh_token", "id_token"):
-                value = getattr(connection, name, None)
-                if type(value) is str and value:
-                    await register_secret_async(self.emissions, value)
+            values = [value for value in (getattr(connection, name, None)
+                                          for name in ("access_token", "refresh_token", "id_token"))
+                      if type(value) is str and value]
+            if values:
+                owner = self._credential_scope()
+                await owner.aregister(*values, slot='connection')
+                # The saved connection now carries what the refresh and login exchanges received.
+                owner.retire()
+
+    async def _register_grant(self, value):
+        """Scrub a value an OAuth exchange sent or received until the connection it produced is registered."""
+        await self._credential_scope().aregister(value)
+
+    @asynccontextmanager
+    async def _operation_credentials(self, auth):
+        """Keep the call's access token scrubbed until the call finishes, even if a refresh replaces it."""
+        if self.emissions is None:
+            yield
+            return
+        owner = self._credential_scope()
+        with owner.hold():
+            try:
+                if type(auth) is str and auth:
+                    await owner.aregister(auth, slot='call')
+                yield
+            finally:
+                # Calls overlap in this slot; each open call's hold keeps its own token.
+                owner.retire('call')
 
     async def _register_secret(self, value):
+        """Scrub a configured or retrieved value for the life of the credential authority."""
         from api_agent.telemetry.privacy import register_secret_async
         await register_secret_async(self.emissions, value)
 
@@ -259,7 +291,7 @@ class GPTProvider:
         await self._register_connection(store.load(profile))
         session = OwnedSubscriptionSession(store, profile, reconnect=reconnect,
                                            register_connection=self._register_connection,
-                                           register_connection_secret=self._register_secret if self.emissions is not None else None)
+                                           register_connection_secret=self._register_grant if self.emissions is not None else None)
         self.sessions.append(session)
         self.quota_interactive = bool(interactive)
         return session
@@ -273,7 +305,7 @@ class GPTProvider:
         browser_options = {}
         registration = {'profile': profile} if profile is not None else {}
         if self.emissions is not None:
-            registration['register_secret'] = self._register_secret
+            registration['register_secret'] = self._register_grant
         if self.inspection is not None:
             browser_options['inspection'] = self.inspection
         if not interactive:
@@ -330,20 +362,19 @@ class GPTProvider:
     async def adescribe(self, *, auth=None):
         if self.closed:
             raise ContractError("GPT provider is closed.")
-        if self.emissions is not None and type(auth) is str and auth:
-            await self._register_secret(auth)
-        from .discovery import discover_selections
-        base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
-        async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
-            selections = await discover_selections(client=client, base_url=base, access_token=auth,
-                                              subscription=self.auth_mode == "subscription", authority=self.emissions,
-                                              timeout=self.discovery_timeout)
-        if base == 'https://openrouter.ai/api/v1':
-            self._reasoning_catalog = {row.selected_llm: row.reasoning_efforts for row in selections}
-        from dataclasses import replace
-        from .reasoning import display_reasoning
-        return tuple(replace(row, features=(*row.features, 'display_reasoning'))
-                     if display_reasoning(row.selected_llm, base_url=base, api_mode=self.api_mode) else row for row in selections)
+        async with self._operation_credentials(auth):
+            from .discovery import discover_selections
+            base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
+            async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
+                selections = await discover_selections(client=client, base_url=base, access_token=auth,
+                                                  subscription=self.auth_mode == "subscription", authority=self.emissions,
+                                                  timeout=self.discovery_timeout)
+            if base == 'https://openrouter.ai/api/v1':
+                self._reasoning_catalog = {row.selected_llm: row.reasoning_efforts for row in selections}
+            from dataclasses import replace
+            from .reasoning import display_reasoning
+            return tuple(replace(row, features=(*row.features, 'display_reasoning'))
+                         if display_reasoning(row.selected_llm, base_url=base, api_mode=self.api_mode) else row for row in selections)
 
     def _validate_catalog_reasoning(self, request):
         effort = request.payload.generation.reasoning_effort
@@ -374,15 +405,14 @@ class GPTProvider:
         if not isinstance(self.auth_mode, str) or self.auth_mode not in {'subscription', 'api_key'}:
             raise ContractError('GPT_AUTH_MODE must be subscription or api_key.')
         base = "https://api.openai.com/v1" if self.auth_mode == "subscription" else self.base_url
-        if self.emissions is not None and type(auth) is str and auth:
-            await self._register_secret(auth)
-        await async_validate_text_request(base_url=base, access_token=auth, subscription=self.auth_mode == 'subscription',
-                              api_mode=self.api_mode, request=request)
-        self._validate_catalog_reasoning(request)
-        async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
-            return await complete_text(client=client, base_url=base, access_token=auth,
-                                       subscription=self.auth_mode == "subscription", api_mode=self.api_mode,
-                                       request=request, cache_session_id=self.cache_session_id, authority=self.emissions)
+        async with self._operation_credentials(auth):
+            await async_validate_text_request(base_url=base, access_token=auth, subscription=self.auth_mode == 'subscription',
+                                  api_mode=self.api_mode, request=request)
+            self._validate_catalog_reasoning(request)
+            async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as client:
+                return await complete_text(client=client, base_url=base, access_token=auth,
+                                           subscription=self.auth_mode == "subscription", api_mode=self.api_mode,
+                                           request=request, cache_session_id=self.cache_session_id, authority=self.emissions)
 
     async def aprepare_accounting(self, *, auth=None):
         """Prepare optional native quota access before the short snapshot budget."""
@@ -472,6 +502,8 @@ class GPTProvider:
         for browser in self.browsers:
             await _dispose(browser.aclose())
         self.browsers.clear()
+        if self._credentials is not None:
+            self._credentials.close()
 
 
 def factory(config, services):
