@@ -1622,7 +1622,7 @@ def test_renderer_permission_error_requires_reserved_zombie_only_group(monkeypat
         raise PermissionError("controlled signal denial")
     monkeypatch.setattr(viewer_render.os, "killpg", denied)
     monkeypatch.setattr(viewer_render.subprocess, "run", lambda *args, **kwargs:
-                        SimpleNamespace(stdout=snapshot))
+                        SimpleNamespace(stdout=snapshot, stderr="", returncode=0))
     if accepted:
         viewer_render.kill_owned_group(123)
     else:
@@ -1643,7 +1643,7 @@ def test_drain_rejects_result_when_zombie_inspection_exhausts_deadline(monkeypat
     monkeypatch.setattr(viewer_render.os, "killpg", denied)
     def late_snapshot(*args, **kwargs):
         clock[0] = 2.0
-        return SimpleNamespace(stdout=f"{process.pid} {process.pid} Z\n")
+        return SimpleNamespace(stdout=f"{process.pid} {process.pid} Z\n", stderr="", returncode=0)
     monkeypatch.setattr(viewer_render.subprocess, "run", late_snapshot)
 
     with pytest.raises(subprocess.TimeoutExpired):

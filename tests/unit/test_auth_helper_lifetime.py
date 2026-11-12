@@ -250,6 +250,7 @@ def test_owner_preserves_housekeeping_fault_when_acknowledgment_fails(monkeypatc
 @pytest.mark.parametrize('code', [0, 7, -9])
 def test_guard_preserves_exit_status_for_permission_denied_zombie_group(monkeypatch, code):
     from api_agent.auth import owned_process as owned
+    from api_agent.runtime import processes
     from types import SimpleNamespace
     events = []
     monkeypatch.setattr(owned, '_enable_subreaper', lambda: None)
@@ -264,8 +265,8 @@ def test_guard_preserves_exit_status_for_permission_denied_zombie_group(monkeypa
     monkeypatch.setattr(owned.os, 'killpg', denied)
     def snapshot(*args, **kwargs):
         events.append('inspect')
-        return SimpleNamespace(stdout='123 123 Z\n456 123 Z\n')
-    monkeypatch.setattr(owned.subprocess, 'run', snapshot)
+        return SimpleNamespace(stdout='123 123 Z\n456 123 Z\n', stderr='', returncode=0)
+    monkeypatch.setattr(processes.subprocess, 'run', snapshot)
     class Selector:
         def register(self, *args): pass
         def close(self): events.append('selector close')
@@ -284,13 +285,13 @@ def test_owned_group_permission_denial_fails_closed_when_inspection_fails(monkey
         raise PermissionError('controlled denial')
     monkeypatch.setattr(owned.os, 'killpg', denied)
     def snapshot(*args, **kwargs):
-        if failure == 'inspection':
-            raise subprocess.CalledProcessError(2, 'ps')
         if failure == 'timeout':
             raise subprocess.TimeoutExpired('ps', 1)
-        return SimpleNamespace(stdout='invalid snapshot')
+        if failure == 'inspection':
+            return SimpleNamespace(stdout='', stderr='failed', returncode=2)
+        return SimpleNamespace(stdout='invalid snapshot', stderr='', returncode=0)
     monkeypatch.setattr(owned.subprocess, 'run', snapshot)
-    with pytest.raises((ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+    with pytest.raises(RuntimeError, match='ps failed|invalid ps output'):
         owned.kill_owned_group(123)
 
 
@@ -332,10 +333,10 @@ def test_guardian_inspection_budget_is_bounded_and_keeps_child_reserved(monkeypa
             assert os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
             raise subprocess.TimeoutExpired(args[0], kwargs['timeout'])
         monkeypatch.setattr(owned, 'os', SimpleNamespace(**(vars(os) | {'killpg': denied})))
-        monkeypatch.setattr(owned, 'subprocess', SimpleNamespace(**(vars(subprocess) | {'run': unavailable})))
-        with pytest.raises(subprocess.TimeoutExpired) as failure:
+        monkeypatch.setattr(subprocess, 'run', unavailable)
+        with pytest.raises(RuntimeError, match='ps failed') as failure:
             owned.kill_owned_group(child.pid)
-        assert failure.value.timeout == 5
+        assert failure.value.__cause__.timeout == 5
         assert child.returncode is None
     finally:
         assert child.wait(timeout=5) == 0
