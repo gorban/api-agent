@@ -104,6 +104,9 @@ def test_viewer_keeps_collector_until_interrupted_then_disposes_in_order(monkeyp
     monkeypatch.setattr(trace_viewer, 'InspectionOwner', Inspection)
     monkeypatch.setattr(trace_viewer, 'LocalTracing', Dashboard)
     monkeypatch.setattr(trace_viewer, 'managed_browser', lambda **kw: Browser())
+    async def prepare(**kw):
+        events.append('prepare-browser')
+    monkeypatch.setattr(trace_viewer, 'prepare_managed_browser', prepare)
     async def scenario():
         nonlocal ready
         ready = asyncio.Event()
@@ -112,12 +115,12 @@ def test_viewer_keeps_collector_until_interrupted_then_disposes_in_order(monkeyp
             'LANGFUSE_SECRET_KEY': 'synthetic-exporter-secret'}))
         await asyncio.wait_for(ready.wait(), 3)
         assert not task.done()
-        assert events == ['acquire', 'dashboard-start', 'browser-start', 'login']
+        assert events == ['prepare-browser', 'acquire', 'dashboard-start', 'browser-start', 'login']
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     asyncio.run(scenario())
-    assert events == ['acquire', 'dashboard-start', 'browser-start', 'login',
+    assert events == ['prepare-browser', 'acquire', 'dashboard-start', 'browser-start', 'login',
                       'browser-close', 'browser-close', 'inspection-close', 'dashboard-close', 'release']
     output = capsys.readouterr().out
     assert output.count('cleanup remains pending') == 1

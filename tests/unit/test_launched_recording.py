@@ -45,8 +45,9 @@ def test_launch_reports_preparation_phases_before_test_start(tmp_path):
 
     phases = [event.component for event in events if event.kind == 'suite_progress']
     assert result.persisted
-    assert [phase.name for phase in phases] == ['Prepare selected workspaces'] * 2 + ['Prepare reporting prerequisites'] * 2
-    assert [phase.active for phase in phases] == [True, False, True, False]
+    assert [phase.name for phase in phases] == (
+        ['Prepare selected workspaces'] * 2 + ['Prepare Chromium'] * 2 + ['Prepare reporting prerequisites'] * 2)
+    assert [phase.active for phase in phases] == [True, False] * 3
     assert all(event.identity is None for event in events if event.kind == 'suite_progress')
 
 
@@ -182,7 +183,7 @@ def test_default_owner_uses_single_validated_requirement_plan(tmp_path, monkeypa
     context, test, config = fixture(tmp_path)
     context.pack_root = context.owner_root
     plan = SimpleNamespace(validate=Mock(), requires_pack_api=requires_api, workspace_kinds=frozenset(),
-        provider_kinds=frozenset({'llm','api','upstream','access'} if requires_api else {'llm'}))
+        prepare_browser=Mock(), provider_kinds=frozenset({'llm','api','upstream','access'} if requires_api else {'llm'}))
     planner, factory = Mock(return_value=plan), Mock(return_value=owner([]))
     monkeypatch.setattr(launched, 'plan_integration_requirements', planner)
     monkeypatch.setattr(launched, 'local_recording_prerequisites', factory)
@@ -200,14 +201,17 @@ def test_recorded_launch_prepares_declared_workspaces_once_before_any_worker(tmp
     order = []
     prepare = Mock(side_effect=lambda *args, **kwargs: order.append('workspaces'))
     monkeypatch.setattr(launched, 'prepare_selected_workspaces', prepare)
+    browser = Mock(side_effect=lambda **kwargs: order.append('browser'))
     monkeypatch.setattr(launched, 'plan_integration_requirements', lambda tests: SimpleNamespace(
-        validate=Mock(), requires_pack_api=False, workspace_kinds=frozenset({'ui'}), provider_kinds=frozenset({'llm'})))
+        validate=Mock(), requires_pack_api=False, workspace_kinds=frozenset({'ui'}), provider_kinds=frozenset({'llm'}),
+        prepare_browser=browser))
     def runner(*args, **hooks):
         order.append('workers')
         return fake_runner()(*args, **hooks)
     launched.run_launched_integration(context, [test], config, accepted=True,
         prerequisites=owner([]), storage=Storage(), runner=runner)
-    assert order == ['workspaces', 'workers']
+    assert order == ['workspaces', 'browser', 'workers']
+    assert browser.call_args.kwargs['cancellation'] is not None
     prepare.assert_called_once()
     assert prepare.call_args.args == (context, config, frozenset({'ui'}))
     assert prepare.call_args.kwargs['cancellation'] is not None
@@ -222,7 +226,8 @@ def test_unrecorded_launch_prepares_declared_workspaces_before_workers(tmp_path,
     monkeypatch.setattr(launched, 'prepare_selected_workspaces',
                         lambda *args, **kwargs: order.append(('workspaces', args[2], kwargs['cancellation'])))
     monkeypatch.setattr(launched, 'plan_integration_requirements', lambda tests: SimpleNamespace(
-        validate=Mock(), workspace_kinds=frozenset({'ui'})))
+        validate=Mock(), workspace_kinds=frozenset({'ui'}),
+        prepare_browser=lambda **kwargs: order.append(('browser', kwargs['cancellation']))))
     def execute(*args, **kwargs):
         order.append('workers')
         return SimpleNamespace(exit_code=0, tests=(), cancelled=False, inspections=())
@@ -230,4 +235,4 @@ def test_unrecorded_launch_prepares_declared_workspaces_before_workers(tmp_path,
     cancelled = object()
     launched.run_launched_integration(context, (test,), {'SKIP_ALLURE_REPORTING': True, 'TUI_MODE': 'integration'},
         accepted=True, cancel_event=cancelled)
-    assert order == [('workspaces', frozenset({'ui'}), cancelled), 'workers']
+    assert order == [('workspaces', frozenset({'ui'}), cancelled), ('browser', cancelled), 'workers']

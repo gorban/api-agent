@@ -276,6 +276,10 @@ class LocalRunOwner:
                     from api_agent.runtime import view_flow
                     from api_agent.runtime.tasks import offload
                     await offload(view_flow.prepare_view_tools, self.context)
+                    if self.browser_factory is None and (
+                            self._config.values.get('RUN_UI', False) or self._config.values.get('DEBUG', False)):
+                        from api_agent.runtime.managed_browser import prepare_managed_browser
+                        await prepare_managed_browser(headless=False)
             async with component_timeout('Local application preparation', 120):
                 if self._config.errors or self._config.missing:
                     raise ValueError('invalid_runtime_configuration')

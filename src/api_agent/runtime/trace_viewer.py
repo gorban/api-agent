@@ -7,7 +7,7 @@ from api_agent.providers.control import finish_cleanup
 from api_agent.providers.progress import component_timeout, report_timeout
 from api_agent.providers.sessions import InspectionOwner
 from api_agent.runtime.local_tracing import DashboardError, LocalTracing
-from api_agent.runtime.managed_browser import managed_browser
+from api_agent.runtime.managed_browser import managed_browser, prepare_managed_browser
 from api_agent.telemetry.privacy import EmissionBoundary
 from api_agent.testing.prerequisites import local_trace_prerequisites
 
@@ -50,6 +50,7 @@ async def _dispose(owner, *, label, inspection=None):
 
 
 async def view_trace(context, values):
+    await prepare_managed_browser(headless=False)
     cancelled = Event()
     manager = local_trace_prerequisites(context, values, cancel_event=cancelled, require_export=False)
     if manager is None and not values.get('TRACE_PROVIDER'):

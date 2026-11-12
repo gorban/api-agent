@@ -74,6 +74,7 @@ def test_provider_snapshot_prepares_missing_client_and_matches_attended_login(mo
             pass
 
     monkeypatch.setattr(factory, 'subscription_browser', lambda **options: BrowserOwner())
+    monkeypatch.setattr(factory, 'prepare_subscription_browser', lambda **options: asyncio.sleep(0))
     readings = []
 
     async def read(selected, *, period, executable=None):

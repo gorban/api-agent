@@ -59,6 +59,8 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         with _preparing(options, 'Prepare selected workspaces'):
             prepare_selected_workspaces(context, config, plan.workspace_kinds,
                                         cancellation=options.get('cancel_event'))
+        with _preparing(options, 'Prepare Chromium'):
+            plan.prepare_browser(cancellation=options.get('cancel_event'))
         if tool_plan is not None:
             with _preparing(options, 'Prepare selected tools'):
                 from .prerequisites import prepare_selected_tool_dependencies
@@ -117,6 +119,8 @@ def run_launched_integration(context, tests, config, *, accepted=False,
     cancelled = options.setdefault('cancel_event', Event())
     with _preparing(options, 'Prepare selected workspaces'):
         prepare_selected_workspaces(context, config, plan.workspace_kinds, cancellation=cancelled)
+    with _preparing(options, 'Prepare Chromium'):
+        plan.prepare_browser(cancellation=cancelled)
     if prerequisites is None:
         scope = StackScope.from_roots(context.base_root, context.pack_root)
         prerequisites = local_recording_prerequisites(context, scope=scope,

@@ -25,6 +25,8 @@ class AllureHistoryOwner:
             plan = plan_compose(config, StackScope.from_roots(self.context.base_root, self.context.pack_root),
                                 engine_environment=environment)
             await offload(self.reporting_sessions.acquire, plan, engine_environment=environment)
+        # The viewer's browser attempt is bounded, so any first-time install precedes it.
+        await self._allure().prepare_browser()
 
     def allure_source(self, *, primary=False):
         from api_agent.testing.allure_viewer import RunSource

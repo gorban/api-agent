@@ -1,5 +1,6 @@
 """Shared Stealth-enabled Chromium for provider, test and local UI sessions."""
 import asyncio
+from functools import partial
 import os
 import tempfile
 import threading
@@ -9,15 +10,25 @@ from urllib.parse import urlsplit
 from api_agent.providers.sessions import BrowserOwner
 from api_agent.providers.control import finish_cleanup as _dispose
 from api_agent.runtime.browser import ensure_chromium_ready
+from api_agent.runtime.tasks import offload
 
 _CHROMIUM_SINGLETON_SUFFIX = "/org.chromium.Chromium.XXXXXX/SingletonSocket"
 
 
+async def prepare_managed_browser(*, headless):
+    """Install Chromium under its own budget; await it before the attempt that launches the browser."""
+    cancellation = threading.Event()
+    await offload(partial(ensure_chromium_ready, headed=not headless, cancelled=cancellation.is_set),
+                  cancellation=cancellation)
+
+
 class ChromiumDriver:
-    """Retain in-flight acquisitions until browser-owner cleanup confirms disposal."""
+    """Retain in-flight acquisitions until browser-owner cleanup confirms disposal.
+
+    Launching expects Chromium to be prepared already; see ``prepare_managed_browser``.
+    """
     def __init__(self, *, inspectable=False):
-        self.cancelled = threading.Event()
-        self.preparing = self.starting = self.launching = None
+        self.starting = self.launching = None
         self.handed_browser = False
         self.inspectable = inspectable
         self.inspection_endpoint = None
@@ -25,9 +36,6 @@ class ChromiumDriver:
         self.process_temp = None
 
     async def launch(self, *, headless):
-        self.preparing = asyncio.create_task(asyncio.to_thread(
-            ensure_chromium_ready, headed=not headless, cancelled=self.cancelled.is_set))
-        await asyncio.shield(self.preparing)
         from playwright.async_api import async_playwright
         self.starting = asyncio.create_task(async_playwright().start())
         playwright = await asyncio.shield(self.starting)
@@ -78,8 +86,6 @@ class ChromiumDriver:
             return None
 
     async def _close(self):
-        self.cancelled.set()
-        await self._result(self.preparing)
         browser = await self._result(self.launching)
         if browser is not None and not self.handed_browser:
             await browser.close()

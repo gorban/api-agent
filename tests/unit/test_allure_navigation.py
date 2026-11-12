@@ -19,6 +19,9 @@ class Viewer:
         self.fail=fail
         self.close_fail=close_fail
         self.closed=False
+        self.prepared=0
+    async def prepare_browser(self):
+        self.prepared+=1
     async def show_preview(self,snapshot,result_file, *, source=None):
         self.calls.append((snapshot,result_file))
         self.sources.append(source() if callable(source) else source)
@@ -149,6 +152,7 @@ def test_live_results_open_exact_completed_attempt_without_changing_execution(tm
             await pilot.press('a')
             await pilot.pause()
             assert viewer.calls==[(current,'one-result.json')]
+            assert viewer.prepared==1
             assert viewer.sources[-1].local_root == tmp_path / ('secondary' if secondary else 'working')
             assert (viewer.sources[-1].storage is None) is secondary
             assert app.screen.kind=='test-results' and app.unit_rows['two'][0]=='RUNNING'

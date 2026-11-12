@@ -29,7 +29,7 @@ def test_missing_or_stale_executable_installs_and_rechecks(tmp_path):
     browser = tmp_path / 'headless-shell'
     browser.write_text('stale, not executable')
     def install(timeout, cancelled):
-        assert timeout == 3
+        assert timeout == pytest.approx(3, abs=.5)
         assert cancelled is None
         _executable(browser)
     assert ensure_chromium_ready(timeout=3, paths=lambda headed: (browser,), install=install) == browser
@@ -217,7 +217,7 @@ def test_default_registry_and_default_installer_forward_progress(tmp_path):
     browser = tmp_path / 'browser'
     updates = []
     def install(timeout, cancelled, progress):
-        assert timeout == 2 and cancelled is None
+        assert timeout == pytest.approx(2, abs=.5) and cancelled is None
         progress('prepared')
         _executable(browser)
     with patch('api_agent.runtime.browser._default_paths', return_value=(tmp_path / 'absent', browser)), \
@@ -233,5 +233,31 @@ def test_cancel_after_install_prevents_success_and_recheck(tmp_path):
     install = Mock()
     with pytest.raises(BrowserPreparationError, match='preparation cancelled'):
         ensure_chromium_ready(paths=paths, cancelled=cancelled, install=install)
-    install.assert_called_once_with(120, cancelled)
+    assert install.call_args.args[0] == pytest.approx(120, abs=.5)
+    assert install.call_args.args[1] is cancelled
     paths.assert_called_once_with(False)
+
+
+def test_preparation_is_reported_as_its_own_declared_budget(tmp_path):
+    from api_agent.providers.progress import progress_sink
+    seen = []
+    with progress_sink(seen.append):
+        ensure_chromium_ready(paths=lambda headed: (tmp_path / 'absent',),
+                              install=lambda timeout, cancelled: _executable(tmp_path / 'absent'))
+
+    assert [(item.name, item.timeout) for item in seen if item.active][:1] == [('Chromium preparation', 120)]
+
+
+def test_preparation_default_budget_covers_a_first_time_install():
+    from api_agent.runtime.browser import INSTALL_TIMEOUT_SECONDS
+    assert INSTALL_TIMEOUT_SECONDS == 120
+
+
+def test_a_deadline_enclosing_the_preparation_still_clips_it(tmp_path):
+    from api_agent.providers.progress import report_timeout_sync
+    budgets = []
+    with report_timeout_sync('Bounded attempt', 5):
+        ensure_chromium_ready(paths=lambda headed: (tmp_path / 'absent',),
+                              install=lambda timeout, cancelled: (budgets.append(timeout), _executable(tmp_path / 'absent')))
+
+    assert budgets[0] <= 5

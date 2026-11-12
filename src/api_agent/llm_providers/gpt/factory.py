@@ -10,7 +10,7 @@ from api_agent.providers.contracts import ContractError, InteractionRequiredErro
 from .connect import _dispose, connect_account
 from .connections import ConnectionStore, SubscriptionSession
 from .contracts import AuthError
-from .browser import subscription_browser
+from .browser import prepare_subscription_browser, subscription_browser
 from .oauth import refresh_connection, OAUTH_ERROR_CODES
 from .api_key import APIKeySession
 from .endpoint import validate_base_url
@@ -278,6 +278,7 @@ class GPTProvider:
             browser_options['inspection'] = self.inspection
         if not interactive:
             browser_options['headless'] = not (self.run_ui or self.inspection is not None)
+        await prepare_subscription_browser(headless=browser_options.get('headless', False))
         browser = subscription_browser(**browser_options)
         self.browsers.append(browser)
         async def login_credentials(kind):
@@ -313,6 +314,7 @@ class GPTProvider:
                     and not hasattr(error, 'cleanup_error')):
                 print('Headless GPT login needs browser interaction. Opening visible Chromium; retry or complete sign-in there.', flush=True)
                 visible_options = {'inspection': self.inspection} if self.inspection is not None else {}
+                await prepare_subscription_browser(headless=False)
                 visible = subscription_browser(**visible_options)
                 self.browsers.append(visible)
                 try:
@@ -402,6 +404,7 @@ class GPTProvider:
 
         async def present_login(url):
             options = {'inspection': self.inspection} if self.inspection is not None else {}
+            await prepare_subscription_browser(headless=False)
             browser = subscription_browser(**options)
             self.browsers.append(browser)
             session = await browser.start()

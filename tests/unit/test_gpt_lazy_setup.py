@@ -119,11 +119,13 @@ def test_application_name_reaches_attended_connection(config, expected, store, m
 
 @pytest.mark.parametrize('mode', ['run-local','integration','e2e'])
 @pytest.mark.parametrize('run_ui', [False, True])
-def test_failed_attended_setup_keeps_browser_until_cleanup_confirmed(store, monkeypatch, run_ui, mode):
+def test_failed_attended_setup_keeps_browser_until_cleanup_confirmed(store, monkeypatch, run_ui, mode,
+                                                                      chromium_preparations):
     browser = SimpleNamespace(aclose=AsyncMock())
     browser.aclose.side_effect = [CleanupPendingError((browser,), browser.aclose), None]
     options = []
     def create(**kwargs):
+        assert [item['headed'] for item in chromium_preparations] == [True], 'Chromium is prepared before its owner is created'
         options.append(kwargs)
         return browser
     monkeypatch.setattr(module, 'subscription_browser', create)

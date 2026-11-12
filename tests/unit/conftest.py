@@ -2,6 +2,8 @@
 import functools
 import sys
 
+from pathlib import Path
+
 import pytest
 
 
@@ -42,6 +44,22 @@ def default_build_and_test_timeouts(monkeypatch):
 def isolated_managed_tools(monkeypatch):
     """Only tests that explicitly opt in may prepare managed tools."""
     monkeypatch.delenv('API_AGENT_MISE', raising=False)
+
+
+@pytest.fixture(autouse=True)
+def chromium_preparations(monkeypatch):
+    """Record Chromium preparation requests; unit tests never resolve or download the real browser.
+
+    Tests of the preparation itself import ``ensure_chromium_ready`` directly and inject their own adapters.
+    """
+    requests = []
+
+    def prepare(**options):
+        requests.append(options)
+        return Path('/unprepared/chromium')
+    monkeypatch.setattr('api_agent.runtime.browser.ensure_chromium_ready', prepare)
+    monkeypatch.setattr('api_agent.runtime.managed_browser.ensure_chromium_ready', prepare)
+    return requests
 
 
 @pytest.fixture(autouse=True)

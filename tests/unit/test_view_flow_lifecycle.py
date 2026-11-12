@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.usefixtures('isolated_renderer_preparation')
 
 
-def test_selected_view_uses_original_page_and_retries_browser_cleanup(tmp_path, monkeypatch):
+def test_selected_view_uses_original_page_and_retries_browser_cleanup(tmp_path, monkeypatch, chromium_preparations):
     entry = tmp_path / 'flow.md.html'
     entry.write_text('# sample\n')
     definition = SimpleNamespace(entry=entry, entry_root='base', roots={'base': tmp_path},
@@ -60,6 +60,7 @@ def test_selected_view_uses_original_page_and_retries_browser_cleanup(tmp_path, 
     class Browser:
         closes = 0
         async def start(self):
+            assert [item['headed'] for item in chromium_preparations] == [True], 'Chromium is prepared before the launch attempt'
             return SimpleNamespace(page=Page(), inspection_endpoint='http://127.0.0.1:12345')
         async def aclose(self):
             self.closes += 1

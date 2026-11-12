@@ -348,8 +348,13 @@ Browser inspection additionally needs:
   above; use the managed tools or configure a suitable custom installation.
 - Chrome DevTools MCP (preferred) or Playwright MCP configured in the agent.
 - A compatible browser: attaching to an existing managed browser needs no
-  separate Chrome installation. The launcher prepares Playwright Chromium when
-  browser work first needs it; required host libraries must also be available.
+  separate Chrome installation. The launcher prepares Playwright Chromium as its
+  own step, `Chromium preparation` with a 120 second budget, before the bounded
+  attempt that launches it (local run, the workflow and trace viewers, the
+  Allure viewer, subscription login, and integration runs that select a UI
+  session). Launching never installs, so code that starts a managed browser
+  calls `prepare_managed_browser` first. Required host libraries must also be
+  available.
   Compatibility with the chosen MCP/browser versions still needs verification.
 
 If the MCP launches its own browser for independent UI development, configure
