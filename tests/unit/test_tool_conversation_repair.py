@@ -149,12 +149,33 @@ def test_unknown_or_post_effect_failures_never_correct(scenario, phase):
     assert len(script.requests) == (1 if phase == 'preflight' else 2)
 
 
-def test_corrected_proposal_cannot_reexecute_completed_input_with_new_id(scenario):
+def test_corrected_proposal_repeating_completed_input_is_corrected_not_reexecuted(scenario):
     script = Script([tool_call(ALIASES[0], 'first'), verdict(), reply('premature'),
-                     tool_call(ALIASES[0], 'new-id')])
-    with pytest.raises(ValueError, match='repeats a completed'):
-        run(scenario, script, required_tools=ALIASES)
+                     tool_call(ALIASES[0], 'new-id'), tool_call(ALIASES[1], 'second'), verdict(), reply('done')])
+    journal = run(scenario, script, max_rounds=6, required_tools=ALIASES)
+    assert [owner.invocations for owner in scenario[0].values()] == [['first'], ['second']]
+    assert [row['reason'] for row in journal['rejections']] == ['repeated_completed_call']
+    assert 'repeated_completed_call' in script.requests[4].payload.messages[-1].content[0].text
+
+
+def test_identical_repeat_before_any_correction_is_corrected_not_dispatched(scenario):
+    script = Script([tool_call(ALIASES[0], 'first'), verdict(), tool_call(ALIASES[0], 'again'),
+                     reply('done')])
+    journal = run(scenario, script, max_rounds=4)
     assert scenario[0][ALIASES[0]].invocations == ['first']
+    assert scenario[0][ALIASES[0]].validations == ['first']
+    assert [row['status'] for row in journal['calls']] == ['success', 'rejected']
+    assert [row['reason'] for row in journal['rejections']] == ['repeated_completed_call']
+    assert len([request for request in script.requests if request.payload.structured]) == 1
+
+
+def test_repeated_completed_calls_are_bounded_by_the_correction_allowance(scenario):
+    script = Script([tool_call(ALIASES[0], 'first'), verdict(), tool_call(ALIASES[0], 'again'),
+                     tool_call(ALIASES[0], 'third')])
+    with pytest.raises(ValueError, match='round limit'):
+        run(scenario, script, max_rounds=3)
+    assert scenario[0][ALIASES[0]].invocations == ['first']
+    assert len(script.requests) == 4
 
 
 def test_correction_exhaustion_is_terminal_not_new_component_correction(scenario):
@@ -236,9 +257,8 @@ def test_whole_batch_schema_preparation_prevents_partial_dispatch(scenario):
 
 def test_completion_replay_protection_stays_active_after_successful_repair(scenario):
     script = Script([tool_call(ALIASES[0], 'first'), verdict(), reply('premature'),
-        tool_call(ALIASES[1], 'second'), verdict(), tool_call(ALIASES[0], 'replayed')])
-    with pytest.raises(ValueError, match='repeats a completed'):
-        run(scenario, script, max_rounds=4, required_tools=ALIASES)
+        tool_call(ALIASES[1], 'second'), verdict(), tool_call(ALIASES[0], 'replayed'), reply('done')])
+    run(scenario, script, max_rounds=6, required_tools=ALIASES)
     assert [owner.invocations for owner in scenario[0].values()] == [['first'], ['second']]
 
 
