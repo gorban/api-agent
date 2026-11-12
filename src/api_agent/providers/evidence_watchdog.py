@@ -169,6 +169,4 @@ async def communicate(process, payload):
                     pass
         from .control import finish_cleanup
         await finish_cleanup(cleanup())
-    if budget.remaining <= 0:
-        raise ContractError('Evidence projection timed out')
     return result
