@@ -610,6 +610,36 @@ def test_macos_peer_identity_is_required(monkeypatch, mode):
             _peer(PeerSocket())
 
 
+@pytest.mark.parametrize('mode', ['accepted', 'wrong_uid'])
+def test_kernel_peer_credentials_are_required(monkeypatch, mode):
+    import os
+    import socket
+    import struct
+    from api_agent.testing.suite_prerequisite_broker import _peer
+
+    class PeerSocket:
+        def getsockopt(self, level, option, size):
+            assert (level, option, size) == (socket.SOL_SOCKET, 17, struct.calcsize('3i'))
+            return struct.pack('3i', 1, os.geteuid() + (mode == 'wrong_uid'), 0)
+
+    monkeypatch.setattr(socket, 'SO_PEERCRED', 17, raising=False)
+    if mode == 'accepted':
+        _peer(PeerSocket())
+    else:
+        with pytest.raises(PermissionError):
+            _peer(PeerSocket())
+
+
+def test_accept_loop_ends_when_the_server_socket_fails(tmp_path):
+    class Server:
+        def accept(self):
+            raise OSError('closed')
+
+    broker = SuitePrerequisiteBroker(tmp_path, {}, owner_budget=5)
+    broker._server = Server()
+    broker._accept()
+
+
 def test_all_worker_disposal_prevents_start_after_delayed_resolution(tmp_path):
     import threading
 
