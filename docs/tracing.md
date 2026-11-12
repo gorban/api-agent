@@ -112,7 +112,8 @@ registers through it. `register(*values, slot=...)` replaces what that slot
 registered before, so a rotation retires the previous token. Wrap any
 operation that can still emit a token in `owner.hold()`: the held token stays
 scrubbed until the hold is released, even after it is superseded or the owner
-is closed. `owner.close()` ends the owner's slots when its session ends.
+is closed. `owner.retire(slot)` ends one slot when its credential has no
+further use, and `owner.close()` ends all the owner's slots when its session ends.
 Removal waits for open evidence leases, and a value that is also registered
 unscoped or by another owner stays scrubbed. Registrations made through an
 owner that is never closed stay for the life of the boundary.
