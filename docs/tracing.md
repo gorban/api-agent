@@ -123,6 +123,14 @@ for the credential it authenticates with: each operation holds it, registers
 its credential in the `call` slot and releases the hold when it ends, so the
 registry keeps only the credentials of operations still running.
 
+Password-manager one-time codes expire, so a reader bound to the boundary
+registers them for one sign-in instead of for the process. A sign-in runs
+inside `credentials.sign_in()` (or `signing_in(credentials)` for any reader):
+the scope holds a credential owner, the codes the sign-in reads register in
+it, and it closes when the last overlapping sign-in ends. A code read outside a
+sign-in is refused. Usernames, passwords and login material stay registered
+for the life of the boundary.
+
 Shared-provider integration tests use a trace runtime owned by their shared
 backend. Its `chat` spans and child `transport attempt` spans carry the same
 logical-call and physical-attempt IDs as accounting and Allure. These remote
