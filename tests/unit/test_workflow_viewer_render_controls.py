@@ -1008,7 +1008,7 @@ def test_drain_waits_for_leader_then_tolerates_empty_process_group(monkeypatch):
 
     viewer_render._drain(Process(), timeout=1.0)
 
-    assert len(waited) == 1 and waited[0] > 0
+    assert waited == [viewer_render._CLEANUP_SECONDS]
 
 
 @pytest.mark.parametrize("timeout,source", [
@@ -1631,7 +1631,7 @@ def test_renderer_permission_error_requires_reserved_zombie_only_group(monkeypat
 
 
 
-def test_drain_rejects_result_when_zombie_inspection_exhausts_deadline(monkeypatch):
+def test_drain_keeps_a_result_completed_before_the_deadline_when_zombie_inspection_crosses_it(monkeypatch):
     process = subprocess.Popen(
         ["/bin/sh", "-c", "exit 0"], stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, start_new_session=True,
@@ -1646,8 +1646,32 @@ def test_drain_rejects_result_when_zombie_inspection_exhausts_deadline(monkeypat
         return SimpleNamespace(stdout=f"{process.pid} {process.pid} Z\n", stderr="", returncode=0)
     monkeypatch.setattr(viewer_render.subprocess, "run", late_snapshot)
 
+    assert viewer_render._drain(process, timeout=1.0) == (b"", b"")
+
+    assert process.returncode == 0
+    assert process.stdout.closed and process.stderr.closed
+
+
+def test_drain_still_rejects_output_that_finished_after_the_deadline(monkeypatch):
+    process = subprocess.Popen(
+        ["/bin/sh", "-c", "exit 0"], stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, start_new_session=True,
+    )
+    clock = [0.0]
+    monkeypatch.setattr(viewer_render.time, "monotonic", lambda: clock[0])
+    original_read = viewer_render.os.read
+    def late_read(descriptor, count):
+        chunk = original_read(descriptor, count)
+        if not chunk:
+            clock[0] = 2.0
+        return chunk
+    monkeypatch.setattr(viewer_render.os, "read", late_read)
+    kills = []
+    monkeypatch.setattr(viewer_render, "kill_owned_group", kills.append)
+
     with pytest.raises(subprocess.TimeoutExpired):
         viewer_render._drain(process, timeout=1.0)
 
+    assert kills == [process.pid]
     assert process.returncode == 0
     assert process.stdout.closed and process.stderr.closed

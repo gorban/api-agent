@@ -108,6 +108,10 @@ may need a new temporary diagram; the viewer and run-local then install the pinn
 PlantUML JAR and the project's Java through mise themselves (run-local does this
 before its startup budget). An explicitly configured renderer JAR is used as is and
 must exist.
+Each render runs under the diagram rendering deadline, which covers the renderer's
+output and exit. Stopping its process group and reaping it afterwards has a separate
+five-second cleanup allowance, so a render that finished before the deadline is kept
+even if cleanup runs past it; one that finishes after the deadline is a timeout.
 That view discloses its selected definition identity and never overwrites owner
 diagrams or reloads replaced originals. Explicitly referenced, captured Python
 sources open as UTF-8 plain text, alongside captured JSON schemas and TOML
