@@ -314,3 +314,37 @@ assert input() == 'synthetic-response'
         assert not interaction.channels
     assert 'Password: Touch your security key.' in output.getvalue()
     assert 'synthetic-response' not in output.getvalue()
+
+
+def test_input_after_the_cli_closed_its_terminal_leaves_the_exit_status_to_decide(tmp_path, monkeypatch):
+    import errno
+    cli = executable(tmp_path, r'''
+sys.stderr.write('Password: ')
+sys.stderr.flush()
+assert sys.stdin.readline().strip() == 'entered-secret'
+time.sleep(.5)
+''')
+    writes = []
+    def write(descriptor, data):
+        writes.append(data)
+        if len(writes) > 1:
+            raise OSError(errno.EIO, 'Input/output error')
+        return os.write(descriptor, data)
+    monkeypatch.setattr(recovery, 'os', NS(**(vars(os) | {'write': write})))
+    class Repeating(Channel):
+        def read(self, timeout):
+            return Reply('input', 'entered-secret') if 'Password:' in self.output else None
+    interaction = Interaction()
+    interaction.channel = Repeating()
+    assert recovery.recover([cli, 'whoami'], interaction, 'Synthetic', _NORMAL_RECOVERY_SECONDS, login_only=True) == ''
+    assert len(writes) > 1
+
+
+def test_other_terminal_write_failures_still_surface(monkeypatch):
+    import errno
+    def write(descriptor, data):
+        raise OSError(errno.EBADF, 'Bad file descriptor')
+    monkeypatch.setattr(recovery, 'os', NS(**(vars(os) | {'write': write})))
+    with pytest.raises(OSError) as caught:
+        recovery._write_input(99, b'x')
+    assert caught.value.errno == errno.EBADF
