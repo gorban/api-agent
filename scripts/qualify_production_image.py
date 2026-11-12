@@ -1,5 +1,6 @@
 """Build and inspect a local-only production image without registry publication."""
 import argparse
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -42,6 +43,12 @@ PROVIDER_ASSET_PATH_ALLOWLIST = (
     'opt/api-agent/venv/lib/python*/site-packages/api_agent/api_providers/graphql_mcp/licenses/*',
     'opt/api-agent/graphql-mcp/*',
 )
+
+DEMO_PLAN = '/opt/api-agent/plans/useful_api_demo.json'
+STUB_PORT = '18080'
+STUB_REQUESTS = '/tmp/stub-requests.jsonl'
+STUB_AUTHORIZATION = 'Bearer qualification-token'
+STUB_GREETING = 'qualification-stub-greeting'
 
 
 def forbidden_members(archive):
@@ -128,6 +135,25 @@ def assert_tracing_export_failure(results):
     """Require the real tracing lifecycle warning from the refused OTLP export."""
     if TRACE_FAILURE not in results.get('container_logs', ''):
         raise RuntimeError('qualification tracing export failure was not logged')
+
+
+def assert_demo_tool_results(results):
+    """Require the demo plan's declared tool to have reached the stub through its configured binding."""
+    if results.get('plan_digest') != results.get('compiled_digest'):
+        raise RuntimeError('qualification demo plan differs from a fresh compile of demo/simple')
+    if results.get('chat', {}).get('status') != 200:
+        raise RuntimeError(f'qualification demo chat response was unexpected: {results.get("chat")}')
+    if STUB_GREETING not in results['chat']['body']:
+        raise RuntimeError('qualification demo answer did not carry the tool result')
+    requests = results.get('stub_requests', [])
+    queries = [row['query'] for row in requests]
+    if not any('__schema' in query for query in queries) or '{ greeting }' not in queries:
+        raise RuntimeError('qualification demo tool did not describe and query the configured endpoint')
+    if not all(row['authorized'] for row in requests):
+        raise RuntimeError('qualification demo tool did not send its configured headers')
+    unconfigured = results.get('unconfigured', {})
+    if unconfigured.get('exit_code') in (0, None) or 'API_ENDPOINT' not in unconfigured.get('logs', ''):
+        raise RuntimeError('qualification demo plan started without its configured endpoint')
 
 
 def _lifecycle_status(response):
@@ -221,15 +247,9 @@ def _wait_ready_external(port):
         time.sleep(.25)
 
 
-def _runtime_qualification(root, evidence, *, tag, base_image=None, shutdown_bound=None, trace_endpoint=None):
-    """Exercise the published API from a host client through Docker port forwarding."""
-    bounds = timeouts()
-    if shutdown_bound is None:
-        shutdown_bound = bounds['shutdown']
-    image, state = tag + ':qualification', Path(tempfile.mkdtemp(prefix='v2-image-state-'))
-    name = 'api-agent-qualification-' + uuid.uuid4().hex
-    # The image runs as its own unprivileged user; a private 0700 mount is not its.
-    state.chmod(0o777)
+def _build_qualification_image(root, tag, base_image):
+    """Layer the deterministic provider, stub endpoint and chat plan onto the image under test."""
+    image = tag + ':qualification'
     # Dockerfile FROM needs a named reference; a raw local image ID is parsed
     # as a registry name by BuildKit. Bind a private temporary tag to the ID.
     base_tag = None
@@ -249,6 +269,19 @@ def _runtime_qualification(root, evidence, *, tag, base_image=None, shutdown_bou
                 _run('docker', 'image', 'rm', base_tag)
             except subprocess.CalledProcessError:
                 pass
+    return image
+
+
+def _runtime_qualification(root, evidence, *, tag, base_image=None, shutdown_bound=None, trace_endpoint=None):
+    """Exercise the published API from a host client through Docker port forwarding."""
+    bounds = timeouts()
+    if shutdown_bound is None:
+        shutdown_bound = bounds['shutdown']
+    state = Path(tempfile.mkdtemp(prefix='v2-image-state-'))
+    name = 'api-agent-qualification-' + uuid.uuid4().hex
+    # The image runs as its own unprivileged user; a private 0700 mount is not its.
+    state.chmod(0o777)
+    image = _build_qualification_image(root, tag, base_image)
     environment = (
         'API_AGENT_PRODUCTION_PLAN=/opt/api-agent/plans/simple_chat.json',
         'API_AGENT_LLM_PROVIDER=/opt/api-agent/providers/deterministic_llm.py:create',
@@ -337,6 +370,87 @@ def _runtime_qualification(root, evidence, *, tag, base_image=None, shutdown_bou
             pass
 
 
+def _wait_stub(container):
+    deadline = time.monotonic() + timeouts()['ready']
+    while subprocess.run(
+            ('docker', 'exec', container, 'python', '-c',
+             'import socket,sys; socket.create_connection(("127.0.0.1",int(sys.argv[1])),2)', STUB_PORT),
+            capture_output=True).returncode:
+        if time.monotonic() >= deadline:
+            raise RuntimeError('qualification stub endpoint never started')
+        time.sleep(.25)
+
+
+def _unconfigured_demo_start(image, environment):
+    """Start the demo plan without its endpoint binding; production must refuse and name it."""
+    options = [item for value in environment if not value.startswith('API_ENDPOINT=') for item in ('-e', value)]
+    started = subprocess.run(('docker', 'run', '--rm', '--read-only', *options, image),
+                             capture_output=True, text=True, timeout=timeouts()['ready'])
+    return {'exit_code': started.returncode, 'logs': started.stdout + started.stderr}
+
+
+def _demo_tool_qualification(root, evidence, *, tag, base_image=None):
+    """Run the bundled demo plan: its declared GraphQL tool must reach a stub endpoint in the container.
+
+    The deterministic provider answers every model call and the stub is a loopback process
+    inside the container, so nothing leaves the host and no inference is spent.
+    """
+    from api_agent.runtime.resource_pack import load_launch_context
+    from api_agent.workflows.artifact_plans import compile_selected_plan
+    bounds = timeouts()
+    state = Path(tempfile.mkdtemp(prefix='v2-image-state-'))
+    name = 'api-agent-qualification-' + uuid.uuid4().hex
+    state.chmod(0o777)
+    image = _build_qualification_image(root, tag, base_image)
+    environment = (
+        f'API_AGENT_PRODUCTION_PLAN={DEMO_PLAN}',
+        'API_AGENT_LLM_PROVIDER=/opt/api-agent/providers/deterministic_llm.py:create',
+        'API_AGENT_LLM_DEFAULT_MODEL=deterministic',
+        'API_AGENT_LISTEN_HOST=0.0.0.0',
+        'API_AGENT_ALLOWED_HOSTS=qualification.example.test',
+        'API_AGENT_CHAT_ORIGIN=https://console.example.test',
+        'API_AGENT_PERMITTED_BROWSER_ORIGINS=https://console.example.test',
+        'API_AGENT_CLIENT_ADDRESS_POLICY=any',
+        'API_AGENT_SESSION_NONCE=' + 'n' * 32,
+        'API_AGENT_STATE_DIR=/var/lib/api-agent',
+        f'API_ENDPOINT=http://127.0.0.1:{STUB_PORT}/graphql',
+        'API_HEADERS=' + json.dumps({'Authorization': STUB_AUTHORIZATION}))
+    results = {'compiled_digest': hashlib.sha256(
+        compile_selected_plan(load_launch_context(root, root / 'demo'))).hexdigest()}
+    try:
+        options = [item for value in environment for item in ('-e', value)]
+        _run('docker', 'run', '--detach', '--name', name, '--read-only',
+             '--publish', '127.0.0.1::8080',
+             '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m',
+             '--mount', f'type=bind,src={state},dst=/var/lib/api-agent', *options, image)
+        results['plan_digest'] = _run(
+            'docker', 'exec', name, 'python', '-c',
+            'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())',
+            DEMO_PLAN).stdout.strip()
+        _run('docker', 'exec', '--detach', name, 'python', '/opt/api-agent/providers/stub_graphql.py',
+             STUB_PORT, STUB_REQUESTS, STUB_AUTHORIZATION)
+        _wait_stub(name)
+        port = _published_port(name)
+        results['ready'] = _wait_ready_external(port)
+        request = {'session_id': str(uuid.uuid4()),
+                   'messages': [{'role': 'user', 'content': 'What does the endpoint greet with?'}],
+                   'model': 'deterministic'}
+        results['chat'] = _external_http(port, '/app/agent/chat', body=request)
+        logged = _run('docker', 'exec', name, 'cat', STUB_REQUESTS).stdout
+        results['stub_requests'] = [json.loads(line) for line in logged.splitlines()]
+        logs = _run('docker', 'logs', name)
+        results['container_logs'] = logs.stdout + logs.stderr
+        results['unconfigured'] = _unconfigured_demo_start(image, environment)
+        (evidence / 'demo-tool-scenario.json').write_text(json.dumps(results, sort_keys=True, indent=2) + '\n')
+        assert_demo_tool_results(results)
+        return results
+    finally:
+        try:
+            _run('docker', 'rm', '--force', name)
+        except subprocess.CalledProcessError:
+            pass
+
+
 def qualify(root, evidence, *, tag='api-agent-runtime'):
     """Build, archive and inspect exact local image bytes; never push."""
     root, evidence = Path(root).resolve(), Path(evidence).resolve()
@@ -410,8 +524,10 @@ def qualify(root, evidence, *, tag='api-agent-runtime'):
         'Unknown licenses are explicit.\\n')
     runtime = _runtime_qualification(root, evidence, tag=tag, base_image=digest)
     telemetry = _runtime_qualification(root, evidence, tag=tag, base_image=digest, trace_endpoint='http://127.0.0.1:1/v1/traces')
+    demo = _demo_tool_qualification(root, evidence, tag=tag, base_image=digest)
     (evidence / 'runtime-scenarios.json').write_text(
-        json.dumps({'runtime': runtime, 'failing_telemetry': telemetry}, sort_keys=True, indent=2) + '\n')
+        json.dumps({'runtime': runtime, 'failing_telemetry': telemetry, 'demo_tool': demo},
+                   sort_keys=True, indent=2) + '\n')
     return report
 
 
