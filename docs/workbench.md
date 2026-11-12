@@ -66,6 +66,9 @@ between base and pack `.env` files. Resaving moves the assignment to that target
 
 **Clear .env configuration** deletes one selected assignment, with confirmation,
 from all applicable `.env` files. Hidden settings appear there when saved.
+Caches that the pack declares with `persisted_caches` (see
+[resource packs](resource-packs.md#persisted-caches)) are listed in the same table as
+`cache:<id>` rows while they hold content; deleting one removes the whole cache directory.
 Account descriptors have their own [credential editor](connections.md).
 
 ## Overrides and command-line options

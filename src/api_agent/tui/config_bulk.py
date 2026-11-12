@@ -47,10 +47,11 @@ def plan_review(snapshot, names, action):
     raise ValueError(f'Unknown review action: {action}')
 
 
-def plan_cleanup(rows, names, action, *, membership):
+def plan_cleanup(rows, names, action, *, membership, caches=()):
+    """``caches`` holds the keys of persisted caches that still have content; they can only be purged."""
     rows = {row.name: row for row in rows if row.name in membership}
     if action == 'delete':
-        return _plan(names, {name for name, row in rows.items() if row.present})
+        return _plan(names, {name for name, row in rows.items() if row.present} | set(caches))
     if action == 'copy':
         values = {name: _display(row.value) for name, row in rows.items()
                   if _copyable(row.field, row.resolved)}
