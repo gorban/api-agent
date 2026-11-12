@@ -46,6 +46,24 @@ def test_transport_payment_requires_complete_consistent_attempt_quotes(case):
     assert tracker.report().get('list_cost_usd') == (0 if case == 'empty' else 1 if case == 'priced' else None)
 
 
+def test_transport_payment_survives_a_retry_after_a_failure_without_usage():
+    from api_agent.providers.generation_attempts import TransportAttemptLedger
+    from api_agent.providers.control import OperationalError
+    from api_agent.providers.llm import Usage
+    policy = {'usd':100,'quota_seconds':86400,'period':'day'}
+    ledger = TransportAttemptLedger(2, quote=lambda _: {'list_cost_usd':None,'payment':policy})
+    first = ledger.begin(1)
+    ledger.finish(first, error=OperationalError('network'), retry_delay_seconds=0)
+    second = ledger.begin(2)
+    ledger.finish(second, result=SimpleNamespace(usage=Usage(2,1,0,0)))
+    tracker = SuiteUsage('run')
+
+    capture(event(row() | {'transport_attempts':ledger.snapshot()}), tracker)
+
+    assert [attempt['quote'] is None for attempt in ledger.snapshot()['attempts']] == [True, False]
+    assert tracker.report().get('payment_policy') == policy
+
+
 def test_publish_inert_without_operation_event_file(monkeypatch):
     monkeypatch.delenv('API_AGENT_INTEGRATION_EVENTS',raising=False)
     assert publish(REQUEST) is None
