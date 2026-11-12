@@ -1977,6 +1977,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 unit_idle_timeout=run_values.get('UNIT_TEST_IDLE_TIMEOUT_SECONDS'),
                 collection_timeout=run_values.get('TEST_COLLECTION_TIMEOUT_SECONDS'),
                 frontend_timeout=run_values.get('SOURCE_FRONTEND_TIMEOUT_SECONDS'),
+                services_timeout=run_values.get('TEST_SERVICES_TIMEOUT_SECONDS'),
                 **({'test_environment': test_environment} if test_environment else {}),
                 coverage_full=run_values.get('UNIT_COVERAGE_FULL', False),
                 **({'coverage_owner_only': True} if owner_unit_only(self.context, run_values) else {}),

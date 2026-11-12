@@ -35,10 +35,11 @@ class LaunchTests(unittest.TestCase):
 
     def test_terminal_unit_timeouts_reach_collection_and_runner(self):
         from api_agent.testing.runner import UnitRunResult
-        for environ, expected in (({}, (60.0, 60.0, 120.0, 300.0)),
+        for environ, expected in (({}, (60.0, 60.0, 120.0, 300.0, 600.0)),
                                   ({'UNIT_TEST_TIMEOUT_SECONDS': '120', 'UNIT_TEST_IDLE_TIMEOUT_SECONDS': '121',
-                                    'TEST_COLLECTION_TIMEOUT_SECONDS': '240', 'SOURCE_FRONTEND_TIMEOUT_SECONDS': '600'},
-                                   (120.0, 121.0, 240.0, 600.0))):
+                                    'TEST_COLLECTION_TIMEOUT_SECONDS': '240', 'SOURCE_FRONTEND_TIMEOUT_SECONDS': '600',
+                                    'TEST_SERVICES_TIMEOUT_SECONDS': '900'},
+                                   (120.0, 121.0, 240.0, 600.0, 900.0))):
             with self.subTest(environ=environ), patch.dict(os.environ, environ, clear=True), \
                     patch('sys.stdout', StringIO()), \
                     patch('api_agent.config.read_dotenv', return_value={}), \
@@ -49,7 +50,8 @@ class LaunchTests(unittest.TestCase):
                 self.assertEqual(main(['--no-std-in', '--tui-mode=unit'], base_root=ROOT), 0)
                 options = run.call_args.kwargs
                 self.assertEqual((options['unit_timeout'], options['unit_idle_timeout'],
-                                  options['collection_timeout'], options['frontend_timeout']), expected)
+                                  options['collection_timeout'], options['frontend_timeout'],
+                                  options['services_timeout']), expected)
                 self.assertEqual(collect.call_args.kwargs['timeout'], expected[2])
 
     def test_terminal_unit_full_coverage_option_reaches_runner(self):

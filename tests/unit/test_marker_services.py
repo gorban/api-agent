@@ -1,5 +1,7 @@
 """Markers a pack declares under tests.prerequisites select services held for a unit run."""
 from pathlib import Path
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -237,3 +239,108 @@ def test_invalid_marker_providers_are_rejected(tmp_path, declaration):
 
     with pytest.raises(ResourcePackError, match='prerequisites'):
         load_launch_context(base, pack)
+
+
+WAIT_FOR_CANCEL = (
+    '    import time\n    from pathlib import Path\n'
+    '    try:\n'
+    '        while not services["cancelled"]():\n            time.sleep(0.01)\n'
+    '        raise RuntimeError("stopped waiting")\n'
+    '    finally:\n        Path(%r).write_text("cleaned")\n    yield {}\n')
+
+
+def waiting_context(tmp_path, body):
+    path = provider(tmp_path, 'waiting', body % str(tmp_path / 'cleaned'))
+    ctx = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, test_prerequisites=(('m', path, 'acquire'),))
+    return ctx, [identity(repository_label(ctx, tmp_path), 'm')]
+
+
+def test_providers_receive_the_startup_deadline_and_a_cancellation_check(tmp_path):
+    seen = tmp_path / 'seen'
+    path = provider(tmp_path, 'budget', (
+        '    import time\n    from pathlib import Path\n'
+        '    Path(%r).write_text(repr((services["deadline"] - time.monotonic(), services["cancelled"]())))\n'
+        '    yield {}\n') % str(seen))
+    ctx = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, test_prerequisites=(('m', path, 'acquire'),))
+
+    with acquired_test_services(ctx, [identity(repository_label(ctx, tmp_path), 'm')], {}, timeout=30):
+        pass
+
+    remaining, cancelled = eval(seen.read_text())
+    assert 20 < remaining <= 30 and cancelled is False
+
+
+def test_startup_budget_defaults_to_the_declared_setting(tmp_path):
+    seen = tmp_path / 'seen'
+    path = provider(tmp_path, 'budget', (
+        '    import time\n    from pathlib import Path\n'
+        '    Path(%r).write_text(repr(services["deadline"] - time.monotonic()))\n    yield {}\n') % str(seen))
+    ctx = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, test_prerequisites=(('m', path, 'acquire'),))
+
+    with acquired_test_services(ctx, [identity(repository_label(ctx, tmp_path), 'm')], {}):
+        pass
+
+    assert 590 < float(seen.read_text()) <= 600
+
+
+def test_a_service_that_outlives_the_startup_budget_is_stopped_and_reported(tmp_path):
+    ctx, tests = waiting_context(tmp_path, WAIT_FOR_CANCEL)
+
+    with pytest.raises(TimeoutError, match='Test services for m did not start within 0.2 seconds'):
+        with acquired_test_services(ctx, tests, {}, timeout=0.2):
+            pytest.fail('the service must not be reported ready')
+
+    assert (tmp_path / 'cleaned').read_text() == 'cleaned'
+
+
+def test_a_service_that_ignores_the_budget_is_stopped_once_it_returns(tmp_path):
+    ctx, tests = waiting_context(tmp_path, (
+        '    import time\n    from pathlib import Path\n'
+        '    time.sleep(0.3)\n'
+        '    try:\n        yield {}\n    finally:\n        Path(%r).write_text("cleaned")\n'))
+
+    with pytest.raises(TimeoutError, match='did not start within 0.1 seconds'):
+        with acquired_test_services(ctx, tests, {}, timeout=0.1):
+            pytest.fail('the service must not be reported ready')
+
+    assert (tmp_path / 'cleaned').read_text() == 'cleaned'
+
+
+def test_cancelling_the_run_stops_startup_and_cleans_up(tmp_path):
+    ctx, tests = waiting_context(tmp_path, WAIT_FOR_CANCEL)
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+
+    with pytest.raises(InterruptedError, match='Test services for m were cancelled during startup'):
+        with acquired_test_services(ctx, tests, {}, timeout=30, cancel_event=cancel):
+            pytest.fail('the service must not be reported ready')
+
+    assert (tmp_path / 'cleaned').read_text() == 'cleaned'
+
+
+def test_a_failure_unrelated_to_the_budget_surfaces_unchanged(tmp_path):
+    path = provider(tmp_path, 'broken', '    raise RuntimeError("broken")\n    yield {}\n')
+    ctx = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, test_prerequisites=(('m', path, 'acquire'),))
+
+    with pytest.raises(RuntimeError, match='broken'):
+        with acquired_test_services(ctx, [identity(repository_label(ctx, tmp_path), 'm')], {}, cancel_event=threading.Event()):
+            pass
+
+
+def test_the_run_passes_its_budget_and_cancellation_to_the_services(pair, monkeypatch):
+    from api_agent.testing import marker_services
+    base, owner = pair
+    ctx = context(base, owner)
+    tests = collect_tests(ctx, 'unit', ['tag:needs_service'])
+    seen = {}
+    real = marker_services.acquired_test_services
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(marker_services, 'acquired_test_services', spy)
+    cancel = threading.Event()
+
+    run_unit_tests(ctx, tests, test_environment={'SUFFIX': 'x'}, services_timeout=45.0, cancel_event=cancel,
+                   require_full_coverage=False)
+
+    assert seen['timeout'] == 45.0 and seen['cancel_event'] is cancel

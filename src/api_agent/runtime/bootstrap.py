@@ -485,6 +485,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                        unit_idle_timeout=result.values['UNIT_TEST_IDLE_TIMEOUT_SECONDS'],
                                        collection_timeout=result.values['TEST_COLLECTION_TIMEOUT_SECONDS'],
                                        frontend_timeout=result.values['SOURCE_FRONTEND_TIMEOUT_SECONDS'],
+                                       services_timeout=result.values['TEST_SERVICES_TIMEOUT_SECONDS'],
                                        **({'test_environment': test_environment} if test_environment else {}),
                                        coverage_full=result.values.get('UNIT_COVERAGE_FULL', False),
                                        **({'coverage_owner_only': True} if owner_unit_only(context, result.values) else {}),

@@ -217,8 +217,9 @@ Build and test time bounds are declared settings whose defaults are the
 historical values. They do not appear in Review configuration:
 `UNIT_TEST_TIMEOUT_SECONDS` (each unit, 60), `UNIT_TEST_IDLE_TIMEOUT_SECONDS`
 (startup and finalization with no unit active, 60),
-`TEST_COLLECTION_TIMEOUT_SECONDS` (120) and `SOURCE_FRONTEND_TIMEOUT_SECONDS`
-(300). The launcher's `BOOTSTRAP_*_TIMEOUT_SECONDS` probes and the image
+`TEST_COLLECTION_TIMEOUT_SECONDS` (120), `SOURCE_FRONTEND_TIMEOUT_SECONDS`
+(300) and `TEST_SERVICES_TIMEOUT_SECONDS` (600, starting the services a marked
+unit suite declares). The launcher's `BOOTSTRAP_*_TIMEOUT_SECONDS` probes and the image
 qualifier's `QUALIFICATION_*_TIMEOUT_SECONDS` bounds are read from the process
 environment because they apply outside configuration resolution. A slower CI
 host can raise them; the unit suite itself always sees the defaults.

@@ -309,6 +309,16 @@ validation = "positive"
 acknowledge_default = false
 help = "Deadline in seconds for collecting each suite root's tests."
 
+[fields.TEST_SERVICES_TIMEOUT_SECONDS]
+type = "float"
+default = 600.0
+validation = "positive"
+acknowledge_default = false
+help = "Deadline in seconds for starting every service the selected marked unit suites declare, including any image build; the launcher stops what started when it passes or the run is cancelled."
+[fields.TEST_SERVICES_TIMEOUT_SECONDS.applies_when]
+TUI_MODE = "unit"
+COLLECT_ONLY = false
+
 [fields.SOURCE_FRONTEND_TIMEOUT_SECONDS]
 type = "float"
 default = 300.0
