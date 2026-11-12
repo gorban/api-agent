@@ -2,7 +2,7 @@
 import asyncio
 
 from api_agent.providers.contracts import ContractError, SetupPrerequisiteError, UnattendedCredentialError
-from api_agent.providers.sessions import ScopedRoleCredentials
+from api_agent.providers.sessions import ScopedRoleCredentials, SignInCredentials
 
 
 def bind_role_credentials(config, roles, index, *, registry, emissions, pending_tasks,
@@ -30,6 +30,8 @@ def bind_role_credentials(config, roles, index, *, registry, emissions, pending_
     except (ValueError, TypeError):
         raise ContractError('The selected unattended login descriptor is incomplete or invalid.') from None
 
+    sign_in = SignInCredentials(emissions)
+
     async def retrieve(selected_role, selected_index, kind, **options):
         helper = {'username': helpers.get_username, 'password': helpers.get_password,
                   'totp': helpers.get_totp, 'login': helpers.get_login_credentials}[kind]
@@ -50,7 +52,11 @@ def bind_role_credentials(config, roles, index, *, registry, emissions, pending_
                     value = await asyncio.shield(task)
                     from api_agent.telemetry.privacy import register_secret_async
                     if type(value) is str and value:
-                        await register_secret_async(emissions, value)
+                        # A one-time code expires with its sign-in; the other values are login material.
+                        if kind == 'totp':
+                            await sign_in.register(value)
+                        else:
+                            await register_secret_async(emissions, value)
                     elif kind == 'login':
                         for secret in value.secret_values():
                             await register_secret_async(emissions, secret)
@@ -75,4 +81,4 @@ def bind_role_credentials(config, roles, index, *, registry, emissions, pending_
                 interaction.close()
     async def retrieve_login(selected_role, selected_index, **options):
         return await retrieve(selected_role, selected_index, 'login', **options)
-    return ScopedRoleCredentials(roles, index, retrieve, retrieve_login=retrieve_login)
+    return ScopedRoleCredentials(roles, index, retrieve, retrieve_login=retrieve_login, sign_in=sign_in)

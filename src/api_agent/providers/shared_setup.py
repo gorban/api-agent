@@ -10,7 +10,7 @@ import time
 from uuid import uuid4
 
 from .contracts import ContractError, SessionClosedError
-from .sessions import _Owner, _drain, _spawn
+from .sessions import _Owner, _drain, _spawn, signing_in
 from .control import OperationalError, CleanupPendingError, finish_cleanup
 from .progress import independent_timeout_scope
 
@@ -60,6 +60,9 @@ class RevocableCredentials(_Owner):
         if reader is None:
             return None
         return await self._read(reader, *args, **kwargs)
+
+    def sign_in(self):
+        return signing_in(self._reader)
 
     async def _read(self, reader, *args, **kwargs):
         self._check()
