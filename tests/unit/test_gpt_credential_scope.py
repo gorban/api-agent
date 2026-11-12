@@ -3,8 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from api_agent.llm_providers.gpt import discovery, inference
+from api_agent.llm_providers.gpt import discovery, factory, inference
 from api_agent.llm_providers.gpt.factory import GPTProvider
+from api_agent.providers.sessions import ScopedLLMCredentials, ScopedRoleCredentials, SignInCredentials
 from api_agent.providers.llm import CompletionRequest, LLMRequest, Message, TextContent
 from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
 
@@ -180,3 +181,41 @@ async def test_closing_the_provider_ends_its_tokens(boundary, provider):
 @pytest.mark.asyncio
 async def test_closing_a_provider_that_never_registered_tokens_is_harmless(provider):
     await provider.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', [False, True])
+async def test_a_sign_in_scrubs_its_one_time_codes_until_it_ends(boundary, provider, monkeypatch, failure):
+    async def prepared(**_):
+        pass
+
+    monkeypatch.setattr(factory, 'prepare_subscription_browser', prepared)
+    monkeypatch.setattr(factory, 'subscription_browser', lambda **_: SimpleNamespace())
+    codes = iter(f'{number:06d}' for number in range(30))
+    sign_in = SignInCredentials(boundary)
+
+    async def retrieve(role, index, kind):
+        code = next(codes)
+        await sign_in.register(code)
+        return code
+
+    credentials = ScopedLLMCredentials('LLM User', ScopedRoleCredentials(('LLM User',), 0, retrieve, sign_in=sign_in))
+    emitted = []
+
+    async def connect(store, *, login_credentials, **_):
+        code = await login_credentials('totp')
+        emitted.append(boundary._text('page said ' + code))
+        if failure:
+            raise RuntimeError(code)
+        return 'profile'
+
+    monkeypatch.setattr(provider, '_connect_account', connect)
+    for _ in range(30):
+        if failure:
+            with pytest.raises(RuntimeError):
+                await provider._login(None, interactive=True, username='person', user_index=0, credentials=credentials)
+        else:
+            assert await provider._login(None, interactive=True, username='person', user_index=0,
+                                         credentials=credentials) == 'profile'
+        assert boundary._secrets == set()
+    assert set(emitted) == {'page said [REDACTED]'}

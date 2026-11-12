@@ -30,13 +30,15 @@ def test_secret_reads_are_lazy_scoped_and_registered(binding, monkeypatch, kind)
     reader = binding.create()
     helper.assert_not_called()
     async def exercise():
-        assert await reader('UI User', 0, kind) == 'synthetic-secret'
-        with pytest.raises(ContractError): await reader('Other User', 0, kind)
-        with pytest.raises(ContractError): await reader('UI User', 1, kind)
+        with reader.sign_in():
+            assert await reader('UI User', 0, kind) == 'synthetic-secret'
+            with pytest.raises(ContractError): await reader('Other User', 0, kind)
+            with pytest.raises(ContractError): await reader('UI User', 1, kind)
     asyncio.run(exercise())
     helper.assert_called_once()
     assert helper.call_args.args[0].user == 'Saved item'
-    assert binding.boundary._text('synthetic-secret') == '[REDACTED]'
+    # A one-time code expires with its sign-in; the other values stay scrubbed.
+    assert binding.boundary._text('synthetic-secret') == ('synthetic-secret' if kind == 'totp' else '[REDACTED]')
     assert not binding.pending
 
 

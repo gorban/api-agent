@@ -8,6 +8,7 @@ import httpx
 
 from api_agent.providers.control import CleanupPendingError
 from api_agent.providers.contracts import ContractError, InteractionRequiredError, ProviderCapabilities, SetupPrerequisiteError
+from api_agent.providers.sessions import signing_in
 from .connect import _dispose, connect_account
 from .connections import ConnectionStore, SubscriptionSession
 from .contracts import AuthError
@@ -315,7 +316,8 @@ class GPTProvider:
         self.browsers.append(browser)
         async def login_credentials(kind):
             value = await credentials(user_index, kind)
-            if self.emissions is not None and type(value) is str and value:
+            # The reader scrubs one-time codes for the length of the sign-in.
+            if self.emissions is not None and type(value) is str and value and kind != 'totp':
                 await self._register_secret(value)
             return value
         material_options = {}
@@ -339,24 +341,26 @@ class GPTProvider:
         login_options = ({'login_username': username, 'login_credentials': login_credentials,
                           'allow_interaction': not browser_options.get('headless', False)}
                          if username is not None else {})
-        try:
-            profile = await self._connect_account(store, browser_owner=browser, app_name=self.app_name, **registration, **login_options, **material_options)
-        except AuthError as error:
-            if (str(error) == 'login_interaction_required' and browser_options.get('headless')
-                    and not hasattr(error, 'cleanup_error')):
-                print('Headless GPT login needs browser interaction. Opening visible Chromium; retry or complete sign-in there.', flush=True)
-                visible_options = {'inspection': self.inspection} if self.inspection is not None else {}
-                await prepare_subscription_browser(headless=False)
-                visible = subscription_browser(**visible_options)
-                self.browsers.append(visible)
-                try:
-                    profile = await self._connect_account(store, browser_owner=visible, app_name=self.app_name,
-                                                    login_username=username, login_credentials=login_credentials, **material_options,
-                                                    allow_interaction=True, **registration)
-                except AuthError as retry_error:
-                    raise self._login_error(retry_error) from None
-            else:
-                raise self._login_error(error) from None
+        # One scope for both attempts: the codes a retry reads stay scrubbed until the sign-in ends.
+        with signing_in(credentials):
+            try:
+                profile = await self._connect_account(store, browser_owner=browser, app_name=self.app_name, **registration, **login_options, **material_options)
+            except AuthError as error:
+                if (str(error) == 'login_interaction_required' and browser_options.get('headless')
+                        and not hasattr(error, 'cleanup_error')):
+                    print('Headless GPT login needs browser interaction. Opening visible Chromium; retry or complete sign-in there.', flush=True)
+                    visible_options = {'inspection': self.inspection} if self.inspection is not None else {}
+                    await prepare_subscription_browser(headless=False)
+                    visible = subscription_browser(**visible_options)
+                    self.browsers.append(visible)
+                    try:
+                        profile = await self._connect_account(store, browser_owner=visible, app_name=self.app_name,
+                                                        login_username=username, login_credentials=login_credentials, **material_options,
+                                                        allow_interaction=True, **registration)
+                    except AuthError as retry_error:
+                        raise self._login_error(retry_error) from None
+                else:
+                    raise self._login_error(error) from None
         return profile
 
     async def adescribe(self, *, auth=None):

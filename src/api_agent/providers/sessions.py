@@ -3,7 +3,7 @@ import asyncio
 import os
 import inspect
 import math
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -11,14 +11,64 @@ from .contracts import BrowserSession, ContractError, SessionClosedError, LLMCre
 from .control import OperationalError, OperationContext, CleanupPendingError, _cancel_once, finish_cleanup
 
 
+class SignInCredentials:
+    """Scrub one-time codes only while a sign-in that may emit them is running.
+
+    An expired code is no longer a usable secret, so the codes a sign-in read
+    are released when it ends instead of accumulating for the life of the
+    credential authority. Overlapping sign-ins share one owner, closed when the
+    last of them ends.
+    """
+
+    def __init__(self, boundary):
+        self._boundary = boundary
+        self._owner = None
+        self._active = 0
+
+    @contextmanager
+    def __call__(self):
+        if self._owner is None:
+            self._owner = self._boundary.credential_owner()
+        owner = self._owner
+        self._active += 1
+        # The hold keeps a code scrubbed after a later read in the same sign-in supersedes it.
+        hold = owner.hold()
+        try:
+            yield
+        finally:
+            hold.release()
+            self._active -= 1
+            if not self._active:
+                self._owner = None
+                owner.close()
+
+    async def register(self, code: str) -> None:
+        if not self._active:
+            raise ContractError("One-time codes are read only during a sign-in")
+        await self._owner.aregister(code, slot="totp")
+
+
+def signing_in(credentials: Any):
+    """Scope for the one-time codes a sign-in reads; readers that register none need no scope."""
+    if inspect.getattr_static(credentials, "sign_in", None) is None:
+        return nullcontext()
+    return credentials.sign_in()
+
+
 class ScopedRoleCredentials:
-    def __init__(self, roles: Iterable[str], index: int, retrieve: Callable[..., Awaitable[str]], *, retrieve_login=None):
+    def __init__(self, roles: Iterable[str], index: int, retrieve: Callable[..., Awaitable[str]], *, retrieve_login=None,
+                 sign_in: SignInCredentials | None = None):
         if type(index) is not int or index < 0:
             raise ContractError("Invalid selected account")
         self._roles = frozenset(roles)
         self._index = index
         self._retrieve = retrieve
         self._retrieve_login = retrieve_login
+        self._sign_in = sign_in
+
+    def sign_in(self):
+        """Scope one sign-in; the one-time codes it reads are scrubbed until it ends."""
+        return nullcontext() if self._sign_in is None else self._sign_in()
 
     def matches_binding(self, roles, index):
         """Whether this reader grants exactly the requested operation binding."""
@@ -60,6 +110,9 @@ class ScopedLLMCredentials:
 
     async def login_credentials(self, index, **kwargs):
         return await self._reader.login_credentials(self._role, index, **kwargs)
+
+    def sign_in(self):
+        return self._reader.sign_in()
 
 
 def ui_session_policy(mode: str, *, run_ui: bool = False, debug: bool = False, e2e_debug: bool = False) -> bool | None:
