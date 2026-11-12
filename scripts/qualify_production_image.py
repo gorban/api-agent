@@ -45,6 +45,8 @@ PROVIDER_ASSET_PATH_ALLOWLIST = (
 )
 
 DEMO_PLAN = '/opt/api-agent/plans/useful_api_demo.json'
+# The unit gate's plan check proves this checked-in plan equals a fresh compile.
+DEMO_SOURCE = 'demo/.private_resources/plans/useful_api_demo.json'
 STUB_PORT = '18080'
 STUB_REQUESTS = '/tmp/stub-requests.jsonl'
 STUB_AUTHORIZATION = 'Bearer qualification-token'
@@ -144,8 +146,8 @@ def assert_demo_tool_results(results, *, traced=False):
 
     A traced run must also have delivered its traces to the container's sink without a delivery warning.
     """
-    if results.get('plan_digest') != results.get('compiled_digest'):
-        raise RuntimeError('qualification demo plan differs from a fresh compile of demo/simple')
+    if results.get('plan_digest') != results.get('source_digest'):
+        raise RuntimeError('qualification demo plan differs from the checked-in demo plan')
     if results.get('chat', {}).get('status') != 200:
         raise RuntimeError(f'qualification demo chat response was unexpected: {results.get("chat")}')
     if STUB_GREETING not in results['chat']['body']:
@@ -421,8 +423,6 @@ def _demo_tool_qualification(root, evidence, *, tag, base_image=None, traced=Fal
     inside the container, so nothing leaves the host and no inference is spent. A traced run
     exports to a second loopback process, so the declared tool is also proven under tracing.
     """
-    from api_agent.runtime.resource_pack import load_launch_context
-    from api_agent.workflows.artifact_plans import compile_selected_plan
     bounds = timeouts()
     state = Path(tempfile.mkdtemp(prefix='v2-image-state-'))
     name = 'api-agent-qualification-' + uuid.uuid4().hex
@@ -443,8 +443,7 @@ def _demo_tool_qualification(root, evidence, *, tag, base_image=None, traced=Fal
         'API_HEADERS=' + json.dumps({'Authorization': STUB_AUTHORIZATION}))
     if traced:
         environment += (f'TRACE_EXPORT_ENDPOINT=http://127.0.0.1:{TRACE_SINK_PORT}/v1/traces',)
-    results = {'compiled_digest': hashlib.sha256(
-        compile_selected_plan(load_launch_context(root, root / 'demo'))).hexdigest()}
+    results = {'source_digest': hashlib.sha256((root / DEMO_SOURCE).read_bytes()).hexdigest()}
     try:
         options = [item for value in environment for item in ('-e', value)]
         _run('docker', 'run', '--detach', '--name', name, '--read-only',

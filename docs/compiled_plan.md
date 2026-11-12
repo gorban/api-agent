@@ -244,7 +244,8 @@ qualifier allows the `node_modules` layout only for the GraphQL MCP license
 notices and its prepared asset tree.
 
 The qualifier also runs the bundled demo plan in the qualification image. It
-compiles `demo/simple` afresh and requires the image's plan to equal it, then
+requires the image's plan to equal the checked-in demo plan (whose freshness the
+unit gate's plan check proves, so the qualifier imports nothing from the project), then
 starts the plan with the deterministic provider (which answers the flow's plan,
 review and render calls without inference) and a loopback stub GraphQL endpoint
 inside the container, so nothing leaves the host. It requires the chat answer to
