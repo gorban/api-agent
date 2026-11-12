@@ -35,8 +35,7 @@ def test_owner_is_lazy_visible_and_closes_in_order(chromium, headless):
         session = await owner.start()
         assert session.page is chromium.page
         chromium.stealth.hook_playwright_context.assert_called_once_with(chromium.playwright)
-        assert chromium.ready[0]['headed'] is not headless
-        assert not chromium.ready[0]['cancelled']()
+        assert not chromium.ready
         chromium.playwright.chromium.launch.assert_awaited_once_with(headless=headless)
         await owner.aclose()
         await owner.aclose()
@@ -77,13 +76,9 @@ def test_gpt_uses_the_same_shared_browser_factory():
     assert subscription_browser is module.managed_browser
 
 
-@pytest.mark.parametrize('stage', ['prepare', 'driver', 'stealth', 'launch'])
+@pytest.mark.parametrize('stage', ['driver', 'stealth', 'launch'])
 def test_failed_acquisition_disposes_previous_resources(chromium, monkeypatch, stage):
-    if stage == 'prepare':
-        def fail(**kwargs):
-            raise RuntimeError('private preparation details')
-        monkeypatch.setattr(module, 'ensure_chromium_ready', fail)
-    elif stage == 'driver':
+    if stage == 'driver':
         chromium.manager.start.side_effect = RuntimeError('private driver details')
     elif stage == 'stealth':
         chromium.stealth.hook_playwright_context.side_effect = RuntimeError('private stealth details')
@@ -168,6 +163,24 @@ def test_close_failure_keeps_browser_for_retry(chromium):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('headless', [False, True])
+def test_preparation_installs_the_selected_browser_before_any_launch(chromium, headless):
+    asyncio.run(module.prepare_managed_browser(headless=headless))
+
+    assert [call['headed'] for call in chromium.ready] == [not headless]
+    assert not chromium.ready[0]['cancelled']()
+    assert not chromium.manager.start.called
+
+
+@pytest.mark.parametrize('headless', [False, True])
+def test_preparation_installs_the_selected_browser_before_any_launch(chromium, headless):
+    asyncio.run(module.prepare_managed_browser(headless=headless))
+
+    assert [call['headed'] for call in chromium.ready] == [not headless]
+    assert not chromium.ready[0]['cancelled']()
+    assert not chromium.manager.start.called
+
+
 def test_preparation_cancellation_is_signaled_and_drained(chromium, monkeypatch):
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     observed = []
@@ -178,31 +191,26 @@ def test_preparation_cancellation_is_signaled_and_drained(chromium, monkeypatch)
         finished.set()
     monkeypatch.setattr(module, 'ensure_chromium_ready', prepare)
     async def scenario():
-        owner = module.managed_browser()
-        owner._timeout = .01
-        starting = asyncio.create_task(owner.start())
+        preparing = asyncio.create_task(module.prepare_managed_browser(headless=True))
         assert await asyncio.to_thread(entered.wait, 2)
-        starting.cancel()
+        preparing.cancel()
+        await asyncio.sleep(.01)
+        assert observed[0]['cancelled']() and not preparing.done()
+        release.set()
         with pytest.raises(asyncio.CancelledError):
-            await starting
-        try:
-            with pytest.raises(CleanupPendingError):
-                await owner.aclose()
-            assert observed[0]['cancelled']()
-            assert not finished.is_set() and owner._resources
-            release.set()
-            for _ in range(3):
-                try:
-                    await owner.aclose()
-                    break
-                except CleanupPendingError:
-                    await asyncio.sleep(.01)
-            assert finished.is_set() and not owner._resources
-            chromium.manager.start.assert_not_awaited()
-        finally:
-            release.set()
-            await owner.aclose()
+            await preparing
+        assert finished.is_set()
     asyncio.run(scenario())
+
+
+def test_launch_never_installs_the_browser(chromium):
+    async def scenario():
+        owner = module.managed_browser()
+        await owner.start()
+        await owner.aclose()
+    asyncio.run(scenario())
+
+    assert not chromium.ready
 
 
 @pytest.mark.parametrize('stage', ['browser', 'driver'])

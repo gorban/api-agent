@@ -1,7 +1,10 @@
 """Explicit Chromium preparation for an enabled browser operation.
 
-Call this immediately before browser work, after Playwright's optional Python
-dependency has been installed. Normal environment setup never calls it.
+Preparation is a prerequisite step with its own declared budget. Run it before
+the bounded attempt that launches the browser, never inside that attempt, so a
+first-time install cannot spend the attempt's allowance. Call it after
+Playwright's optional Python dependency has been installed. Normal environment
+setup never calls it.
 """
 import os
 from pathlib import Path
@@ -10,6 +13,11 @@ import subprocess
 import sys
 import tempfile
 import time
+
+from api_agent.providers.progress import report_timeout_sync
+
+# A first-time install downloads the browser, which takes up to about two minutes.
+INSTALL_TIMEOUT_SECONDS = 120
 
 
 class BrowserPreparationError(RuntimeError):
@@ -104,34 +112,37 @@ def _install(timeout, cancelled, progress=None):
             raise
 
 
-def ensure_chromium_ready(*, headed=False, timeout=120, cancelled=None,
+def ensure_chromium_ready(*, headed=False, timeout=INSTALL_TIMEOUT_SECONDS, cancelled=None,
                           paths=None, install=None, progress=None):
     """Return an existing executable or install Chromium and recheck it.
 
-    ``cancelled`` is a zero-argument predicate. ``progress(message)`` receives
-    status text. ``paths(headed)`` returns
-    candidate executable Paths; ``install(timeout, cancelled)`` is an optional
-    controlled adapter for callers and tests. A missing file is never trusted.
+    The step is reported as ``Chromium preparation`` with ``timeout`` as its
+    declared budget; an enclosing deadline still clips it. ``cancelled`` is a
+    zero-argument predicate. ``progress(message)`` receives status text.
+    ``paths(headed)`` returns candidate executable Paths;
+    ``install(timeout, cancelled)`` is an optional controlled adapter for
+    callers and tests. A missing file is never trusted.
     """
     if timeout <= 0:
         raise ValueError('timeout must be positive')
     if cancelled and cancelled():
         raise BrowserPreparationError('Chromium preparation cancelled')
-    resolve = paths or _default_paths
-    candidates = tuple(Path(path) for path in resolve(headed))
-    if not candidates:
-        raise BrowserPreparationError('No Chromium executable path is available')
-    for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
-    if install is None:
-        _install(timeout, cancelled, progress)
-    else:
-        install(timeout, cancelled)
-    if cancelled and cancelled():
-        raise BrowserPreparationError('Chromium preparation cancelled')
-    for candidate in resolve(headed):
-        candidate = Path(candidate)
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
-    raise BrowserPreparationError('Chromium installer completed, but the expected executable is absent')
+    with report_timeout_sync('Chromium preparation', timeout) as budget:
+        resolve = paths or _default_paths
+        candidates = tuple(Path(path) for path in resolve(headed))
+        if not candidates:
+            raise BrowserPreparationError('No Chromium executable path is available')
+        for candidate in candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+        if install is None:
+            _install(budget.remaining, cancelled, progress)
+        else:
+            install(budget.remaining, cancelled)
+        if cancelled and cancelled():
+            raise BrowserPreparationError('Chromium preparation cancelled')
+        for candidate in resolve(headed):
+            candidate = Path(candidate)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+        raise BrowserPreparationError('Chromium installer completed, but the expected executable is absent')

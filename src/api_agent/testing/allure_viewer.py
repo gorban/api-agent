@@ -21,7 +21,7 @@ from urllib.parse import quote
 from api_agent.providers.control import CleanupPendingError, finish_cleanup
 from api_agent.providers.sessions import InspectionOwner
 from api_agent.providers.progress import component_timeout, report_timeout
-from api_agent.runtime.managed_browser import managed_browser
+from api_agent.runtime.managed_browser import managed_browser, prepare_managed_browser
 from api_agent.runtime.tasks import offload
 from .allure_source import (PreviewSnapshot, RunSource, ViewerError, validate_manifest,
                             verified_files)
@@ -165,6 +165,8 @@ class ManagedAllureViewer:
         self.cli = cli
         self._inspection = InspectionOwner()
         self.browser_factory = browser_factory or (lambda: managed_browser(headless=False, inspection=self._inspection))
+        # A caller-supplied factory owns its browser's readiness.
+        self._prepares_browser = browser_factory is None
         self._temporary = None
         self._server = self._thread = self._browser = None
         self._processes = []
@@ -179,6 +181,12 @@ class ManagedAllureViewer:
         self._lock = asyncio.Lock()
         self._closed = False
         self._cli = None
+
+    async def prepare_browser(self):
+        """Install the managed Chromium under its own budget, before any viewer operation opens it."""
+        if self._prepares_browser:
+            await prepare_managed_browser(headless=False)
+            self._prepares_browser = False
 
     @asynccontextmanager
     async def _operation(self):

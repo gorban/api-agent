@@ -19,6 +19,18 @@ class IntegrationRequirementsPlan:
         return frozenset({'ui'} if self.requires_ui_session or self.requires_owned_ui_session else ())
 
     @property
+    def requires_browser(self):
+        """UI sessions, owned or shared, launch Chromium inside bounded attempts."""
+        return self.requires_ui_session or self.requires_owned_ui_session
+
+    def prepare_browser(self, *, cancellation=None):
+        """Install Chromium once, here, before any worker's bounded attempt launches it."""
+        if self.requires_browser:
+            from api_agent.runtime.browser import ensure_chromium_ready
+            for headed in (False, True):
+                ensure_chromium_ready(headed=headed, cancelled=None if cancellation is None else cancellation.is_set)
+
+    @property
     def provider_kinds(self):
         kinds = {'llm'} if self.requires_llm else set()
         if self.requires_ui_session:

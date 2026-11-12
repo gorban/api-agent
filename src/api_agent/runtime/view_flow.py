@@ -7,7 +7,7 @@ from pathlib import Path
 from api_agent.providers.progress import component_timeout
 from api_agent.providers.sessions import InspectionOwner
 from api_agent.providers.control import CleanupPendingError, finish_cleanup
-from api_agent.runtime.managed_browser import managed_browser
+from api_agent.runtime.managed_browser import managed_browser, prepare_managed_browser
 from api_agent.runtime.resource_pack import load_selected_definition
 from api_agent.runtime.viewer_host import start_viewer_host
 
@@ -128,6 +128,7 @@ def _prepare_view(context, *, entry=None, renderer_path=None):
 
 async def _serve_view(prepared):
     definition, projection, canonical, bundle, repository_sources = prepared
+    await prepare_managed_browser(headless=False)
     host = await start_viewer_host(bundle, projection=projection, repository_sources=repository_sources)
     inspection = InspectionOwner()
     browser = managed_browser(inspection=inspection, headless=False)
