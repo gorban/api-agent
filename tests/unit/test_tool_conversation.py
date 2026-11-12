@@ -298,7 +298,7 @@ def test_batch_calls_are_reviewed_and_executed_in_order_with_continuation(scenar
 
 
 def test_repeated_alias_results_retain_distinct_prior_invocations(scenario):
-    script = Script([tool_call(ALIASES[0]), verdict(), tool_call(ALIASES[0], 'again'),
+    script = Script([tool_call(ALIASES[0]), verdict(), tool_call(ALIASES[0], 'again', '{"query":"other"}'),
                      verdict(), tool_call(ALIASES[1], 'dependent'), verdict(), reply('finished')])
     run(scenario, script)
     review = script.requests[5].payload.messages[0].content[0].text
@@ -475,17 +475,21 @@ def test_local_marker_does_not_override_terminal_classification(scenario, kind, 
     assert len(script.requests) == 1
 
 
-def test_corrected_batch_cannot_repeat_completed_input_with_a_fresh_call_id(scenario):
+def test_corrected_batch_repeating_completed_input_asks_for_another_correction(scenario):
     invalid = tool_call(ALIASES[1], 'invalid', '{}')
     repeated = reply(calls=(ToolCall('new-second', ALIASES[1], '{"query":"hello"}'),
                             ToolCall('new-first', ALIASES[0], '{ "query" : "hello" }')))
-    script, complete = validated_script([tool_call(ALIASES[0]), verdict(), invalid, repeated])
+    script, complete = validated_script([tool_call(ALIASES[0]), verdict(), invalid, repeated,
+                                         tool_call(ALIASES[1], 'fixed'), verdict(), reply('done')])
 
-    with pytest.raises(ValueError, match='Corrected proposal repeats a completed tool call'):
-        run(scenario, complete)
+    journal = run(scenario, complete, max_rounds=6)
 
-    assert [owner.invocations for owner in scenario[0].values()] == [['call-1'], []]
-    assert len(script.requests) == 4
+    assert [owner.invocations for owner in scenario[0].values()] == [['call-1'], ['fixed']]
+    assert journal['rejections'][-1]['reason'] == 'repeated_completed_call'
+    assert 'repeated_completed_call' in script.requests[4].payload.messages[-1].content[0].text
+    # The repeated batch is omitted from outbound history rather than answered with fabricated results.
+    assert all(call.call_id not in ('new-second', 'new-first') for message in script.requests[4].payload.messages
+               for call in message.calls)
 
 
 def test_cancellation_during_correction_preserves_failed_and_unknown_usage(scenario):
@@ -732,7 +736,8 @@ async def test_declared_capability_repeated_alias_retains_distinct_prior_calls()
         contents={instance: b'id = "synthetic/reader"\n'})
     owner = Owner('actual')
     alias = ALIASES[0]
-    script = Script([tool_call(alias, 'first'), verdict(), tool_call(alias, 'second'), verdict(), reply('done')])
+    script = Script([tool_call(alias, 'first'), verdict(),
+                     tool_call(alias, 'second', '{"query":"other"}'), verdict(), reply('done')])
     async with invocation_tools(definition, {'tools': OwnerTools(definition, owner)}):
         journal = await run_tool_conversation(prompt='Read twice',
             gates={alias: node_tools('conversation')['primary']}, complete=script, selection='synthetic')
