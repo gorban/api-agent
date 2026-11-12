@@ -277,7 +277,13 @@ leaves the port untimed.
 
 ## Implementation-declared operations
 
-The `verified-read@1` interface always offers the four fixed operations above.
+The `verified-read@1` interface always offers the four fixed operations above,
+and all four are idempotent. The interface is read-only, so an implementation of
+it must not write: a call to it must leave the world as it found it, which is
+what allows candidate correction and replay after a step that called it. An
+implementation that can write belongs on `operations@1`, where each write
+operation stays non-idempotent.
+
 A pack that ships its own tool can instead choose the `operations@1` interface,
 where the *implementation* names the operations it offers and which of them are
 idempotent. Nodes then select those names directly. The
@@ -374,10 +380,9 @@ the implementation that it did not list, or an operation the implementation does
 not declare; each fails before the owner is called. Positional arguments are
 rejected. A call to an operation that is not declared idempotent is recorded in
 the invocation's effects and marks the active node as having dispatched an
-effect, the same as executing a verified call, so replay, candidate-correction
-and timeout-replay protections apply. A call to an idempotent operation is not
-recorded, so a step that made only such calls can still be corrected or replayed.
-Calls to these operations do not go through the verified-read tool conversation
+effect, so replay, candidate-correction and timeout-replay protections apply.
+A call to an idempotent operation is not recorded, so a step that made only such
+calls can still be corrected or replayed. Calls to these operations do not go through the verified-read tool conversation
 or schema/evidence capture: the owner is responsible for validating its arguments
 and results.
 

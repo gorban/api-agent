@@ -9,7 +9,7 @@ from api_agent.providers.control import finish_cleanup
 from api_agent.workflows.tool_gate import ToolGate, ToolGateError, VerifiedCall
 from api_agent.providers.tools import PreparedCall
 from api_agent.providers.progress import component_timeout
-from .operations import FIXED_OPERATIONS, OPERATIONS_INTERFACE
+from .operations import FIXED_IDEMPOTENT, FIXED_OPERATIONS, OPERATIONS_INTERFACE
 
 
 class BorrowedTool:
@@ -262,7 +262,8 @@ class ToolInvocation:
             raise ToolGateError('Tool verification is missing')
         gate = calls[candidate.digest]
         if operation == 'execute':
-            self.effects.append(use.scope)
+            if operation not in FIXED_IDEMPOTENT:
+                self.effects.append(use.scope)
             kwargs['_tool_alias'] = use.port
         return await getattr(gate, operation)(*args, **kwargs)
 

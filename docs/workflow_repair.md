@@ -48,11 +48,12 @@ pass limit and inherited deadline. `context.attempt` counts consumed passes;
 `context.correction_attempt` counts local node repairs. `PREVIOUS` contains only
 accepted prior-pass outputs, never an invalid candidate.
 
-Tool dispatch is a replay boundary. Runtime-owned tools and legacy `ToolGate`
-owners record dispatch on the active native node before awaiting execution. An
-`operations@1` call is recorded only when its operation is not declared
-[idempotent](tools.md#implementation-declared-operations); correction and replay
-stay available after a step whose every call was to an idempotent operation.
+Tool dispatch is a replay boundary. A call is recorded on the active native node
+before awaiting execution unless its operation is
+[idempotent](tools.md#implementation-declared-operations): the fixed
+`verified-read@1` operations always are, because that interface is read-only,
+and an `operations@1` operation is only when it declares so. Correction and
+replay stay available after a step whose every call was to an idempotent operation.
 Native code must call `context.mark_effect()` before any
 other side effect that cannot safely repeat. A component cannot restart after
 such dispatch; a later independent producer may still repair its own output
