@@ -10,6 +10,8 @@ from types import MappingProxyType
 from typing import Mapping
 import tomllib
 
+from .persisted_caches import parse_persisted_caches
+
 
 class ResourcePackError(ValueError):
     """A pack cannot provide a valid launch context."""
@@ -59,6 +61,7 @@ class LaunchContext:
     tooling_base_root: Path | None = None
     tooling_library_files: frozenset[str] | None = None
     unit_exclude_markers: tuple[str, ...] = ()
+    persisted_caches: tuple = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -120,7 +123,7 @@ def load_launch_context(
             data = tomllib.loads(_manifest_body.decode('utf-8'))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ResourcePackError(f"Cannot read resource-pack declaration: {manifest}") from exc
-    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure", "tooling", "composition", "prompt_slots"}
+    allowed = {"version", "id", "owner", "config", "tests", "defaults", "authentication", "production", "service_name", "providers", "configuration", "workflow", "infrastructure", "tooling", "composition", "prompt_slots", "persisted_caches"}
     if set(data) - allowed:
         raise ResourcePackError(f"Unknown fields in resource-pack declaration: {manifest}")
     if type(data.get("version")) is not int or data["version"] != 1:
@@ -384,6 +387,7 @@ def load_launch_context(
         tooling_base_root=tooling_base_root,
         tooling_library_files=tooling_library_files,
         unit_exclude_markers=tuple(unit_exclude_markers),
+        persisted_caches=parse_persisted_caches(data.get('persisted_caches', [])),
         inventory_sources=tuple(inventory_sources),
         composition_replacements=composition_replacements,
     )

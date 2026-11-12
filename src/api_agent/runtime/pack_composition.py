@@ -86,6 +86,7 @@ def load_ordered_context(base_root, directories, launcher_root=None):
         shared_dotenv_paths=tuple(dict.fromkeys(path for layer in layers
             for path in (*layer.shared_dotenv_paths, layer.dotenv_path))),
         credential_role_fields=_collect(layers, 'credential_role_fields'),
+        persisted_caches=_collect(layers, 'persisted_caches'),
         infrastructure_sources=tuple((layer.pack_root, layer.infrastructure_paths) for layer in layers),
         infrastructure_paths=_collect(layers, 'infrastructure_paths'),
         inventory_sources=_collect(layers, 'inventory_sources'),
