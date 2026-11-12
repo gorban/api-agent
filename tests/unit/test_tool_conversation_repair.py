@@ -375,6 +375,45 @@ def test_native_feedback_borrows_task_local_authority_without_journal(scenario):
     assert owner.invocations == ['fixed']
 
 
+def preflight_feedback(scenario, error):
+    owner = scenario[0][ALIASES[0]]
+    async def validate(prepared):
+        if prepared.invocation_id == 'bad':
+            raise error
+    owner.validate = validate
+    script = Script([tool_call(ALIASES[0], 'bad'), tool_call(ALIASES[0], 'fixed'), verdict(), reply('done')])
+    journal = run(scenario, script, max_rounds=3)
+    assert owner.invocations == ['fixed']
+    return journal['corrections'][0]['feedback']
+
+
+@pytest.mark.parametrize('error,facts', [
+    (ToolValidationError('Only a literal query is supported'),
+     {'category': 'rejected', 'detail': 'Only a literal query is supported'}),
+    (ToolValidationError('Only a literal query is supported', category='query_shape'),
+     {'category': 'query_shape', 'detail': 'Only a literal query is supported'}),
+    (ToolValidationError('x' * 1000), {'category': 'rejected', 'detail': 'x' * 256}),
+    (ToolValidationError(), {'category': 'rejected'}),
+    (ToolValidationError(category='query_depth'), {'category': 'query_depth'}),
+    (ToolValidationError({'raw': 'object'}), {'category': 'rejected'}),
+])
+def test_preflight_feedback_is_typed_and_bounded_not_the_raw_error_text(scenario, error, facts):
+    assert preflight_feedback(scenario, error) == {
+        'reason': 'Tool preflight rejected the candidate', 'check': 'owner_preflight', **facts}
+
+
+def test_preflight_category_identifies_a_bundled_query_rejection(scenario):
+    from api_agent.api_providers.graphql_mcp import GraphQLQueryError
+    feedback = preflight_feedback(scenario, GraphQLQueryError('query_depth'))
+    assert feedback['category'] == 'query_depth' and 'detail' not in feedback
+
+
+@pytest.mark.parametrize('category', ['', 'Query', '1query', 'a b', 'a' * 65, None, 3])
+def test_preflight_category_must_be_a_short_identifier(category):
+    with pytest.raises(ValueError, match='Invalid tool rejection category'):
+        ToolValidationError('detail', category=category)
+
+
 def test_exhaustion_exception_never_exports_authored_feedback_content(scenario):
     sentinel = 'synthetic-private-rejected-content'
     def check(*args):

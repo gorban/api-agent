@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from hashlib import sha256
 import json
+import re
 from typing import Literal, Protocol
 
 from jsonschema import Draft202012Validator
@@ -16,8 +17,26 @@ MAX_ARGUMENT_BYTES = 16384
 MAX_RESULT_BYTES = 262144
 
 
+MAX_REJECTION_DETAIL = 256
+_CATEGORY = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
+
+
 class ToolValidationError(ValueError):
-    """A candidate rejected deterministically before any execution."""
+    """A candidate rejected deterministically before any execution.
+
+    ``category`` names the kind of rejection and ``detail`` is the bounded text
+    safe to show the model; neither is derived from arbitrary exception contents.
+    """
+    def __init__(self, detail='', *, category='rejected'):
+        if type(category) is not str or not _CATEGORY.fullmatch(category):
+            raise ValueError('Invalid tool rejection category')
+        super().__init__(detail)
+        self.category = category
+
+    @property
+    def detail(self):
+        text = self.args[0] if type(self.args[0]) is str else ''
+        return text[:MAX_REJECTION_DETAIL]
 
 
 def _no_remote(uri):

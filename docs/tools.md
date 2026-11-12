@@ -78,8 +78,11 @@ help = "Address of the selected service."
 A factory is synchronous `create_tool(local_config, services)` and returns a version 1 owner with asynchronous `describe`, `validate`, `invoke` and `aclose` methods. `describe` returns the existing `ToolSpec`; validity and execution use `PreparedCall` and `ToolResult`. Inputs and prerequisites can each be empty. A compatible alternative must advertise its own real schemas; GraphQL arguments are never silently translated into another protocol.
 
 For a deterministic pre-dispatch candidate rejection, `validate` raises
-`ToolValidationError` from `api_agent.providers.tools`. The tool gate forwards
-its credential-safe details to an existing workflow correction controller.
+`ToolValidationError` from `api_agent.providers.tools`. It takes a short
+`category` identifier (default `rejected`) and a detail string. The tool gate
+forwards the category and the detail, cut to 256 characters, to an existing
+workflow correction controller with registered credentials redacted; nothing
+else about the exception reaches the model.
 Arbitrary exceptions remain terminal; they do not establish a correctable
 candidate defect. `validate` must not execute the operation. See
 [candidate repair](workflow_repair.md) for pass limits and dispatch boundaries.
