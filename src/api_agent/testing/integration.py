@@ -38,6 +38,31 @@ from api_agent.providers.setup_transport import _diagnostic
 _RUNNER_OPERATION = threading.local()
 
 
+def _prepare_suite_prerequisites(context, config, output, cancel_event=None):
+    if not config.get('E2E_PREREQUISITE_PROVIDER'):
+        return
+    from .suite_prerequisite_provider import SuitePrerequisiteProvider
+    owner = getattr(_RUNNER_OPERATION, 'prerequisites', None)
+    recovery = _RUNNER_OPERATION.recovery
+    if owner is None:
+        owner = SuitePrerequisiteProvider(context, config, recovery.directory.parent, recovery, output=output)
+        _RUNNER_OPERATION.prerequisites = owner
+    with recovery.bind():
+        owner.start(cancelled=cancel_event)
+
+
+def _close_suite_prerequisites(inspections=()):
+    if any(callable(getattr(item, '_when_closed', None)) and not item.closed for item in inspections):
+        return
+    owner = getattr(_RUNNER_OPERATION, 'prerequisites', None)
+    if owner is not None:
+        from .processes import disposal_complete
+        recovery = _RUNNER_OPERATION.recovery
+        disposed = bool(recovery.workers) and all(disposal_complete(worker) for worker in recovery.workers)
+        with recovery.bind():
+            owner.close(workers_disposed=disposed)
+
+
 def _admit_operation(function):
     """Adapters may nest, but a callback cannot launch a second runner operation."""
     @wraps(function)
@@ -54,6 +79,7 @@ def _admit_operation(function):
             recovery = NativeRecoveryOwner(temporary.name)
             recovery.prepare()
             _RUNNER_OPERATION.recovery = recovery
+            _RUNNER_OPERATION.prerequisites = None
             result = None
             recovered = False
             try:
@@ -64,6 +90,7 @@ def _admit_operation(function):
                 inspections = getattr(result if result is not None else primary, 'inspections', ())
                 retained = tuple(item for item in inspections
                     if callable(getattr(item, '_when_closed', None)) and not item.closed)
+                contribution = getattr(_RUNNER_OPERATION, 'prerequisites', None)
                 def close():
                     nonlocal recovered
                     from api_agent.runtime.processes import disposal_complete
@@ -72,10 +99,14 @@ def _admit_operation(function):
                             recovery._acknowledge_closed()
                             return
                         if not recovered:
-                            if any(recovery.directory.iterdir()):
+                            if any(recovery.directory.iterdir()) or contribution is not None:
                                 for worker in recovery.workers:
                                     if not disposal_complete(worker):
                                         finalize(worker)
+                            if contribution is not None:
+                                disposed = bool(recovery.workers) and all(disposal_complete(worker) for worker in recovery.workers)
+                                with recovery.bind():
+                                    contribution.close(workers_disposed=disposed)
                             recovery.recover()
                             recovered = True
                         temporary.cleanup()
@@ -105,6 +136,7 @@ def _admit_operation(function):
                     primary.cleanup_pending = pending
         finally:
             _RUNNER_OPERATION.recovery = None
+            _RUNNER_OPERATION.prerequisites = None
             _RUNNER_OPERATION.active = False
     return guarded
 
@@ -119,6 +151,7 @@ class IntegrationRunResult:
     attempts: tuple[TestResult, ...] = ()
     e2e_reruns: int = 0
     infrastructure_failed: bool = False
+    prerequisite_events: tuple = ()
 
 
 _PLUGIN = r'''
@@ -1016,7 +1049,9 @@ def run_integration_tests(context, tests, **options):
         execution = IntegrationRunResult(130 if cancelled else int(infrastructure_failed or any(
             row.status not in {'passed', 'skipped'} for row in outcomes)), tuple(outcomes), ''.join(chunks),
             cancelled, tuple(inspections), tuple(attempts), allowance,
-            infrastructure_failed=infrastructure_failed)
+            infrastructure_failed=infrastructure_failed,
+            prerequisite_events=(owner.events if (owner := getattr(_RUNNER_OPERATION, 'prerequisites', None))
+                                 is not None else ()))
         return execution
     publication_attempted = False
     try:
@@ -1053,6 +1088,7 @@ def run_integration_tests(context, tests, **options):
                 if not prepared:
                     if callbacks['before_run'] is not None:
                         callbacks['before_run']()
+                    _prepare_suite_prerequisites(context, config, options.get('output'), options.get('cancel_event'))
                     prepared = True
             wave_options = dict(options)
             if admitted_profiles is not None:
@@ -1073,6 +1109,7 @@ def run_integration_tests(context, tests, **options):
                 break
             pending = tuple(test for test in pending
                 if confirmation_outcome([row.status for row in histories[test.id]], allowance)[1])
+        _close_suite_prerequisites(inspections)
         execution = aggregate()
         outcomes = execution.tests
         if callbacks['on_event'] is not None:
@@ -1106,6 +1143,10 @@ def run_integration_tests(context, tests, **options):
         retained = tuple(dict.fromkeys([*inspections, *getattr(error, 'inspections', ())]))
         error.inspections = retained
         cleanup_errors = []
+        try:
+            _close_suite_prerequisites(retained)
+        except BaseException as cleanup:
+            cleanup_errors.append(cleanup)
         for inspection in retained:
             try:
                 inspection.abort()
@@ -1113,7 +1154,7 @@ def run_integration_tests(context, tests, **options):
                 cleanup_errors.append(cleanup)
         if cleanup_errors:
             error.confirmation_cleanup_errors = tuple(cleanup_errors)
-        if (not publication_attempted and (prepared or attempts) and not cleanup_errors
+        if (not publication_attempted and (prepared or attempts or getattr(_RUNNER_OPERATION, 'prerequisites', None) is not None) and not cleanup_errors
                 and not any(_cleanup_receipts(error))):
             cancelled |= not isinstance(error, Exception)
             infrastructure_failed = True

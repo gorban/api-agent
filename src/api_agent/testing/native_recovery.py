@@ -4,6 +4,7 @@ This local control data is never exported as test evidence. No executable hook,
 ambient engine selection or filesystem-wide discovery is accepted.
 """
 import json
+from contextvars import ContextVar
 import fcntl
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ from .suite_lock import CleanupLeaseOwner
 
 
 LABEL = 'api-agent.acquisition'
+_BOUND_DIRECTORY = ContextVar('suite_native_recovery_directory', default=None)
 
 
 def _private(path, *, directory=False):
@@ -58,6 +60,9 @@ def _read(path):
 
 def admitted_directory():
     """Use the existing protected launch snapshot, never a new environment knob."""
+    if bound := _BOUND_DIRECTORY.get():
+        _private(bound, directory=True)
+        return bound
     if not os.environ.get('API_AGENT_INTEGRATION_CONTEXT'):
         return None
     from .provider_setup import integration_context_directory
@@ -160,6 +165,18 @@ class NativeRecoveryOwner(CleanupLeaseOwner):
 
     def prepare(self):
         self.directory.mkdir(mode=0o700)
+
+    @contextmanager
+    def bind(self):
+        """Lend this operation's recovery root to owned preparation contexts."""
+        _private(self.directory, directory=True)
+        if self.closed:
+            raise ValueError('Native recovery owner is closed')
+        token = _BOUND_DIRECTORY.set(self.directory)
+        try:
+            yield
+        finally:
+            _BOUND_DIRECTORY.reset(token)
 
     def _runtimes(self, state, record):
         scope = StackScope(record['scope'])

@@ -577,9 +577,17 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             shared = [
                 ('Suite usage', 'usage-summary.json', 'application/json'),
                 ('Immutable accounting', 'accounting.json', 'application/json')]
+            prerequisite_events = tuple(result.prerequisite_events)
+            if prerequisite_events:
+                from .suite_prerequisite_provider import validate_prerequisite_event
+                prerequisite_events = tuple(validate_prerequisite_event(event) for event in prerequisite_events)
+                recorder.record_artifact('prerequisite-events.json',
+                    json.dumps(prerequisite_events, sort_keys=True, allow_nan=False).encode())
+                shared.append(('Suite prerequisite diagnostics', 'prerequisite-events.json', 'application/json'))
             if has_workflow_accounting:
                 shared.append(('Workflow accounting join', 'workflow-accounting-join.json', 'application/json'))
             manifest = recorder.finalize(status=status, shared_artifacts=tuple(shared),
+                prerequisite_events=prerequisite_events,
                 **({'e2e_reruns': result.e2e_reruns} if identity.mode == 'e2e' else {}))
             from .allure_preview import emit_snapshot
             emit_snapshot(recorder, {logical_owners[key]: value for key, value in recording_ids.items()},

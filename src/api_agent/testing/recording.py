@@ -290,7 +290,7 @@ class RunRecorder:
             finally:
                 temporary.unlink(missing_ok=True)
 
-    def finalize(self, metadata=None, *, status=None, shared_artifacts=(), e2e_reruns=None):
+    def finalize(self, metadata=None, *, status=None, shared_artifacts=(), e2e_reruns=None, prerequisite_events=()):
         if self._finalized:
             raise RuntimeError('Run already finalized')
         if self._write_failed:
@@ -404,6 +404,9 @@ class RunRecorder:
         boundary = EmissionBoundary(assigned_ids=(self.identity.run_id,))
         metadata = dict(metadata or {})
         safe_metadata = boundary.export(metadata)
+        if prerequisite_events:
+            from .suite_prerequisite_provider import validate_prerequisite_event
+            safe_metadata['prerequisite_events'] = [validate_prerequisite_event(event) for event in prerequisite_events]
         if e2e_outcomes is not None:
             # These records are constructed above from admitted result statuses,
             # generated filenames and SHA-256 identities, never caller content.

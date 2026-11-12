@@ -145,7 +145,7 @@ def test_cleanup_context_and_deletion(tmp_path):
             await pilot.press("enter")
             await pilot.pause(0.4)
             assert table.get_row_at(row)[0] == "✓"
-            assert "Select a row and delete it (with confirmation) from agent .env file." in str(app.screen.query_one("#body", Static).render())
+            assert "Select rows and delete them (with confirmation) from agent .env file." in str(app.screen.query_one("#body", Static).render())
             await pilot.press("d")
             await pilot.pause(0.4)
             assert not app.screen_stack[-2].check_action("switch_target", ())

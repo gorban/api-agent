@@ -683,3 +683,23 @@ def test_loss():
     graph = row['steps'][0]
     assert any(a['name'] == 'Incomplete workflow LLM evidence' for a in graph['attachments'])
     assert any(a['name'] == 'Incomplete workflow LLM evidence' for a in graph['steps'][0]['attachments'])
+
+
+def test_prerequisite_diagnostics_are_retained_without_content_flags(tmp_path):
+    context, test, config = fixture(tmp_path)
+    events = ({'phase': 'prepare', 'seconds': 0.5, 'miss': 1},
+              {'phase': 'cleanup', 'seconds': 0.2, 'pending': 0})
+    def runner(context, tests, **hooks):
+        hooks['before_run']()
+        outcome = TestResult(tests[0], 'passed')
+        hooks['on_result'](outcome)
+        result = IntegrationRunResult(0, (outcome,), '', prerequisite_events=events)
+        hooks['after_run'](result)
+        return result
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                                               runner=runner, storage=Storage())
+    assert result.manifest['metadata']['prerequisite_events'] == list(events)
+    assert json.loads((result.directory / 'prerequisite-events.json').read_text()) == list(events)
+    rows = [json.loads(path.read_text()) for path in result.directory.glob('*-result.json')]
+    assert any(item['source'] == 'prerequisite-events.json'
+               for row in rows for item in row.get('attachments', ()))

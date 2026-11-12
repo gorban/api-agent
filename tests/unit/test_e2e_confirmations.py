@@ -390,3 +390,31 @@ def test_logical_cost_metadata_describes_all_attempts(amounts,bases,zeroes,incom
     if amounts == [0,1] and not any(incomplete):
         assert combined['estimated_cost_usd'] == 1
         assert cost_cell(combined) == '1.000000'
+
+
+def test_failed_prerequisite_before_first_attempt_publishes_events(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import api_agent.testing.suite_prerequisite_provider as module
+    events = []
+    class FailedProvider:
+        def __init__(self, *args, **kwargs):
+            self.events = ()
+        def start(self, *, cancelled=None):
+            self.events = ({'phase': 'error', 'seconds': 0.1, 'count': 1},)
+            raise RuntimeError('startup failed')
+        def close(self, *, workers_disposed=False):
+            self.events += ({'phase': 'cleanup', 'seconds': 0.2, 'pending': 0},)
+    monkeypatch.setattr(module, 'SuitePrerequisiteProvider', FailedProvider)
+    def execute(context, tests, **options):
+        options['before_run']()
+        pytest.fail('preparation must fail before an attempt')
+    monkeypatch.setattr(integration, '_run_integration_tests', execute)
+    with pytest.raises(RuntimeError, match='startup failed') as error:
+        integration.run_integration_tests(SimpleNamespace(owner_root=tmp_path), [identity()],
+            accepted=True, config={'TUI_MODE': 'e2e', 'E2E_PREREQUISITE_PROVIDER': 'synthetic'},
+            after_run=events.append)
+    assert len(events) == 1 and events[0].infrastructure_failed
+    assert events[0].attempts == () and events[0].prerequisite_events == (
+        {'phase': 'error', 'seconds': 0.1, 'count': 1},
+        {'phase': 'cleanup', 'seconds': 0.2, 'pending': 0})
+    assert error.value.execution == events[0]

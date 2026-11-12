@@ -14,7 +14,8 @@ def test_carriers_hide_payloads_and_preserve_types():
     assert c.ProviderCapabilities("llm").version == 1
     assert c.BrowserSession(marker, marker, marker).inspection_endpoint is None
     assert "private-endpoint" not in repr(c.BrowserSession(marker, marker, marker, "private-endpoint"))
-    assert set(c.OPERATION_METHODS) == {"api", "llm", "ui", "upstream", "access"}
+    assert set(c.OPERATION_METHODS) == {"api", "llm", "ui", "upstream", "access", "test_prerequisites"}
+    assert c.OPERATION_METHODS['test_prerequisites'] == {'prepare': 'aprepare', 'dispose_workers': 'adispose_workers'}
     assert {f.name for f in fields(c.BrowserSession)} == {"browser", "context", "page", "inspection_endpoint"}
 
 

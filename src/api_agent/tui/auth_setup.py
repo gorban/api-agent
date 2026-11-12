@@ -6,6 +6,7 @@ import json
 from rich.text import Text
 from api_agent.auth.profiles import _canonical_shape, normalize_auth, DEFAULT_PASSWORD_MANAGER
 from api_agent.config.dotenv import read_dotenv
+from api_agent.config.resolve import ResolvedValue
 from api_agent.tui.app import ButtonFooter, FocusNavigation, QuitDialog, SelectedTextCopy
 from api_agent.tui.select import AdvancingSelect
 from api_agent.tui.editable_input import EditableInput
@@ -286,10 +287,13 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     AuthSetupScreen #auth-content { height: 1fr; }
     AuthSetupScreen #auth-content Static { height: auto; }
     AuthSetupScreen #auth-error { color: $error; }
+    AuthSetupScreen #auth-index { margin-bottom: 1; }
     AuthSetupScreen #auth-targets { margin-top: 1; }
     """
     BINDINGS = [Binding("a", "add_entry", "Add"), Binding("e", "edit_entry", "Edit"),
                 Binding("r", "remove_entry", "Remove"),
+                Binding("u", "select_unattended", "Select highlighted index"),
+                Binding("m", "select_attended", "Attended"),
                 Binding("[", "move_entry_up", "Move up"), Binding("]", "move_entry_down", "Move down"), Binding("s", "switch_target", "Switch .env"),
                 Binding("c", "close_view", "Close"), Binding("q", "quit_request", "Quit")]
 
@@ -316,6 +320,7 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             yield Static("", id="auth-override", markup=False)
             yield Static("Create a 1Password/Keeper login with password and optional TOTP.\n"
                          "Duplicates of each role allowed; pair like users on same index to select them together.\n", id="auth-profile-help", markup=False)
+            yield Static("", id="auth-index", markup=False)
             yield Static("", id="auth-workflow", markup=False)
             yield AuthTable(id="auth-table", cursor_type="row")
             yield AuthTable(id="auth-manager-table", cursor_type="row")
@@ -402,9 +407,98 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         override = self.query_one('#auth-override', Static)
         override.display = source in {'environment', 'environ', 'cli'}
         override.update(f"The {source} value overrides saved .env settings until removed from that source." if override.display else '')
+        self._refresh_index()
         self.query_one('#auth-workflow', Static).update(self._workflow_text())
         self.refresh_bindings()
         self.call_after_refresh(self._fit_tables)
+
+    def _index_result(self):
+        result = self.app.session.result(_review=True)
+        field = result.fields.get('UNATTENDED_USER_INDEX')
+        if field is None and not any(error.startswith('UNATTENDED_USER_INDEX:') for error in result.errors):
+            field = ResolvedValue(None, 'absent', False)
+        return result, field
+
+    def _refresh_index(self):
+        display = self.query_one('#auth-index', Static)
+        if 'UNATTENDED_USER_INDEX' not in self.app.session.schema.fields:
+            display.display = False
+            return
+        display.display = True
+        result, field = self._index_result()
+        if field is None:
+            display.update('Unattended selection is invalid; correct UNATTENDED_USER_INDEX in its source.')
+            return
+        index = field.value
+        source = field.source
+        if index is None:
+            display.update(f'Attended mode (no unattended index; source: {source}). '
+                           'Highlight an account and press u to select its shared index.')
+            return
+        names = []
+        missing = []
+        for role in self.roles:
+            entries = self.entries[role]
+            if isinstance(index, int) and 0 <= index < len(entries):
+                names.append(f"{role}: {entries[index]['user']}")
+            else:
+                missing.append(role)
+        details = '; '.join(names)
+        if missing:
+            details += ('; ' if details else '') + 'unavailable for ' + ', '.join(missing)
+        display.update(f'Selected unattended index {index} (source: {source}): {details}. '
+                       'Press u to select the highlighted index or m for attended mode. '
+                       'Change selection before a removal or reorder that shifts selected accounts.')
+
+    def _structural_change_allowed(self, role, entries):
+        if 'UNATTENDED_USER_INDEX' not in self.app.session.schema.fields:
+            return True
+        _, field = self._index_result()
+        # An invalid selection is not safe to reinterpret as attended mode.
+        if field is None:
+            self._error('Correct the invalid unattended selection before changing account order.')
+            return False
+        index = field.value
+        if index is None:
+            return True
+        old = self.entries[role]
+        before = old[index] if isinstance(index, int) and 0 <= index < len(old) else None
+        after = entries[index] if isinstance(index, int) and 0 <= index < len(entries) else None
+        if before != after:
+            self._error('Change the unattended selection before removing or reordering these accounts.')
+            return False
+        return True
+
+    def _save_index(self, value):
+        session = self.app.session
+        previous_target = session.dotenv_path
+        try:
+            session.switch_target(self.shared_target)
+            session._batch_edit(session.target_paths, lambda: session.set_value(
+                'UNATTENDED_USER_INDEX', '' if value is None else str(value), persist=True))
+            self.changed = True
+        except (ValueError, OSError) as exc:
+            notes = ''.join(f'\n{note}' for note in getattr(exc, '__notes__', ()))
+            self._error(f'Unable to save unattended selection: {exc}{notes}')
+            return
+        finally:
+            session.switch_target(previous_target)
+        self._refresh_index()
+        _, field = self._index_result()
+        if field is None or field.value != value:
+            source = field.source if field else 'an invalid higher-priority value'
+            self._error(f'Saved selection to {self.shared_target}, but {source} overrides the saved choice.')
+        else:
+            self._error('')
+        self.refresh_bindings()
+
+    def action_select_unattended(self):
+        if self.check_action('select_unattended', ()):
+            self._save_index(self._selected()[1])
+
+    def action_select_attended(self):
+        if self.check_action('select_attended', ()):
+            self._save_index(None)
 
     def _workflow_text(self):
         steps = [('s', 'Choose .env target'), (None, 'Select a role'), ('a', 'Add account'), (None, 'Enter vault name'),
@@ -500,6 +594,12 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
     def check_action(self, action, parameters):
         if self.app.screen is not self:
             return False
+        if action in {'select_unattended', 'select_attended'}:
+            if self.editing is not None or 'UNATTENDED_USER_INDEX' not in self.app.session.schema.fields:
+                return False
+            selected = self._selected()
+            return action == 'select_attended' or (not self.load_error and not self._manager_selected()
+                                                    and selected is not None and selected[1] is not None)
         if action == 'switch_target':
             return self.editing is None
         if action == 'add_entry':
@@ -546,6 +646,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
             entries = [dict(value) for value in self.entries[role]]
             if index is None:
                 entries.append(values)
+                if not self._structural_change_allowed(role, entries):
+                    raise ValueError('Change the unattended selection before adding an account at its index.')
             else:
                 entries[index] = values
             self.app.session.save_auth_role(role, entries)
@@ -572,6 +674,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
         moved = entries[index]
         occurrence = sum(item == moved for item in entries[:index])
         entries[index], entries[destination] = entries[destination], entries[index]
+        if not self._structural_change_allowed(role, entries):
+            return
         try:
             self.app.session.save_auth_role(role, entries)
         except Exception as exc:
@@ -608,6 +712,8 @@ class AuthSetupScreen(FocusNavigation, Screen[bool]):
                 role, index = self._selected()
                 entries = [dict(item) for item in self.entries[role]]
                 entries.pop(index)
+                if not self._structural_change_allowed(role, entries):
+                    return
                 self.app.session.save_auth_role(role, entries)
                 self.entries[role] = entries
             self.changed = True
