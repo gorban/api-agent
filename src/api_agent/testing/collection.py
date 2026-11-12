@@ -127,10 +127,10 @@ def _selects(test, value):
     """Match a file, node or ID, a directory/class/function above it, or a glob."""
     if value.startswith("tag:"):
         return value[4:] in test.tags
-    if "*" in value or "?" in value:
-        return fnmatchcase(test.node_id, value) or fnmatchcase(test.file, value)
     if value in {test.file, test.node_id, test.id}:
         return True
+    if "*" in value or "?" in value:
+        return fnmatchcase(test.node_id, value) or fnmatchcase(test.file, value)
     return (test.node_id.startswith((value + "::", value + "["))
             or test.file.startswith(value.rstrip("/") + "/"))
 
