@@ -421,17 +421,27 @@ def test_worker_thread_launch_failure_closes_client_and_accept_loop_recovers(tmp
 
 @pytest.mark.parametrize('message', [b'{"x":1,"x":2}\n', b'[]\n', b'x' * 32768])
 def test_invalid_or_oversized_wire_message_is_rejected(message):
+    import contextlib
     import socket
+    import threading
     from api_agent.testing.suite_prerequisite_broker import _read
 
+    def send():
+        with contextlib.suppress(OSError):
+            writer.sendall(message)
+
     reader, writer = socket.socketpair()
+    # Some platforms buffer less than the oversized message, so send while reading.
+    sender = threading.Thread(target=send, daemon=True)
+    sender.start()
     try:
-        writer.sendall(message)
         with pytest.raises(ValueError):
             _read(reader, deadline=time.monotonic() + 5)
     finally:
         reader.close()
+        sender.join(5)
         writer.close()
+    assert not sender.is_alive()
 
 
 def test_unserializable_capability_releases_borrower_without_leaking(tmp_path):
