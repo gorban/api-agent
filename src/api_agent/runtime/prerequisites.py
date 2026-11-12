@@ -32,7 +32,7 @@ from uuid import uuid4
 
 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment, snapshot_compose
 from api_agent.runtime.ownership import PROFILES
-from api_agent.runtime.processes import disposal_complete, finalize, observe_exit, wait_owned
+from api_agent.runtime.processes import disposal_complete, finalize, list_processes, observe_exit, wait_owned
 
 CONFIG_LABEL = 'api-agent.config'
 _ID = re.compile(r'[0-9a-f]{64}')
@@ -109,21 +109,16 @@ def process_identity(pid):
     if sys.platform != 'darwin':
         raise PrerequisiteError('Cannot verify lease process identity on this platform.')
     try:
-        options = dict(capture_output=True, text=True, timeout=1, check=False,
-                       env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
-        boot = subprocess.run(['/usr/sbin/sysctl', '-n', 'kern.boottime'], **options)
-        birth = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'stat='], **options)
-    except (OSError, subprocess.TimeoutExpired) as error:
+        boot = subprocess.run(['/usr/sbin/sysctl', '-n', 'kern.boottime'], capture_output=True, text=True,
+                              timeout=1, check=False, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+        birth = list_processes('started', 'state', pid=pid, timeout=1)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         raise PrerequisiteError('Cannot verify lease process identity.') from error
     if boot.returncode or not boot.stdout.strip():
         raise PrerequisiteError('Cannot verify host boot identity.')
-    if birth.returncode == 1 and not birth.stdout.strip() and not birth.stderr.strip():
+    if not birth or birth[0][1].startswith('Z'):
         return None
-    if birth.returncode or not birth.stdout.strip():
-        raise PrerequisiteError('Cannot verify lease process identity.')
-    if birth.stdout.split()[-1].startswith('Z'):
-        return None
-    return boot.stdout.strip() + ':' + birth.stdout.rsplit(None, 1)[0]
+    return boot.stdout.strip() + ':' + birth[0][0]
 
 
 def _check(deadline, cancelled, now):

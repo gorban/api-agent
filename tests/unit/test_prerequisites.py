@@ -1228,7 +1228,7 @@ def test_process_identity_mac_and_unknown_fail_closed(monkeypatch, case):
             return SimpleNamespace(returncode=1 if case == 'boot_error' else 0, stdout='{ sec = 123, usec = 456 }')
         return SimpleNamespace(returncode=1 if case in {'missing', 'ps_permission'} else 0, stderr='permission denied' if case == 'ps_permission' else '',
             stdout='' if case in {'missing', 'ps_permission', 'ps_empty'} else 'Mon Oct 5 12:00:00 2026 ' + ('Z' if case == 'zombie' else 'S'))
-    monkeypatch.setattr(p, 'subprocess', SimpleNamespace(**(vars(p.subprocess) | {'run': run})))
+    monkeypatch.setattr(subprocess, 'run', run)
     if case in {'boot_error', 'oserror', 'timeout', 'unsupported', 'ps_permission', 'ps_empty'}:
         with pytest.raises(p.PrerequisiteError): p.process_identity(123)
     elif case in {'missing', 'zombie'}:

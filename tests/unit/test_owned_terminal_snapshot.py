@@ -81,14 +81,14 @@ def test_external_reap_rejects_before_snapshot(monkeypatch, reserved_child):
 ])
 def test_snapshot_rejects_ambiguous_identity(monkeypatch, listing, message):
     monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(subprocess) | {
-        'run': lambda *args, **kwargs: SimpleNamespace(stdout=listing)})))
+        'run': lambda *args, **kwargs: SimpleNamespace(stdout=listing, stderr='', returncode=0)})))
     with pytest.raises(RuntimeError, match=message):
         processes._process_snapshot()
 
 
 def test_snapshot_preserves_identity_and_ignores_blank_rows(monkeypatch):
     monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(subprocess) | {
-        'run': lambda *args, **kwargs: SimpleNamespace(stdout='\n12 1 12 Z+\n\n13 12 12 Z\n')})))
+        'run': lambda *args, **kwargs: SimpleNamespace(stdout='\n12 1 12 Z+\n\n13 12 12 Z\n', stderr='', returncode=0)})))
     assert processes._process_snapshot() == ((12, 1, 12, 'Z+'), (13, 12, 12, 'Z'))
 
 

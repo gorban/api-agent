@@ -72,23 +72,23 @@ def test_group_detection_without_proc_ignores_zombies(monkeypatch, listing, runn
     calls = []
     def ps(*args, **kwargs):
         calls.append((args, kwargs))
-        return SimpleNamespace(stdout=listing)
+        return SimpleNamespace(stdout=listing, stderr='', returncode=0)
     monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(processes.subprocess) | {'run': ps})))
     assert processes._group_running(123) is running
     assert calls == [((['/bin/ps', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'state='],),
-                      {'capture_output': True, 'text': True, 'check': True, 'timeout': 5})]
+                      {'capture_output': True, 'text': True, 'check': False, 'timeout': 5,
+                       'env': {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}})]
 
 
 @pytest.mark.parametrize('listing', ['bad row', '123', 'abc S'])
 def test_group_detection_rejects_malformed_ps(monkeypatch, listing):
     monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
-    monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(processes.subprocess) | {'run': lambda *args, **kwargs: SimpleNamespace(stdout=listing)})))
+    monkeypatch.setattr(processes, 'subprocess', SimpleNamespace(**(vars(processes.subprocess) | {'run': lambda *args, **kwargs: SimpleNamespace(stdout=listing, stderr='', returncode=0)})))
     with pytest.raises(RuntimeError, match='invalid ps output'):
         processes._group_running(123)
 
 
-@pytest.mark.parametrize('failure', [OSError('missing ps'), subprocess.CalledProcessError(1, 'ps'),
-                                      subprocess.TimeoutExpired('ps', .5)])
+@pytest.mark.parametrize('failure', [OSError('missing ps'), subprocess.TimeoutExpired('ps', .5)])
 def test_group_detection_rejects_ps_failure(monkeypatch, failure):
     monkeypatch.setattr(processes, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
     def fail(*args, **kwargs):
