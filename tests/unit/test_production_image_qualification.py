@@ -420,7 +420,7 @@ def test_scenario_base_tag_mismatch_fails_before_build_and_is_cleaned(monkeypatc
 
 
 DEMO_RESULTS = {
-    'plan_digest': 'a' * 64, 'compiled_digest': 'a' * 64,
+    'plan_digest': 'a' * 64, 'source_digest': 'a' * 64,
     'chat': {'status': 200, 'body': 'deterministic demo answer: qualification-stub-greeting'},
     'stub_requests': [{'query': 'query { __schema { types { name } } }', 'authorized': True},
                       {'query': '{ greeting }', 'authorized': True}],
@@ -435,7 +435,7 @@ def test_demo_tool_guard_accepts_a_complete_transcript():
 
 
 @pytest.mark.parametrize(('change', 'message'), (
-    (lambda results: results.update(plan_digest='b' * 64), 'fresh compile'),
+    (lambda results: results.update(plan_digest='b' * 64), 'checked-in demo plan'),
     (lambda results: results['chat'].update(status=502), 'chat response'),
     (lambda results: results['chat'].update(body='deterministic response'), 'tool result'),
     (lambda results: results.update(stub_requests=[]), 'configured endpoint'),
@@ -570,9 +570,6 @@ def test_demo_scenario_starts_the_shipped_plan_with_its_endpoint_and_headers_bou
     monkeypatch.setitem(scope, '_unconfigured_demo_start', lambda *_: {'exit_code': 3, 'logs': 'API_ENDPOINT'})
     monkeypatch.setitem(scope, 'assert_demo_tool_results', lambda results, **_kwargs: calls.append(('asserted', results)))
     monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda **_kwargs: str(state))
-    import api_agent.workflows.artifact_plans as plans
-    monkeypatch.setattr(plans, 'compile_selected_plan', lambda _: b'plan')
-
     results = module['_demo_tool_qualification'](ROOT, tmp_path, tag='custom')
 
     run_command = next(command for command in calls if command[:2] == ('docker', 'run'))
@@ -580,6 +577,8 @@ def test_demo_scenario_starts_the_shipped_plan_with_its_endpoint_and_headers_bou
     assert 'API_HEADERS={"Authorization": "Bearer qualification-token"}' in run_command
     assert not any('API_PROVIDER' in item for item in run_command)
     assert results['stub_requests'] == [{'query': '{ greeting }', 'authorized': True}]
+    # The checked-in plan is hashed on the host without importing the project.
+    assert results['source_digest'] == module['hashlib'].sha256((ROOT / module['DEMO_SOURCE']).read_bytes()).hexdigest()
     assert json.loads((tmp_path / 'demo-tool-scenario.json').read_text())['chat'] == {'status': 200, 'body': 'chat'}
     assert ('docker', 'rm', '--force') == next(c for c in calls if c[:2] == ('docker', 'rm'))[:3]
 
@@ -610,8 +609,6 @@ def _traced_demo_scenario(monkeypatch, tmp_path, *, traced):
     monkeypatch.setitem(scope, 'assert_demo_tool_results',
                         lambda results, **kwargs: calls.append(('asserted', kwargs)))
     monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda **_kwargs: str(state))
-    import api_agent.workflows.artifact_plans as plans
-    monkeypatch.setattr(plans, 'compile_selected_plan', lambda _: b'plan')
     results = module['_demo_tool_qualification'](ROOT, tmp_path, tag='custom', traced=traced)
     return module, calls, results
 
