@@ -154,7 +154,8 @@ def test_the_earlier_tool_resolver_does_not_expose_the_raw_borrowed_tool():
     borrowed = type('Borrowed', (), {'description': 'kept', 'call': None, 'view': None, 'owner': None})()
     definition = declared('read', 'primary')
     resolver = SimpleNamespace(definition=definition,
-                               for_node=lambda node: SimpleNamespace(borrow=lambda port: borrowed))
+                               for_node=lambda node: SimpleNamespace(borrow=lambda port: borrowed,
+                                                                     instance=lambda port: port))
 
     async def scenario():
         async with invocation_tools(definition, {'tools': resolver}):

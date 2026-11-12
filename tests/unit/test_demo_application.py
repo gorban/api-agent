@@ -593,13 +593,14 @@ def test_unsupported_messages_are_rejected_before_provider(invalid):
     assert llm.requests == []
 
 
-def test_application_holds_no_tool_handles_and_tools_unbound_by_the_engine_fail_at_the_node():
+def test_application_holds_no_tool_handles_and_tools_unbound_by_the_engine_fail_before_inference():
     app = application(None)
     assert not {'tool_owner', 'tools', 'requires_api'} & set(vars(app._app))
     llm = LLM([json.dumps({'use_tool': True, 'arguments': {'query': '{ item { name } }'}, 'answer': ''}),
                verdict()])
-    with pytest.raises(Exception, match='admitted tool bindings'):
+    with pytest.raises(Exception, match='has no admitted tool binding: no tools are bound'):
         asyncio.run(app.complete(request(), llm=llm, context=OperationContext('request')))
+    assert llm.requests == []
 
 
 def test_selected_graph_requires_review_guard_and_optional_branch():

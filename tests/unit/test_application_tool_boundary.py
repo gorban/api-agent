@@ -193,8 +193,9 @@ def test_ambient_resolver_serves_only_its_own_definition(tmp_path, grammar):
                 with pytest.raises(ContractError, match='supplied by the engine'):
                     async with invocation_tools(definition, {'tools': tools}):
                         pytest.fail('application supplied its own resolver')
-            async with invocation_tools(definition, {}) as outside:
-                assert outside.resolver is None
+            with pytest.raises(ContractError, match='has no admitted tool binding: no tools are bound'):
+                async with invocation_tools(definition, {}):
+                    pytest.fail('declared tools started without a binding')
         finally:
             await runtime.aclose()
     asyncio.run(scenario())

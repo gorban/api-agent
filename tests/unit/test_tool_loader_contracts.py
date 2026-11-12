@@ -194,7 +194,8 @@ def test_node_context_resolves_its_named_port_in_node_scope():
         definition = declared('read', 'primary')
         def for_node(self, node):
             calls.append(node)
-            return SimpleNamespace(borrow=lambda port: calls.append(port) or selected)
+            return SimpleNamespace(borrow=lambda port: calls.append(port) or selected,
+                                   instance=lambda port: calls.append(('instance', port)) or port)
 
     with pytest.raises(ValueError, match="active workflow invocation"):
         _ = NodeContext('read', (), (), {}).tools
@@ -206,7 +207,7 @@ def test_node_context_resolves_its_named_port_in_node_scope():
             assert borrowed.description == 'forwarded'
             assert await borrowed.invoke(marker) is marker
     asyncio.run(scenario())
-    assert calls == ['read', 'primary', marker]
+    assert calls == ['read', ('instance', 'primary'), 'read', 'primary', marker]
 
 
 def test_node_context_without_admission_rejects_tool_access():
