@@ -174,6 +174,9 @@ def test_resistant_iteration_and_close_retain_dependencies():
         with pytest.raises(asyncio.CancelledError):
             await closing
         close_release.set()
+        # The short budget made the earlier closes fail fast; the released close
+        # must not race it on a slow host.
+        llm._timeout = 5
         await stream.aclose()
         await cm.__aexit__(None, None, None)
         await llm.aclose()
