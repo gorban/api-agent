@@ -225,8 +225,6 @@ class ToolInvocation:
 
     def gate(self, use):
         self.check()
-        if self.resolver is None:
-            raise ContractError('Workflow has no admitted tool bindings')
         resolver = self.resolver.for_node(use.scope)
         instance = resolver.instance(use.port)
         if instance not in self.gates:
@@ -304,14 +302,34 @@ def bind_workflow_tools(resolver):
         _ADMITTED_TOOLS.reset(token)
 
 
+def _require_bindings(definition, resolver, *, other_definition):
+    """Resolve every declared node port before the workflow's first node can spend inference."""
+    for use in getattr(definition, 'tool_usages', ()):
+        if use.scope_kind != 'node':
+            continue
+        where = f'Workflow node {use.scope} port {use.port} has no admitted tool binding: '
+        if resolver is None:
+            reason = ('the bound tools belong to another workflow definition' if other_definition
+                      else 'no tools are bound')
+            raise ContractError(where + reason + "; bind this definition's tools with "
+                                "bind_workflow_tools() or services['tools']")
+        try:
+            resolver.for_node(use.scope).instance(use.port)
+        except ContractError as error:
+            raise ContractError(where + str(error)) from None
+
+
 @asynccontextmanager
 async def invocation_tools(definition, services, *, timeouts=None):
     admitted, supplied = _ADMITTED_TOOLS.get(), services.get('tools')
-    if admitted is not None and not _matches(admitted, definition):
+    other_definition = admitted is not None and not _matches(admitted, definition)
+    if other_definition:
         admitted = None
     if admitted is not None and supplied is not None:
         raise ContractError('Workflow tools are supplied by the engine, not the application')
-    invocation = ToolInvocation(definition, admitted if admitted is not None else supplied, timeouts)
+    resolver = admitted if admitted is not None else supplied
+    invocation = ToolInvocation(definition, resolver, timeouts)
+    _require_bindings(definition, resolver, other_definition=other_definition)
     token = _CURRENT_TOOLS.set(invocation)
     try:
         yield invocation

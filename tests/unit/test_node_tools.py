@@ -233,10 +233,48 @@ async def test_multiple_instances_keep_grants_separate_and_close_each_view():
 
 
 @pytest.mark.asyncio
-async def test_declared_consumer_without_admitted_resolver_fails_before_effects():
-    async with invocation_tools(definition(), {}):
-        with pytest.raises(ContractError, match='admitted tool bindings'):
-            await node_tools('plan')['reader'].describe()
+async def test_declared_consumer_without_admitted_resolver_fails_before_the_first_node():
+    with pytest.raises(ContractError, match=(
+            r"^Workflow node plan port reader has no admitted tool binding: no tools are bound; "
+            r"bind this definition's tools with bind_workflow_tools\(\) or services\['tools'\]$")):
+        async with invocation_tools(definition(), {}):
+            pytest.fail('unbound declared tools admitted')
+
+
+@pytest.mark.asyncio
+async def test_tools_bound_for_another_definition_are_named_before_the_first_node():
+    from api_agent.tooling.runtime import bind_workflow_tools
+    selected, other = definition(), definition()
+    selected.definition_id, other.definition_id = 'selected', 'other'
+    owner = Owner('other')
+
+    with bind_workflow_tools(OwnerTools(other, owner)):
+        with pytest.raises(ContractError, match=(
+                '^Workflow node plan port reader has no admitted tool binding: '
+                'the bound tools belong to another workflow definition;')):
+            async with invocation_tools(selected, {}):
+                pytest.fail('another definition supplied the tools')
+
+    assert owner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_declared_port_fails_before_the_first_node():
+    selected = definition()
+    class Resolver:
+        definition = selected
+        def for_node(self, node):
+            return self
+        def instance(self, port):
+            if port == 'check':
+                raise ContractError('Selected workflow tool port is unavailable')
+            return port
+
+    with pytest.raises(ContractError, match=(
+            '^Workflow node review port check has no admitted tool binding: '
+            'Selected workflow tool port is unavailable$')):
+        async with invocation_tools(selected, {'tools': Resolver()}):
+            pytest.fail('unresolvable port admitted')
 
 
 def test_single_owner_compatibility_rejects_ambiguous_instances():

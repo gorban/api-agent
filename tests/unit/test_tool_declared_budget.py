@@ -230,7 +230,7 @@ async def test_legacy_port_call_honors_its_row_and_otherwise_inherits(progress):
             await asyncio.sleep(delay)
             return 'done'
         resolver = SimpleNamespace(definition=selected, for_node=lambda node: SimpleNamespace(
-            borrow=lambda port: SimpleNamespace(invoke=invoke)))
+            borrow=lambda port: SimpleNamespace(invoke=invoke), instance=lambda port: port))
         progress.clear()
         async with invocation_tools(selected, {'tools': resolver}, timeouts=timeouts):
             tool = NodeContext('run', (), (), {}).tool('primary')
