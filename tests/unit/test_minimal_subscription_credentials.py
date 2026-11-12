@@ -29,7 +29,8 @@ def test_selected_descriptor_retrieval_is_lazy_and_scoped(tmp_path, monkeypatch,
     reader = owner._credentials(0)
     assert calls == []
     try:
-        assert owner.loop.run_until_complete(reader(0, kind)) == 'synthetic-value'
+        with reader.sign_in():
+            assert owner.loop.run_until_complete(reader(0, kind)) == 'synthetic-value'
         assert calls[0].manager == '1password' and calls[0].user == 'login'
         with pytest.raises(ContractError, match='outside binding'):
             owner.loop.run_until_complete(reader(1, kind))
