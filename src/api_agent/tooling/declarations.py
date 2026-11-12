@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import tomllib
 
-from api_agent.workflows.definition import _read_bounded
+from api_agent.workflows.safe_read import read_bounded as _read_bounded
 from .models import ToolSelectionError
 from .operations import OPERATIONS_INTERFACE, name_problem
 
