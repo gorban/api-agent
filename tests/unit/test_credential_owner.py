@@ -129,6 +129,32 @@ def test_a_hold_outlives_the_owner_that_issued_it(boundary, owner):
     assert not scrubbed(boundary, 'jwt-1')
 
 
+def test_retiring_a_slot_releases_only_that_slot(boundary, owner):
+    owner.register('jwt-1', slot='jwt')
+    owner.register('identity-1', slot='identity')
+    owner.register('loose')
+
+    owner.retire('jwt')
+    owner.retire(None)
+    owner.retire('never-registered')
+
+    assert [scrubbed(boundary, value) for value in ('jwt-1', 'identity-1', 'loose')] == [False, True, False]
+
+
+def test_retiring_a_slot_keeps_a_credential_a_hold_still_claims(boundary, owner):
+    owner.register('jwt-1', slot='jwt')
+    with owner.hold():
+        owner.retire('jwt')
+        assert scrubbed(boundary, 'jwt-1')
+    assert not scrubbed(boundary, 'jwt-1')
+
+
+def test_a_closed_owner_retires_nothing_further(owner):
+    owner.close()
+
+    owner.retire('jwt')
+
+
 def test_closing_an_owner_twice_is_harmless(boundary, owner):
     owner.register('jwt-1')
 

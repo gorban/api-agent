@@ -795,6 +795,11 @@ class CredentialOwner:
         secrets = self._checked(secrets)
         await self._boundary._admitted(lambda: self._register(secrets, slot), timeout)
 
+    def retire(self, slot=None):
+        """End one slot's registrations when its credential has no further use; open holds keep theirs."""
+        with self._authority.lock:
+            self._authority.unclaim(self._slots.pop(slot, frozenset()))
+
     def hold(self):
         """Keep every credential registered now, or while the hold is open, scrubbed until it is released.
 
