@@ -104,6 +104,19 @@ Omission notices name the destination's flag and require a new run; unavailable
 provider text cannot be recovered by enabling capture. Timing, status and admitted usage metadata remain useful without
 payloads. Enabling content permission does not itself enable a tracing backend.
 
+`register_secret` keeps a credential scrubbed for the life of the emission
+boundary, which suits configured values. A service that receives rotating
+credentials (per-user tokens, refreshed sessions) takes a `credential_owner()`
+from the boundary for each credential owner, such as a user session, and
+registers through it. `register(*values, slot=...)` replaces what that slot
+registered before, so a rotation retires the previous token. Wrap any
+operation that can still emit a token in `owner.hold()`: the held token stays
+scrubbed until the hold is released, even after it is superseded or the owner
+is closed. `owner.close()` ends the owner's slots when its session ends.
+Removal waits for open evidence leases, and a value that is also registered
+unscoped or by another owner stays scrubbed. Registrations made through an
+owner that is never closed stay for the life of the boundary.
+
 Shared-provider integration tests use a trace runtime owned by their shared
 backend. Its `chat` spans and child `transport attempt` spans carry the same
 logical-call and physical-attempt IDs as accounting and Allure. These remote

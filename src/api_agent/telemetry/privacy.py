@@ -134,6 +134,37 @@ class _Authority:
         self.generation = 0
         self.evidence_leases = 0
         self.registration_waiters = set()
+        # Unscoped registrations live as long as the authority. Scoped ones
+        # live while a credential owner's slot or hold still claims them.
+        self.permanent = set()
+        self.claims = {}
+        self.unclaimed = set()
+
+    def claim(self, secret):
+        self.claims[secret] = self.claims.get(secret, 0) + 1
+
+    def unclaim(self, secrets):
+        """Drop one claim per secret; an unclaimed scoped secret stops being scrubbed.
+
+        Removal waits for open evidence leases, whose publication may still
+        scrub with the secrets that were live when it began.
+        """
+        for secret in secrets:
+            remaining = self.claims[secret] - 1
+            if remaining:
+                self.claims[secret] = remaining
+                continue
+            del self.claims[secret]
+            self.unclaimed.add(secret)
+        self.sweep()
+
+    def sweep(self):
+        if self.evidence_leases:
+            return
+        for secret in self.unclaimed:
+            if secret not in self.claims and secret not in self.permanent:
+                self.secrets.discard(secret)
+        self.unclaimed.clear()
 
 
 class CredentialRegistrationBlocked(RuntimeError):
@@ -162,6 +193,7 @@ class _EvidenceLease:
                 return
             self._released = True
             authority.evidence_leases -= 1
+            authority.sweep()
             waiters = tuple(authority.registration_waiters)
             authority.registration_waiters.clear()
         for loop, future in waiters:
@@ -209,31 +241,37 @@ class EmissionBoundary:
         with self._authority.lock:
             self._assigned_ids.add(identifier)
 
+    def _admit(self, secret, record):
+        """Make ``secret`` scrubbed and call ``record`` with it; False while an evidence lease blocks a new value.
+
+        The caller holds the authority lock, so admission and ownership are atomic.
+        """
+        authority = self._authority
+        if secret not in self._secrets:
+            if authority.evidence_leases:
+                return False
+            self._secrets.add(secret)
+            authority.generation += 1
+        record(secret)
+        return True
+
     def register_secret(self, secret):
+        """Scrub ``secret`` for the life of this authority; use a credential owner for rotating values."""
         if type(secret) is not str or not secret:
             raise ValueError('Secret must be a nonempty string')
         with self._authority.lock:
-            if secret not in self._secrets:
-                if self._authority.evidence_leases:
-                    raise CredentialRegistrationBlocked('Credential registration requires asynchronous admission during evidence publication.')
-                self._secrets.add(secret)
-                self._authority.generation += 1
+            if not self._admit(secret, self._authority.permanent.add):
+                raise CredentialRegistrationBlocked('Credential registration requires asynchronous admission during evidence publication.')
 
-    async def aregister_secret(self, secret, *, timeout=30):
-        """Wait without blocking the event loop until a publication lease ends."""
-        if type(secret) is not str or not secret:
-            raise ValueError('Secret must be a nonempty string')
+    async def _admitted(self, attempt, timeout):
+        """Retry ``attempt`` under the lock until it succeeds, waiting out evidence leases without blocking the loop."""
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 3600:
             raise ValueError('Invalid credential registration timeout')
         async with asyncio.timeout(timeout):
             while True:
                 loop = asyncio.get_running_loop()
                 with self._authority.lock:
-                    if secret in self._secrets:
-                        return
-                    if not self._authority.evidence_leases:
-                        self._secrets.add(secret)
-                        self._authority.generation += 1
+                    if attempt():
                         return
                     future = loop.create_future()
                     waiter = (loop, future)
@@ -243,6 +281,16 @@ class EmissionBoundary:
                 finally:
                     with self._authority.lock:
                         self._authority.registration_waiters.discard(waiter)
+
+    async def aregister_secret(self, secret, *, timeout=30):
+        """Wait without blocking the event loop until a publication lease ends."""
+        if type(secret) is not str or not secret:
+            raise ValueError('Secret must be a nonempty string')
+        await self._admitted(lambda: self._admit(secret, self._authority.permanent.add), timeout)
+
+    def credential_owner(self):
+        """Return an owner whose registrations end with it instead of living as long as this authority."""
+        return CredentialOwner(self)
 
     def begin_evidence_lease(self):
         """Freeze new registrations until the returned owned lease is released."""
@@ -689,6 +737,107 @@ class EmissionBoundary:
         else:
             kind = 'error'
         return {'status': 'error', 'error_kind': kind}
+
+
+class CredentialOwner:
+    """Scrub rotating credentials only while their owner can still emit them.
+
+    A credential stays registered while it is registered in its slot, or while
+    a hold taken before it was superseded is still open. Closing the owner
+    ends the slots; open holds keep their credentials until released. An owner
+    that is never closed keeps its credentials registered.
+    """
+
+    def __init__(self, boundary):
+        self._authority = boundary._authority
+        self._boundary = boundary
+        self._slots = {}
+        self._holds = set()
+        self._closed = False
+
+    @staticmethod
+    def _checked(secrets):
+        if not secrets or any(type(secret) is not str or not secret for secret in secrets):
+            raise ValueError('Secrets must be nonempty strings')
+        return frozenset(secrets)
+
+    def _register(self, secrets, slot):
+        """Claim ``secrets``; False while an evidence lease blocks a new value. Caller holds the lock."""
+        if self._closed:
+            raise ValueError('Credential owner is closed')
+        authority = self._authority
+        if any(secret not in self._boundary._secrets for secret in secrets) and authority.evidence_leases:
+            return False
+        for secret in secrets:
+            self._boundary._admit(secret, lambda _: None)
+        previous = self._slots.get(slot, frozenset())
+        # An unslotted registration accumulates; a named slot replaces its credential.
+        current = previous | secrets if slot is None else secrets
+        for secret in current - previous:
+            authority.claim(secret)
+        self._slots[slot] = current
+        for hold in self._holds:
+            for secret in secrets - hold.secrets:
+                authority.claim(secret)
+                hold.secrets.add(secret)
+        authority.unclaim(previous - current)
+        return True
+
+    def register(self, *secrets, slot=None):
+        """Scrub ``secrets``; a named ``slot`` supersedes what that slot registered before."""
+        secrets = self._checked(secrets)
+        with self._authority.lock:
+            if not self._register(secrets, slot):
+                raise CredentialRegistrationBlocked('Credential registration requires asynchronous admission during evidence publication.')
+
+    async def aregister(self, *secrets, slot=None, timeout=30):
+        """Wait without blocking the event loop until a publication lease ends."""
+        secrets = self._checked(secrets)
+        await self._boundary._admitted(lambda: self._register(secrets, slot), timeout)
+
+    def hold(self):
+        """Keep every credential registered now, or while the hold is open, scrubbed until it is released.
+
+        Take one around any operation that can emit a credential the owner may
+        rotate away. Use it as a context manager or call ``release``.
+        """
+        with self._authority.lock:
+            if self._closed:
+                raise ValueError('Credential owner is closed')
+            hold = _CredentialHold(self)
+            for secrets in self._slots.values():
+                for secret in secrets - hold.secrets:
+                    self._authority.claim(secret)
+                    hold.secrets.add(secret)
+            self._holds.add(hold)
+            return hold
+
+    def close(self):
+        """End the owner's slots; credentials still held remain until their holds are released."""
+        with self._authority.lock:
+            self._closed = True
+            slots, self._slots = self._slots, {}
+            for secrets in slots.values():
+                self._authority.unclaim(secrets)
+
+
+class _CredentialHold:
+    def __init__(self, owner):
+        self._owner = owner
+        self.secrets = set()
+
+    def release(self):
+        owner = self._owner
+        with owner._authority.lock:
+            if self in owner._holds:
+                owner._holds.discard(self)
+                owner._authority.unclaim(self.secrets)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.release()
 
 
 class OwnedLogFilter(logging.Filter):
