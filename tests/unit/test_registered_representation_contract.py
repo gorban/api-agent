@@ -295,8 +295,10 @@ def test_structural_key_value_and_scalar_cuts_follow_registered_contract(layers,
 def test_recursive_serialized_guards_reject_excessive_nesting(operation):
     from api_agent.telemetry import redaction
     value = 'ordinary'
-    for _ in range(22):
-        value = json.dumps(value)
+    # Registration matching allows 128 levels; re-serializing a string that
+    # often is infeasible, so its bound is proven with native nesting.
+    for _ in range(130 if operation == 'registration' else 22):
+        value = [value] if operation == 'registration' else json.dumps(value)
     operations = {
         'registration': lambda: redaction._contains_json_registration(value, {'"owned"'}),
         'prefix': lambda: redaction._contains_json_prefix(value, {'"owned"'}),
@@ -352,7 +354,7 @@ def test_primitive_only_registration_does_not_allocate_semantic_carrier_ranges()
 def test_nested_native_json_depth_is_bounded_before_canonical_serialization():
     from api_agent.telemetry import redaction
     value = 9
-    for _ in range(22):
+    for _ in range(130):
         value = [value]
     with pytest.raises(redaction.AmbiguousJSON, match='nesting'):
         redaction.normalized_json(value)

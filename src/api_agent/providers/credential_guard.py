@@ -79,7 +79,7 @@ def _charge_carrier_work(current, amount):
     return total
 
 
-def _json_document(value, *, max_depth=64):
+def _json_document(value, *, max_depth=128):
     parts = []
     count = 0
     size = 0
@@ -180,7 +180,7 @@ def _check_json(value, secrets):
             def inspect_carrier(item, depth):
                 nonlocal work, nodes
                 nodes += 1
-                if nodes > 100000 or depth > 20:
+                if nodes > 100000 or depth > 128:
                     raise ValueError()
                 if type(item) is str:
                     if not any(mark in item for mark in ('[', '{', '"')):

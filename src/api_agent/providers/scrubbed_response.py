@@ -127,7 +127,7 @@ def _validate(value, schema, operation, diagnostics):
     return value
 
 
-def scrub_response(value, *, schema, secrets=(), operation='response', transform=True, max_depth=64):
+def scrub_response(value, *, schema, secrets=(), operation='response', transform=True, max_depth=128):
     """Return clean JSON and diagnostics; validation owns all required fields.
 
     Bytes are decoded as JSON; native strings remain strings. Additional fields
@@ -145,7 +145,7 @@ def scrub_response(value, *, schema, secrets=(), operation='response', transform
             if len(value) > _LIMIT:
                 raise ValueError()
             value = decode_json(value)
-        if type(max_depth) is not int or not 0 <= max_depth <= 64:
+        if type(max_depth) is not int or not 0 <= max_depth <= 128:
             raise ValueError()
         original = _json_document(value, max_depth=max_depth)[0] if transform else value
         boundary = EmissionBoundary(ContentPolicy(True), secrets=secrets, preserve_json_text=True)
