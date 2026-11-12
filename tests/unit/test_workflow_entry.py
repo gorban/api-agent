@@ -65,6 +65,12 @@ def test_the_entry_requires_exactly_one_matching_row(tmp_path, rows, mode):
         scripted.run(workflow)
 
 
+def test_several_matching_rows_that_name_one_child_enter_it(tmp_path):
+    rows = edges(('START', 'b', 'pre.mode == "b"'), ('START', 'b', 'pre.mode != "c"'), ('START', 'a', 'otherwise'))
+
+    assert calls_for(tmp_path, 'b', rows) == ['pre', 'b', 'c', 'post']
+
+
 def test_a_sole_always_row_is_a_fixed_entry(tmp_path):
     assert calls_for(tmp_path, 'b', edges(('START', 'c', 'always'))) == ['pre', 'c', 'post']
 
