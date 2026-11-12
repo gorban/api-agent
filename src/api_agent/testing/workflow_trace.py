@@ -160,7 +160,8 @@ async def _owned_workflow_trace_locked(factory, config, *, owner_root, environ,
             await runtime.astart()
     except BaseException as error:
         if isinstance(error, Exception):
-            _warning(f'Tracing setup failed at {stage}; continuing without tracing.')
+            outcome = 'timed out' if isinstance(error, TimeoutError) else 'failed'
+            _warning(f'Tracing setup {outcome} at {stage}; continuing without tracing.')
             if stage == 'collector acquisition':
                 _collector_diagnostic(error, factory, config, binding)
         await _close_owned(owner)

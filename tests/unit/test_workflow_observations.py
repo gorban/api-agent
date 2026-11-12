@@ -533,6 +533,36 @@ def test_owned_trace_setup_reports_fixed_failure_stage(monkeypatch, capsys, stag
         runtime.aclose.assert_awaited_once()
 
 
+def test_owned_trace_setup_names_a_collector_readiness_timeout(monkeypatch, capsys):
+    from pathlib import Path
+    from time import monotonic
+    from api_agent.testing import workflow_trace
+    from api_agent.runtime import tracing_collector_snapshot
+
+    resolved = config()
+    original = WorkflowObservationFactory(resolved, boundary=EmissionBoundary())
+    runtime = SimpleNamespace(astart=AsyncMock(), aclose=AsyncMock())
+    def expire(**_kwargs):
+        raise TimeoutError('Owned workflow trace collector readiness timed out')
+    manager = SimpleNamespace(timeout=1, now=monotonic, acquire=expire, release=lambda **_kwargs: None)
+    monkeypatch.setattr(workflow_trace, 'admit_binding', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(workflow_trace, 'TraceRuntime', lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(tracing_collector_snapshot, 'verify_collector_binding', lambda *_args: None)
+    monkeypatch.setattr(tracing_collector_snapshot, 'collector_from_snapshot', lambda *_args: manager)
+
+    async def run():
+        async with workflow_trace.owned_workflow_trace(original, resolved,
+                owner_root=Path(__file__).resolve().parents[2],
+                collector_snapshot={'trace_collector_plan': {'version': 2}}) as scoped:
+            assert scoped is original
+
+    asyncio.run(run())
+
+    assert capsys.readouterr().err == ('WARNING: Tracing setup timed out at collector acquisition; '
+                                       'continuing without tracing.\n')
+    runtime.aclose.assert_awaited_once()
+
+
 def test_owned_trace_external_collector_receipt_needs_no_managed_lease(monkeypatch):
     from api_agent.testing import workflow_trace
     from api_agent.runtime import tracing_collector_snapshot
