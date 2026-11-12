@@ -56,7 +56,7 @@ def _close_suite_prerequisites(inspections=()):
         return
     owner = getattr(_RUNNER_OPERATION, 'prerequisites', None)
     if owner is not None:
-        from .processes import disposal_complete
+        from ..runtime.processes import disposal_complete
         recovery = _RUNNER_OPERATION.recovery
         disposed = bool(recovery.workers) and all(disposal_complete(worker) for worker in recovery.workers)
         with recovery.bind():
