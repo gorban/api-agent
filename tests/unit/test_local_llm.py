@@ -285,7 +285,7 @@ def test_helpers_pending_cleanup_is_retryable(selected):
     asyncio.run(run())
 
 
-def test_readiness_and_catalog_register_each_refreshed_string_auth(selected):
+def test_readiness_and_catalog_register_each_refreshed_string_auth_until_the_next_refresh(selected):
     owner, implementation, _, _, _ = selected
     tokens = iter(('readiness-credential', 'refresh-credential', 'catalog-credential'))
     class Auth:
@@ -302,7 +302,8 @@ def test_readiness_and_catalog_register_each_refreshed_string_auth(selected):
         with pytest.raises(ProviderAccessError) as failure: await owner.describe()
         safe = owner.emissions.content_export({'text': str(failure.value)})['text']
         assert 'catalog-credential' not in safe and 'Catalog failed' in safe
-        assert 'refresh-credential' not in owner.emissions.content_export({'text': 'refresh-credential'})['text']
+        assert 'refresh-credential' in owner.emissions.content_export({'text': 'refresh-credential'})['text']
+        assert 'catalog-credential' not in owner.emissions.content_export({'text': 'catalog-credential'})['text']
         await owner.aclose()
     asyncio.run(run())
 
