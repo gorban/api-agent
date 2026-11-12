@@ -124,6 +124,15 @@ without truncating diagnostics. Setup and provider-operation timeouts retain a
 safe `deadline` classification without requiring DEBUG. A deadline alone is not
 evidence of a network outage. See [authentication limits](authentication-limitations.md).
 
+E2E suites with `UNATTENDED_AUTH` read password-manager entries through the
+launcher. Managers such as 1Password approve each terminal session, and test
+processes run in sessions of their own, so the launcher starts a private relay
+(`testing/credential_relay.py`) before the first wave and asks for one approval
+up front. Test processes request only the configured accounts, and the launcher
+holds no value between requests. Attended sign-in recovery still runs in the
+requesting process. Without the relay (local runs, unit tests) reads happen
+in-process as before.
+
 Physical inference recovery defaults to five total attempts, with nominal waits
 of 0.2s, 1s, 5s and 25s plus bounded jitter. It covers HTTP 429/5xx and explicitly
 classified transient network failures, within the shared deadline. A failed
