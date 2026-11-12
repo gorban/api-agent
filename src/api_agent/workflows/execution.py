@@ -98,7 +98,11 @@ def _schema_facts(schema, value, errors):
 
 
 def scrub_correction(feedback, *, boundary=None):
-    """Bound JSON facts, sharing active authority or an explicit empty authority."""
+    """Bound JSON facts for the model, redacting only credentials the shared authority knows.
+
+    Key names stay as authored; the telemetry key filter applies where the retained
+    feedback is exported, not to what the model sees.
+    """
     from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
     admitted = CandidateCorrection(feedback if feedback != {} else {'reason': 'candidate_rejected'}).feedback
     if feedback == {}:
@@ -109,7 +113,7 @@ def scrub_correction(feedback, *, boundary=None):
         raise WorkflowError('Correction credential authority unavailable')
     lease = boundary.begin_evidence_lease()
     try:
-        return boundary.for_policy(ContentPolicy(True)).content_export(admitted)
+        return boundary.redacted_content(admitted)
     finally:
         lease.release()
 

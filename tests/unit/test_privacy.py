@@ -132,6 +132,20 @@ def test_credentials_always_excluded(key):
     assert payload[key] == SECRET
 
 
+def test_redacted_content_keeps_key_names_that_telemetry_export_drops():
+    boundary = EmissionBoundary(ContentPolicy(False), secrets=[SECRET])
+    payload = {'token_limit': 5, 'next_token': 'cursor', 'password_policy': 'rotate',
+               'rows': [{'next_token': 'page-2', 'text': MARKER + SECRET}], SECRET: 'value',
+               'encoded': json.dumps({'next_token': SECRET, 'ok': 1})}
+    result = boundary.redacted_content(payload)
+    assert result['token_limit'] == 5 and result['next_token'] == 'cursor'
+    assert result['password_policy'] == 'rotate'
+    assert result['rows'] == [{'next_token': 'page-2', 'text': MARKER + '[REDACTED]'}]
+    assert json.loads(result['encoded'])['next_token'] == '[REDACTED]'
+    assert SECRET not in json.dumps(result)
+    assert 'next_token' not in boundary.for_policy(ContentPolicy(True)).content_export(payload)
+
+
 def test_serialized_json_streams_retries_and_nested_values_scrub_secrets():
     boundary = EmissionBoundary(ContentPolicy(True), secrets=[SECRET, SECRET + '_long'])
     payload = {'chunks': [{'text': MARKER + SECRET + '_long'}, (MARKER, SECRET)],
