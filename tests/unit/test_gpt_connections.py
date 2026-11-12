@@ -607,7 +607,7 @@ def test_serialized_initial_save_and_host_mismatch(store, record):
     assert store.load(store.profile_id(record)) == record
 
 
-def test_refresh_registers_old_and_new_credentials_before_return(store, record):
+def test_refresh_registers_new_credentials_before_return_and_retires_the_old(store, record):
     from api_agent.llm_providers.gpt.factory import GPTProvider
     from api_agent.telemetry.privacy import EmissionBoundary
 
@@ -627,7 +627,8 @@ def test_refresh_registers_old_and_new_credentials_before_return(store, record):
                                       register_connection=provider._register_connection)
         assert await session() == 'new-access'
         _, snapshot = authority.snapshot_content()
-        assert {'access', 'refresh', 'id', 'new-access', 'new-refresh', 'new-id'} <= snapshot._secrets
+        assert {'new-access', 'new-refresh', 'new-id'} <= snapshot._secrets
+        assert not {'access', 'refresh', 'id'} & snapshot._secrets
         await session.aclose()
 
     asyncio.run(run())
