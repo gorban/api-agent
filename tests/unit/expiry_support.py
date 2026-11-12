@@ -98,6 +98,10 @@ ROUTE = (('work', 'timed_out', 'work.expired'), ('work', 'finish', 'otherwise'))
 REPLAY = (('work', 'work', 'work.expired and work.attempt < NODE_TIMEOUT_PASSES'),
           ('work', 'timed_out', 'work.expired and work.attempt >= NODE_TIMEOUT_PASSES'),
           ('work', 'finish', 'otherwise'))
+# The same replay counted by expiries only, so ordinary loops through `work` do not use it up.
+EXPIRY_REPLAY = (('work', 'work', 'work.expired and work.expirations < NODE_TIMEOUT_PASSES'),
+                 ('work', 'timed_out', 'work.expired and work.expirations >= NODE_TIMEOUT_PASSES'),
+                 ('work', 'finish', 'otherwise'))
 ENDS = (('finish', 'END', 'always'), ('timed_out', 'END', 'always'))
 
 
@@ -105,9 +109,10 @@ def timeouts(*rows):
     return table('Timeouts', ('Owner', 'Source', 'Key'), [(owner, '[config](config.toml)', key) for owner, key in rows])
 
 
-def expiring(root, *rows, flow=FLOW, owners=(('work', 'NODE_TIMEOUT'),), ends=ENDS, extra='', **kwargs):
+def expiring(root, *rows, flow=FLOW, owners=(('work', 'NODE_TIMEOUT'),), ends=ENDS, extra='',
+             keys=('NODE_TIMEOUT_PASSES',), **kwargs):
     """A graph declaring ``owners`` as Timeouts rows, with ``rows`` as the Edges and every flow end routed to END."""
-    sections = (limits('NODE_TIMEOUT_PASSES') + timeouts(*owners) + edges(*rows, *ends) + extra)
+    sections = (limits(*keys) + timeouts(*owners) + edges(*rows, *ends) + extra)
     return graph(root, flow, sections=sections, native=NATIVE, config=CONFIG, **kwargs)
 
 

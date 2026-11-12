@@ -41,11 +41,14 @@ class Predicate:
     steps: frozenset = frozenset()
     expiring: frozenset = frozenset()
 
-    def evaluate(self, values, *, attempt=1, max_passes=1, constants=None, visits=None, expired=None):
-        """``visits`` maps a step ID to its start count (an unstarted step reads 0) and ``expired`` to
-        whether its latest run ended at its own declared timeout (an unstarted step reads false)."""
+    def evaluate(self, values, *, attempt=1, max_passes=1, constants=None, visits=None, expired=None,
+                 expirations=None):
+        """``visits`` maps a step ID to its start count (an unstarted step reads 0), ``expired`` to
+        whether its latest run ended at its own declared timeout (an unstarted step reads false) and
+        ``expirations`` to how many of its runs did."""
         counters = {('attempt', step): (visits or {}).get(step, 0) for step in self.steps}
         counters.update({('expired', step): bool((expired or {}).get(step)) for step in self.expiring})
+        counters.update({('expirations', step): (expirations or {}).get(step, 0) for step in self.expiring})
         return _evaluate(self.tree.body, values, self.source_owners,
                          {'attempt': attempt, 'max_passes': max_passes}, constants or {}, counters)
 
@@ -113,16 +116,16 @@ def parse_predicate(text, fields):
 
     def contract(node):
         owner, path = _reference(node)
-        if (len(path) == 1 and path[0] in ('attempt', 'expired') and owner in steps
+        if (len(path) == 1 and path[0] in ('attempt', 'expired', 'expirations') and owner in steps
                 and path[0] in fields.get(owner, {})):
             raise PredicateError(f'{owner}.{path[0]} is ambiguous: {owner} also declares an output field '
                                  f'named {path[0]}; rename that field')
         if path == ('attempt',) and owner in steps:
             return {'type': 'integer'}
-        if path == ('expired',) and owner in steps:
+        if path in (('expired',), ('expirations',)) and owner in steps:
             if owner not in expiring:
-                raise PredicateError(f'{owner}.expired requires {owner} to declare its own Timeouts row')
-            return {'type': 'boolean'}
+                raise PredicateError(f'{owner}.{path[0]} requires {owner} to declare its own Timeouts row')
+            return {'type': 'boolean' if path == ('expired',) else 'integer'}
         if owner == _SOURCE and fields is not None:
             owner = source_owners.get(path)
             if owner is None:
@@ -371,18 +374,25 @@ def predicate_fields(layout, source, entering=None):
     return fields
 
 
-def backward_bound(predicate, target, limits):
-    """Find ``<target>.attempt < LIMIT`` (or ``<=``) among a condition's top-level conjuncts.
+def backward_bound(predicate, source, target, limits):
+    """Find the bound on re-entering ``target`` among a condition's top-level conjuncts.
 
-    ``limits`` names the declared Limits keys. Returns ``(key, inclusive)`` for the first
-    such comparison, or ``None`` when the condition does not bound re-entering ``target``.
+    ``<target>.attempt < LIMIT`` (or ``<=``) bounds any backward edge. ``<target>.expirations <
+    LIMIT`` bounds only the edge that replays its own source after that source expired, because
+    only an expiry raises the count: ``source`` is ``target`` and the condition also requires
+    ``<target>.expired``. ``limits`` names the declared Limits keys. Returns ``(key, inclusive,
+    counter)`` for the first such comparison, or ``None`` when the condition does not bound
+    re-entering ``target``.
     """
+    counters = ['attempt']
+    if source == target and edge_expiry(predicate.text, source, flag='expired') == 'requires':
+        counters.append('expirations')
     for node in _conjuncts(predicate.tree.body):
         if (isinstance(node, ast.Compare) and isinstance(node.ops[0], (ast.Lt, ast.LtE))
-                and isinstance(node.left, ast.Attribute) and node.left.attr == 'attempt'
+                and isinstance(node.left, ast.Attribute) and node.left.attr in counters
                 and isinstance(node.left.value, ast.Name) and node.left.value.id == target
                 and isinstance(node.comparators[0], ast.Name) and node.comparators[0].id in limits):
-            return node.comparators[0].id, isinstance(node.ops[0], ast.LtE)
+            return node.comparators[0].id, isinstance(node.ops[0], ast.LtE), node.left.attr
     return None
 
 
@@ -394,17 +404,18 @@ def _conjuncts(node):
         yield node
 
 
-def _reads_expired(node, step):
+def _reads_expired(node, step, flag):
     try:
-        return _reference(node) == (step, ('expired',))
+        return _reference(node) == (step, (flag,))
     except PredicateError:
         return False
 
 
 @lru_cache(maxsize=1024)
-def edge_expiry(when, step):
-    """How an edge condition text uses ``<step>.expired``: ``'requires'`` when a top-level conjunct is
-    exactly that flag, ``'reads'`` when it appears anywhere else, otherwise ``None``.
+def edge_expiry(when, step, flag='expired'):
+    """How an edge condition text uses the ``<step>.<flag>`` expiry flag: ``'requires'`` when a
+    top-level conjunct is exactly that flag, ``'reads'`` when it appears anywhere else, otherwise
+    ``None``.
 
     Condition texts that do not parse as predicates (native condition IDs, ``always``) use nothing.
     """
@@ -412,9 +423,9 @@ def edge_expiry(when, step):
         tree = ast.parse(_normalize(when), mode='eval').body
     except (PredicateError, SyntaxError):
         return None
-    if any(_reads_expired(node, step) for node in _conjuncts(tree)):
+    if any(_reads_expired(node, step, flag) for node in _conjuncts(tree)):
         return 'requires'
-    return 'reads' if any(_reads_expired(node, step) for node in ast.walk(tree)) else None
+    return 'reads' if any(_reads_expired(node, step, flag) for node in ast.walk(tree)) else None
 
 
 def unbounded_edge_message(target):
@@ -426,7 +437,7 @@ def unbounded_edge_message(target):
 def loop_edges(layout):
     """Yield ``(row, bound)`` for each declared edge back to the same or an earlier step.
 
-    ``bound`` is ``backward_bound``'s ``(key, inclusive)``, or ``None`` when the edge's
+    ``bound`` is ``backward_bound``'s ``(key, inclusive, counter)``, or ``None`` when the edge's
     condition does not name a declared Limits key.
     """
     limit_keys = {row['Key'] for row in layout.tables.get('Limits', ())}
@@ -437,7 +448,7 @@ def loop_edges(layout):
             continue
         bound = None
         if when not in ('always', 'otherwise') and not native_condition_id(when):
-            bound = backward_bound(parse_predicate(when, predicate_fields(layout, source)), target, limit_keys)
+            bound = backward_bound(parse_predicate(when, predicate_fields(layout, source)), source, target, limit_keys)
         yield row, bound
 
 

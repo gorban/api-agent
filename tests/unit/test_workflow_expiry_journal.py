@@ -6,18 +6,18 @@ from uuid import uuid4
 import pytest
 
 from api_agent.workflows.journal import WorkflowJournal, validate_journal
-from expiry_support import ENDS, REPLAY, ROUTE, expiring
+from expiry_support import ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, expiring
 from loop_support import build, load
-from test_workflow_expiry import GROUP_ROUTE, group
+from test_workflow_expiry import GROUP_ROUTE, group, looped
 from test_workflow_loops_journal import routes, sign
 
 SAME_TARGET = (('work', 'finish', 'work.expired'), ('work', 'finish', 'otherwise'))
 
 
-def recorded(entry, script=None, limit=None):
-    """Run one turn under a journal carrying the effective limit, as ``(payload, definition)``."""
+def recorded(entry, script=None, limit=None, **limits):
+    """Run one turn under a journal carrying the effective limits, as ``(payload, definition)``."""
     definition = load(entry)
-    values = {} if limit is None else {'NODE_TIMEOUT_PASSES': limit}
+    values = dict(limits, **({} if limit is None else {'NODE_TIMEOUT_PASSES': limit}))
     journal = WorkflowJournal(definition, limits=values or None)
     workflow, native, _ = build(entry, config=values, journal=journal)
     native['SCRIPT'].update({name: list(steps) for name, steps in (script or {}).items()})
@@ -74,6 +74,50 @@ def test_a_replay_journal_over_a_forged_lower_limit_is_not_complete(tmp_path):
     forged = deepcopy(payload)
     forged['projection']['limits'][0]['value'] = 2
     with pytest.raises(ValueError, match='completeness mismatch'):
+        validate_journal(sign(forged))
+
+
+@pytest.mark.parametrize('script,visited', [
+    (['hang', 'ok'], ['work', 'work', 'finish', 'END']),
+    (['hang', 'hang'], ['work', 'work', 'timed_out', 'END'])])
+def test_replays_counted_by_expiries_validate(tmp_path, script, visited):
+    payload, definition = recorded(expiring(tmp_path, *EXPIRY_REPLAY), {'work': script})
+
+    [bounded] = [edge for edge in payload['projection']['edges'] if 'bound' in edge]
+    assert bounded['bound'] == {'key': 'NODE_TIMEOUT_PASSES', 'inclusive': False, 'counter': 'expirations'}
+    assert [target for _, target in routes(payload)] == visited
+    assert payload['completeness'] == 'complete'
+    assert validate_journal(payload, expected_definition=definition) == payload
+
+
+def test_a_replay_after_earlier_ordinary_starts_validates_against_the_expiry_count(tmp_path):
+    payload, definition = recorded(looped(tmp_path), {'work': ['ok', 'hang', 'ok']}, limit=2, PLAN_PASSES=3)
+
+    assert [target for _, target in routes(payload)] == ['work', 'review', 'work', 'work', 'review', 'finish', 'END']
+    assert payload['completeness'] == 'complete'
+    assert validate_journal(payload, expected_definition=definition,
+                            expected_limits={'NODE_TIMEOUT_PASSES': 2, 'PLAN_PASSES': 3}) == payload
+
+
+def test_a_replay_journal_over_a_forged_lower_expiry_limit_is_not_complete(tmp_path):
+    payload, definition = recorded(expiring(tmp_path, *EXPIRY_REPLAY), {'work': ['hang'] * 3}, limit=3)
+
+    assert [target for _, target in routes(payload)].count('work') == 3
+    assert validate_journal(payload, expected_definition=definition, expected_limits={'NODE_TIMEOUT_PASSES': 3}) == payload
+    forged = deepcopy(payload)
+    forged['projection']['limits'][0]['value'] = 2
+    with pytest.raises(ValueError, match='completeness mismatch'):
+        validate_journal(sign(forged))
+
+
+@pytest.mark.parametrize('counter', ['starts', 7, ''])
+def test_an_edge_bound_names_only_a_known_counter(tmp_path, counter):
+    payload, _ = recorded(expiring(tmp_path, *EXPIRY_REPLAY), {'work': ['hang', 'ok']})
+    forged = deepcopy(payload)
+    [bounded] = [edge for edge in forged['projection']['edges'] if 'bound' in edge]
+    bounded['bound']['counter'] = counter
+
+    with pytest.raises(ValueError, match='Invalid workflow projection edge'):
         validate_journal(sign(forged))
 
 

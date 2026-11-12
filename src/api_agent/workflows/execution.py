@@ -372,6 +372,7 @@ class _State(TypedDict):
     attempt_id: str | None
     starts: dict
     expired: dict
+    expirations: dict
 
 
 
@@ -750,7 +751,8 @@ class Workflow:
         def matches(row):
             try:
                 return self._condition(row['When'], state['values'], source=source, ancestry=state['ancestry'],
-                                       visits=state.get('starts'), expired=expired, abandoned=abandoned)
+                                       visits=state.get('starts'), expired=expired,
+                                       expirations=state.get('expirations'), abandoned=abandoned)
             except MissingPredicateField as error:
                 if error.owner not in abandoned:
                     raise
@@ -761,13 +763,15 @@ class Workflow:
             choices = choices or [row for row in edges if row['When'] in ('always', 'otherwise')]
         return choices
 
-    def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None, expired=None, abandoned=()):
+    def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None, expired=None,
+                   expirations=None, abandoned=()):
         if (source, identifier) in self._predicates:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
             results = {key: value for key, value in self._turn_state.get()['results'].items() if key not in abandoned}
             result = predicate.evaluate({**values, **results}, attempt=attempt,
                                         max_passes=maximum, visits=visits, expired=expired,
+                                        expirations=expirations,
                                         constants={**self.pass_constants, **self.limit_values})
         else:
             result = self.conditions[identifier](deepcopy(values))
@@ -1110,7 +1114,9 @@ class Workflow:
         """
         if not self._routes_expiry(owner, budget, nodes):
             return None
+        expirations = state.get('expirations', {})
         after = dict(state, visit_id=budget.id, expired={**state.get('expired', {}), owner: True},
+                     expirations={**expirations, owner: expirations.get(owner, 0) + 1},
                      values={key: value for key, value in state['values'].items() if key != owner and key not in nodes})
         edges = [row for row in self.layout.tables['Edges'] if row['From'] == owner]
         return after if self._route_choices(owner, edges, after) else None
@@ -1641,7 +1647,7 @@ class Workflow:
                 self._turn_state.get()['session'] = session
             prompts = self._prompt_texts()
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
-                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}, expired={}),
+                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}, expired={}, expirations={}),
                 {'recursion_limit': self._recursion_limit})
             if commit is not None:
                 commit.merged = self._merge_session(session, self._turn_state.get()['runs'])
