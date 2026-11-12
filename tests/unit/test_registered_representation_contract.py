@@ -308,6 +308,28 @@ def test_recursive_serialized_guards_reject_excessive_nesting(operation):
         operations[operation]()
 
 
+def test_registration_search_refuses_serialized_levels_past_its_bound():
+    from api_agent.telemetry import redaction
+    # Native nesting reaches normalization's bound first; serialized levels count separately.
+    with pytest.raises(redaction.AmbiguousJSON, match='Serialized JSON nesting'):
+        redaction._contains_json_registration('ordinary', {'"owned"'}, depth=129)
+
+
+def test_export_keeps_ordinary_text_when_registration_search_reports_depth(monkeypatch):
+    from api_agent.telemetry import privacy
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    searched = []
+
+    def too_deep(*args, **kwargs):
+        searched.append(args)
+        raise privacy.JSONDepthError('JSON nesting exceeds the safe bound.')
+
+    monkeypatch.setattr(privacy, '_contains_json_registration', too_deep)
+    boundary = EmissionBoundary(ContentPolicy(True), secrets={'{"token":"synthetic-credential"}'})
+    assert boundary.export({'text': '{"safe": "value"}'}) == {'text': '{"safe": "value"}'}
+    assert searched
+
+
 def test_structural_depth_bound_fails_closed_without_discarding_adjacent_execution():
     carrier = ('[' * 22 + '"ordinary"' + ']' * 22).encode()
     assert CredentialScrubber().capture(carrier) == '[REDACTED]'
