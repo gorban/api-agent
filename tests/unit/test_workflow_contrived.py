@@ -199,7 +199,7 @@ def test_native_cancelled_llm_cannot_swallow_timeout_and_return_success():
         except asyncio.CancelledError:
             cancellations.append(True)
         return SimpleNamespace(outcome='completed',payload=SimpleNamespace(content=(SimpleNamespace(text='{"route":"skip","ready":true}'),)))
-    context=SimpleNamespace(node_id='first_draft',attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(),'output_schema':{},'llm_timeout':.001})
+    context=SimpleNamespace(node_id='first_draft',attempt=1,max_passes=2,prompts=('prompt',),services={'llm':llm,'selection':'synthetic','trial':trial_uuid(),'output_schema':{},'llm_timeout':.2})
     with pytest.raises(TimeoutError,match='LLM call deadline expired'):
         asyncio.run(produce({'previous':None,'feedback':None,'upstream':None,'user_input':'input'},context))
     assert cancellations==[True]
