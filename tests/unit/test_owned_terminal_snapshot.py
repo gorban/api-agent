@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api_agent.testing import processes
+from api_agent.runtime import processes
 
 
 pytestmark = [

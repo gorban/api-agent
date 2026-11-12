@@ -1,5 +1,5 @@
 """Owned pytest unit execution and fixed, per-file production coverage gates."""
-from api_agent.testing.processes import observe_exit
+from api_agent.runtime.processes import observe_exit
 from .contracts import TestResult, RunnerEvent, format_test_summary
 from dataclasses import dataclass
 import json
@@ -15,7 +15,7 @@ import time
 import uuid
 
 from .collection import CollectionError, TestIdentity, collect_tests, repository_label
-from .processes import disposal_complete, finalize
+from api_agent.runtime.processes import disposal_complete, finalize
 from .suite_lock import suite_locked
 from .unit_watchdog import UnitWatchdog
 from .coverage_reports import CoverageReport, coverage_table, retain_report

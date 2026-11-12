@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from api_agent.testing.processes import finalize
+from api_agent.runtime.processes import finalize
 
 
 def _alive(pid):
@@ -318,7 +318,7 @@ def test_guard_inspects_real_zombie_after_closing_standard_streams(tmp_path):
 
 def test_guardian_inspection_budget_is_bounded_and_keeps_child_reserved(monkeypatch):
     from api_agent.auth import owned_process as owned
-    from api_agent.testing.processes import wait_owned
+    from api_agent.runtime.processes import wait_owned
     from types import SimpleNamespace
     child = subprocess.Popen([sys.executable, '-c', 'pass'], start_new_session=True)
     try:

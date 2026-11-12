@@ -1064,7 +1064,7 @@ def test_watchdog_reaps_owned_child_when_group_signal_races_with_disappearance(m
 def test_watchdog_waits_for_owned_exchange_after_descendant_disposal():
     import sys
     from api_agent.providers import evidence_watchdog as watchdog
-    from api_agent.testing.processes import wait_owned, disposal_complete
+    from api_agent.runtime.processes import wait_owned, disposal_complete
     async def scenario():
         code = ('import subprocess,sys; '
                 'subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"])')

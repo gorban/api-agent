@@ -1,5 +1,5 @@
 """Prepare selected launcher-managed executables and files on demand."""
-from api_agent.testing.processes import wait_owned
+from api_agent.runtime.processes import wait_owned
 import os
 from pathlib import Path
 import shutil
@@ -110,7 +110,7 @@ def ensure_tools(*names, timeout=300, cancellation=None):
                 output.seek(0)
                 return output.read(4097)
             finally:
-                from api_agent.testing.processes import finalize
+                from api_agent.runtime.processes import finalize
                 finalize(process)
 
     def resolved(arguments, budget, asset=None):

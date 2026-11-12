@@ -15,7 +15,7 @@ from api_agent.testing import inspection
 @pytest.mark.parametrize('failure', ['reader', 'stream', 'directory'])
 @pytest.mark.parametrize('retry', ['end_inspection', 'abort'])
 def test_disposed_group_is_never_signalled_again_after_later_cleanup_failure(tmp_path, monkeypatch, failure, retry):
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     monkeypatch.setattr(inspection.threading.Thread, 'start', lambda self: None)
     signals = []
     owner = ['original']
@@ -50,7 +50,7 @@ def test_disposed_group_is_never_signalled_again_after_later_cleanup_failure(tmp
 @pytest.mark.parametrize('retry', ['end_inspection', 'abort'])
 @pytest.mark.parametrize('handoff_interrupted', [False, True])
 def test_real_interrupt_grace_wait_records_disposal_before_retry(tmp_path, monkeypatch, retry, handoff_interrupted):
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     monkeypatch.setattr(inspection.threading.Thread, 'start', lambda self: None)
     signals = Mock()
     monkeypatch.setattr(processes.os, 'killpg', signals)
@@ -105,7 +105,7 @@ def test_real_interrupt_grace_wait_records_disposal_before_retry(tmp_path, monke
 
 @pytest.mark.parametrize('leader_known,group_known', [(False, True), (True, False), (False, False)])
 def test_interrupted_unconfirmed_disposal_preserves_interrupt_and_retries(tmp_path, monkeypatch, leader_known, group_known):
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     monkeypatch.setattr(inspection.threading.Thread, 'start', lambda self: None)
     signals = Mock()
     monkeypatch.setattr(processes.os, 'killpg', signals)

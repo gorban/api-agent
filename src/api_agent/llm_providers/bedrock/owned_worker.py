@@ -4,7 +4,7 @@ import subprocess
 
 from api_agent.providers.control import CleanupPendingError
 from api_agent.runtime.tasks import settle
-from api_agent.testing.processes import finalize, observe_exit
+from api_agent.runtime.processes import finalize, observe_exit
 
 
 class _ReaderProtocol(asyncio.StreamReaderProtocol):

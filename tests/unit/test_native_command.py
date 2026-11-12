@@ -114,7 +114,7 @@ def test_supervisor_rejects_invalid_private_payload_before_execution(intent, cha
 @pytest.mark.parametrize('failure_stage', ['register', 'pipe_close'])
 def test_real_post_spawn_failure_has_no_completion_and_blocks_recovery(intent, monkeypatch, failure_stage):
     from api_agent.runtime import prerequisites
-    from api_agent.testing.processes import finalize
+    from api_agent.runtime.processes import finalize
     processes = []
     original_popen = prerequisites.subprocess.Popen
     original_selector = prerequisites.selectors.DefaultSelector

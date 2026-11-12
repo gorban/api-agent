@@ -187,7 +187,7 @@ def test_non_posix_reader_start_failure_reaps_worker_and_closes_stdout(tmp_path,
             raise RuntimeError('synthetic reader startup failure')
         return original_start(thread)
 
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     platform = NonPosixOS()
     monkeypatch.setattr(integration, 'os', platform)
     monkeypatch.setattr(processes, 'os', platform)

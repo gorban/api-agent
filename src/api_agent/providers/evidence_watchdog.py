@@ -54,7 +54,7 @@ class OwnedProjection:
         return self.process.returncode
 
     async def communicate(self, payload):
-        from api_agent.testing.processes import communicate_owned
+        from api_agent.runtime.processes import communicate_owned
         self._exchange_started = True
         try:
             return await _offload_owned(communicate_owned, self.process, payload)
@@ -62,7 +62,7 @@ class OwnedProjection:
             self._close_pipes()
 
     def _dispose(self):
-        from api_agent.testing.processes import finalize
+        from api_agent.runtime.processes import finalize
         try:
             finalize(self.process)
         finally:
@@ -73,7 +73,7 @@ class OwnedProjection:
         await _offload_owned(self._dispose)
 
     async def resident_bytes(self):
-        from api_agent.testing.processes import inspect_owned
+        from api_agent.runtime.processes import inspect_owned
         return await _offload_owned(inspect_owned, self.process, _darwin_resident_bytes)
 
 async def spawn(*argv, **options):

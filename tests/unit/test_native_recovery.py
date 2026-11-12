@@ -429,7 +429,7 @@ def test_native_command_rejects_invalid_descriptor_contract(tmp_path, descriptor
 
 def test_detached_native_command_keeps_recovery_pending_until_actual_cli_finishes(pending_intent):
     import time
-    from api_agent.testing.processes import finalize, wait_owned
+    from api_agent.runtime.processes import finalize, wait_owned
     from api_agent.testing import native_recovery
     owner, state = pending_intent.owner, pending_intent.state
     ready, late = state / 'ready', state / 'late-creation'
@@ -528,7 +528,7 @@ def test_canonical_command_inherits_only_explicit_native_descriptor(tmp_path):
 
 def test_supervisor_disposes_fd_closing_plugin_after_cli_leader_and_worker_die(pending_intent):
     import time
-    from api_agent.testing.processes import finalize, wait_owned
+    from api_agent.runtime.processes import finalize, wait_owned
     from api_agent.testing.native_recovery import _quiescent
     owner, state = pending_intent.owner, pending_intent.state
     ready, release, late = (state / name for name in ('plugin-ready', 'plugin-release', 'plugin-late'))
@@ -675,7 +675,8 @@ def test_suite_ignores_inspection_without_cleanup_subscription_capability():
 
 @pytest.mark.parametrize('already_disposed', [False, True])
 def test_suite_disposes_actual_native_worker_before_recovery(monkeypatch, already_disposed):
-    from api_agent.testing import integration, native_recovery, processes
+    from api_agent.runtime import processes
+    from api_agent.testing import integration, native_recovery
     worker = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(30)'],
         start_new_session=True)
     original_finalize = processes.finalize
@@ -731,7 +732,8 @@ def test_suite_keeps_native_storage_until_all_retained_inspections_close():
 
 
 def test_single_wave_executor_disposes_worker_without_parent_recovery_registry(tmp_path, monkeypatch):
-    from api_agent.testing import integration, processes
+    from api_agent.runtime import processes
+    from api_agent.testing import integration
     from api_agent.testing.collection import collect_tests
     suite = tmp_path / 'tests' / 'integration'
     suite.mkdir(parents=True)

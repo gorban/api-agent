@@ -13,7 +13,7 @@ tracer.set_option('run:relative_files', settings['relative_files'])
 tracer.set_option('run:context', settings['context'])
 tracer.start()
 # Prove the child actually traced a known production body, including branch data.
-from api_agent.testing.processes import disposal_complete
+from api_agent.runtime.processes import disposal_complete
 from types import SimpleNamespace
 assert disposal_complete(SimpleNamespace()) is False
 

@@ -593,7 +593,7 @@ def test_truncated_raw_assignment_redacts_whole_value_in_command_evidence(tmp_pa
 @pytest.fixture
 def interrupted_owned_command(tmp_path, monkeypatch):
     import api_agent.runtime.prerequisites as prerequisites
-    from api_agent.testing.processes import disposal_complete, finalize
+    from api_agent.runtime.processes import disposal_complete, finalize
     from api_agent.providers.control import CleanupPendingError
     from unittest.mock import AsyncMock
 
@@ -619,7 +619,7 @@ def interrupted_owned_command(tmp_path, monkeypatch):
 def test_initial_confirmed_disposal_preserves_independent_duty_without_refinalizing(
         tmp_path, monkeypatch, interrupted_owned_command):
     import asyncio
-    from api_agent.testing.processes import disposal_complete
+    from api_agent.runtime.processes import disposal_complete
     from api_agent.testing.diagnostics import format_exception
     prerequisites, primary, owner, independent_retry, processes, finalize = interrupted_owned_command
     secondary = KeyboardInterrupt('synthetic interruption after confirmed disposal')
@@ -652,7 +652,7 @@ def test_cancelled_drained_disposal_preserves_pending_independent_duty_without_r
         tmp_path, monkeypatch, interrupted_owned_command):
     import asyncio
     import threading
-    from api_agent.testing.processes import disposal_complete
+    from api_agent.runtime.processes import disposal_complete
     prerequisites, primary, owner, independent_retry, processes, finalize = interrupted_owned_command
 
     def pending_finalization(process):
@@ -731,7 +731,7 @@ def test_independent_receipt_disposal_acknowledges_process_before_own_retry(
 def owned_pending_helpers(monkeypatch):
     """Reap real helpers left pending by intentionally mocked retry outcomes."""
     import api_agent.runtime.prerequisites as prerequisites
-    from api_agent.testing.processes import disposal_complete, finalize
+    from api_agent.runtime.processes import disposal_complete, finalize
 
     popen = prerequisites.subprocess.Popen
     owned = []

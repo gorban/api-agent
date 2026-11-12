@@ -309,8 +309,8 @@ def test_real_owned_group_timeout_reaps_descendant_and_cannot_accept_late_pass(t
     import subprocess
     import sys
     import textwrap
-    from api_agent.testing import processes as process_tools
-    from api_agent.testing.processes import _group_running, disposal_complete
+    from api_agent.runtime import processes as process_tools
+    from api_agent.runtime.processes import _group_running, disposal_complete
     if use_ps:
         monkeypatch.setattr(process_tools, 'Path', lambda path: SimpleNamespace(is_dir=lambda: False))
     root = tmp_path / 'base'

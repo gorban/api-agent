@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from api_agent.llm_providers.bedrock import owned_worker
-from api_agent.testing import processes
+from api_agent.runtime import processes
 
 pytestmark = [pytest.mark.unit_platform('linux', 'darwin'),
               pytest.mark.skipif(os.name != 'posix', reason='POSIX retained worker pipes')]

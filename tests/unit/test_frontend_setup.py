@@ -207,7 +207,7 @@ def test_command_cancellation_reaps_process_group(tmp_path):
     finally:
         watcher.join(timeout=6)
     assert not watcher.is_alive()
-    from api_agent.testing.processes import _group_running
+    from api_agent.runtime.processes import _group_running
     # The child shares the leader's group; it must no longer be executing.
     child = int(pid_file.read_text())
     try:

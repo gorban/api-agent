@@ -1,5 +1,5 @@
 """Prepare locked source-checkout frontend dependencies at operation boundaries."""
-from api_agent.testing.processes import wait_owned
+from api_agent.runtime.processes import wait_owned
 import hashlib
 from functools import partial
 import json
@@ -52,7 +52,7 @@ def _command(argv, root, budget, cancellation, env=None):
                 except subprocess.TimeoutExpired:
                     continue
         finally:
-            from api_agent.testing.processes import finalize
+            from api_agent.runtime.processes import finalize
             finalize(process)
 
 

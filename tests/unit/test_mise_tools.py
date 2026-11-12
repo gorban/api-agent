@@ -148,7 +148,7 @@ def test_invalid_resolved_tool_path_is_rejected(fake_mise, monkeypatch, value):
 
 def test_preparation_timeout_during_install_is_reported(fake_mise, monkeypatch, tmp_path):
     import time
-    from api_agent.testing.processes import finalize
+    from api_agent.runtime.processes import finalize
     marker = tmp_path / 'waiting'
     monkeypatch.setenv('FAKE_MISE_WAIT', str(marker))
     original_popen = mise_tools.subprocess.Popen

@@ -1,5 +1,5 @@
 """Capture selected executable data; acquire toolchains only at runtime start."""
-from api_agent.testing.processes import wait_owned
+from api_agent.runtime.processes import wait_owned
 import json
 from functools import partial
 import os
@@ -103,7 +103,7 @@ def _command(mise, arguments, directory, environment, budget, cancellation):
                 raise OSError('Toolchain environment exceeds output limit')
             return body
         finally:
-            from api_agent.testing.processes import finalize
+            from api_agent.runtime.processes import finalize
             finalize(process)
 
 

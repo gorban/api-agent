@@ -862,7 +862,7 @@ def test_browser():
 def test_launcher_liveness_eof_stops_only_registered_worker_group(tmp_path):
     import os
     import signal
-    from api_agent.testing.processes import disposal_complete
+    from api_agent.runtime.processes import disposal_complete
     if os.name != 'posix':
         pytest.skip('POSIX worker group ownership')
     base = fixture_repo(tmp_path / 'base', '''

@@ -126,7 +126,7 @@ def test_prompt_like_successful_credentials_remain_private(tmp_path, password, c
 def test_timeout_kills_owned_descendant_holding_pipes(tmp_path, monkeypatch):
     import os
     from api_agent.auth import owned_process
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     if os.name != 'posix':
         pytest.skip('Process group regression requires POSIX')
     marker = tmp_path / 'child.pid'
