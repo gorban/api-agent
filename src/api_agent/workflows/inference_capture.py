@@ -459,19 +459,52 @@ def capture_rows(rows, call_id):
                     deferred['lost'] = True
 
 
+class _CapturedAuth:
+    """A call's credential, scrubbed until the call releases it."""
+    def __init__(self, credentials=None, hold=None):
+        self._credentials, self._hold = credentials, hold
+
+    def release(self):
+        hold, self._hold = self._hold, None
+        if hold is not None:
+            hold.release()
+            self._credentials.retire('call')
+
+
+def _register_call_auth(boundary, auth):
+    """Scrub a call's credential on ``boundary`` until the next call replaces it."""
+    credentials = getattr(boundary, 'call_credentials', None)
+    if credentials is None:
+        boundary.register_secret(auth)
+    else:
+        credentials().register(auth, slot='call')
+
+
 async def prepare_capture_auth(auth):
-    """Admit a credential before inference uses it or attempts capture."""
+    """Admit a credential before inference uses it or attempts capture; release the result when the call ends."""
     if type(auth) is not str or not auth:
-        return
+        return _CapturedAuth()
     collector = _COLLECTOR.get()
     owner = current_workflow_visit()
     boundary = collector['boundary'] if collector is not None else None
     if boundary is None and owner is not None:
         boundary = getattr(owner[0], 'boundary', None) or getattr(owner[0], '_boundary', None)
     if boundary is None:
-        return
-    from api_agent.telemetry.privacy import register_secret_async
-    await register_secret_async(boundary, auth)
+        return _CapturedAuth()
+    call_credentials = getattr(boundary, 'call_credentials', None)
+    if call_credentials is None:
+        from api_agent.telemetry.privacy import register_secret_async
+        await register_secret_async(boundary, auth)
+        return _CapturedAuth()
+    credentials = call_credentials()
+    # Taken before registering: a concurrent call replacing the slot must not release this call's credential.
+    hold = credentials.hold()
+    try:
+        await credentials.aregister(auth, slot='call')
+    except BaseException:
+        hold.release()
+        raise
+    return _CapturedAuth(credentials, hold)
 
 
 class _UnsupportedCapture(ValueError):
@@ -582,7 +615,7 @@ def _capture_inference_failure(error, cause_id, *, auth=None, transport_attempt_
         selected = []
     try:
         if boundary is not None and type(auth) is str and auth:
-            boundary.register_secret(auth)
+            _register_call_auth(boundary, auth)
         if boundary is not None:
             diagnostics = scrub_diagnostics(diagnostics, boundary)
         allowed = (boundary is not None and not _WITHHELD.get() and (collector is None or
@@ -684,7 +717,7 @@ def capture_inference(direction, wire, cause_id, *, auth=None, fallback=False, p
         from api_agent.providers.generation_attempts import current_transport_attempt
         attempt_id = current_transport_attempt()
         if type(auth) is str and auth:
-            boundary.register_secret(auth)
+            _register_call_auth(boundary, auth)
         if collector is not None and collector['retain_raw']:
             phase = 'request' if direction == 'input' else 'response'
             for prior in collector['rows']:
