@@ -66,6 +66,7 @@ class LaunchContext:
     unit_exclude_markers: tuple[str, ...] = ()
     persisted_caches: tuple = ()
     hooks: tuple[tuple[str, str], ...] = ()
+    test_prerequisites: tuple[tuple[str, Path, str], ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -313,7 +314,7 @@ def load_launch_context(
     declared_tests = data.get("tests", {})
     if not isinstance(defaults, dict) or not isinstance(declared_tests, dict):
         raise ResourcePackError("Resource-pack defaults and tests must be TOML tables")
-    if set(declared_tests) - {"unit", "integration", "e2e", "unit_exclude_markers"}:
+    if set(declared_tests) - {"unit", "integration", "e2e", "unit_exclude_markers", "prerequisites"}:
         raise ResourcePackError("Resource-pack tests contains an unknown test mode")
     unit_exclude_markers = declared_tests.get('unit_exclude_markers', [])
     if (type(unit_exclude_markers) is not list or len(unit_exclude_markers) > 64
@@ -329,6 +330,19 @@ def load_launch_context(
         if (script is None or not re.fullmatch(r'[A-Za-z0-9_.][A-Za-z0-9_./-]*', relative)
                 or '..' in Path(relative).parts or script.is_symlink() or not script.is_file()):
             raise ResourcePackError(f'hooks.{name} must be an owner-relative regular file')
+    declared_prerequisites = declared_tests.get('prerequisites', {})
+    if type(declared_prerequisites) is not dict:
+        raise ResourcePackError('tests.prerequisites must map markers to provider functions')
+    test_prerequisites = []
+    for marker, location in declared_prerequisites.items():
+        path, _, symbol = location.partition(':') if type(location) is str else ('', '', '')
+        source = owner / path
+        if (marker not in unit_exclude_markers or not symbol.isidentifier() or not symbol.isascii()
+                or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_./-]*\.py', path) or '..' in Path(path).parts
+                or source.is_symlink() or not source.is_file()):
+            raise ResourcePackError(f'tests.prerequisites.{marker} must name an excluded marker '
+                                    'and an owner-relative Python file:function')
+        test_prerequisites.append((marker, source, symbol))
     production = data.get("production", [])
     if not isinstance(production, list):
         raise ResourcePackError('Resource-pack production must list relative source directories')
@@ -369,7 +383,7 @@ def load_launch_context(
             raise ResourcePackError("authentication.identity.path must be included in production coverage directories")
     tests: dict[str, tuple[Path, ...]] = {}
     for mode, paths in declared_tests.items():
-        if mode == 'unit_exclude_markers':
+        if mode in {'unit_exclude_markers', 'prerequisites'}:
             continue
         if not isinstance(paths, list):
             raise ResourcePackError(f"tests.{mode} must be an array of relative paths")
@@ -401,6 +415,7 @@ def load_launch_context(
         unit_exclude_markers=tuple(unit_exclude_markers),
         persisted_caches=parse_persisted_caches(data.get('persisted_caches', [])),
         hooks=tuple(hooks.items()),
+        test_prerequisites=tuple(test_prerequisites),
         inventory_sources=tuple(inventory_sources),
         composition_replacements=composition_replacements,
     )
