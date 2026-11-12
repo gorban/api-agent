@@ -338,6 +338,32 @@ def test_start_failure_and_unavailable_requests_are_bounded(monkeypatch, tmp_pat
     assert sent[0]['status'] == 503
 
 
+def test_start_failure_logs_its_category_and_location_without_the_message(monkeypatch, tmp_path, caplog):
+    from api_agent.providers.contracts import ContractError
+    from api_agent.runtime import production
+    settings = production.ProductionSettings(
+        plan=tmp_path / 'selected.json', pack_id='demo', owner_root=tmp_path,
+        listen_host='127.0.0.1', listen_port=8080, callback_origin='https://localhost:9443',
+        chat_origin='http://localhost:3000',
+        session_nonce='n' * 32, values={'LLM_PROVIDER': 'test:provider'}, shutdown_timeout=1,
+    )
+    settings.plan.write_bytes(b'compiled')
+    monkeypatch.setattr(production, 'load_artifact', lambda _: object())
+    monkeypatch.setattr(production, 'selected_application', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(production, 'compose_chat_runtime',
+                        Mock(side_effect=ContractError('token=secret-value')))
+
+    with caplog.at_level('ERROR', logger='api_agent.runtime.production'):
+        sent = _lifespan_messages(production.ProductionApplication(settings))
+
+    assert sent == [{'type': 'lifespan.startup.failed', 'message': 'runtime_start_failed'}]
+    assert [record.name for record in caplog.records] == ['api_agent.runtime.production']
+    logged = caplog.records[0].getMessage()
+    assert logged.startswith('Runtime startup failure category: contract\n')
+    assert 'api_agent/runtime/production.py:' in logged
+    assert 'secret-value' not in logged
+
+
 def test_generic_shutdown_failure_and_factory_cli(monkeypatch, tmp_path):
     from api_agent.runtime import production
 
