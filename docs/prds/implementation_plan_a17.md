@@ -40,10 +40,10 @@ For example:
 ## Command-line parsing and execution boundaries
 
 Negative selectors must work without requiring the `--` separator in these test
-modes. Continue supporting `--` for positional arguments. Keep `-h` reserved for
-help; a group named `h` cannot be excluded using `-h`. After `--`, do not interpret
-`-h` as an exclusion of that group. Existing help/separator behavior otherwise
-remains compatible. Known long options and their typed values retain their
+modes. Continue supporting `--` for positional arguments. Before `--`, keep `-h`
+reserved for help. After `--`, option parsing has ended: `-h` excludes the `h`
+group and must not display help. This makes both meanings unambiguous on their
+respective sides of the separator. Known long options and their typed values retain their
 meaning, including negative numeric values consumed by an option. Unknown long
 options must remain errors rather than becoming test selectors. Other launcher
 modes must not acquire new single-dash semantics.
@@ -66,7 +66,8 @@ File/tag expansion is not explicit enumeration of individual test IDs for the
   removed by `-skip` or `-mutation`.
 - [ ] Cover exclusions alone, no matches, an empty final selection, qualified
   exclusions, namespace collisions, existing globs and repository ambiguity.
-- [ ] Cover negative selectors with and without `--`, reserved `-h`, ordinary
+- [ ] Cover negative selectors with and without `--`, `-h` as help before `--`
+  and as an exclusion of tag `h` after `--`, ordinary
   long options, unknown options and negative typed option values. Assert that
   rejected input never starts authentication or prerequisites.
 - [ ] Prove the same selection algebra in all three modes, normal owner defaults,
