@@ -281,6 +281,24 @@ def test_launcher_help_consumes_all_pack_configuration_layers(tmp_path, monkeypa
     assert str(second.name + '/config.toml') in output.out
 
 
+def test_launcher_installs_each_composed_owners_declared_hooks_once(tmp_path, monkeypatch):
+    from api_agent.runtime.bootstrap import main
+    declared = 'hooks={pre-commit="hook"}\n'
+    first = pack(tmp_path, 'first', manifest=declared)
+    second = pack(tmp_path, 'second', manifest=declared)
+    for root in (first, second):
+        (root / 'hook').write_text('#!/bin/sh\n')
+    calls = []
+    monkeypatch.setattr('api_agent.runtime.hook_assurance.assure_hook', lambda *args: None)
+    monkeypatch.setattr('api_agent.runtime.pack_hooks.assure_pack_hooks', lambda *args: calls.append(args))
+    monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', lambda *args, **kwargs: None)
+    monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+    monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *args, **kwargs: None)
+    monkeypatch.setattr('os.environ', {})
+    assert main(['--resource-pack-dir', str(first), '--resource-pack-dir', str(second), '--help'], base_root=BASE) == 0
+    assert calls == [(first, (('pre-commit', 'hook'),)), (second, (('pre-commit', 'hook'),))]
+
+
 def test_pack_launcher_and_interpreter_handoff_preserve_order(tmp_path, monkeypatch):
     from api_agent.runtime.bootstrap import resource_pack_main
     from api_agent.runtime.dependencies import _relaunch

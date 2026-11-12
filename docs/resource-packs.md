@@ -150,6 +150,21 @@ account, model, endpoint or a replay after failure. Legacy requests retain their
 existing contract. See [declaration and binding requirements](prds/implementation_plan_f1a1.md)
 and [included adapter modes and evidence](../src/api_agent/llm_providers/gpt/RESPONSE_MODES.md).
 
+## Git hooks
+
+A pack can declare scripts that its checkout wants as Git hooks:
+```toml
+[hooks]
+pre-commit = "git/hooks/pre-commit"
+```
+Names are `pre-commit`, `prepare-commit-msg`, `commit-msg` or `pre-push`; each path is a regular file
+relative to the pack owner. During normal launcher setup, the launcher installs a small wrapper in that
+owner's `.git/hooks` that runs the checkout's script, so editing the script needs no reinstall. It never
+replaces an existing hook, a wrapper it did not write or a `core.hooksPath` you configured (a `hooksPath`
+that already names the script's directory counts as installed), and it does not write into the hook
+directory a linked worktree shares with its main checkout. In those cases it reports why and you can run
+the script from your own hook. Every layer of a composed pack gets its own owner's hooks.
+
 ## Contribute integration tests
 
 A selected provider can add adjacent `cfg/tests.toml`:
