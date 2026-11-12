@@ -43,6 +43,17 @@ def recover(argv, interaction, label, timeout, *, login_only=False):
         raise CredentialError('Password manager recovery interaction disconnected.') from None
 
 
+def _write_input(master, data):
+    """Deliver terminal input; False once the helper has closed its terminal."""
+    try:
+        os.write(master, data)
+    except OSError as error:
+        if error.errno != errno.EIO:
+            raise
+        return False
+    return True
+
+
 def _invocation(argv, channel, deadline, *, login_only=False):
     import termios
     from .credentials import CredentialRecoveryError as CredentialError
@@ -120,7 +131,7 @@ def _invocation(argv, channel, deadline, *, login_only=False):
                 if input_ended and reply.action in ('input', 'eof'):
                     continue
                 if reply.action == 'eof' and input_sent:
-                    os.write(master, attributes[6][termios.VEOF])
+                    _write_input(master, attributes[6][termios.VEOF])
                     input_ended = True
                     continue
                 if reply.action in ('cancel', 'eof'):
@@ -133,7 +144,10 @@ def _invocation(argv, channel, deadline, *, login_only=False):
                 data = (reply.value + '\n').encode('utf-8')
                 if len(data) > 4096:
                     raise CredentialError('Password manager recovery input exceeded its limit.')
-                os.write(master, data)
+                if not _write_input(master, data):
+                    # The helper closed its terminal; its exit status decides.
+                    input_ended = True
+                    continue
                 input_sent = True
         # Streams can close while the helper remains alive. Guardian exit
         # acknowledges group disposal; wait without blocking cancellation.
