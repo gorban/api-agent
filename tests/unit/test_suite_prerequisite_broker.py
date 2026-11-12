@@ -854,3 +854,38 @@ def test_request_already_connected_is_rejected_after_admission_stops(tmp_path, m
         resume.set()
         broker.close(timeout=5)
     assert resolutions.value == starts.value == 0
+
+
+def test_failure_callback_is_deduplicated_and_cannot_change_acquisition(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    ctx = multiprocessing.get_context('spawn')
+    starts, stops = ctx.Value('i', 0), ctx.Value('i', 0)
+    failures, events = [], []
+    def report(error):
+        failures.append(error)
+        raise SystemExit('callback failure')
+    broker = SuitePrerequisiteBroker(tmp_path, {'service': FailingHandler(starts, stops)},
+        owner_budget=5, event=events.append, on_failure=report)
+    descriptor = broker.start()
+    def acquire(_):
+        with pytest.raises(RuntimeError, match='^prerequisite acquisition failed$'):
+            borrow_prerequisite(descriptor, 'service', {'account_scope': 'a' * 64}, timeout=5)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(acquire, range(8)))
+    assert len(failures) == 1
+    assert 'private startup detail' in str(failures[0])
+    assert 'private startup detail' not in str(events)
+    broker.close(timeout=5)
+    assert stops.value == 1
+
+
+def test_failure_reporting_is_optional_and_bounded(tmp_path):
+    broker = SuitePrerequisiteBroker(tmp_path, {}, owner_budget=1)
+    broker._report_failure(ValueError('ignored'))
+    failures = []
+    broker._on_failure = failures.append
+    errors = [ValueError(str(index)) for index in range(129)]
+    for error in errors:
+        broker._report_failure(error)
+    broker._report_failure(errors[0])
+    assert failures == errors[:128]

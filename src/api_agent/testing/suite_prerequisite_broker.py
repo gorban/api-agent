@@ -130,13 +130,15 @@ def _gone(sock):
 
 class SuitePrerequisiteBroker:
     """Own the pool and a private socket for one pytest controller."""
-    def __init__(self, context_directory, handlers, *, owner_budget, event=None):
+    def __init__(self, context_directory, handlers, *, owner_budget, event=None, on_failure=None):
         _duration(owner_budget)
         self._context_directory = Path(context_directory)
         self._handlers = dict(handlers)
         self._owner_budget = owner_budget
         self._pool = SuitePrerequisitePool(owner_budget=owner_budget)
         self._event = event
+        self._on_failure = on_failure
+        self._reported_failures = []
         self._token = secrets.token_hex(32)
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
@@ -154,6 +156,21 @@ class SuitePrerequisiteBroker:
                 self._event({'phase': phase, 'seconds': max(0, time.monotonic() - start), **counts})
             except Exception:
                 pass  # Diagnostics cannot affect ownership.
+
+    def _report_failure(self, error):
+        if self._on_failure is None:
+            return
+        with self._lock:
+            if any(previous is error for previous in self._reported_failures):
+                return
+            # Bound retained exceptions and diagnostic volume per controller.
+            if len(self._reported_failures) >= 128:
+                return
+            self._reported_failures.append(error)
+        try:
+            self._on_failure(error)
+        except BaseException:
+            pass  # Diagnostics cannot affect ownership or the worker response.
 
     def start(self):
         if self._server is not None:
@@ -210,6 +227,7 @@ class SuitePrerequisiteBroker:
 
     def _serve(self, sock):
         started = time.monotonic()
+        acquiring = False
         try:
             sock.settimeout(5)
             _peer(sock)
@@ -221,6 +239,7 @@ class SuitePrerequisiteBroker:
                     or type(request['scope']['account_scope']) is not str
                     or not re.fullmatch('[0-9a-f]{64}', request['scope']['account_scope'])):
                 raise ValueError('invalid request')
+            acquiring = True
             with self._condition:
                 if self._stopping.is_set():
                     raise RuntimeError('broker is draining')
@@ -242,6 +261,7 @@ class SuitePrerequisiteBroker:
             self._emit('prepare', started, reuse=int(reused), miss=int(not reused))
             wait = time.monotonic()
             borrower = self._pool.borrow(digest, factory, cancelled=lambda: _gone(sock))
+            acquiring = False
             lease_id = secrets.token_hex(32)
             try:
                 if type(borrower.value) is not dict:
@@ -267,7 +287,9 @@ class SuitePrerequisiteBroker:
                 raise ValueError('invalid release')
             self.acknowledge_disposal(lease_id)
             sock.sendall(_encode({'status': 'released'}))
-        except (Exception,):
+        except Exception as error:
+            if acquiring:
+                self._report_failure(error)
             self._emit('error', started, count=1)
             try:
                 sock.sendall(_encode({'status': 'error'}))

@@ -47,10 +47,17 @@ def test_actual_node_http_readiness_and_owned_disposal():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('kwargs', [dict(timeout=0), dict(timeout=float('inf')), dict(cleanup_timeout=0)])
+@pytest.mark.parametrize('kwargs', [dict(timeout=0), dict(timeout=-1), dict(timeout=601),
+    dict(timeout=float('inf')), dict(timeout=float('nan')), dict(timeout=True),
+    dict(cleanup_timeout=0), dict(cleanup_timeout=11)])
 def test_invalid_timeout(kwargs):
     with pytest.raises(ValueError, match='timeout'):
         launcher(**kwargs)
+
+
+@pytest.mark.parametrize('timeout', [61, 600])
+def test_extended_startup_timeout_is_allowed(timeout):
+    assert launcher(timeout=timeout).timeout == timeout
 
 
 @pytest.mark.parametrize('host,port_value,scheme', [('remote.invalid', 8000, 'http'), ('192.0.2.1', 8000, 'http'), ('localhost', 0, 'http'), ('localhost', 8000, 'ftp')])

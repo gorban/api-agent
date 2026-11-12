@@ -195,3 +195,43 @@ def test_declaration_default_cannot_accept_e2e():
     result = resolve_config(schema, argv=['--start=E2E'], environ={})
     assert e2e_accepted(result) and automatically_started(result)
     assert not e2e_accepted(replace(result, fields={}))
+
+
+@pytest.mark.parametrize('mode', ['unit', 'integration', 'e2e'])
+def test_negative_selectors_keep_options_and_help_boundaries(mode):
+    result = resolved(['--tui-mode', mode, '-skip', '--test-collection-timeout-seconds', '-2', '--', '-h'])
+    assert result.positionals == ('-skip', '-h')
+    assert not result.help_requested
+    assert any('TEST_COLLECTION_TIMEOUT_SECONDS' in error for error in result.errors)
+    assert resolved(['--tui-mode', mode, '-h']).help_requested
+    assert any('Unknown option --unknown' in error for error in resolved(['--tui-mode', mode, '--unknown']).errors)
+
+
+def test_negative_selector_is_not_an_option_in_other_modes():
+    assert any('Unknown option -skip' in error for error in resolved(['--tui-mode', 'config-cleanup', '-skip']).errors)
+
+
+@pytest.mark.parametrize('mode', [[], {}])
+def test_invalid_unhashable_mode_reports_configuration_error(mode):
+    result = resolved(environ={'TUI_MODE': mode})
+    assert result.errors
+
+
+@pytest.mark.parametrize('default,dotenv,environ,argv,overrides,accepted', [
+    ('unit', {}, {}, [], {}, True),
+    ('run-local', {'TUI_MODE': 'unit'}, {}, [], {}, True),
+    ('unit', {'TUI_MODE': 'run-local'}, {}, [], {}, False),
+    ('run-local', {'TUI_MODE': 'run-local'}, {'TUI_MODE': 'integration'}, [], {}, True),
+    ('unit', {'TUI_MODE': 'unit'}, {'TUI_MODE': 'run-local'}, [], {}, False),
+    ('run-local', {}, {'TUI_MODE': 'run-local'}, ['--tui-mode=e2e'], {}, True),
+    ('unit', {}, {'TUI_MODE': 'unit'}, ['--tui-mode=run-local'], {}, False),
+    ('run-local', {}, {}, ['--tui-mode=run-local'], {'TUI_MODE': 'unit'}, True),
+    ('unit', {}, {}, ['--tui-mode=unit'], {'TUI_MODE': 'run-local'}, False),
+])
+def test_negative_selector_mode_source_precedence(default, dotenv, environ, argv, overrides, accepted):
+    from api_agent.config import schema_from_dict
+    schema = schema_from_dict({'version': 1, 'fields': {'TUI_MODE': {'type': 'str', 'default': default}}})
+    result = resolve_config(schema, argv=[*argv, '-skip'], dotenv=dotenv, environ=environ,
+                            overrides=overrides, interactive=True)
+    assert (result.positionals == ('-skip',)) is accepted
+    assert any(error == 'Unknown option -skip' for error in result.errors) is not accepted

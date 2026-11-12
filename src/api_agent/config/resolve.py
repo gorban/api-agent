@@ -29,6 +29,7 @@ class ConfigResult:
     tool_plan: object = field(default=None, repr=False, compare=False)
     active_fields: tuple[str, ...] = field(default=(), repr=False, compare=False)
     deferred_required_fields: tuple[str, ...] = field(default=(), repr=False, compare=False)
+    negative_selectors: bool = field(default=False, repr=False, compare=False)
 
     def raise_for_errors(self):
         if self.errors:
@@ -144,8 +145,14 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
     operation_intents = frozenset(operation_intents)
     if not operation_intents <= OPERATION_INTENTS:
         raise ConfigError('Unsupported configuration operation intent')
-    options = parse_options(schema, argv)
     environ = os.environ if environ is None else environ
+    options = parse_options(schema, argv)
+    default_mode = schema.fields['TUI_MODE'].default if 'TUI_MODE' in schema.fields else None
+    mode = (overrides or {}).get('TUI_MODE', options.values.get('TUI_MODE',
+            environ.get('TUI_MODE', (dotenv or {}).get('TUI_MODE', default_mode))))
+    negative_selectors = mode in ('unit', 'integration', 'e2e')
+    if negative_selectors:
+        options = parse_options(schema, argv, negative_selectors=True)
     sources = [('dotenv', dotenv or {}), ('environment', environ), ('cli', options.values)]
     sources.append(('interactive', overrides or {}))
     raw = {}
@@ -171,7 +178,8 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
     if 'HELP' in schema.fields:
         resolve('HELP')
     if values.get('HELP') is True:
-        return ConfigResult(values, fields, options.positionals, (), tuple(errors), True)
+        return ConfigResult(values, fields, options.positionals, (), tuple(errors), True,
+                            negative_selectors=negative_selectors)
     # Resolve all plain values first so predicate order never depends on TOML order.
     deferred_errors = {}
     completed, visiting = {'HELP'}, set()
@@ -215,4 +223,5 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
     values = {name: value.value for name, value in fields.items()}
     return ConfigResult(values, fields, options.positionals, missing, tuple(errors),
                         active_fields=tuple(name for name in schema.fields if name in active),
-                        deferred_required_fields=deferred_required)
+                        deferred_required_fields=deferred_required,
+                        negative_selectors=negative_selectors)

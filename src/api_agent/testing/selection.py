@@ -19,6 +19,7 @@ class SelectionModel:
         self.tests = tuple(dict((test.id, test) for test in tests).values())
         self.selected_ids = {test.id for test in self.tests}
         self.selected_scopes = {"all"}
+        self.exclusions = ()
         self._index_catalog()
 
     def set_defaults(self, repositories=None):
@@ -27,18 +28,37 @@ class SelectionModel:
                                 {f"repo:{repo}" for repo in repositories})
         self.selected_ids = {test.id for test in self.tests
                              if repositories is None or f"repo:{test.repo}" in self.selected_scopes}
+        if self.exclusions:
+            allowed = select_tests(self.tests, self.exclusions, allow_missing=True, allow_empty=True)
+            self.selected_ids.intersection_update(test.id for test in allowed)
 
     def preselect(self, selectors):
         """Select startup matches against the full suite, retaining group intent."""
-        self.selected_ids = {test.id for test in select_tests(self.tests, selectors)}
-        self.selected_scopes = {"all"} if not selectors else set()
-        for selector in selectors:
+        self.exclusions = tuple(selector for selector in selectors if selector.startswith('-'))
+        includes = tuple(selector for selector in selectors if not selector.startswith('-'))
+        defaults = [test for test in self.tests if test.id in self.selected_ids]
+        self.selected_ids = {test.id for test in select_tests(self.tests, selectors, defaults=defaults)}
+        if includes:
+            self.selected_scopes = set()
+        for selector in includes:
             repo, separator, value = selector.partition("::")
             if not separator or repo not in {test.repo for test in self.tests}:
                 repo, value = None, selector
-            if value.startswith("tag:"):
+            if repo is None and value in {test.repo for test in self.tests}:
+                self.selected_scopes.add(f"repo:{value}")
+            elif repo is None and value.startswith("repo:"):
+                self.selected_scopes.add(value)
+            elif value in {tag for test in self.tests if repo is None or test.repo == repo for tag in test.tags}:
+                self.selected_scopes.add(f"{repo}::tag:{value}" if repo else f"tag:{value}")
+            elif value.startswith("tag:"):
                 self.selected_scopes.add(f"{repo}::tag:{value[4:]}" if repo else value)
             else:
+                if value.startswith("file:"):
+                    file_repo, separator, file_value = value[5:].partition("::")
+                    if separator:
+                        repo, value = file_repo, file_value
+                    else:
+                        value = file_repo
                 matches = [test for test in self.tests if (repo is None or test.repo == repo)
                            and value == test.file]
                 self.selected_scopes.update(f"file:{test.repo}::{test.file}" for test in matches)
@@ -83,6 +103,9 @@ class SelectionModel:
     def toggle_members(self, members, scopes=()):
         """Toggle a projected union while retaining only complete group intent."""
         members = frozenset(members)
+        if self.exclusions:
+            allowed = select_tests(self.tests, self.exclusions, allow_missing=True, allow_empty=True)
+            members &= {test.id for test in allowed}
         if not members:
             return
         if members <= self.selected_ids:
@@ -95,18 +118,21 @@ class SelectionModel:
         else:
             self.selected_ids.update(members)
             self.selected_scopes.update(scopes)
+        allowed_ids = ({test.id for test in allowed} if self.exclusions else {test.id for test in self.tests})
         checked = {scope for scope in self.selected_scopes if scope in self._spec_by_key
-                   and self._spec_by_key[scope][1] and self._spec_by_key[scope][1] <= self.selected_ids}
+                   and self._spec_by_key[scope][1]
+                   and self._spec_by_key[scope][1] & allowed_ids <= self.selected_ids}
         self.selected_scopes = {scope for scope in self.selected_scopes if scope in checked or (
             scope.startswith("repo:") and all(test.id in self.selected_ids
-                for test in self.tests if test.repo == scope[5:])
+                for test in self.tests if test.repo == scope[5:] and test.id in allowed_ids)
             or "::tag:" in scope and any(test.repo == scope.split("::tag:", 1)[0]
                                       and scope.split("::tag:", 1)[1] in test.tags
                                       and test.id in self.selected_ids for test in self.tests))}
 
     def refresh_for_run(self, tests):
         """Recollect once, expanding checked groups but preserving exact exclusions."""
-        checked = {row.id for row in self.groups() if row.selected}
+        allowed = {test.id for test in select_tests(self.tests, self.exclusions, allow_missing=True, allow_empty=True)} if self.exclusions else {test.id for test in self.tests}
+        checked = {row.id for row in self.groups() if row.members and row.members & allowed <= self.selected_ids}
         scopes = {scope for scope in self.selected_scopes if scope in checked or "::tag:" in scope or scope.startswith("repo:")}
         qualified_tags = {(repo, tag) for scope in scopes
                           for repo, separator, tag in [scope.partition("::tag:")] if separator}
@@ -123,6 +149,9 @@ class SelectionModel:
                 or any(test.repo == repo and tag in test.tags for repo, tag in qualified_tags)
                 or f"{test.repo}::{test.file}" in files))
         }
+        if self.exclusions:
+            allowed = select_tests(self.tests, self.exclusions, allow_missing=True, allow_empty=True)
+            self.selected_ids.intersection_update(test.id for test in allowed)
 
     @property
     def selected_tests(self):

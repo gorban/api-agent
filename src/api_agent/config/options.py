@@ -7,7 +7,7 @@ class ParsedOptions:
     positionals: tuple[str, ...]
     errors: tuple[str, ...]
 
-def parse_options(schema, argv):
+def parse_options(schema, argv, *, negative_selectors=False):
     from .resolve import format_enum_values
     values, positionals, errors = {}, [], []
     seen = set()
@@ -30,6 +30,9 @@ def parse_options(schema, argv):
             positionals.append(token)
             continue
         if not token.startswith('--'):
+            if negative_selectors:
+                positionals.append(token)
+                continue
             errors.append(f'Unknown option {token}')
             continue
         key, separator, value = token[2:].partition('=')

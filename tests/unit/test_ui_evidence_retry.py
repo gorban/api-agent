@@ -284,7 +284,7 @@ async def test_repeated_layout_failure_reports_the_moved_element_once(monkeypatc
 
 def _scripted_attempts(monkeypatch, outcomes, *, seconds=()):
     calls, clock = [], [0.0]
-    async def once(page, boundary, origin, *, unavailable, **options):
+    async def once(page, boundary, origin, *, unavailable, caller_budget, **options):
         calls.append(options)
         clock[0] += seconds[len(calls) - 1] if seconds else 0
         outcome = outcomes[len(calls) - 1]
@@ -359,6 +359,61 @@ def test_caller_deadline_clips_the_retry_window(monkeypatch):
     assert len(calls) == 1 and reasons == ['paint_changed']
     timeouts = [timeout for name, timeout in components if name == 'UI viewport capture']
     assert timeouts and all(4 < timeout <= 5 for timeout in timeouts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('elapsed,expect_image', [(26, True), (31, False)],
+                         ids=['retry-window-expired', 'caller-deadline-expired'])
+async def test_masking_uses_caller_deadline_after_retry_window(monkeypatch, elapsed, expect_image):
+    from playwright.async_api import async_playwright
+    from api_agent.providers import progress
+
+    clock = [0.0]
+    monkeypatch.setattr(progress, '_clock', lambda: clock[0])
+    mask_calls = []
+    original_mask = evidence._PausedPage.mask_png
+
+    async def mask_png(raster, image):
+        mask_calls.append(True)
+        return await original_mask(raster, image)
+
+    monkeypatch.setattr(evidence._PausedPage, 'mask_png', mask_png)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={'width': 300, 'height': 200})
+            await page.route(_ORIGIN + '/', lambda route: route.fulfill(content_type='text/html', body='''
+              <body style="margin:0;background:white"><main id="panel">
+                <div id="private" style="position:absolute;left:10px;top:10px;width:80px;
+                  height:80px;background:red">Private</div>
+                <button id="send" style="position:absolute;left:120px;top:10px;width:80px;
+                  height:80px;background:red">Send</button>
+              </main></body>'''))
+            await page.goto(_ORIGIN + '/')
+            reasons = []
+
+            def stage(name, _elapsed):
+                if name == 'cleanup':
+                    clock[0] = elapsed
+
+            async with component_timeout('Caller page budget', 30):
+                image = await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
+                    _ORIGIN, retry_window_seconds=25, content_mask_selector='#private',
+                    content_mask_anchor='#panel', unavailable=reasons.append, stage=stage)
+
+            if expect_image:
+                assert mask_calls == [True]
+                assert image is not None and image.startswith(b'\x89PNG\r\n\x1a\n')
+                assert reasons == []
+                assert await _pixels(page, image, {'x': 20, 'y': 20, 'width': 20, 'height': 20}) == {
+                    'black': True, 'red': False}
+                assert (await _pixels(page, image, {'x': 130, 'y': 20, 'width': 20, 'height': 20}))['red']
+            else:
+                assert image is None
+                assert mask_calls == []
+                assert reasons == ['mask']
+        finally:
+            await browser.close()
 
 
 def test_attempt_with_any_deterministic_refusal_is_not_retried(monkeypatch):

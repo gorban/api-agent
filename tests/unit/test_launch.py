@@ -7,6 +7,7 @@ import sys
 import shutil
 import tempfile
 import unittest
+import pytest
 from unittest.mock import patch
 from api_agent.runtime.bootstrap import _extract_option, _supports_color, generated_help, main
 from api_agent.config import load_shared_schema, schema_from_dict
@@ -341,12 +342,12 @@ def test_terminal_owner_defaults_and_explicit_all_or_dependency_selection(tmp_pa
                 patch('api_agent.config.read_dotenv', return_value={}), \
                 patch('api_agent.runtime.worktrees.verify_worktrees'), \
                 patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
-                patch('api_agent.testing.collection.collect_tests', return_value=tests[:1] if options == ('api-agent::a',) else tests) as collect, \
+                patch('api_agent.testing.collection.collect_tests', return_value=tests) as collect, \
                 patch('api_agent.testing.runner.run_unit_tests', return_value=UnitRunResult(0, (), (), '')) as run:
             assert main(['--no-std-in', '--tui-mode=unit', *options], base_root=ROOT, resource_pack_dir=pack) == 0
             assert tuple(run.call_args.args[1]) == expected
             assert run.call_args.kwargs.get('coverage_owner_only', False) is owner_only
-            assert tuple(collect.call_args.args[2]) == (('api-agent::a',) if options == ('api-agent::a',) else ())
+            assert tuple(collect.call_args.args[2]) == ()
 
 
 def test_terminal_empty_owner_guides_all_unit_without_running_dependencies(tmp_path):
@@ -368,3 +369,54 @@ def test_terminal_empty_owner_guides_all_unit_without_running_dependencies(tmp_p
         run.assert_not_called()
         assert main(['--no-std-in', '--tui-mode=unit', '--collect-only'], base_root=ROOT, resource_pack_dir=pack) == 0
         run.assert_not_called()
+
+
+def test_terminal_exclusion_only_preserves_owner_coverage_gate(tmp_path):
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.testing.runner import UnitRunResult
+    pack = tmp_path / 'owner'
+    pack.mkdir()
+    (pack / 'config.toml').write_text('version = 1\n')
+    (pack / 'pack.toml').write_text('version = 1\nid = "owner_fixture"\nconfig = "config.toml"\n')
+    dependency = TestIdentity('api-agent::a', 'api-agent', 'a.py', 'a', {'skip'})
+    owner = TestIdentity('owner::b', 'owner', 'b.py', 'b')
+    with patch.dict(os.environ, {}, clear=True), patch('sys.stdout', StringIO()), \
+            patch('api_agent.config.read_dotenv', return_value={}), \
+            patch('api_agent.runtime.worktrees.verify_worktrees'), \
+            patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+            patch('api_agent.testing.collection.collect_tests', return_value=[dependency, owner]), \
+            patch('api_agent.testing.runner.run_unit_tests', return_value=UnitRunResult(0, (), (), '')) as run:
+        assert main(['--no-std-in', '--tui-mode=unit', '-skip'], base_root=ROOT, resource_pack_dir=pack) == 0
+        assert run.call_args.args[1] == [owner]
+        assert run.call_args.kwargs['require_full_coverage'] is True
+
+
+@pytest.mark.parametrize('mode,start', [('integration', 'True'), ('e2e', 'E2E')])
+@pytest.mark.parametrize('selectors,diagnostic', [(['-missing'], 'Unknown or empty'),
+                                                   (['-skip'], 'No tests remain')])
+def test_terminal_invalid_selection_stops_before_execution_resources(monkeypatch, capsys, mode, start, selectors, diagnostic):
+    from unittest.mock import Mock
+    from api_agent.testing.collection import TestIdentity, select_tests
+    # Import consumers before patching the source function so their cached
+    # bindings cannot retain this test's guard after monkeypatch teardown.
+    import api_agent.testing.launched
+    import api_agent.testing.recorded
+    catalog = [TestIdentity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one', {'skip'})]
+    collect = Mock(side_effect=lambda context, test_mode, requested, **kwargs: select_tests(catalog, requested))
+    requirements = Mock(side_effect=AssertionError('unexpected prerequisite planning'))
+    runner = Mock(side_effect=AssertionError('unexpected launched runner'))
+    monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', lambda *a, **kw: None)
+    monkeypatch.setattr('api_agent.config.read_dotenv', lambda path: {})
+    monkeypatch.setattr(os, 'environ', {})
+    monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *a, **kw: None)
+    monkeypatch.setattr('api_agent.testing.collection.collect_tests', collect)
+    monkeypatch.setattr('api_agent.testing.requirements.plan_integration_requirements', requirements)
+    monkeypatch.setattr('api_agent.testing.launched.plan_integration_requirements', requirements)
+    monkeypatch.setattr('api_agent.testing.recorded.run_recorded_integration', runner)
+    args = ['--tui-mode=' + mode, '--no-std-in', '--start=' + start,
+            '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', *selectors]
+    assert main(args, base_root=ROOT) == 2
+    assert diagnostic in capsys.readouterr().err
+    collect.assert_called_once()
+    requirements.assert_not_called()
+    runner.assert_not_called()

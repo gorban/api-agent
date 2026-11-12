@@ -53,7 +53,13 @@ class Engine:
                 'com.docker.compose.project': manager.scope.project,
                 'com.docker.compose.network': 'default'}}])
         if command[1] == 'ps': return '\n'.join(self.records)
-        if command[1] == 'inspect': return json.dumps([self.records[key] for key in command[2:]])
+        if command[1] == 'inspect':
+            if command[2] == '--format':
+                return '\n'.join(json.dumps({
+                    'networks': self.records[key]['NetworkSettings']['Networks'],
+                    'mode': self.records[key]['HostConfig']['NetworkMode'],
+                }) for key in command[4:])
+            return json.dumps([self.records[key] for key in command[2:]])
         if command[1:] == ('info', '--format', '{{json .OperatingSystem}}') and self.operating_system is not None:
             return json.dumps(self.operating_system)
         if command[1:3] == ('image', 'inspect'):
@@ -90,7 +96,10 @@ class Engine:
                     'Config': {'Image': spec['image'], 'Labels': {**spec['labels'],
                         'com.docker.compose.project': manager.scope.project,
                         'com.docker.compose.service': name, p.CONFIG_LABEL: manager.fingerprints[name]}},
-                    'State': {'Running': True}, 'Mounts': mounts}
+                    'State': {'Running': True}, 'Mounts': mounts,
+                    'HostConfig': {'NetworkMode': manager.scope.project + '_default'},
+                    'NetworkSettings': {'Networks': {
+                        manager.scope.project + '_default': {'NetworkID': 'a' * 64}}}}
             return ''
         raise AssertionError(command)
 
@@ -154,6 +163,20 @@ def test_external_pack_capture_dag_seed_reuse_and_endpoints(synthetic):
     assert not any(call[1] == 'exec' for call, _ in engine.calls)
     session.release()
     assert all(item['State']['Running'] for item in engine.records.values())
+
+
+def test_network_inventory_includes_stopped_and_running_definitions(synthetic):
+    manager, engine, clock, _, _ = synthetic
+    manager.acquire()
+    running, stopped = engine.records.values()
+    stopped['State']['Running'] = False
+    stopped['NetworkSettings']['Networks'] = {'stopped-network': {'NetworkID': 'b' * 64}}
+    stopped['HostConfig']['NetworkMode'] = 'stopped-network'
+
+    references = manager._container_network_references(clock.now() + 120, cleanup=True)
+
+    assert running['State']['Running']
+    assert {manager.scope.project + '_default', 'a' * 64, 'stopped-network', 'b' * 64} <= references
 
 
 def test_seed_timeout_prevents_downstream_start_and_rolls_back(synthetic):
