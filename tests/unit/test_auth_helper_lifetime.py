@@ -317,6 +317,28 @@ def test_guard_inspects_real_zombie_after_closing_standard_streams(tmp_path):
     assert marker.read_text() == '7'
 
 
+def test_guard_script_imports_its_own_package_when_the_caller_path_is_absent():
+    """A launcher that put the package on sys.path only in-process still starts a working guard."""
+    from api_agent.auth import owned_process as owned
+    reader, writer = os.pipe()
+    script = (
+        'import os, runpy, sys\n'
+        'def denied(*args): raise PermissionError("controlled zombie signaling")\n'
+        'os.killpg = denied\n'
+        f'sys.argv = [{owned.__file__!r}, sys.argv[1], "1", sys.executable, "-c", "raise SystemExit(7)"]\n'
+        f'runpy.run_path({owned.__file__!r}, run_name="__main__")\n'
+    )
+    environment = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
+    try:
+        # -S hides installed site packages, as for a launcher-only sys.path entry.
+        result = subprocess.run([sys.executable, '-S', '-c', script, str(reader)], pass_fds=(reader,),
+                                env=environment, cwd=os.path.dirname(owned.__file__), timeout=10)
+    finally:
+        os.close(reader)
+        os.close(writer)
+    assert result.returncode == 7
+
+
 def test_guardian_inspection_budget_is_bounded_and_keeps_child_reserved(monkeypatch):
     from api_agent.auth import owned_process as owned
     from api_agent.runtime.processes import wait_owned

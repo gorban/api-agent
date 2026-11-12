@@ -124,4 +124,8 @@ def _guard(reader, argv, keep_session=False):
 
 
 if __name__ == '__main__':
+    # Started as a script, this guard may run under an interpreter whose caller
+    # put the package on sys.path only in-process (the launcher). Its zombie-group
+    # probe imports the package, so make the package that contains it importable.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     sys.exit(_guard(int(sys.argv[1]), sys.argv[3:], sys.argv[2] == '1'))
