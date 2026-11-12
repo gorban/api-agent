@@ -506,7 +506,7 @@ def test_post_start_interrupt_remains_inside_continuous_process_ownership(contro
     import sys
     context, tests, clock, state = controlled_runner
     primary = KeyboardInterrupt('between reader start and event initialization')
-    source, first_line = inspect.getsourcelines(runner.run_unit_tests.__wrapped__)
+    source, first_line = inspect.getsourcelines(runner._run_unit_tests)
     interrupt_line = first_line + next(index for index, line in enumerate(source)
                                        if line.strip() == 'offset = 0')
     def interrupt(frame, event, arg):
