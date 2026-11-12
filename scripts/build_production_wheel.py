@@ -45,7 +45,7 @@ requires = ["hatchling>=1.26,<2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "api-agent-runtime"
+name = "api-agent"
 version = "0.1.0"
 description = "Compiled-workflow API agent runtime"
 requires-python = ">=3.13"
@@ -177,7 +177,7 @@ def build(root, output):
         # Run from the checkout so a project-scoped uv (for example a mise shim) resolves.
         subprocess.run(('uv', 'build', '--wheel', '--out-dir', str(output), str(source)),
                        cwd=root, check=True, capture_output=True, text=True)
-    wheels = sorted(output.glob('api_agent_runtime-*.whl'))
+    wheels = sorted(output.glob('api_agent-*.whl'))
     if len(wheels) != 1:
         raise RuntimeError('production wheel build did not produce exactly one wheel')
     return wheels[0]

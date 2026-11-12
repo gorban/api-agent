@@ -252,7 +252,7 @@ def test_production_wheel_script_exits_with_main_result(monkeypatch, tmp_path):
         assert cwd == tmp_path
         output = Path(command[command.index('--out-dir') + 1])
         assert output == tmp_path / 'dist-production'
-        output.joinpath('api_agent_runtime-0.1.0-py3-none-any.whl').write_bytes(b'')
+        output.joinpath('api_agent-0.1.0-py3-none-any.whl').write_bytes(b'')
 
     monkeypatch.setattr(subprocess, 'run', build_wheel)
 
@@ -307,6 +307,60 @@ assert application.definition is definition
 assert 'api_agent.workflows.native' not in sys.modules
 assert 'api_agent.workflows.definition' not in sys.modules
 ''', str(site), str(plan)), capture_output=True, text=True)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_installed_runtime_admits_the_graphql_tool_a_plan_declares(tmp_path):
+    from test_production_tools import declared_plan
+
+    plan, bindings = declared_plan(tmp_path, '''version = 1
+id = "sample/graphql"
+interface = "verified-read@1"
+implementation = "package:api-agent:api_agent/api_providers/graphql_mcp/tool.toml"
+
+[bindings]
+ENDPOINT = "API_ENDPOINT"
+HEADERS = "API_HEADERS"
+
+[defaults]
+ENDPOINT = ""
+
+[local]
+slot = "ENDPOINT"
+output = "sample/api/graphql"
+path = "/graphql"
+declaration = "missing/infrastructure.toml"
+''')
+    build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
+    runtime = build(ROOT, tmp_path / 'runtime')
+    site = tmp_path / 'site'
+    for wheel in (runtime, bindings):
+        with zipfile.ZipFile(wheel) as archive:
+            archive.extractall(site)
+    provider = tmp_path / 'llm.py'
+    provider.write_text('def create(config, services): return None\n')
+
+    completed = subprocess.run((sys.executable, '-I', '-c', '''import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from api_agent.runtime import production
+environment = {'API_AGENT_PRODUCTION_PLAN': sys.argv[2], 'API_AGENT_OWNER_ROOT': sys.argv[3],
+               'API_AGENT_LLM_PROVIDER': sys.argv[4] + ':create', 'API_AGENT_CHAT_ORIGIN': 'http://localhost:3000',
+               'API_AGENT_SESSION_NONCE': 'n' * 32, 'API_ENDPOINT': 'http://127.0.0.1:9/graphql',
+               'API_HEADERS': '{"Authorization": "Bearer synthetic"}'}
+settings = production.settings_from_environment(environment)
+definition = production.load_artifact(settings.plan.read_bytes())
+config = production.compose_tool_configuration(settings, definition)
+tool, = config.tool_plan.tools
+assert tool.local_values == {'ENDPOINT': 'http://127.0.0.1:9/graphql',
+                             'HEADERS': {'Authorization': 'Bearer synthetic'}}, tool.local_values
+assert tool.factory.parent.name == 'graphql_mcp'
+assert Path(tool.factory).is_relative_to(Path(sys.argv[1]))
+assert not [name for name in sys.modules if name.startswith((
+    'api_agent.testing', 'api_agent.tui', 'api_agent.ui', 'api_agent.workflows.definition',
+    'api_agent.workflows.native', 'api_agent.workflows.viewer'))]
+''', str(site), str(plan), str(tmp_path), str(provider)), capture_output=True, text=True)
 
     assert completed.returncode == 0, completed.stderr
 

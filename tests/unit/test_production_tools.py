@@ -92,27 +92,30 @@ def create_tool(config, services): return Owner(config)
 '''
 
 
-@pytest.fixture
-def declared(tmp_path, monkeypatch):
-    """A compiled plan whose declared tool names an installed implementation, plus its environment."""
-    root = copy_tree(QUALIFICATION, tmp_path / 'tree')
-    (root / 'instance.toml').write_text(INSTANCE)
+def declared_plan(directory, instance, implementation=None):
+    """Compile a graph whose tool instance names an installed implementation; return plan and bindings wheel."""
+    root = copy_tree(QUALIFICATION, directory / 'tree')
+    (root / 'instance.toml').write_text(instance)
     for node, operations in (('intake', 'prepare, verify'), ('finish', 'execute')):
         path = root / f'{node}.md.html'
         path.write_text(path.read_text() + '\n## Tools\n\n| Port | Instance | Operations |\n'
                         f'| --- | --- | --- |\n| compiled | [instance](instance.toml) | {operations} |\n')
     native = root / 'src/aq_bindings'
     (native / 'native.py').write_text(NATIVE)
-    wheel = build_wheel(tmp_path, 'aq-bindings', {
+    wheel = build_wheel(directory, 'aq-bindings', {
         'aq_bindings/__init__.py': (native / '__init__.py').read_bytes(),
-        'aq_bindings/native.py': NATIVE.encode(),
-        'aq_bindings/tool_impl.toml': IMPLEMENTATION,
-        'aq_bindings/factory.py': FACTORY,
-    })
-    plan = tmp_path / 'plan.json'
+        'aq_bindings/native.py': NATIVE.encode(), **(implementation or {})})
+    plan = directory / 'plan.json'
     plan.write_bytes(compile_plan(root / 'flow.md.html', base_root=root, pack_root=root, wheels=[wheel]))
-    site = install(wheel, tmp_path / 'site')
-    monkeypatch.syspath_prepend(str(site))
+    return plan, wheel
+
+
+@pytest.fixture
+def declared(tmp_path, monkeypatch):
+    """A compiled plan whose declared tool names an installed implementation, plus its environment."""
+    plan, wheel = declared_plan(tmp_path, INSTANCE, {
+        'aq_bindings/tool_impl.toml': IMPLEMENTATION, 'aq_bindings/factory.py': FACTORY})
+    monkeypatch.syspath_prepend(str(install(wheel, tmp_path / 'site')))
     provider = tmp_path / 'llm.py'
     provider.write_text('def create(config, services): return None\n')
     environment = {
