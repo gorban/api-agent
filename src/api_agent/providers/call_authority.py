@@ -38,12 +38,15 @@ class _CallAuthority:
         self.admitted = coordinator is not None and caller is not None
         self._local_lease = local_lease
 
-    async def register(self, source, values):
+    async def register(self, source, values, *, owner=None, slot=None):
         if not self.admitted or type(source) is not EmissionBoundary:
             raise ContractError('Call credential authority unavailable')
         if self._local_lease is not None and self._local_lease.owns(source):
             await self._local_lease.aupgrade(source, values)
             self._caller = self._local_lease.secrets
+        elif owner is not None:
+            if values:
+                await owner.aregister(*values, slot=slot)
         else:
             from api_agent.telemetry.privacy import register_secret_async
             for value in values:
