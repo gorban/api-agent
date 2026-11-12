@@ -111,12 +111,44 @@ report the added line ending.
 The bundled demo selects
 `demo/.private_resources/plans/useful_api_demo.json`; its compiler input wheel
 is retained under `demo/.private_resources/wheels/`.  The plan is the only demo
-workflow representation copied into the production image.  Verify it without
-the viewer toolchain:
+workflow representation copied into the production image, and it runs there
+through the tool the `demo/simple` flow declares (see Declared tools below).
+Verify it without the viewer toolchain:
 
 ```bash
 uv run python -m api_agent.workflows.artifact_plans check --root .
 ```
+
+## Declared tools
+
+A plan carries its flow's `## Tools` declarations exactly as source mode reads
+them: each tool usage (port, scope, operations) and the bytes of every tool
+instance descriptor, which hold the instance identity, interface,
+implementation reference, `[bindings]` and `[defaults]`. Nothing about a
+tool is selected through a production-only setting: there is no separate
+API provider selection, and `API_AGENT_API_PROVIDER` is not read.
+
+At startup the production entrypoint admits those declarations with the same
+tool admission and binding code as a source run (`compose_tools`, then the
+ordinary configuration resolution and `bind_values`). The descriptor's binding
+names become configuration fields, so the deployment supplies each value
+under the name the declaration binds it to. For the demo's GraphQL tool
+those are `API_ENDPOINT` (required, nonempty) and `API_HEADERS` (a JSON object,
+default `{}`); the endpoint reaches the tool through the declaration's
+`ENDPOINT` binding, not through a field the production schema declares.
+
+Two limits follow from a plan having no source tree:
+
+- A compiled tool instance must name a distribution-owned implementation
+  (`package:<distribution>:<path>`). The production image installs the
+  runtime as the `api-agent` distribution so that `package:api-agent:...`
+  references resolve to the installed, receipted files.
+- Production does not honor an instance's `[local]` and `[infrastructure]`
+  tables. They start a local demonstration service for source runs and are a
+  development convenience. A binding that resolves to a blank value fails
+  startup with the field name, for example
+  `API_ENDPOINT: selected tool input requires a nonempty string`, instead of
+  falling back to a local service.
 
 ## Noninteractive runtime and image
 
@@ -171,7 +203,9 @@ deterministic provider without adding test tooling to the production image.
 A startup failure (an unreadable plan, invalid configuration, or a
 composition error such as a missing `GRAPH` timeout) is logged on stderr as a
 failure category and in-package stack locations, without exception text,
-before the ASGI server receives `runtime_start_failed`.
+before the ASGI server receives `runtime_start_failed`. A configuration
+error (for example a blank tool binding) also logs its message, which names
+fields and fixed reasons and never values.
 
 The image ships the two public providers that need more than the Python
 runtime:
@@ -186,18 +220,20 @@ runtime:
   adapter selected by file location can supply credentials instead. Set it
   explicitly for a deployment, because the resolved default is the attended
   sign-in adapter.
-- **GraphQL MCP** (`API_PROVIDER`). The image installs the locked `graphql`
+- **GraphQL MCP** (a declared tool). The image installs the locked `graphql`
   extra, a pinned Node runtime (checksummed in `mise.lock`) at
   `/opt/api-agent/bin/node`, and the provider's locked npm tree, prepared at
-  build time into `/opt/api-agent/graphql-mcp`. The image sets
+  build time into `/opt/api-agent/graphql-mcp`. The flow declares the tool
+  with an instance whose implementation is
+  `package:api-agent:api_agent/api_providers/graphql_mcp/tool.toml`, and
+  production admits it as described under Declared tools. The image sets
   `GRAPHQL_MCP_ASSETS_DIR` to that directory, so the provider finds its assets
   whichever directory holds the plan or `API_AGENT_OWNER_ROOT` names. A set
   directory is verified and never prepared at startup: an incomplete or
   modified tree fails closed with `assets_missing`, `assets_invalid` or
   `assets_integrity`. Without the setting, the provider reads
   `<owner root>/.api-agent/graphql-mcp` and prepares it with `npm` on first
-  start, which the image does not ship. Select the provider by installed file
-  location, for example `.../api_agent/api_providers/graphql_mcp/factory.py:create`.
+  start, which the image does not ship.
 
 `tests/unit/test_production_wheel.py` proves the wheel carries every file of
 both provider packages and the Node asset locks, and that an installed copy
@@ -207,14 +243,18 @@ fails if either provider's import closure reaches an excluded module. The image
 qualifier allows the `node_modules` layout only for the GraphQL MCP license
 notices and its prepared asset tree.
 
+The qualifier also runs the bundled demo plan in the qualification image. It
+compiles `demo/simple` afresh and requires the image's plan to equal it, then
+starts the plan with the deterministic provider (which answers the flow's plan,
+review and render calls without inference) and a loopback stub GraphQL endpoint
+inside the container, so nothing leaves the host. It requires the chat answer to
+carry the stub's data, the stub to have received both the tool's schema
+introspection and the planned query with the configured headers, and a start
+without `API_ENDPOINT` to exit naming that field.
+
 Remaining gaps: the local-only proof does not establish collector delivery or
-production credentials. The qualifier still exercises only the deterministic
-LLM provider. The two bundled providers were exercised inside a built image
-without network access: both import, the GraphQL MCP provider's Node child
-completes its MCP initialization from the prepared assets, and the Bedrock
-provider constructs and fails at its credential step; the qualifier does not
-yet repeat those checks. The production configuration schema declares no
-`API_ENDPOINT`, so a GraphQL MCP provider selected through
-`API_AGENT_API_PROVIDER` receives no endpoint from the environment. The image's
-`graphql` extra also installs the Python `mcp` package, which no shipped code
-imports.
+production credentials. The two bundled providers were exercised inside a built
+image without network access: the GraphQL MCP tool is now exercised by the
+qualifier as above, while the Bedrock provider constructs and fails at its
+credential step but is not yet repeated by the qualifier. The image's `graphql`
+extra also installs the Python `mcp` package, which no shipped code imports.
