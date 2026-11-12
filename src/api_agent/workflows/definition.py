@@ -45,6 +45,7 @@ class WorkflowDefinition:
     declaration_entry: Path | None = None
     application_binding: tuple[str, Path] | None = None
     slot_files: object = field(default_factory=lambda: MappingProxyType({}))
+    native_dependencies: object = field(default_factory=lambda: MappingProxyType({}))
 
     def native_sources(self):
         """Every admitted native source: node bindings and the declared application factory."""
@@ -57,8 +58,8 @@ class WorkflowDefinition:
         return tuple(self.layout.tables.get('Limits', ()))
 
     def verify_native_sources(self):
-        """Reject a source change before importing its admitted native binding."""
-        for source in self.native_sources():
+        """Reject a source or local dependency change before importing an admitted native binding."""
+        for source in dict.fromkeys((*self.native_sources(), *self.native_dependencies.values())):
             owner = max((root for root in self.roots.values() if source.is_relative_to(root)),
                         key=lambda root: len(root.parts))
             current = _read_bounded(source, owner)
@@ -164,9 +165,13 @@ def load_native_catalog(definition: WorkflowDefinition, source: Path, *, reporti
         from .provenance import verified_documents
         verified_documents(definition, packaged_proof=packaged_proof)
     definition.verify_native_sources()
+    from .native import admitted_dependencies, check_admitted_imports
+    check_admitted_imports(definition, dict.fromkeys((*definition.native_sources(),
+                                                      *definition.native_dependencies.values())))
     namespace = {'__name__': '<workflow_catalog>', '__file__': str(source), '__package__': None}
     code = compile(definition.contents[source], str(source), 'exec')
-    exec(code, namespace)
+    with admitted_dependencies(definition):
+        exec(code, namespace)
     for value in namespace.values():
         if callable(value) and getattr(value, '__module__', None) == namespace['__name__']:
             try:
@@ -686,6 +691,11 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
             execution_steps.append(Step(step.id, step.kind, step.parent, source, step.line))
         else:
             execution_steps.append(step)
+    from .native import import_closure
+    native_dependencies = import_closure(
+        dict.fromkeys((*(step.source for step in execution_steps if step.kind == 'node'),
+                       *((application_binding[1],) if application_binding is not None else ()))),
+        lambda path: captured[capture(path, 'native_dependency')][1], roots)
     parents = {step.id: step.parent for step in resolved}
     def belongs_to(scope, identifier):
         while identifier is not None:
@@ -783,6 +793,7 @@ def _load_binding_definition(entry, *, base_root, pack_root, replacements, entry
     definition = WorkflowDefinition(graph_id, entry, entry_root, root_map, replacements, tuple(resources), definition_id,
                                     layout, MappingProxyType({path: data for path, (_, data) in captured.items()}),
                                     MappingProxyType(selected_declarations), MappingProxyType(declaration_fragments), tuple(tool_usages),
-                                    application_binding=application_binding, slot_files=MappingProxyType(slot_files))
+                                    application_binding=application_binding, slot_files=MappingProxyType(slot_files),
+                                    native_dependencies=MappingProxyType(native_dependencies))
     resolve_state_limits(definition)
     return definition

@@ -333,8 +333,22 @@ envelope. The callback is also available to the selected UI composition through
 the `workflow_application` service.
 
 Admission derives the static import closure of every admitted native source,
-including the selected owner's application module. A module that is loaded only
-dynamically (for example by file path) can be added through captured TOML:
+including the selected owner's application module, in both grammars. Local
+modules resolve under either declared root (and its `src` directory), so an
+owner's application can import modules of the library root it layers on. Their
+bytes are admitted as `native_dependency` resources and re-verified with the
+native sources before each catalog executes. While native code runs and
+afterwards, including imports deferred into function bodies, an admitted finder
+serves those modules, and the namespace packages above them, from the admitted
+bytes. No declared root has to be on `sys.path`.
+A module name belongs to one admitted source and its exact bytes for the life
+of the process. Definitions that admit identical bytes share the module, and a
+module already imported from a file with exactly the admitted bytes (for example
+an installed copy) is reused. Different bytes, an already imported module with
+other or unreadable source, or a local import that resolves outside the admitted
+closure is rejected before the catalog executes and requires a restart or a
+fresh admission. The typed grammar can also add a module that is loaded only
+dynamically (for example by file path) through captured TOML:
 
 ```markdown
 ## Native Dependency Manifests

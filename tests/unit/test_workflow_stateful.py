@@ -2497,7 +2497,7 @@ def test_native_shadow_with_host_prefix_still_requires_admission(fixture_graph):
     source.write_text('from api_agent.extra import hidden\n' + source.read_text())
     definition = load_definition(entry, base_root=runtime_root, pack_root=root,
                                            entry_root='pack')
-    with pytest.raises(LayoutError, match='local native import must be declared'):
+    with pytest.raises(LayoutError, match='local native import api_agent.extra resolves outside the admitted'):
         load_native_bindings(definition)
 
 

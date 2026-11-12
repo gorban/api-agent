@@ -2,16 +2,19 @@
 from .run_context import recording_enabled
 
 import ast
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha256
 from importlib.abc import Loader, MetaPathFinder
+from importlib.machinery import ModuleSpec
 from importlib.util import spec_from_loader
 import os
 from pathlib import Path
 import re
 import sys
 import tomllib
-from threading import Lock, RLock
+from threading import RLock
 from types import MappingProxyType
 from typing import ClassVar
 from urllib.parse import unquote, urlsplit
@@ -37,27 +40,50 @@ _SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
 _LIMIT_KEY = re.compile(r'[A-Z][A-Z0-9_]{0,63}\Z')
 _TIMEOUT_COLUMNS = ('Owner', 'Source', 'Key')
 _EXPIRY_COLUMNS = (*_TIMEOUT_COLUMNS, 'Expired', 'Expirations')
+# A module name is reserved for one admitted source and its exact bytes for the
+# process lifetime; definitions that admit identical bytes share the module.
 _LOADED_DEPENDENCIES = {}
 
 
 _RESERVED_DEPENDENCIES = {}
 _ADMITTED_LOADERS = {}
 _DEPENDENCY_LOCK = RLock()
-_CATALOG_LOCK = Lock()
+# Reentrant: native code may load another catalog while its own catalog executes.
+_CATALOG_LOCK = RLock()
 
 
 class _AdmittedDependencyLoader(MetaPathFinder, Loader):
     def __init__(self, definition):
         self.definition = definition
+        # A package directory without __init__.py is a namespace package; each
+        # admitted module's path names the directories of its parent packages.
+        namespaces = {}
+        for name, source in definition.native_dependencies.items():
+            parts = name.split('.')
+            directory = source.parent.parent if source.name == '__init__.py' else source.parent
+            for length in range(len(parts) - 1, 0, -1):
+                prefix = '.'.join(parts[:length])
+                if prefix not in definition.native_dependencies:
+                    namespaces.setdefault(prefix, {})[str(directory)] = None
+                directory = directory.parent
+        self.namespaces = {name: list(directories) for name, directories in namespaces.items()}
+
+    def _reservation(self, name):
+        source = self.definition.native_dependencies[name]
+        return source, self.definition.contents[source]
 
     def find_spec(self, fullname, path=None, target=None):
-        source = self.definition.native_dependencies.get(fullname)
-        if source is None:
+        if fullname in self.namespaces:
+            spec = ModuleSpec(fullname, None, is_package=True)
+            spec.submodule_search_locations = list(self.namespaces[fullname])
+            return spec
+        if fullname not in self.definition.native_dependencies:
             return None
+        reserved = self._reservation(fullname)
         with _DEPENDENCY_LOCK:
-            if _RESERVED_DEPENDENCIES.get(fullname) != (
-                    self.definition.definition_id, source, self.definition.contents[source]):
+            if _RESERVED_DEPENDENCIES.get(fullname) != reserved:
                 return None
+        source = reserved[0]
         package = source.name == '__init__.py'
         return spec_from_loader(fullname, self, origin=str(source), is_package=package)
 
@@ -65,22 +91,111 @@ class _AdmittedDependencyLoader(MetaPathFinder, Loader):
         return None
 
     def exec_module(self, module):
-        source = self.definition.native_dependencies[module.__name__]
+        reserved = source, data = self._reservation(module.__name__)
         with _DEPENDENCY_LOCK:
-            if _RESERVED_DEPENDENCIES.get(module.__name__) != (
-                    self.definition.definition_id, source, self.definition.contents[source]):
+            if _RESERVED_DEPENDENCIES.get(module.__name__) != reserved:
                 raise LayoutError(f'{source}:1: native dependency reservation changed; restart required')
         module.__file__ = str(source)
         if source.name == '__init__.py':
             module.__path__ = [str(source.parent)]
-        exec(compile(self.definition.contents[source], str(source), 'exec'), module.__dict__)
+        exec(compile(data, str(source), 'exec'), module.__dict__)
         with _DEPENDENCY_LOCK:
-            if _RESERVED_DEPENDENCIES.get(module.__name__) != (
-                    self.definition.definition_id, source, self.definition.contents[source]):
+            if _RESERVED_DEPENDENCIES.get(module.__name__) != reserved:
                 # Admission may have rolled back while package code was running.
                 # Raising lets importlib discard its in-flight sys.modules entry.
                 raise LayoutError(f'{source}:1: native dependency admission ended during import')
-            _LOADED_DEPENDENCIES[module.__name__] = (self.definition.definition_id, source, module)
+            _LOADED_DEPENDENCIES[module.__name__] = (*reserved, module)
+
+
+def _reusable(name, reserved):
+    """Whether an already imported module is the reserved source, compared by its exact bytes."""
+    current = sys.modules.get(name)
+    if current is None:
+        return True
+    loaded = _LOADED_DEPENDENCIES.get(name)
+    if loaded is not None:
+        return loaded == (*reserved, current)
+    # An ordinary import from any copy of the admitted bytes is the same module.
+    origin = getattr(current, '__file__', None)
+    if type(origin) is not str:
+        return False
+    try:
+        with open(origin, 'rb') as handle:
+            return handle.read(len(reserved[1]) + 1) == reserved[1]
+    except OSError:
+        return False
+
+
+@contextmanager
+def admitted_dependencies(definition):
+    """Serve the definition's admitted import closure while its native code executes.
+
+    The finder stays installed so lazy imports read the admitted bytes without
+    an ambient source-root sys.path. A load that fails releases only the names
+    it reserved.
+    """
+    dependencies = definition.native_dependencies
+    with _CATALOG_LOCK:
+        with _DEPENDENCY_LOCK:
+            for module, source in dependencies.items():
+                reserved = (source, definition.contents[source])
+                if (_RESERVED_DEPENDENCIES.get(module, reserved) != reserved
+                        or not _reusable(module, reserved)):
+                    raise LayoutError(f'{source}:1: native dependency already loaded from another source; restart required')
+            created = [module for module in dependencies if module not in _RESERVED_DEPENDENCIES]
+            loader = _ADMITTED_LOADERS.get(definition.definition_id)
+            fresh = loader is None and bool(created)
+            for module in created:
+                _RESERVED_DEPENDENCIES[module] = (dependencies[module], definition.contents[dependencies[module]])
+            if fresh:
+                loader = _AdmittedDependencyLoader(definition)
+                _ADMITTED_LOADERS[definition.definition_id] = loader
+                sys.meta_path.insert(0, loader)
+        try:
+            yield
+        except BaseException:
+            if fresh:
+                with _DEPENDENCY_LOCK:
+                    for module in sorted(created, key=lambda name: name.count('.'), reverse=True):
+                        loaded = _LOADED_DEPENDENCIES.get(module)
+                        if loaded is not None:
+                            if sys.modules.get(module) is loaded[2]:
+                                del sys.modules[module]
+                            del _LOADED_DEPENDENCIES[module]
+                        del _RESERVED_DEPENDENCIES[module]
+                    del _ADMITTED_LOADERS[definition.definition_id]
+                    sys.meta_path.remove(loader)
+            raise
+
+
+def check_admitted_imports(definition, paths):
+    """Reject a local import that now resolves outside the admitted closure."""
+    resolved = {}
+    for path in paths:
+        for module, local in _local_imports(path, definition.contents[path], definition.roots, resolved):
+            if definition.native_dependencies.get(module) != local:
+                raise LayoutError(f'{path}:1: local native import {module} resolves outside the admitted '
+                                  'dependency closure; reload the definition')
+
+
+def import_closure(sources, read, roots):
+    """The static local import closure of ``sources`` as ``module -> source``.
+
+    ``read`` admits one local source and returns its bytes; host runtime
+    modules stay with the host.
+    """
+    pending, scanned, resolved, closure = list(sources), set(), {}, {}
+    while pending:
+        path = pending.pop()
+        if path in scanned:
+            continue
+        scanned.add(path)
+        for module, local in _local_imports(path, read(path), roots, resolved):
+            if module in closure or module == 'api_agent' or module.startswith('api_agent.'):
+                continue
+            closure[module] = local
+            pending.append(local)
+    return dict(sorted(closure.items()))
 
 
 @dataclass(frozen=True)
@@ -641,6 +756,18 @@ def _module_for_path(path, roots):
     return '.'.join(parts)
 
 
+@lru_cache(maxsize=4096)
+def _import_statements(path_text, data):
+    """Each import statement as ``(from_import, level, module, names)``, keyed by exact bytes."""
+    statements = []
+    for node in ast.walk(ast.parse(data, filename=path_text)):
+        if isinstance(node, ast.Import):
+            statements.append((False, 0, '', tuple(alias.name for alias in node.names)))
+        elif isinstance(node, ast.ImportFrom):
+            statements.append((True, node.level, node.module or '', tuple(alias.name for alias in node.names)))
+    return tuple(statements)
+
+
 def _local_imports(path, data, roots, resolved=None):
     """Yield (module, file) for each repository-local module a native source imports.
 
@@ -655,24 +782,19 @@ def _local_imports(path, data, roots, resolved=None):
                                      if candidate.is_file()), None)
         return resolved[module]
     trusted_host = Path(__file__).resolve().parents[1]
-    tree = ast.parse(data, filename=str(path))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:
+    for from_import, level, base_name, aliases in _import_statements(str(path), bytes(data)):
+        if not from_import:
+            names = list(aliases)
+        else:
+            if level:
                 owner = _module_for_path(path, roots)
                 package = owner if path.name == '__init__.py' else owner.rpartition('.')[0]
                 prefix = package.split('.') if package else []
-                if node.level > len(prefix):
+                if level > len(prefix):
                     raise LayoutError(f'{path}:1: relative native import leaves package')
-                prefix = prefix[:len(prefix) - node.level + 1]
-                base_name = '.'.join((*prefix, node.module or '')) if node.module else '.'.join(prefix)
-            else:
-                base_name = node.module or ''
-            names = [base_name, *(base_name + '.' + alias.name for alias in node.names if alias.name != '*')]
-        else:
-            continue
+                prefix = prefix[:len(prefix) - level + 1]
+                base_name = '.'.join((*prefix, base_name)) if base_name else '.'.join(prefix)
+            names = [base_name, *(base_name + '.' + alias for alias in aliases if alias != '*')]
         for name in names:
             parts = name.split('.')
             for length in range(1, len(parts) + 1):
@@ -697,52 +819,19 @@ def load_native_bindings(definition, *, packaged_proof=None, config=None):
                *(row['Source'] for row in getattr(definition, 'prompt_slots', ()))}
     if definition.application_binding is not None:
         sources.add(definition.application_binding[1])
-    resolved = {}
-    for path in (*definition.helper_sources, *sources, *definition.native_dependencies.values()):
-        for module, local in _local_imports(path, definition.contents[path], definition.roots, resolved):
-            if definition.native_dependencies.get(module) != local:
-                raise LayoutError(f'{path}:1: local native import must be declared as a dependency')
+    check_admitted_imports(definition, (*definition.helper_sources, *sources,
+                                        *definition.native_dependencies.values()))
     # Reserve every declared name before native execution, including imports
-    # deferred until a later graph turn. The finder stays installed so lazy
-    # imports read the admitted bytes without an ambient source-root sys.path.
-    with _CATALOG_LOCK:
-        with _DEPENDENCY_LOCK:
-            for module, source in definition.native_dependencies.items():
-                reserved = (definition.definition_id, source, definition.contents[source])
-                if (_RESERVED_DEPENDENCIES.get(module, reserved) != reserved
-                        or module in sys.modules and _LOADED_DEPENDENCIES.get(module) != (
-                            definition.definition_id, source, sys.modules[module])):
-                    raise LayoutError(f'{source}:1: native dependency already loaded from another definition; restart required')
-            loader = _ADMITTED_LOADERS.get(definition.definition_id)
-            fresh = loader is None and bool(definition.native_dependencies)
-            if fresh:
-                loader = _AdmittedDependencyLoader(definition)
-                for module, source in definition.native_dependencies.items():
-                    _RESERVED_DEPENDENCIES[module] = (definition.definition_id, source, definition.contents[source])
-                _ADMITTED_LOADERS[definition.definition_id] = loader
-                sys.meta_path.insert(0, loader)
-        try:
-            for path in sorted(sources):
-                module = _module_for_path(path, definition.roots)
-                package = module if path.name == '__init__.py' else module.rpartition('.')[0]
-                namespace = {'__name__': '<stateful_catalog>', '__file__': str(path), '__package__': package or None}
-                for helper in definition.helper_sources:
-                    exec(compile(definition.contents[helper], str(helper), 'exec'), namespace)
-                exec(compile(definition.contents[path], str(path), 'exec'), namespace)
-                result[path] = MappingProxyType(namespace)
-        except BaseException:
-            if fresh:
-                with _DEPENDENCY_LOCK:
-                    for module in sorted(definition.native_dependencies, key=lambda name: name.count('.'), reverse=True):
-                        loaded = _LOADED_DEPENDENCIES.get(module)
-                        if loaded is not None and loaded[0] == definition.definition_id:
-                            if sys.modules.get(module) is loaded[2]:
-                                del sys.modules[module]
-                            del _LOADED_DEPENDENCIES[module]
-                        del _RESERVED_DEPENDENCIES[module]
-                    del _ADMITTED_LOADERS[definition.definition_id]
-                    sys.meta_path.remove(loader)
-            raise
+    # deferred until a later graph turn.
+    with admitted_dependencies(definition):
+        for path in sorted(sources):
+            module = _module_for_path(path, definition.roots)
+            package = module if path.name == '__init__.py' else module.rpartition('.')[0]
+            namespace = {'__name__': '<stateful_catalog>', '__file__': str(path), '__package__': package or None}
+            for helper in definition.helper_sources:
+                exec(compile(definition.contents[helper], str(helper), 'exec'), namespace)
+            exec(compile(definition.contents[path], str(path), 'exec'), namespace)
+            result[path] = MappingProxyType(namespace)
     bindings = {(path, name): value for path, namespace in result.items()
                 for name, value in namespace.items()}
     return NativeCatalog(definition.definition_id, MappingProxyType(result), timeout_values, timeout_keys,
