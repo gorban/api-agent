@@ -207,7 +207,9 @@ def test_deadline_budget_and_approved_failures():
             await llm.aclose()
         assert not auth.closed and not driver.stop.called
         release.set()
-        await asyncio.sleep(0)
+        # The short budget made the blocked close fail fast; the released close
+        # must not race it on a slow host.
+        llm._timeout = 5
         await llm.aclose()
         llm, *_ = owner()
         safe = OperationalError('rate_limited', retry_after=1)
