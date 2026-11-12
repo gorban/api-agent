@@ -44,13 +44,8 @@ class _CallAuthority:
         if self._local_lease is not None and self._local_lease.owns(source):
             await self._local_lease.aupgrade(source, values)
             self._caller = self._local_lease.secrets
-        elif owner is not None:
-            if values:
-                await owner.aregister(*values, slot=slot)
-        else:
-            from api_agent.telemetry.privacy import register_secret_async
-            for value in values:
-                await register_secret_async(source, value)
+        elif values:
+            await owner.aregister(*values, slot=slot)
 
     def acquire(self, source):
         if not self.admitted or type(source) is not EmissionBoundary:

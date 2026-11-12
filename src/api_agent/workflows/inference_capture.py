@@ -473,11 +473,10 @@ class _CapturedAuth:
 
 def _register_call_auth(boundary, auth):
     """Scrub a call's credential on ``boundary`` until the next call replaces it."""
-    credentials = getattr(boundary, 'call_credentials', None)
-    if credentials is None:
+    if getattr(type(boundary), 'call_credentials', None) is None:
         boundary.register_secret(auth)
     else:
-        credentials().register(auth, slot='call')
+        boundary.call_credentials().register(auth, slot='call')
 
 
 async def prepare_capture_auth(auth):
@@ -491,12 +490,11 @@ async def prepare_capture_auth(auth):
         boundary = getattr(owner[0], 'boundary', None) or getattr(owner[0], '_boundary', None)
     if boundary is None:
         return _CapturedAuth()
-    call_credentials = getattr(boundary, 'call_credentials', None)
-    if call_credentials is None:
+    if getattr(type(boundary), 'call_credentials', None) is None:
         from api_agent.telemetry.privacy import register_secret_async
         await register_secret_async(boundary, auth)
         return _CapturedAuth()
-    credentials = call_credentials()
+    credentials = boundary.call_credentials()
     # Taken before registering: a concurrent call replacing the slot must not release this call's credential.
     hold = credentials.hold()
     try:
