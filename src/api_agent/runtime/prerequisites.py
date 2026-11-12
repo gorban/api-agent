@@ -987,7 +987,11 @@ class PrerequisiteManager:
                 if any(key not in current or current[key].id != item.id
                         or not current[key].running for key, item in observed.items()):
                     raise PrerequisiteError('Existing prerequisite changed during acquisition.')
-                if (name in current and current[name].running
+                if name in current and not current[name].running:
+                    # Managed services declare no restart policy, so a stopped
+                    # container cannot still become ready; its logs explain why.
+                    raise PrerequisiteError('Prerequisite service stopped before it became ready; inspect its logs.')
+                if (name in current
                         and self._conditional_ready(current, check_deadline,
                             names={name}, checks=(readiness,))):
                     observed[name] = current[name]
