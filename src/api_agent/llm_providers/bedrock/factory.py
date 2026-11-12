@@ -14,7 +14,20 @@ from .sdk import SDKTransport
 from .worker import DEFAULT_INFERENCE_TIMEOUT, inference_timeout
 
 
+class _HeldLease:
+    """An evidence lease that also ends the credential hold taken with it."""
+    def __init__(self, lease, hold):
+        self._lease, self._hold = lease, hold
+
+    def release(self):
+        try:
+            self._lease.release()
+        finally:
+            self._hold.release()
+
+
 class BedrockProvider:
+    _credentials = None
     telemetry_provider_name = 'aws.bedrock'
     credential_protection_version = 1
     captures_effective_payload = True
@@ -43,6 +56,7 @@ class BedrockProvider:
         self._session_closes = {}
         self.emissions = self.services.get("emissions")
         self._credential_setup_started = False
+        self._credentials = None
         self._continuation_key = secrets.token_bytes(32)
 
     def bind_credential_authority(self, authority):
@@ -67,25 +81,39 @@ class BedrockProvider:
             from api_agent.telemetry.privacy import EmissionBoundary
             self.emissions = EmissionBoundary()
 
+    def _credential_scope(self):
+        """Owner of the rotating session credentials; a rotation retires the previous set."""
+        if self._credentials is None:
+            self._credentials = self.emissions.credential_owner()
+        return self._credentials
+
     async def _join_credentials(self, values):
         from api_agent.telemetry.privacy import EmissionBoundary
         if not isinstance(self.emissions, EmissionBoundary):
             raise ContractError('Bedrock credential authority unavailable.')
         from api_agent.providers.call_authority import current_call_authority
-        call_authority = current_call_authority()
-        if call_authority is not None:
-            await call_authority.register(self.emissions, values)
-            return call_authority.acquire(self.emissions)
-        from api_agent.telemetry.privacy import register_secret_async
-        for value in values:
-            await register_secret_async(self.emissions, value)
-        lease = self.emissions.begin_evidence_lease()
+        owner = self._credential_scope()
+        # Taken before registering, so the operation keeps its credentials scrubbed after a rotation supersedes them.
+        hold = owner.hold()
         try:
-            _, snapshot = self.emissions.snapshot_content()
-            return sorted(snapshot._secrets), lease
+            call_authority = current_call_authority()
+            if call_authority is not None:
+                await call_authority.register(self.emissions, values, owner=owner, slot='session')
+                secrets, lease = call_authority.acquire(self.emissions)
+            else:
+                if values:
+                    await owner.aregister(*values, slot='session')
+                lease = self.emissions.begin_evidence_lease()
+                try:
+                    _, snapshot = self.emissions.snapshot_content()
+                    secrets = sorted(snapshot._secrets)
+                except BaseException:
+                    lease.release()
+                    raise
         except BaseException:
-            lease.release()
+            hold.release()
             raise
+        return secrets, _HeldLease(lease, hold)
 
     def _open(self):
         if self.closed:
@@ -437,6 +465,8 @@ class BedrockProvider:
                         *(self._close_session(session) for session in sessions), return_exceptions=True)
                     if any(isinstance(result, BaseException) for result in results):
                         raise ContractError('Bedrock provider cleanup failed; retry disposal.') from None
+                    if self._credentials is not None:
+                        self._credentials.close()
             with independent_timeout_scope():
                 self._closing = asyncio.create_task(dispose())
 
