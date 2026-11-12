@@ -714,9 +714,9 @@ class Workflow:
 
 
     def _choose(self, source, edges, state):
-        """The one edge that applies after ``source``; a graph that matches none or several is invalid."""
+        """The first edge that applies after ``source``; matching none, or several targets, is invalid."""
         choices = self._route_choices(source, edges, state)
-        if len(choices) != 1:
+        if len({row['To'] for row in choices}) != 1:
             raise WorkflowError('Routing requires exactly one matching condition or fallback')
         return choices[0]
 
@@ -1352,7 +1352,7 @@ class Workflow:
             matches = [edge for edge in edges if edge['When'] not in ('always', 'otherwise')
                        and self._state_predicates[edge['When']].evaluate(values, constants=self.limit_values)]
             choices = matches or [edge for edge in edges if edge['When'] in ('always', 'otherwise')]
-            if len(choices) != 1:
+            if len({edge['To'] for edge in choices}) != 1:
                 raise WorkflowError('Routing requires exactly one matching condition or fallback')
             target = choices[0]['To']
             visit_id = self._turn_state.get()['visits'].get(source)

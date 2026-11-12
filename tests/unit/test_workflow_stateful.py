@@ -1442,6 +1442,18 @@ def test_typed_prompt_slots_must_return_text(fixture_graph):
         asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='numeric'))
 
 
+def test_typed_conditions_true_together_for_one_target_take_it(fixture_graph):
+    root, entry = fixture_graph
+    _conditional(root, entry, _WHEN_GROUP.replace(
+        '| intake | finish | .visits == 1 |', '| intake | finish | .visits == 1 |\n| intake | finish | .visits >= 1 |'))
+    definition = load_definition(entry, base_root=root, pack_root=root)
+    workflow = Workflow(definition, catalog=load_native_bindings(definition), reducers={'messages': add_messages})
+
+    result = asyncio.run(workflow.arun({'messages': [], 'pending': False, 'visits': 0}, thread_id='shared-target'))
+
+    assert (result['visits'], result['pending']) == (1, True)
+
+
 def test_typed_conditions_must_select_exactly_one_route(fixture_graph):
     from api_agent.workflows.execution import WorkflowError
     root, entry = fixture_graph
