@@ -32,11 +32,11 @@ class OwnedService:
         with selectors.DefaultSelector() as selector:
             selector.register(self._process.stdout, selectors.EVENT_READ)
             while True:
-                if cancelled():
-                    raise InterruptedError('Service startup was cancelled')
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError('Service startup passed its deadline')
+                if cancelled():
+                    raise InterruptedError('Service startup was cancelled')
                 if selector.select(min(0.1, remaining)):
                     return self._process.stdout.readline().strip()
 
