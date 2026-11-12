@@ -173,6 +173,25 @@ provider, and application-specific assertions with the pack. Test parameters
 should have readable IDs. See [configuration coverage](development.md#configuration-coverage)
 for test-local overrides and scenario isolation.
 
+## Persisted caches
+
+A pack that keeps data across runs in the per-user cache directory (for example a
+reusable sign-in) declares it in `pack.toml`, so Clear .env configuration lists it and
+can purge it:
+
+```toml
+[[persisted_caches]]
+id = "sign-in"                     # lowercase letters, digits and dashes; unique
+label = "Cached sign-in"           # shown in the table
+user_cache_dir = "fixture-auth"    # one directory name under the user cache directory
+```
+
+`user_cache_dir` resolves to `~/Library/Caches/<name>` on macOS and
+`$XDG_CACHE_HOME/<name>` (default `~/.cache/<name>`) elsewhere;
+`api_agent.runtime.persisted_caches.user_cache_directory` computes the same path for
+the pack's own code. Purging removes the whole directory, or only the link when the
+directory is a symlink. Composed packs combine their declarations.
+
 ## Workflow-selected named tools
 
 A named tool separates an interface, a reusable implementation and a configured instance.

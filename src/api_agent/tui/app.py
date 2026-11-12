@@ -242,12 +242,13 @@ class QuitDialog(SelectedTextCopy, FocusNavigation, ModalScreen):
 
 
 class DeleteDialog(QuitDialog):
-    def __init__(self, name):
+    def __init__(self, name, source=".env"):
         super().__init__()
         self.setting_name = name
+        self.source = source
 
     def compose(self) -> ComposeResult:
-        yield Static(f"Delete {self.setting_name} from .env? Enter literal y to confirm; every other response cancels.", markup=False)
+        yield Static(f"Delete {self.setting_name} from {self.source}? Enter literal y to confirm; every other response cancels.", markup=False)
         yield EditableInput(id="delete-answer")
         with Horizontal(classes="confirmation-actions"):
             yield Button("Confirm response", id="delete-submit")
@@ -851,13 +852,13 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
     def action_delete_assignment(self):
         names = self.config_selection()
         if names is not None:
-            self.app.push_screen(DeleteDialog(f'{len(names)} selected settings'),
+            self.app.push_screen(DeleteDialog(f'{len(names)} selected settings', self.app.deletion_source(names)),
                 lambda yes: self.app.apply_config_action('delete', names) if yes else None)
             return
         if self.app.focused_cleanup_present():
             table = self.query_one(DataTable)
             name = str(table.get_row_at(table.cursor_row)[1])
-            self.app.push_screen(DeleteDialog(name),
+            self.app.push_screen(DeleteDialog(name, self.app.deletion_source((name,))),
                                  lambda yes: self.app.delete_assignment(name) if yes else None)
 
     def action_switch_target(self):
@@ -1552,7 +1553,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 plan = BulkPlan(plan.names, plan.skipped, f'{plan.names[0]}={plan.copy_text}')
             return BulkPlan(plan.names, tuple(name for name in names if name in skipped), plan.copy_text)
         rows = self.session.cleanup_rows(retained=self.cleanup_names)
-        return plan_cleanup(rows, names, action, membership=self.cleanup_names)
+        return plan_cleanup(rows, names, action, membership=self.cleanup_names,
+                            caches={key for key, cache in self.persisted_caches().items() if cache.present()})
 
     def report_config_action(self, action, plan):
         verbs = {'accept': 'Accepted', 'unset': 'Unset', 'delete': 'Deleted', 'copy': 'Copyable'}
@@ -1572,7 +1574,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 operation = {'accept': self.session.save_defaults,
                              'unset': self.session.unset_saved_many,
                              'delete': self.session.delete_keys}[action]
-                operation(plan.names)
+                caches = self.persisted_caches()
+                if options := tuple(name for name in plan.names if name not in caches):
+                    operation(options)
+                for name in plan.names:
+                    if name in caches:
+                        caches[name].purge()
                 self.operation_status = 0
                 if screen.kind == 'defaults':
                     self.refresh_configuration_rows(screen)
@@ -2663,8 +2670,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.cleanup_names = frozenset(row.name for row in saved)
         rows = [(row.name, ("✓", row.name, display_configuration(row.field, row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in saved]
         location = "all agent / resource pack .env files" if self.context.external_pack else "agent .env file"
+        caches = [cache for cache in self.persisted_caches().values() if cache.present()]
+        self.cleanup_names |= {cache.key for cache in caches}
+        rows += [self.cache_row(cache) for cache in caches]
+        note = " Persisted caches declared by the pack are listed too; deleting one purges it." if self.persisted_caches() else ""
         self.show("cleanup", "Clear .env configuration",
-                  f"Select rows and delete them (with confirmation) from {location}.", rows=rows)
+                  f"Select rows and delete them (with confirmation) from {location}." + note, rows=rows)
         self.screen.config_masked_names = {row.name for row in saved
                                            if row.field.sensitive and row.value}
 
@@ -2765,6 +2776,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                  display_configuration(row.field, row.value) if row.resolved else "Inactive / unset",
                  row.source if row.resolved else ""))
                 for row in cleanup_rows if row.name in self.cleanup_names]
+        rows += [self.cache_row(cache) for key, cache in self.persisted_caches().items() if key in self.cleanup_names]
         # Rebuilding posts another highlight event; unchanged snapshots must
         # not rebuild again. Preserve the focused setting when rows change.
         current = [tuple(table.get_row_at(i)) for i in range(table.row_count)]
@@ -2779,9 +2791,27 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         restore_viewport(table, viewport)
         screen.refresh_bindings()
 
+    def persisted_caches(self):
+        return {cache.key: cache for cache in getattr(self.context, 'persisted_caches', ())}
+
+    def cache_row(self, cache):
+        return (cache.key, ("✓" if cache.present() else "", cache.key, cache.summary(), "persisted cache"))
+
+    def deletion_source(self, names):
+        caches = self.persisted_caches()
+        cached = [name for name in names if name in caches]
+        if not cached:
+            return ".env"
+        if len(names) == 1:
+            return str(caches[names[0]].directory)
+        return "persisted caches" if len(cached) == len(names) else ".env and persisted caches"
+
     def delete_assignment(self, name):
         try:
-            self.session.delete_keys([name])
+            if name in self.persisted_caches():
+                self.persisted_caches()[name].purge()
+            else:
+                self.session.delete_keys([name])
             self.cleanup_last_deleted = name
             self.operation_status = 0
             self.refresh_rows()
