@@ -441,3 +441,86 @@ def test_cancelled_load_retains_rollback_on_original_loop(context, monkeypatch):
         owner.start()
     owner.close()
     assert owner.closed and len(loops) == 2 and loops[0] is loops[1]
+
+
+def test_failure_service_reports_scrubbed_parent_diagnostic(context, monkeypatch):
+    output, services_seen = [], {}
+    contribution = Contribution()
+    async def load(_location, _config, services, **kwargs):
+        services_seen.update(services)
+        return LoadedProvider(contribution, 'synthetic_provider')
+    monkeypatch.setattr('api_agent.testing.suite_prerequisite_provider.aload_provider', load)
+    owner = make(context, API_KEY='sentinel-config-secret', LOG_CONTENT=False)
+    owner.output = output.append
+    with context[1].bind():
+        owner.start()
+        services_seen['prerequisite_failure'](ValueError('startup failed sentinel-config-secret Authorization: Bearer sentinel-token'))
+        owner.close()
+    diagnostic = ''.join(output)
+    assert 'startup failed' in diagnostic
+    assert 'sentinel-config-secret' not in diagnostic
+    assert 'sentinel-token' not in diagnostic
+    assert '[REDACTED]' in diagnostic
+    assert owner.events == ()
+
+
+def test_failure_output_is_optional_printable_and_bounded(context):
+    owner = make(context)
+    owner._failure(ValueError('ignored'))
+    output = []
+    owner.output = output.append
+    owner._failure(ValueError('evidence\x00' + 'x' * 70000))
+    assert '\\u0000' in output[0]
+    assert output[0].endswith('[diagnostic truncated]\n')
+    assert len(output[0]) < 66000
+
+
+def test_suite_cleanup_budget_reaches_loaded_provider_waiter(context, monkeypatch):
+    class SlowClose(Contribution):
+        async def aclose(self):
+            await asyncio.sleep(0.08)
+            self.closed += 1
+    contribution = SlowClose()
+    loaded = LoadedProvider(contribution, 'synthetic_provider', timeout=0.02)
+    async def load(*args, **kwargs):
+        return loaded
+    monkeypatch.setattr('api_agent.testing.suite_prerequisite_provider.aload_provider', load)
+    owner = make(context, E2E_PREREQUISITE_CLEANUP_TIMEOUT_SECONDS=0.5)
+    with context[1].bind():
+        owner.start()
+        try:
+            owner.close()
+            assert owner.closed and contribution.closed == 1 and loaded.disposed
+        finally:
+            if not owner.closed:
+                # Avoid leaving the supervised provider loop behind after red.
+                owner.cleanup_timeout = 0.5
+                import time
+                time.sleep(0.1)
+                owner.close()
+
+
+def test_cleanup_budget_includes_worker_acknowledgement(context, monkeypatch):
+    class SlowDisposal(Contribution):
+        async def adispose_workers(self, request, *, auth=None):
+            await asyncio.sleep(0.08)
+            self.disposals += 1
+        async def aclose(self):
+            await asyncio.sleep(0.08)
+            self.closed += 1
+    contribution = SlowDisposal()
+    async def load(*args, **kwargs):
+        return LoadedProvider(contribution, 'synthetic_provider', timeout=1)
+    monkeypatch.setattr('api_agent.testing.suite_prerequisite_provider.aload_provider', load)
+    owner = make(context, E2E_PREREQUISITE_CLEANUP_TIMEOUT_SECONDS=0.12)
+    with context[1].bind():
+        owner.start()
+        try:
+            with pytest.raises(CleanupPendingError):
+                owner.close(workers_disposed=True)
+        finally:
+            if not owner.closed:
+                import time
+                time.sleep(0.1)
+                owner.close(workers_disposed=True)
+    assert contribution.disposals == contribution.closed == 1

@@ -256,6 +256,8 @@ def test_old_network_candidates_are_inspected_in_batches(setup):
     def inventory(command, **options):
         if command[1:3] == ('network', 'ls'):
             return '\n'.join(names)
+        if command[1] == 'ps':
+            return ''
         assert command[1:3] == ('network', 'inspect')
         inspections.append(command[3:])
         return json.dumps([{'Name': name, 'Id': 'a' * 64,
@@ -408,3 +410,80 @@ def test_saved_definition_without_network_details_still_protects_by_name(setup):
 
     assert network in engine.networks
     assert not any(command[1:3] == ('network', 'rm') for command, _ in engine.commands)
+
+
+@pytest.mark.parametrize('aged', [False, True])
+def test_referenced_names_are_filtered_before_network_inspection(setup, aged):
+    create, _, clock, scope, _ = setup
+    manager = create()
+    names = [f'sa-{index:016x}_default' for index in range(35)] if aged else [scope.project + '_default']
+    # Current-scope cleanup can only remove its own scope, so exercise the mixed
+    # inventory under aged cleanup and the same ordering for current scope.
+    if aged:
+        referenced_names, id_only, orphan = names[:33], names[33], names[34]
+    else:
+        referenced_names, id_only, orphan = [], None, names[0]
+    identifiers = {name: f'{index + 1:064x}' for index, name in enumerate(names)}
+    references = set(referenced_names)
+    if id_only:
+        references.add(identifiers[id_only])
+    calls = []
+
+    def inventory(command, **options):
+        calls.append(command)
+        if command[1:3] == ('network', 'ls'):
+            return '\n'.join(names)
+        if command[1] == 'ps':
+            return 'f' * 64
+        if command[1:3] == ('inspect', '--format'):
+            networks = {name: {'NetworkID': identifiers[name]} for name in referenced_names}
+            if id_only:
+                networks['alias'] = {'NetworkID': identifiers[id_only]}
+            return json.dumps({'networks': networks, 'mode': ''})
+        if command[1:3] == ('network', 'inspect'):
+            return json.dumps([{'Name': name, 'Id': identifiers[name],
+                'Created': '2000-01-01T00:00:00Z', 'Labels': {
+                    LABEL: name[3:19], 'api-agent.managed': 'true', 'api-agent.scope': name[3:19],
+                    'com.docker.compose.project': name.removesuffix('_default'),
+                    'com.docker.compose.network': 'default'}} for name in command[3:]])
+        assert command[1:3] == ('network', 'rm')
+        return ''
+
+    manager.runner = inventory
+    manager._prune_networks(clock.now() + 120, aged=aged)
+
+    inspections = [command for command in calls if command[1:3] == ('network', 'inspect')]
+    assert [name for command in inspections for name in command[3:]] == [name for name in names if name not in references]
+    assert len([command for command in calls if command[1] == 'ps']) == 1
+    assert next(i for i, command in enumerate(calls) if command[1] == 'ps') < calls.index(inspections[0])
+    assert [command[3:] for command in calls if command[1:3] == ('network', 'rm')] == [(identifiers[orphan],)]
+
+
+def test_all_name_referenced_networks_skip_inspection(setup):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    engine.add(next(iter(manager.specs)), running=False)
+    engine.commands.clear()
+
+    manager._prune_networks(clock.now() + 120, aged=True)
+
+    assert scope.project + '_default' in engine.networks
+    assert not any(command[1:3] in {('network', 'inspect'), ('network', 'rm')}
+                   for command, _ in engine.commands)
+
+
+@pytest.mark.parametrize('listing', ['', 'unmanaged-network'])
+def test_empty_filtered_network_inventory_skips_reference_scan(setup, listing):
+    create, _, clock, _, _ = setup
+    manager = create()
+    calls = []
+    def inventory(command, **options):
+        calls.append(command)
+        assert command[1:3] == ('network', 'ls')
+        return listing
+    manager.runner = inventory
+
+    manager._prune_networks(clock.now() + 120, aged=True)
+
+    assert len(calls) == 1

@@ -418,3 +418,92 @@ def test_collection_inherits_process_coverage_only_outside_unit_mode(tmp_path, m
     monkeypatch.setenv('COVERAGE_PROCESS_START', 'synthetic-inherited-start')
     collected = collect_tests(context(root, modes={mode: (selected,)}), mode)
     assert [test.node_id for test in collected] == [f'tests/{mode}/test_tiny.py::test_collected_without_execution']
+
+
+def test_group_union_and_exclusions_are_order_independent():
+    tests = [TestIdentity('repo::a.py::one', 'repo', 'a.py', 'a.py::one', {'skip'}),
+             TestIdentity('repo::a.py::two', 'repo', 'a.py', 'a.py::two', {'mutation'}),
+             TestIdentity('repo::b.py::three', 'repo', 'b.py', 'b.py::three', {'shared'})]
+    for selectors in [('a.py', 'shared', tests[0].id, '-skip', '-repo::tag:mutation'),
+                      ('-repo::tag:mutation', '-skip', tests[0].id, 'shared', 'a.py')]:
+        assert select_tests(tests, selectors) == [tests[2]]
+    assert select_tests(tests, ['-skip']) == tests[1:]
+    with pytest.raises(CollectionError, match='No tests'):
+        select_tests(tests, ['repo', '-repo'])
+
+
+def test_bare_namespace_collision_requires_qualification():
+    tests = [TestIdentity('repo::shared::one', 'repo', 'shared', 'shared::one'),
+             TestIdentity('repo::other::two', 'repo', 'other', 'other::two', {'shared'})]
+    with pytest.raises(CollectionError, match='qualif'):
+        select_tests(tests, ['shared'])
+    assert select_tests(tests, ['tag:shared']) == tests[1:]
+
+
+def test_qualified_file_group_preserves_repository_ambiguity():
+    tests = [_identity('a.py::test_x', repo) for repo in ('base', 'pack')]
+    with pytest.raises(CollectionError, match='Ambiguous'):
+        select_tests(tests, ['file:a.py'])
+    assert select_tests(tests, ['file:pack::a.py']) == tests[1:]
+    assert select_tests(tests, ['-pack::a.py']) == tests[:1]
+
+
+def test_exclusions_use_explicit_default_seed_and_validate_against_full_catalog():
+    tests = [_identity('a.py::test_one', 'base'), _identity('b.py::test_two', 'pack')]
+    assert select_tests(tests, ['-base'], defaults=tests[1:]) == tests[1:]
+    with pytest.raises(CollectionError, match='Unknown'):
+        select_tests(tests, ['-missing'], defaults=tests[1:])
+    with pytest.raises(CollectionError, match='No tests'):
+        select_tests(tests, ['-pack'], defaults=tests[1:])
+
+
+def test_tag_h_and_glob_exclusions():
+    tests = [TestIdentity('repo::a.py::one', 'repo', 'a.py', 'a.py::one', {'h'}),
+             TestIdentity('repo::b.py::two', 'repo', 'b.py', 'b.py::two')]
+    assert select_tests(tests, ['-h']) == tests[1:]
+    assert select_tests(tests, ['*.py', '-repo::a.py']) == tests[1:]
+
+
+def test_preview_identifies_exclusions_and_effective_tests():
+    from api_agent.testing.collection import selection_preview
+    test = _identity('a.py::test_one')
+    assert selection_preview([test], ['-skip']) == f'Excluded selectors: -skip\n{test.id}'
+    assert selection_preview([test]) == test.id
+
+
+@pytest.mark.parametrize('repo', ['repo', 'file', 'repo:layer'])
+def test_repository_labels_can_overlap_namespace_prefixes(repo):
+    test = _identity('a.py::test_one', repo)
+    assert select_tests([test], [test.id]) == [test]
+
+
+@pytest.mark.parametrize('selector', ['-', '--skip'])
+def test_malformed_negative_selectors_are_rejected(selector):
+    with pytest.raises(CollectionError, match='Unknown or empty'):
+        select_tests([_identity('a.py::test_one')], [selector])
+
+
+def test_repository_qualifier_disambiguates_colliding_tag():
+    base = TestIdentity('base::a.py::one', 'base', 'a.py', 'a.py::one')
+    tagged = TestIdentity('pack::b.py::two', 'pack', 'b.py', 'b.py::two', {'base'})
+    with pytest.raises(CollectionError, match='Ambiguous'):
+        select_tests([base, tagged], ['base'])
+    assert select_tests([base, tagged], ['repo:base']) == [base]
+    assert select_tests([base, tagged], ['-repo:base']) == [tagged]
+
+
+def test_refresh_ignores_exclusion_for_a_test_removed_from_catalog():
+    remaining = _identity('a.py::test_remaining')
+    assert select_tests([remaining], ['-base::a.py::test_removed'], allow_missing=True) == [remaining]
+
+
+def test_collection_exclusions_start_from_owner_default(tmp_path):
+    base, pack = tmp_path / 'base', tmp_path / 'pack'
+    suite(base)
+    owner_units = suite(pack)
+    ctx = context(base, pack, {'unit': (owner_units,)})
+    with pytest.raises(CollectionError, match='No tests remain'):
+        collect_tests(ctx, 'unit', ['-repo:pack'])
+    selected = collect_tests(ctx, 'unit', ['-repo:pack'], config={'ALL_UNIT': True})
+    assert len(selected) == 2
+    assert {test.repo for test in selected} == {'base'}

@@ -1856,8 +1856,13 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             if not await self.collection_delivery_allowed(owner, cancel_event):
                 return
             if self.session.result().values.get("COLLECT_ONLY"):
-                from api_agent.testing.collection import select_tests
-                self.collected_output = "\n".join(test.id for test in select_tests(tests, self.active_test_selectors))
+                from api_agent.testing.collection import select_tests, selection_preview
+                from api_agent.testing.unit_scope import unit_default_tests
+                defaults = (unit_default_tests(self.context, tests, all_unit=self.session.result().values.get('ALL_UNIT', False))
+                            if self.mode == 'unit' and self.active_test_selectors
+                            and all(selector.startswith('-') for selector in self.active_test_selectors) else None)
+                selected = select_tests(tests, self.active_test_selectors, defaults=defaults)
+                self.collected_output = selection_preview(selected, self.active_test_selectors)
                 self.exit(0)
                 return
             self.selection = SelectionModel(tests)
@@ -1876,7 +1881,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.show("error", "Collection failed", str(error), (("menu", "Main menu"),))
 
     def apply_unit_defaults(self):
-        if self.mode != 'unit' or self.active_test_selectors:
+        if self.mode != 'unit' or any(not selector.startswith('-') for selector in self.active_test_selectors):
             return
         from api_agent.testing.unit_scope import owner_unit_only
         from api_agent.testing.collection import repository_label

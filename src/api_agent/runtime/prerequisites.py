@@ -755,13 +755,18 @@ class PrerequisiteManager:
         executable, marker = self.plan.command[0], 'api-agent.network-cleanup-v1'
         cleanup = not aged
         with self._network_guard(deadline, cleanup=cleanup):
-            references = None
             removable = []
             selected = marker if aged else marker + '=' + self.scope.id
             names = self._command((executable, 'network', 'ls', '--filter',
                 'label=' + selected, '--format', '{{.Name}}'), deadline, cleanup=cleanup).split()
             names = sorted({name for name in names if re.fullmatch(r'sa-[0-9a-f]{16}_default', name)})
-            for record in self._network_records(names, deadline, cleanup=cleanup):
+            if not names:
+                return
+            # This snapshot is protected against managed creation by the guard;
+            # processes outside that lock are not serialized by it.
+            references = self._container_network_references(deadline, cleanup=cleanup)
+            candidates = [name for name in names if name not in references]
+            for record in self._network_records(candidates, deadline, cleanup=cleanup):
                 name = record.get('Name', record.get('name'))
                 try:
                     labels = record.get('Labels', record.get('labels'))
@@ -784,8 +789,6 @@ class PrerequisiteManager:
                             continue
                 except (ValueError, TypeError, AttributeError) as error:
                     raise PrerequisiteError('Network cleanup inventory could not be verified; remaining networks were preserved.') from error
-                if references is None:
-                    references = self._container_network_references(deadline, cleanup=cleanup)
                 if name in references or identifier in references:
                     continue
                 removable.append(identifier)

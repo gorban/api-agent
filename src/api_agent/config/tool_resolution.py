@@ -26,8 +26,9 @@ def bind_operation_tools(plan, result, *, argv=()):
         for name in inactive}
     # Resolve values against the active schema, but parse arity against the inert
     # catalog inventory so an inactive option value never becomes a test selector.
-    active_options = parse_options(plan.schema, argv)
-    inventory_options = parse_options(plan.option_schema, argv)
+    negative_selectors = result.negative_selectors or result.values.get('TUI_MODE') in {'unit', 'integration', 'e2e'}
+    active_options = parse_options(plan.schema, argv, negative_selectors=negative_selectors)
+    inventory_options = parse_options(plan.option_schema, argv, negative_selectors=negative_selectors)
     errors = list(result.errors)
     for error in active_options.errors:
         if error in errors:

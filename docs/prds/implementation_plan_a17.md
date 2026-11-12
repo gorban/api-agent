@@ -2,7 +2,7 @@
 
 [Configuration and TUI](implementation_plan_a.md)
 
-Status: requirements recorded; implementation and acceptance are pending.
+Status: implemented; automated acceptance and source review passed. Human terminal/TUI review is pending.
 
 ## Selection contract
 
@@ -61,18 +61,18 @@ File/tag expansion is not explicit enumeration of individual test IDs for the
 
 ## Acceptance
 
-- [ ] Prove red-to-green coverage for overlapping file/tag/test includes,
+- [x] Prove red-to-green coverage for overlapping file/tag/test includes,
   duplicates, order-independent exclusions, and an explicitly included test
   removed by `-skip` or `-mutation`.
-- [ ] Cover exclusions alone, no matches, an empty final selection, qualified
+- [x] Cover exclusions alone, no matches, an empty final selection, qualified
   exclusions, namespace collisions, existing globs and repository ambiguity.
-- [ ] Cover negative selectors with and without `--`, `-h` as help before `--`
+- [x] Cover negative selectors with and without `--`, `-h` as help before `--`
   and as an exclusion of tag `h` after `--`, ordinary
   long options, unknown options and negative typed option values. Assert that
   rejected input never starts authentication or prerequisites.
-- [ ] Prove the same selection algebra in all three modes, normal owner defaults,
+- [x] Prove the same selection algebra in all three modes, normal owner defaults,
   picker/catalog refresh, and unchanged skip, consent and DEBUG boundaries.
-- [ ] Run the applicable unit/coverage gates, dedicated adversarial review and
+- [x] Run the applicable unit/coverage gates, dedicated adversarial review and
   external PR-style review before human review of terminal and TUI parity.
 
 This task changes selection only. It does not authorize a live inference run or

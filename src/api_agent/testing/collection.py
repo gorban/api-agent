@@ -125,8 +125,6 @@ def _installed_base_identity(base):
 
 def _selects(test, value):
     """Match a file, node or ID, a directory/class/function above it, or a glob."""
-    if value.startswith("tag:"):
-        return value[4:] in test.tags
     if value in {test.file, test.node_id, test.id}:
         return True
     if "*" in value or "?" in value:
@@ -135,28 +133,74 @@ def _selects(test, value):
             or test.file.startswith(value.rstrip("/") + "/"))
 
 
-def select_tests(tests, selectors=()):
-    """Resolve a de-duplicated union of repository-qualified or bare selectors."""
+def select_tests(tests, selectors=(), *, defaults=None, allow_missing=False, allow_empty=False):
+    """Resolve includes as a union and subtract every validated exclusion."""
     tests = list(tests)
     if not selectors:
-        return tests
-    selected = set()
+        return tests if defaults is None else list(defaults)
     repos = {test.repo for test in tests}
-    for selector in selectors:
-        if not isinstance(selector, str) or not selector.strip():
+    includes, excludes = set(), set()
+    has_includes = False
+    for original in selectors:
+        if not isinstance(original, str) or not original.strip():
             raise CollectionError("Test selectors must be nonempty strings")
+        negative = original.startswith('-')
+        selector = original[1:] if negative else original
+        if not selector or selector.startswith('-'):
+            raise CollectionError(f"Unknown or empty test selector: {original}")
         repo = None
         value = selector
-        prefix, separator, remainder = selector.partition("::")
+        namespace = None
+        leading_repo, separator, _ = value.partition('::')
+        if not (separator and leading_repo in repos):
+            if value.startswith('repo:'):
+                namespace, value = 'repo', value[5:]
+            elif value.startswith('file:'):
+                namespace, value = 'file', value[5:]
+        prefix, separator, remainder = value.partition('::')
         if separator and prefix in repos:
             repo, value = prefix, remainder
-        matches = [test for test in tests if (repo is None or test.repo == repo) and _selects(test, value)]
+        candidates = [test for test in tests if repo is None or test.repo == repo]
+        if namespace == 'repo':
+            matches = [test for test in candidates if test.repo == value]
+        elif namespace == 'file':
+            matches = [test for test in candidates if test.file == value]
+            if repo is None and len({test.repo for test in matches}) > 1:
+                raise CollectionError(f"Ambiguous test selector {original!r}; qualify it with file:<repository>::<path>")
+        elif value.startswith('tag:'):
+            matches = [test for test in candidates if value[4:] in test.tags]
+        else:
+            paths = [test for test in candidates if _selects(test, value)]
+            tags = [test for test in candidates if value in test.tags]
+            repository = [test for test in candidates if test.repo == value] if repo is None else []
+            kinds = sum(bool(group) for group in (paths, tags, repository))
+            if kinds > 1:
+                raise CollectionError(f"Ambiguous test selector {original!r}; qualify with tag:, repo:, file:<repository>::, or a repository-qualified test path")
+            matches = paths or tags or repository
+            if paths and repo is None and len({test.repo for test in paths}) > 1:
+                raise CollectionError(f"Ambiguous test selector {original!r}; qualify it with a repository name followed by ::")
         if not matches:
-            raise CollectionError(f"Unknown or empty test selector: {selector}")
-        if repo is None and not value.startswith("tag:") and len({test.repo for test in matches}) > 1:
-            raise CollectionError(f"Ambiguous test selector {selector!r}; qualify it with a repository name followed by ::")
-        selected.update(test.id for test in matches)
+            if allow_missing:
+                continue
+            raise CollectionError(f"Unknown or empty test selector: {original}")
+        if negative:
+            excludes.update(test.id for test in matches)
+        else:
+            has_includes = True
+            includes.update(test.id for test in matches)
+    if not has_includes:
+        includes = {test.id for test in (tests if defaults is None else defaults)}
+    selected = includes - excludes
+    if not selected and not allow_empty:
+        raise CollectionError("No tests remain after applying selectors and exclusions")
     return [test for test in tests if test.id in selected]
+
+
+def selection_preview(tests, selectors=()):
+    """Describe exclusions and list the effective test identities."""
+    exclusions = [selector for selector in selectors if selector.startswith('-')]
+    lines = (["Excluded selectors: " + ", ".join(exclusions)] if exclusions else [])
+    return "\n".join([*lines, *(test.id for test in tests)])
 
 
 def _stop_collection(process):
@@ -343,4 +387,8 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
                 raise CollectionError(f"Pytest returned invalid collection data for {repo}: {exc}") from exc
     if not collected:
         raise CollectionError(f"No tests collected for {mode}")
-    return select_tests(collected.values(), selectors)
+    defaults = None
+    if mode == 'unit' and selectors and all(selector.startswith('-') for selector in selectors):
+        from .unit_scope import unit_default_tests
+        defaults = unit_default_tests(context, collected.values(), all_unit=(config or {}).get('ALL_UNIT', False))
+    return select_tests(collected.values(), selectors, defaults=defaults)

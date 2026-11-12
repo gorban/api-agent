@@ -94,6 +94,42 @@ def test_main_returns_cold_discovery_handoff_before_tool_composition(monkeypatch
     compose.assert_not_called()
 
 
+@pytest.mark.parametrize('argv,environment,dotenv', [
+    (['--tui-mode=unit', '-skip', '-h'], {}, {}),
+    (['-skip', '--help'], {'TUI_MODE': 'integration'}, {}),
+    (['-skip', '--help'], {}, {'TUI_MODE': 'e2e'}),
+    (['--tui-mode=unit', '--help', '--', '-skip'], {}, {}),
+])
+def test_help_accepts_exclusions_with_effective_test_mode(
+        selection_fixture, monkeypatch, capsys, argv, environment, dotenv):
+    from dataclasses import replace
+    from pathlib import Path
+    from api_agent.config import load_shared_schema
+    from api_agent.runtime.bootstrap import main
+
+    context, _ = selection_fixture
+    context = replace(context, launcher_root=context.base_root)
+    context.config_path.write_text('version=1\n')
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setattr('api_agent.runtime.resource_pack.load_launch_context', Mock(return_value=context))
+    monkeypatch.setattr('api_agent.config.load_shared_schema', lambda _: load_shared_schema(root))
+    monkeypatch.setattr('api_agent.runtime.hook_assurance.assure_hook', Mock())
+    monkeypatch.setattr('api_agent.runtime.worktrees.verify_worktrees', Mock())
+    monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', Mock(return_value=None))
+    monkeypatch.setattr('api_agent.config.read_dotenv', Mock(return_value=dotenv))
+    monkeypatch.setattr('api_agent.config.dotenv.read_dotenv', Mock(return_value=dotenv))
+    monkeypatch.setattr('os.environ', environment)
+    collect = Mock(side_effect=AssertionError('help must not collect tests'))
+    monkeypatch.setattr('api_agent.testing.collection.collect_tests', collect)
+
+    status = main(argv, base_root=context.base_root)
+
+    output = capsys.readouterr()
+    assert status == 0, output.err
+    assert '--help' in output.out
+    collect.assert_not_called()
+
+
 @pytest.mark.parametrize('mode,provided', [('unit', False), ('unit', True), ('integration', False), ('integration', True)])
 def test_terminal_exact_selection_validates_required_tool_inputs(selection_fixture, monkeypatch, capsys, mode, provided):
     from pathlib import Path

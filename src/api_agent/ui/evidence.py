@@ -18,7 +18,7 @@ from urllib.parse import unquote, urljoin, urlsplit
 from uuid import uuid4
 
 from api_agent.providers.control import finish_cleanup
-from api_agent.providers.progress import component_timeout, report_timeout
+from api_agent.providers.progress import bind_timeout_budget, component_timeout, report_timeout
 
 
 @dataclass(frozen=True, slots=True)
@@ -1077,12 +1077,16 @@ async def capture_studio_viewport(page, boundary, origin, *, unavailable=None, f
     if (type(retry_window_seconds) not in (int, float) or not math.isfinite(retry_window_seconds)
             or retry_window_seconds <= 0):
         raise ValueError('Invalid capture retry window')
-    async with report_timeout('UI viewport capture', retry_window_seconds) as budget:
-        return await _capture_with_retries(page, boundary, origin, budget.remaining,
-                                           unavailable, failure_detail, options)
+    # The retry window bounds admission of another attempt. Masking the last
+    # capture has its own timeout and must retain the caller's deadline even
+    # when that retry window has elapsed.
+    async with report_timeout('UI viewport evidence', None) as caller_budget:
+        async with report_timeout('UI viewport capture', retry_window_seconds) as budget:
+            return await _capture_with_retries(page, boundary, origin, budget.remaining,
+                                               unavailable, failure_detail, options, caller_budget)
 
 
-async def _capture_with_retries(page, boundary, origin, window, unavailable, failure_detail, options):
+async def _capture_with_retries(page, boundary, origin, window, unavailable, failure_detail, options, caller_budget):
     stage = options.get('stage')
     started = monotonic()
     attempts, reason, shift, longest, failures = 0, None, None, 0.0, []
@@ -1101,7 +1105,8 @@ async def _capture_with_retries(page, boundary, origin, window, unavailable, fai
             began = monotonic()
             failures = []
             image = await _capture_viewport_once(page, boundary, origin,
-                unavailable=lambda refused, moved: failures.append((refused, moved)), **options)
+                unavailable=lambda refused, moved: failures.append((refused, moved)),
+                caller_budget=caller_budget, **options)
             if image is not None and not failures:
                 return image
             attempts += 1
@@ -1133,7 +1138,7 @@ async def _capture_with_retries(page, boundary, origin, window, unavailable, fai
 async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/', allow_frames=False,
                                  owned_frames=None, owned_shadow_selector=None, owned_chrome=None, content_mask_selector=None,
                                  content_mask_anchor=None,
-                                 content_mask_requirements=(), stage=None):
+                                 content_mask_requirements=(), stage=None, caller_budget):
     """Return masked original PNG, or None when owned safety is unavailable.
 
     Authentication controls and unsupported rendering surfaces are hidden before
@@ -1454,8 +1459,9 @@ async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/
         await finish_cleanup(restore_capture())
         if result is not None and raster.mask_plan is not None:
             try:
-                async with component_timeout('Viewport image masking', 5):
-                    result = await raster.mask_png(result)
+                with bind_timeout_budget(caller_budget):
+                    async with component_timeout('Viewport image masking', 5):
+                        result = await raster.mask_png(result)
             except Exception:
                 result = reject('mask')
 

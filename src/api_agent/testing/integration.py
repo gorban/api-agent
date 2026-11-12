@@ -537,12 +537,23 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                     args.extend(selected)
                     coverage_directory = None
                     if config is not None and config.get('E2E_COVERAGE') is True:
-                        from .e2e_coverage import prepare
-                        from .runner import _production_sources
-                        sources = tuple(path for source_root in owner_roots
-                                        for path in _production_sources(context, Path(source_root).resolve()))
-                        coverage_directory = owner / 'artifacts/e2e-coverage' / uuid4().hex
-                        prepare(coverage_directory, sources, args, env)
+                        try:
+                            from .e2e_coverage import prepare
+                            from .runner import _production_sources
+                            sources = tuple(path for source_root in owner_roots
+                                            for path in _production_sources(context, Path(source_root).resolve()))
+                            coverage_directory = owner / 'artifacts/e2e-coverage' / uuid4().hex
+                            coverage_args, coverage_env = list(args), dict(env)
+                            flows = [{'graph_id': item.graph_id, 'definition_id': item.definition_id,
+                                      'compiled_plan_identity': getattr(item, 'compiled_plan_identity', None)}
+                                     for item in getattr(tool_plan, 'definitions', ())]
+                            prepare(coverage_directory, sources, coverage_args, coverage_env,
+                                selection=[identity.id for identity in selected.values()],
+                                parallel_jobs=parallel_jobs, e2e_reruns=0, flow_identities=flows)
+                            args, env = coverage_args, coverage_env
+                        except Exception:
+                            coverage_directory = None
+                            raw(repo, 'E2E diagnostic coverage preparation unavailable; test outcome unchanged.\n')
                     liveness_read = liveness_write = None
                     if os.name == 'posix':
                         liveness_read, liveness_write = os.pipe()
@@ -874,11 +885,16 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                             local_diagnostics.setdefault(identity.id, []).append(local)
                         finish(repo, identity, reports.get(identity.id, []), 'cancelled' if cancelled else 'error')
                 if coverage_directory is not None:
-                    from .e2e_coverage import finalize as finalize_coverage
-                    receipt = finalize_coverage(coverage_directory,
-                        selection=[identity.id for identity in selected.values()], parallel_jobs=parallel_jobs,
-                        e2e_reruns=0, complete=not cancelled and not infrastructure_failed)
-                    raw(repo, 'E2E diagnostic coverage: ' + receipt['report'] + '\n')
+                    try:
+                        from .e2e_coverage import finalize as finalize_coverage
+                        receipt = finalize_coverage(coverage_directory,
+                            selection=[identity.id for identity in selected.values()], parallel_jobs=parallel_jobs,
+                            e2e_reruns=0, complete=not cancelled and not infrastructure_failed,
+                            successful=not failed and all(_complete_report(reports.get(item.id, []))
+                                                          for item in selected.values()))
+                        raw(repo, 'E2E diagnostic coverage: ' + (receipt['report'] or receipt['status']) + '\n')
+                    except Exception:
+                        raw(repo, 'E2E diagnostic coverage report unavailable; test outcome unchanged.\n')
                 if cancelled:
                     break
     except BaseException as error:

@@ -1848,3 +1848,25 @@ def test_tui_forwards_resolved_opted_unit_environment(tmp_path):
             assert calls == [{'REPORT_PATH': 'from-cli'}]
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('selectors,diagnostic', [(['-missing'], 'Unknown or empty'),
+                                                   (['-skip'], 'No tests remain')])
+def test_invalid_startup_selection_stops_tui_before_resources(selectors, diagnostic):
+    from unittest.mock import AsyncMock, Mock
+    import threading
+
+    async def scenario():
+        test = Identity('base::a.py::test_one', 'base', 'a.py', 'a.py::test_one', {'skip'})
+        shown = []
+        screen = object()
+        app = SimpleNamespace(screen=screen, active_test_selectors=tuple(selectors), mode='integration',
+            session=SimpleNamespace(result=lambda: SimpleNamespace(values={'COLLECT_ONLY': False})),
+            discover_tests=AsyncMock(return_value=[test]), collection_delivery_allowed=AsyncMock(return_value=True),
+            show=lambda *args: shown.append(args), apply_unit_defaults=Mock(), show_selection=Mock(),
+            auto_start_pending=False)
+        await ApiAgentApp._collect_tests(app, threading.Event())
+        assert shown[-1][0] == 'error'
+        assert diagnostic in shown[-1][2]
+        app.show_selection.assert_not_called()
+    asyncio.run(scenario())

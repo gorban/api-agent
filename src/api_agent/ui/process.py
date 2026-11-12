@@ -98,7 +98,7 @@ class StudioProcesses:
     def __init__(self, *, ssl_context, timeout=15, cleanup_timeout=5,
                  log_callback=None, emissions=None):
         self.ssl_context = require_verified_context(ssl_context)
-        if (type(timeout) not in (int, float) or not 0 < timeout <= 60
+        if (type(timeout) not in (int, float) or not 0 < timeout <= 600
                 or type(cleanup_timeout) not in (int, float) or not 0 < cleanup_timeout <= 10):
             raise ValueError('Invalid Studio process timeout')
         self.timeout, self.cleanup_timeout = timeout, cleanup_timeout

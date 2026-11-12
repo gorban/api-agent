@@ -12,6 +12,7 @@ from api_agent.providers.loading import aload_provider
 from api_agent.runtime.tasks import offload
 from api_agent.providers.progress import report_timeout_sync
 from .suite_lock import CleanupLeaseOwner
+from .diagnostics import CredentialScrubber, format_exception
 
 
 def validate_prerequisite_event(event):
@@ -49,6 +50,13 @@ class SuitePrerequisiteProvider(CleanupLeaseOwner):
         with self._event_lock:
             self._events.append(event)
 
+    def _failure(self, error):
+        if self.output is not None:
+            diagnostic = CredentialScrubber(self.config)(format_exception(error, 'Suite prerequisite acquisition failed'))
+            diagnostic = ''.join(character if character.isprintable() or character in '\n\t'
+                                 else f'\\u{ord(character):04x}' for character in diagnostic)
+            self.output(diagnostic[:65536] + ('\n[diagnostic truncated]\n' if len(diagnostic) > 65536 else ''))
+
     @property
     def events(self):
         with self._event_lock:
@@ -64,7 +72,11 @@ class SuitePrerequisiteProvider(CleanupLeaseOwner):
         try:
             self.provider = await aload_provider(self.config['E2E_PREREQUISITE_PROVIDER'], self.config,
                 {'owner_root': self.context.owner_root, 'suite_directory': self.directory,
-                 'native_recovery': self.recovery, 'output': self.output, 'prerequisite_event': self._event}, kind='test_prerequisites')
+                 'native_recovery': self.recovery, 'output': self.output, 'prerequisite_event': self._event,
+                 'prerequisite_failure': self._failure}, kind='test_prerequisites')
+            # This owner has a suite-specific disposal budget; the generic
+            # provider's shorter default must not cut its cleanup wait short.
+            self.provider.timeout = self.cleanup_timeout
         except BaseException as error:
             self.failed_owners.extend(getattr(error, 'retained_owners', ()))
             raise
@@ -133,22 +145,23 @@ class SuitePrerequisiteProvider(CleanupLeaseOwner):
         if self.closed:
             return
         if self.loop is not None:
+            deadline = time.monotonic() + self.cleanup_timeout
             if workers_disposed or self.acknowledgement_future is not None:
                 if (self.acknowledgement_future is None or self.acknowledgement_future.done()
                         and self.acknowledgement_future.exception() is not None):
                     self.acknowledgement_future = asyncio.run_coroutine_threadsafe(self._acknowledge_workers(), self.loop)
                 try:
-                    self.acknowledgement_future.result(timeout=self.cleanup_timeout)
+                    self.acknowledgement_future.result(timeout=max(0, deadline - time.monotonic()))
                 except BaseException as error:
                     raise self._pending() from error
             if self.close_future is None or self.close_future.done() and self.close_future.exception() is not None:
                 self.close_future = asyncio.run_coroutine_threadsafe(self._dispose(), self.loop)
             try:
-                self.close_future.result(timeout=self.cleanup_timeout)
+                self.close_future.result(timeout=max(0, deadline - time.monotonic()))
             except BaseException as error:
                 raise self._pending() from error
             self.loop.call_soon_threadsafe(self.loop.stop)
-            self.thread.join(self.cleanup_timeout)
+            self.thread.join(max(0, deadline - time.monotonic()))
             if self.thread.is_alive():
                 raise self._pending()
             self.loop.close()
