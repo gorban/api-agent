@@ -253,7 +253,9 @@ def test_prepare_failure_preserves_test_launch_and_outcome(tmp_path, monkeypatch
 
     popen = subprocess.Popen
     def record_launch(args, **kwargs):
-        captured['launch_args'], captured['launch_env'] = list(args), dict(kwargs['env'])
+        # Process listing shares the patched module; record only the suite launch.
+        if list(args)[:1] != ['/bin/ps']:
+            captured['launch_args'], captured['launch_env'] = list(args), dict(kwargs['env'])
         return popen(args, **kwargs)
 
     monkeypatch.setattr(e2e_coverage, 'prepare', fail_prepare)
