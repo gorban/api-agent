@@ -312,9 +312,80 @@ def test_exception_preserves_cleanup_and_publication_duties(monkeypatch, cleanup
             config={'TUI_MODE':'e2e', 'E2E_RERUNS':2}, after_run=after)
     assert caught.value is error
     inspection.abort.assert_called_once()
-    assert len(published) == int(not cleanup_failure)
+    assert len(published) == 1
+    assert published[0].infrastructure_failed and published[0].exit_code == 1
+    assert [row.status for row in published[0].attempts] == ['failed']
     assert hasattr(error, 'confirmation_cleanup_errors') == cleanup_failure
     assert hasattr(error, 'confirmation_publication_error') == publication_failure
+
+
+def test_pending_prerequisite_cleanup_publishes_completed_attempts_and_retains_lease(monkeypatch):
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from test_suite_cleanup_lease import assert_competing_suite_blocked, assert_competing_suite_allowed
+
+    test = identity()
+    published = []
+    async def retry():
+        pass
+    pending = CleanupPendingError((), retry)
+    def execute(context, tests, **options):
+        options['before_run']()
+        outcome = TestResult(test, 'passed')
+        options['on_result'](outcome)
+        return integration.IntegrationRunResult(0, (outcome,), '')
+    def close(inspections=()):
+        raise pending
+
+    monkeypatch.setattr(integration, '_run_integration_tests', execute)
+    monkeypatch.setattr(integration, '_close_suite_prerequisites', close)
+    try:
+        with pytest.raises(CleanupPendingError) as caught:
+            integration.run_integration_tests(object(), [test], accepted=True,
+                config={'TUI_MODE': 'e2e', 'E2E_RERUNS': 2}, after_run=published.append)
+        assert caught.value is pending
+        assert len(published) == 1 and caught.value.execution is published[0]
+        assert published[0].exit_code == 1 and published[0].infrastructure_failed
+        assert [row.status for row in published[0].attempts] == ['passed']
+        assert_competing_suite_blocked()
+    finally:
+        asyncio.run(pending.retry())
+    assert_competing_suite_allowed()
+
+
+@pytest.mark.parametrize('boundary', ['cleanup', 'publication'])
+def test_secondary_pending_cleanup_retains_suite_lease(monkeypatch, boundary):
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from test_suite_cleanup_lease import assert_competing_suite_blocked, assert_competing_suite_allowed
+
+    test = identity()
+    primary = RuntimeError('worker unavailable')
+    async def retry():
+        pass
+    pending = CleanupPendingError((), retry)
+    inspection = Mock()
+    if boundary == 'cleanup':
+        inspection.abort.side_effect = pending
+    primary.inspections = (inspection,)
+    def execute(context, tests, **options):
+        options['before_run']()
+        options['on_result'](TestResult(test, 'failed'))
+        raise primary
+    def publish(result):
+        if boundary == 'publication':
+            raise pending
+
+    monkeypatch.setattr(integration, '_run_integration_tests', execute)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            integration.run_integration_tests(object(), [test], accepted=True,
+                config={'TUI_MODE': 'e2e', 'E2E_RERUNS': 2}, after_run=publish)
+        assert caught.value is primary
+        assert_competing_suite_blocked()
+    finally:
+        asyncio.run(pending.retry())
+    assert_competing_suite_allowed()
 
 
 @pytest.mark.parametrize('mode,attempt,reason', [('integration', 1, 'E2E mode'), ('e2e', 2, 'contiguous')])

@@ -139,14 +139,20 @@ def retain_suite_cleanup(owner):
 
 
 def _cleanup_receipts(error):
-    """Enumerate direct and attached duties, once each, including cycles."""
+    """Enumerate known attached duties, once each, including cycles."""
     from api_agent.providers.control import CleanupPendingError
     seen = set()
-    while error is not None and id(error) not in seen:
+    pending = [error]
+    while pending:
+        error = pending.pop()
+        if error is None or id(error) in seen:
+            continue
         seen.add(id(error))
         if isinstance(error, CleanupPendingError) and callable(error.retry):
             yield error
-        error = getattr(error, 'cleanup_pending', None)
+        pending.append(getattr(error, 'cleanup_pending', None))
+        pending.append(getattr(error, 'confirmation_publication_error', None))
+        pending.extend(getattr(error, 'confirmation_cleanup_errors', ()))
 
 
 def retain_cleanup_receipt(error):
