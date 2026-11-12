@@ -203,8 +203,11 @@ failure. Starting every declared service, including any image build, shares one 
 waiting then and release what it started; the launcher then fails the run with a
 timeout (or an interruption for a cancelled run) after exiting the services already
 started, and also rejects a provider that returns after the deadline. A provider that
-starts an engine container should make its owner process remove it when the launcher
-dies, for example by holding it from a child whose stdin closes with the launcher. A run that
+starts a container or other process should have an owner remove it when the launcher
+dies: `api_agent.testing.owned_service.OwnedService` runs a shell script that prints a
+ready line, waits for its standard input to close and cleans up from an EXIT trap, and
+it signals that script's process group when startup passes the deadline or is cancelled.
+A run that
 selects none of the marker's tests never imports the file. A partial selection reports
 coverage as informational, as for any selector.
 

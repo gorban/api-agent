@@ -4,7 +4,6 @@ from hashlib import sha256
 import importlib.util
 from pathlib import Path
 import tempfile
-from threading import Event, Timer
 import time
 
 from api_agent.config.process_settings import process_setting
@@ -51,13 +50,9 @@ def acquired_test_services(context, tests, environment, *, output=None, timeout=
     if timeout is None:
         timeout = process_setting('TEST_SERVICES_TIMEOUT_SECONDS')
     deadline = time.monotonic() + timeout
-    expired = Event()
-    timer = Timer(timeout, expired.set)
-    timer.daemon = True
-    timer.start()
 
     def cancelled():
-        return expired.is_set() or (cancel_event is not None and cancel_event.is_set())
+        return time.monotonic() >= deadline or (cancel_event is not None and cancel_event.is_set())
 
     def stopped(marker):
         if cancel_event is not None and cancel_event.is_set():
@@ -65,27 +60,23 @@ def acquired_test_services(context, tests, environment, *, output=None, timeout=
         return TimeoutError(f'Test services for {marker} did not start within {timeout:g} seconds')
 
     added = {}
-    try:
-        with ExitStack() as stack, tempfile.TemporaryDirectory(prefix='api-agent-services-') as directory:
-            for (owner, marker), (path, symbol) in selected.items():
-                services = {'owner_root': owner, 'environment': {**environment, **added}, 'directory': Path(directory),
-                            'output': output or _discard, 'deadline': deadline, 'cancelled': cancelled}
-                try:
-                    values = stack.enter_context(_load(path, symbol)(services))
-                except Exception as error:
-                    if cancelled():
-                        raise stopped(marker) from error
-                    raise
+    with ExitStack() as stack, tempfile.TemporaryDirectory(prefix='api-agent-services-') as directory:
+        for (owner, marker), (path, symbol) in selected.items():
+            services = {'owner_root': owner, 'environment': {**environment, **added}, 'directory': Path(directory),
+                        'output': output or _discard, 'deadline': deadline, 'cancelled': cancelled}
+            try:
+                values = stack.enter_context(_load(path, symbol)(services))
+            except Exception as error:
                 if cancelled():
-                    raise stopped(marker)
-                if (not isinstance(values, dict) or any(
-                        type(key) is not str or not key.isidentifier() or type(value) is not str
-                        or any(character in value for character in '\0\r\n') for key, value in values.items())):
-                    raise ValueError(f'Test services for {marker} must return identifier keys with single-line string values')
-                if set(values) & set(added):
-                    raise ValueError(f'Test services for {marker} redefine environment already provided')
-                added.update(values)
-            timer.cancel()
-            yield added
-    finally:
-        timer.cancel()
+                    raise stopped(marker) from error
+                raise
+            if cancelled():
+                raise stopped(marker)
+            if (not isinstance(values, dict) or any(
+                    type(key) is not str or not key.isidentifier() or type(value) is not str
+                    or any(character in value for character in '\0\r\n') for key, value in values.items())):
+                raise ValueError(f'Test services for {marker} must return identifier keys with single-line string values')
+            if set(values) & set(added):
+                raise ValueError(f'Test services for {marker} redefine environment already provided')
+            added.update(values)
+        yield added
