@@ -8,8 +8,6 @@ from uuid import uuid4
 from api_agent.config.declarations import ConfigSchema, FieldDeclaration, TYPES, UNSET, schema_from_dict
 from api_agent.config.options import parse_options
 from api_agent.config.resolve import _matches, convert_value, resolve_config
-from api_agent.runtime.resource_pack import load_selected_definition
-from api_agent.testing.workflow_selection import parse_catalog, selected_graphs
 from .declarations import Capture, instance_declaration, implementation_declaration
 from .operations import OPERATIONS_INTERFACE, check_use, declared_operations
 from .models import (SelectedTool, ToolCatalog, ToolPlan, ToolSelectionError,
@@ -47,6 +45,8 @@ def _artifact_sites(definitions):
 def discover(context, selection=None, *, definition_loader=None):
     """Capture available declarations separately from the selected graph closure."""
     operation = operation_selection(selection)
+    if definition_loader is None:
+        from api_agent.runtime.resource_pack import load_selected_definition
     load = definition_loader or load_selected_definition
     application_roots = {'base': getattr(context, 'workflow_base_root', None) or context.base_root,
                          'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
@@ -90,6 +90,7 @@ def discover(context, selection=None, *, definition_loader=None):
             except ValueError:
                 diagnostics['@application'] = 'Cannot admit selected application graph'
     if path is not None:
+        from api_agent.testing.workflow_selection import parse_catalog, selected_graphs
         declaration = parse_catalog(capture.toml(Path(path)), catalog_roots)
         profiles = dict(declaration.profiles)
         selected, selected_profiles = selected_graphs(declaration, operation)
@@ -327,8 +328,12 @@ def _binding_contract(declaration):
                  for value in (getattr(declaration, field.name),))
 
 
-def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None, dotenv=None, overrides=None, operation_intents=(), definition_loader=None):
-    """Compose declarative tool inputs before final explicit-input validation."""
+def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None, dotenv=None, overrides=None, operation_intents=(), definition_loader=None, local_infrastructure=True):
+    """Compose declarative tool inputs before final explicit-input validation.
+
+    ``local_infrastructure=False`` ignores each instance's ``[local]`` and ``[infrastructure]``
+    development declarations, so every binding must come from configuration.
+    """
     catalog = discover(context, selection, definition_loader=definition_loader)
     capture = Capture(catalog.roots, library_files=catalog.library_files,
                       package_sites=_artifact_sites(catalog.definitions.values()))
@@ -424,7 +429,7 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
         services, capabilities = data.get('services', {}), spec.get('services', {})
         if any(slot not in services for slot in capabilities):
             raise ToolSelectionError('Missing selected tool service capability binding')
-        pending, local = {}, data.get('local', {})
+        pending, local = {}, data.get('local', {}) if local_infrastructure else {}
         if local and local['slot'] in spec.get('inputs', {}):
             for controller, value in local.get('activation', {}).items():
                 field = base_schema.fields.get(controller)
@@ -437,7 +442,7 @@ def compose_tools(context, base_schema, *, selection=None, argv=(), environ=None
             declaration_path = capture.path(path, local['declaration'])
             capture.read(declaration_path)
             pending[local['slot']] = dict(local, declaration=declaration_path)
-        infrastructure = data.get('infrastructure', {})
+        infrastructure = data.get('infrastructure', {}) if local_infrastructure else {}
         if infrastructure:
             owner_root = capture.path(path, infrastructure['root'])
             declarations = tuple(capture.path(owner_root / '_owner', item) for item in infrastructure['declarations'])

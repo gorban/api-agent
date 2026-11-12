@@ -7,7 +7,7 @@ locations through the environment.
 """
 import argparse
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ipaddress
 import logging
 import os
@@ -44,6 +44,7 @@ class ProductionSettings:
     allowed_hosts: tuple[str, ...] = ('localhost', '127.0.0.1')
     permitted_browser_origins: tuple[str, ...] = ()
     client_address_policy: str = 'loopback'
+    environment: dict = field(default_factory=dict, repr=False)
 
 
 def _required(environ, name):
@@ -149,13 +150,13 @@ def _production_environment(environ):
     values = dict(environ)
     values['LLM_PROVIDER'] = _required(environ, 'API_AGENT_LLM_PROVIDER')
     values['UI_PROVIDER'] = ''
+    # The flow's declared tools are the only route to an API; none is selected here.
+    values['API_PROVIDER'] = ''
     for name in ('LLM_ALLOWED_MODELS', 'LLM_DEFAULT_MODEL', 'LLM_REASONING_EFFORT',
                  'LLM_MAX_OUTPUT_TOKENS'):
         production_name = 'API_AGENT_' + name
         if production_name in environ:
             values[name] = environ[production_name]
-    if environ.get('API_AGENT_API_PROVIDER'):
-        values['API_PROVIDER'] = environ['API_AGENT_API_PROVIDER']
     if values.get('TRACE_EXPORT_ENDPOINT') and not values.get('TRACE_PROVIDER'):
         values['TRACE_PROVIDER'] = (
             str(Path(__file__).parents[1] / 'telemetry/trace_adapters/otel/provider.py')
@@ -169,15 +170,32 @@ def _production_environment(environ):
     return values
 
 
-def _resolve_production_config(environ, owner_root):
-    """Resolve deployment configuration through the ordinary schema pipeline."""
+def _resolve_production_config(environ, owner_root, *, definition=None, plan=None):
+    """Resolve deployment configuration through the ordinary schema pipeline.
+
+    A definition's declared tools extend the schema with their bindings, exactly as in a
+    source run, except that their local development fallbacks are not honored.
+    """
     from api_agent.providers.loading import bootstrap_schema
     values = _production_environment(environ)
+    anchors = {'owner_root': owner_root, 'base_root': owner_root, 'pack_root': owner_root}
     schema = bootstrap_schema(load_shared_schema(), (), values, {}, owner_root=owner_root)
-    resolved = resolve_config(schema, environ=values, dotenv={},
-                              anchors={'owner_root': owner_root, 'base_root': owner_root,
-                                       'pack_root': owner_root},
-                              interactive=False)
+    tools = None
+    if definition is not None:
+        from api_agent.tooling.models import ToolSelectionError
+        from api_agent.tooling.selection import compose_tools
+        context = SimpleNamespace(base_root=owner_root, pack_root=owner_root, workflow_entry=plan,
+                                  anchors=anchors, external_pack=False)
+        try:
+            tools = compose_tools(context, schema, environ=values, definition_loader=lambda _: definition,
+                                  local_infrastructure=False)
+        except ToolSelectionError as error:
+            raise ProductionConfigurationError(f'invalid production tool declaration: {error}') from None
+        schema = tools.schema
+    resolved = resolve_config(schema, environ=values, dotenv={}, anchors=anchors, interactive=False)
+    if tools is not None:
+        from api_agent.config.tool_resolution import bind_operation_tools
+        resolved = bind_operation_tools(tools, resolved)
     if resolved.errors or resolved.missing:
         raise ProductionConfigurationError('; '.join(
             ('invalid production configuration', *resolved.errors,
@@ -190,7 +208,16 @@ def _resolve_production_config(environ, owner_root):
     return ConfigResult({**resolved.values, **fixed}, fields, resolved.positionals,
                         resolved.missing, resolved.errors, resolved.help_requested,
                         active_fields=resolved.active_fields,
-                        deferred_required_fields=resolved.deferred_required_fields)
+                        deferred_required_fields=resolved.deferred_required_fields,
+                        tool_plan=resolved.tool_plan)
+
+
+def compose_tool_configuration(settings, definition):
+    """Admit the plan's declared tools and bind them from configuration; ``None`` without any."""
+    if not getattr(definition, 'tool_usages', ()):
+        return None
+    return _resolve_production_config(settings.environment, settings.owner_root,
+                                      definition=definition, plan=settings.plan)
 
 
 def settings_from_environment(environ=None):
@@ -218,6 +245,7 @@ def settings_from_environment(environ=None):
         allowed_hosts=allowed_hosts,
         permitted_browser_origins=origins,
         client_address_policy=client_policy,
+        environment=dict(environ),
     )
 
 
@@ -232,9 +260,10 @@ class ProductionApplication:
         if self._started:
             return
         definition = load_artifact(self.settings.plan.read_bytes())
-        graph = selected_application(definition, config=self.settings.values)
+        config = (compose_tool_configuration(self.settings, definition) or self.settings.config
+                  or ConfigResult(dict(self.settings.values), {}, (), (), ()))
+        graph = selected_application(definition, config=config.values)
         context = SimpleNamespace(pack_id=self.settings.pack_id, owner_root=self.settings.owner_root)
-        config = self.settings.config or ConfigResult(dict(self.settings.values), {}, (), (), ())
         composed = compose_chat_runtime(
             context, config, callback_origin=self.settings.callback_origin, chat_origin=self.settings.chat_origin,
             tls_material=None, graph=graph, llm_factory=self.llm_factory, on_error=None,
@@ -271,6 +300,8 @@ class ProductionApplication:
                 except Exception as error:
                     from api_agent.providers.setup_transport import _diagnostic
                     logging.getLogger(__name__).error(_diagnostic(error, 'Runtime startup'))
+                    if isinstance(error, ProductionConfigurationError):
+                        logging.getLogger(__name__).error(str(error))
                     await send({'type': 'lifespan.startup.failed', 'message': 'runtime_start_failed'})
                     return
                 await send({'type': 'lifespan.startup.complete'})

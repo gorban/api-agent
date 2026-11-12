@@ -154,7 +154,6 @@ def test_environment_settings_are_explicit_loopback_and_secret_free(monkeypatch,
         'API_AGENT_LLM_PROVIDER': _provider(tmp_path),
         'API_AGENT_CHAT_ORIGIN': 'http://localhost:3000',
         'API_AGENT_SESSION_NONCE': 'n' * 32,
-        'API_AGENT_API_PROVIDER': _provider(tmp_path, 'api.py'),
         'API_AGENT_LLM_MAX_OUTPUT_TOKENS': '12',
         'API_AGENT_SHUTDOWN_TIMEOUT_SECONDS': '1.5',
     }
@@ -163,7 +162,7 @@ def test_environment_settings_are_explicit_loopback_and_secret_free(monkeypatch,
     assert settings.listen_host == '127.0.0.1'
     assert settings.listen_port == 8080
     assert settings.values['LLM_PROVIDER'] == env['API_AGENT_LLM_PROVIDER']
-    assert settings.values['API_PROVIDER'] == env['API_AGENT_API_PROVIDER']
+    assert settings.values['API_PROVIDER'] == ''
     assert settings.values['LLM_MAX_OUTPUT_TOKENS'] == 12
     assert settings.values['NO_STD_IN'] is True
     assert settings.values['DEBUG'] is False
@@ -172,8 +171,6 @@ def test_environment_settings_are_explicit_loopback_and_secret_free(monkeypatch,
     assert settings.values['TRACE_PROVIDER'] == ''
     assert settings.config.fields['LLM_PROVIDER'].source == 'environment'
     assert settings.config.fields['LLM_PROVIDER'].explicit is True
-    assert settings.config.fields['API_PROVIDER'].source == 'environment'
-    assert settings.config.fields['API_PROVIDER'].explicit is True
     env['API_AGENT_LLM_DEFAULT_MODEL'] = 'selected'
     assert settings_from_environment(env).values['LLM_DEFAULT_MODEL'] == 'selected'
     env['TRACE_EXPORT_ENDPOINT'] = 'http://127.0.0.1:1/v1/traces'
