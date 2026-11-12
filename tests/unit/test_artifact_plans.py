@@ -102,9 +102,21 @@ def test_freshness_operations_require_declared_wheels_to_exist(tmp_path):
 def test_freshness_check_detects_a_stale_plan(tmp_path):
     root, pack = _pack(tmp_path)
     plan, = regenerate_plans(root)
-    plan.write_bytes(plan.read_bytes() + b'\n')
+    plan.write_bytes(plan.read_bytes().replace(b'"graph_id":"artifact_qualification"', b'"graph_id":"stale"'))
 
-    with pytest.raises(ValueError, match='compiled plan is stale'):
+    with pytest.raises(ValueError, match='compiled plan is stale; regenerate'):
+        check_plans(root)
+
+
+@pytest.mark.parametrize('ending', [b'\n', b'\r\n'])
+def test_freshness_check_names_a_line_ending_added_after_compilation(tmp_path, ending):
+    root, pack = _pack(tmp_path)
+    plan, = regenerate_plans(root)
+    plan.write_bytes(plan.read_bytes() + ending)
+
+    with pytest.raises(ValueError, match=(
+            'compiled plan ends with a line ending the compiler does not write; exclude compiled plans '
+            'from end-of-file and line-ending conversion, then regenerate')):
         check_plans(root)
 
 

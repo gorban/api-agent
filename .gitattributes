@@ -13,3 +13,6 @@ src/api_agent/api_providers/graphql_mcp/licenses/third-party/iconv-lite/LICENSE 
 src/api_agent/api_providers/graphql_mcp/licenses/third-party/inherits/LICENSE whitespace=-blank-at-eof
 src/api_agent/api_providers/graphql_mcp/licenses/third-party/color-name/LICENSE whitespace=cr-at-eol,-blank-at-eof
 src/api_agent/api_providers/graphql_mcp/licenses/third-party/pkce-challenge/LICENSE whitespace=-blank-at-eol
+# Compiled plans are exact compiler bytes; never convert their line endings.
+**/.private_resources/plans/*.json -text
+qualification/*.json -text

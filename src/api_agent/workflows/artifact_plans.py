@@ -65,6 +65,16 @@ def _plan_files(root: Path):
         yield from sorted(path for path in directory.glob('*.json') if path.is_file())
 
 
+def _require_fresh(label, actual, compiled):
+    if actual == compiled:
+        return
+    regenerate = 'regenerate with python -m api_agent.workflows.artifact_plans regenerate --root .'
+    if actual.rstrip(b'\r\n') == compiled:
+        raise ValueError(f'{label}: compiled plan ends with a line ending the compiler does not write; '
+                         f'exclude compiled plans from end-of-file and line-ending conversion, then {regenerate}')
+    raise ValueError(f'{label}: compiled plan is stale; {regenerate}')
+
+
 def check_plans(root: Path) -> None:
     """Require every selected checked-in plan to equal a fresh deterministic compile."""
     root = Path(root).resolve()
@@ -83,17 +93,14 @@ def check_plans(root: Path) -> None:
             compiled = compile_selected_plan(context)
         except (ArtifactCompileError, OSError, ValueError) as error:
             raise ValueError(f'{plan.relative_to(root)}: cannot compile selected graph: {error}') from error
-        if plan.read_bytes() != compiled:
-            raise ValueError(f'{plan.relative_to(root)}: compiled plan is stale; regenerate with '
-                             'python -m api_agent.workflows.artifact_plans regenerate --root .')
+        _require_fresh(plan.relative_to(root), plan.read_bytes(), compiled)
     for plan in _plan_files(root):
         if plan not in selected:
             raise ValueError(f'{plan.relative_to(root)}: orphaned compiled plan is not selected by any '
                              'resource pack; delete it or restore its declaration')
     qualification = root / QUALIFICATION_PLAN
-    if qualification.is_file() and qualification.read_bytes() != _qualification_plan(root):
-        raise ValueError(f'{QUALIFICATION_PLAN}: compiled plan is stale; regenerate with '
-                         'python -m api_agent.workflows.artifact_plans regenerate --root .')
+    if qualification.is_file():
+        _require_fresh(QUALIFICATION_PLAN, qualification.read_bytes(), _qualification_plan(root))
 
 
 def regenerate_plans(root: Path) -> tuple[Path, ...]:
