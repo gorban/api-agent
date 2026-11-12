@@ -173,10 +173,40 @@ composition error such as a missing `GRAPH` timeout) is logged on stderr as a
 failure category and in-package stack locations, without exception text,
 before the ASGI server receives `runtime_start_failed`.
 
+The image ships the two public providers that need more than the Python
+runtime:
+
+- **Bedrock** (`LLM_PROVIDER`). The image installs the locked `bedrock` extra,
+  and the process helpers its worker uses live in the shipped
+  `api_agent.runtime.processes` module rather than the excluded `testing`
+  package. Select it by the installed file location, for example
+  `API_AGENT_LLM_PROVIDER=/opt/api-agent/venv/lib/python3.13/site-packages/api_agent/llm_providers/bedrock/factory.py:factory`.
+  Credentials come from `BEDROCK_SESSION_PROVIDER`. An explicitly empty value
+  uses the SDK's already-authenticated profile or credential chain. A session
+  adapter selected by file location can supply credentials instead. Set it
+  explicitly for a deployment, because the resolved default is the attended
+  sign-in adapter.
+- **GraphQL MCP** (`API_PROVIDER`). The image installs the locked `graphql`
+  extra, a pinned Node runtime (checksummed in `mise.lock`) at
+  `/opt/api-agent/bin/node`, and the provider's locked npm tree, prepared at
+  build time into `/opt/api-agent/plans/.api-agent/graphql-mcp`. The provider
+  reads its assets from `<owner root>/.api-agent/graphql-mcp`, and the owner
+  root defaults to the plan's directory, so a plan under `/opt/api-agent/plans`
+  starts without installing anything. A different `API_AGENT_OWNER_ROOT` has no
+  prepared assets and the provider fails closed at startup, because the image
+  has no `npm`. Select it by installed file location, for example
+  `.../api_agent/api_providers/graphql_mcp/factory.py:create`.
+
+`tests/unit/test_production_wheel.py` proves the wheel carries every file of
+both provider packages and the Node asset locks, and that an installed copy
+imports both packages without `testing`, `tui` or `ui`. It also checks that the
+image's `--extra` list covers each provider's declared requirements. The build
+fails if either provider's import closure reaches an excluded module. The image
+qualifier allows the `node_modules` layout only for the GraphQL MCP license
+notices and its prepared asset tree.
+
 Remaining gaps: the local-only proof does not establish collector delivery or
-production credentials. The image is qualified only with a deterministic LLM
-provider. The Bedrock provider cannot start in it: the image omits the
-`bedrock` extra and the `testing` package that its worker imports. The
-bundled GraphQL MCP API provider (`api_providers/`) is not in the runtime
-wheel either; `API_AGENT_API_PROVIDER` must select a provider installed in the
-image.
+production credentials. The qualifier still exercises only the deterministic
+LLM provider, so neither Bedrock nor GraphQL MCP has been run inside the image
+itself. The image's `graphql` extra also installs the Python `mcp` package,
+which no shipped code imports.
