@@ -25,15 +25,9 @@ def kill_owned_group(pid: int) -> None:
     except PermissionError:
         # Some POSIX kernels reject signaling a group containing only zombies.
         # The caller retains its child PID with WNOWAIT throughout this check.
-        snapshot = subprocess.run(
-            ["/bin/ps", "-axo", "pid=,pgid=,stat="], capture_output=True, text=True,
-            check=True, timeout=_GROUP_PROBE_SECONDS,
-        )
-        members = []
-        for line in snapshot.stdout.splitlines():
-            member, group, state = line.split()
-            if int(group) == pid:
-                members.append((int(member), state))
+        from api_agent.runtime.processes import list_processes
+        members = [(member, state) for member, group, state in
+                   list_processes('pid', 'pgid', 'state', timeout=_GROUP_PROBE_SECONDS) if group == pid]
         if not any(member == pid and state.startswith("Z") for member, state in members):
             raise
         if any(not state.startswith("Z") for _, state in members):

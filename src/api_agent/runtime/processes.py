@@ -16,28 +16,60 @@ _Popen = subprocess.Popen
 _TERMINAL_SETTLE_SECONDS = 5
 
 
-def _process_snapshot(*, timeout=5):
-    """Read one bounded system snapshot with explicit process identities."""
+# ``ps`` column keywords and how many whitespace-separated fields each prints.
+_PS_COLUMNS = {'pid': ('pid', 1), 'ppid': ('ppid', 1), 'pgid': ('pgid', 1),
+               'state': ('state', 1), 'started': ('lstart', 5)}
+_PS_NUMERIC = frozenset(('pid', 'ppid', 'pgid'))
+_PS_ENVIRONMENT = {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}
+
+
+def list_processes(*columns, pid=None, timeout=5):
+    """The one system ``ps`` listing: every process, or only ``pid``, as rows in ``columns`` order.
+
+    Columns are ``pid``, ``ppid``, ``pgid`` (integers), ``state`` and ``started``
+    (text). A ``pid`` that no longer exists lists no rows; any other ``ps`` failure or
+    unreadable output raises ``RuntimeError``.
+    """
+    argv = ['/bin/ps', '-A'] if pid is None else ['/bin/ps', '-p', str(pid)]
+    for column in columns:
+        argv += ['-o', _PS_COLUMNS[column][0] + '=']
     try:
-        report = subprocess.run(
-            ['/bin/ps', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid=', '-o', 'state='],
-            capture_output=True, text=True, check=True, timeout=timeout)
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        report = subprocess.run(argv, capture_output=True, text=True, check=False,
+                                timeout=timeout, env=_PS_ENVIRONMENT)
+    except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError('Cannot inspect owned processes: ps failed') from exc
+    if pid is not None and report.returncode == 1 and not report.stdout.strip() and not report.stderr.strip():
+        return ()
+    if report.returncode or (pid is not None and not report.stdout.strip()):
+        raise RuntimeError('Cannot inspect owned processes: ps failed')
+    width = sum(_PS_COLUMNS[column][1] for column in columns)
     rows = []
-    seen = set()
     for line in report.stdout.splitlines():
         fields = line.split()
         if not fields:
             continue
-        if len(fields) != 4 or any(not value.isascii() or not value.isdecimal() for value in fields[:3]):
+        if len(fields) != width:
             raise RuntimeError('Cannot inspect owned processes: invalid ps output')
-        pid, parent, group = map(int, fields[:3])
-        if pid in seen:
-            raise RuntimeError('Cannot inspect owned processes: duplicate ps process identity')
-        seen.add(pid)
-        rows.append((pid, parent, group, fields[3]))
+        row, offset = [], 0
+        for column in columns:
+            count = _PS_COLUMNS[column][1]
+            value = ' '.join(fields[offset:offset + count])
+            offset += count
+            if column in _PS_NUMERIC:
+                if not value.isascii() or not value.isdecimal():
+                    raise RuntimeError('Cannot inspect owned processes: invalid ps output')
+                value = int(value)
+            row.append(value)
+        rows.append(tuple(row))
     return tuple(rows)
+
+
+def _process_snapshot(*, timeout=5):
+    """Read one bounded system snapshot with explicit process identities."""
+    rows = list_processes('pid', 'ppid', 'pgid', 'state', timeout=timeout)
+    if len({row[0] for row in rows}) != len(rows):
+        raise RuntimeError('Cannot inspect owned processes: duplicate ps process identity')
+    return rows
 
 
 def _group_running(group, *, timeout=5):
