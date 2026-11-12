@@ -225,3 +225,14 @@ def test_the_separate_api_provider_selection_is_retired(declared):
     settings = production.settings_from_environment(declared.environment)
 
     assert settings.values['API_PROVIDER'] == ''
+
+
+def test_an_inadmissible_tool_declaration_is_a_configuration_error(declared, tmp_path, monkeypatch):
+    (tmp_path / 'broken').mkdir()
+    plan, wheel = declared_plan(tmp_path / 'broken', INSTANCE.replace('tool_impl.toml', 'absent.toml'), {
+        'aq_bindings/tool_impl.toml': IMPLEMENTATION, 'aq_bindings/factory.py': FACTORY})
+    monkeypatch.syspath_prepend(str(install(wheel, tmp_path / 'broken-site')))
+    declared.environment['API_AGENT_PRODUCTION_PLAN'] = str(plan)
+
+    with pytest.raises(production.ProductionConfigurationError, match='invalid production tool declaration'):
+        _start(declared.environment)

@@ -8,6 +8,7 @@ from uuid import uuid4
 from api_agent.config.declarations import ConfigSchema, FieldDeclaration, TYPES, UNSET, schema_from_dict
 from api_agent.config.options import parse_options
 from api_agent.config.resolve import _matches, convert_value, resolve_config
+from api_agent.runtime.resource_pack import load_selected_definition
 from .declarations import Capture, instance_declaration, implementation_declaration
 from .operations import OPERATIONS_INTERFACE, check_use, declared_operations
 from .models import (SelectedTool, ToolCatalog, ToolPlan, ToolSelectionError,
@@ -45,8 +46,6 @@ def _artifact_sites(definitions):
 def discover(context, selection=None, *, definition_loader=None):
     """Capture available declarations separately from the selected graph closure."""
     operation = operation_selection(selection)
-    if definition_loader is None:
-        from api_agent.runtime.resource_pack import load_selected_definition
     load = definition_loader or load_selected_definition
     application_roots = {'base': getattr(context, 'workflow_base_root', None) or context.base_root,
                          'pack': getattr(context, 'workflow_pack_root', None) or context.pack_root}
