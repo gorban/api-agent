@@ -137,14 +137,14 @@ explicit generation to update saved diagrams. Managed viewing can render a
 temporary view of current changes without modifying saved diagrams; when needed,
 it installs the pinned renderer and Java on first use. Both are lazy tools in the
 project `mise.toml`: Java and the optional MIT PlantUML JAR, whose lockfile checksum
-and the renderer's own pinned digest must match. `./launch.sh` opts into mise;
-`API_AGENT_MISE=1` gives the generator commands the same opt-in. Without it, set
-`API_AGENT_PLANTUML_JAR` and provide Java 17 or newer as `java` on PATH; there is no
-other download. To update saved diagrams:
+and the renderer's own pinned digest must match. `./launch.sh` and the generator's
+`prepare` and `generate` commands install them into the launcher's isolated mise
+state, so a source checkout needs only mise. An installed distribution has no
+project mise configuration: set `API_AGENT_PLANTUML_JAR` and provide Java 17 or
+newer as `java` on PATH; there is no other download. To update saved diagrams:
 
 ```sh
-API_AGENT_MISE=1 .venv/bin/python tools/workflow_views.py prepare
-API_AGENT_MISE=1 .venv/bin/python tools/workflow_views.py generate --root .
+.venv/bin/python tools/workflow_views.py generate --root .
 .venv/bin/python tools/workflow_views.py check --root .
 ```
 

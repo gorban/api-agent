@@ -1017,6 +1017,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-orphan", type=Path, action="append", default=[])
     args = parser.parse_args(argv)
     try:
+        if args.command == "prepare" or args.command == "generate" and args.api_agent_plantuml_jar is None:
+            from api_agent.runtime.mise_tools import adopt_launcher_state
+            adopt_launcher_state()
         if args.command == "prepare":
             print(prepare_renderer())
         elif args.command == "generate":
