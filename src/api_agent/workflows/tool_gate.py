@@ -103,8 +103,12 @@ class ToolGate:
             try:
                 await self.owner.validate(prepared)
             except ToolValidationError as error:
-                raise ToolCandidateRejected({'reason': 'Tool preflight rejected the candidate',
-                    'check': 'owner_preflight', 'detail': str(error)}) from None
+                facts = {'reason': 'Tool preflight rejected the candidate',
+                         'check': 'owner_preflight', 'category': error.category}
+                # The bundled query owner's detail is its category; do not say it twice.
+                if error.detail and error.detail != error.category:
+                    facts['detail'] = error.detail
+                raise ToolCandidateRejected(facts) from None
             verdict = relevance(prepared)
             if inspect.isawaitable(verdict):
                 verdict = await verdict

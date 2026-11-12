@@ -391,7 +391,8 @@ def test_typed_tool_validation_details_reach_the_next_planner():
         context=OperationContext('preflight-feedback')))
 
     feedback = json.loads(llm.requests[1].payload.messages[-1].content[0].text)['feedback']
-    assert feedback['validation'] == {'check': 'owner_preflight', 'detail': 'invalid query',
+    assert feedback['validation'] == {'check': 'owner_preflight', 'category': 'rejected',
+                                      'detail': 'invalid query',
                                       'reason': 'Tool preflight rejected the candidate'}
     assert result.payload.content[0].text == 'Hello'
     assert 'invoke' not in owner.events
