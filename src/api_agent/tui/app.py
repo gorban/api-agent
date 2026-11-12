@@ -17,6 +17,7 @@ from api_agent.tui.test_results import (literal_cell, progress_summary, ordered_
 from api_agent.tui.select import AdvancingSelect
 from api_agent.tui.editable_input import EditableInput
 from api_agent.tui.test_table import TestTable
+from api_agent.tui.config_table import ConfigTable
 from api_agent.tui.virtual_picker import PickerRows, VirtualPicker
 from api_agent.tui.search import GroupedUserFooter, SearchBar, SearchInput
 from api_agent.tui.clipboard import ClipboardError, copy_text
@@ -63,6 +64,10 @@ def display(value):
 
 def display_configuration(field, value):
     return Text('Configured', justify='right') if field.sensitive and value else display(value)
+
+
+def configuration_error_text(error):
+    return '\n'.join((str(error), *getattr(error, '__notes__', ())))
 
 
 class ButtonFooter(GroupedUserFooter):
@@ -384,8 +389,12 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                         yield Static('', id='suite-elapsed', markup=False)
             else:
                 yield Static(self.body, id="body", markup=False)
+            if self.kind in {'defaults', 'cleanup'}:
+                yield Static('', id='config-selection', markup=False)
             if self.rows or self.kind == "cleanup":
-                table_type = VirtualPicker if self.kind == 'tests' else TestTable if self.kind == 'test-results' else DataTable
+                table_type = (VirtualPicker if self.kind == 'tests' else
+                              ConfigTable if self.kind in {'defaults', 'cleanup'} else
+                              TestTable if self.kind == 'test-results' else DataTable)
                 if self.kind == 'test-results':
                     yield table_type(id="choices", cursor_type="row", sticky_timing=True)
                 else:
@@ -486,7 +495,12 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
                                         if (row.id if self.kind == 'tests' else row[0]) == self.selected_row), 0))
             if self.kind == "test-results":
                 table.results_completed = self.test_run_complete
+            if self.kind == "defaults":
+                from .config_viewport import restore_viewport
+                restore_viewport(table, getattr(self.app, 'configuration_viewport', None))
             table.focus()
+            if self.kind in {'defaults', 'cleanup'}:
+                self.update_config_selection()
         elif self.kind == "input":
             control = self.query_one('#config-value')
             if isinstance(control, Input):
@@ -526,16 +540,45 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         self.refresh_bindings()
 
     def on_resize(self, event):
+        viewport = None
+        if (self.kind in {'defaults', 'cleanup'} and self.query(DataTable)
+                and getattr(self, '_config_resize_ready', False)):
+            from .config_viewport import capture_viewport
+            viewport = capture_viewport(self.query_one(DataTable))
+        self._config_resize_ready = True
         if self.kind == "defaults":
             self.set_class(event.size.height < 18, "compact-review")
             snapshot = getattr(self, 'configuration_snapshot', None)
             self.body = self.app.configuration_review_text(
                 result=snapshot.execution if snapshot else None, snapshot=snapshot)
             self.query_one("#body", Static).update(self.body)
+            self.update_config_selection()
             self.call_after_refresh(self.query_one("#workbench-content", VerticalScroll).scroll_home,
                                     animate=False)
         if self.kind == "test-results":
             self.call_after_refresh(self.layout_test_results)
+        if viewport is not None:
+            from .config_viewport import restore_viewport
+            restore_viewport(self.query_one(DataTable), viewport)
+
+    def update_config_selection(self):
+        table = self.query_one(ConfigTable)
+        count = len(table.selected_row_keys) if table.selection_explicit else 0
+        self.query_one('#config-selection', Static).update(
+            f'Marked: {count} · Space mark · Shift+arrows range · Ctrl+A all · Esc clear')
+        heading = self.heading + (f' · {count} marked' if count and self.has_class('compact-review') else '')
+        self.query_one('#heading', Static).update(heading)
+        self.refresh_bindings()
+
+    def on_config_table_selection_changed(self):
+        if self.app.screen is self and self.kind in {'defaults', 'cleanup'}:
+            self.update_config_selection()
+
+    def config_selection(self):
+        if self.kind not in {'defaults', 'cleanup'} or not self.query(ConfigTable):
+            return None
+        table = self.query_one(ConfigTable)
+        return table.selected_row_keys if table.selection_explicit else None
 
     def refresh_suite_timer(self):
         run = self.app.test_run
@@ -715,9 +758,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if action == "close_view" and self.kind == "input":
             return False
         if action == "accept_default":
-            return self.kind == "defaults" and self.app.focused_default()
+            return self.kind == "defaults" and (self.config_selection() is not None or self.app.focused_default())
         if action == "unset_setting":
-            return self.kind == "defaults" and self.app.focused_setting() in self.config_saved
+            return self.kind == "defaults" and (self.config_selection() is not None or self.app.focused_setting() in self.config_saved)
         if action == "edit_setting":
             return self.kind == "defaults"
         if action == 'recheck_setup':
@@ -726,9 +769,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         if action == "setting_help":
             return self.selected_setting_help() is not None
         if action == 'copy_value':
-            return self.check_copy_action()
+            return self.config_selection() is not None or self.check_copy_action()
         if action == "delete_assignment":
-            return self.kind == "cleanup" and self.app.focused_cleanup_present()
+            return self.kind == "cleanup" and (self.config_selection() is not None or self.app.focused_cleanup_present())
         if action == "switch_target":
             return (self.kind in {"defaults", "input"}
                     or self.kind == "unavailable" and self.app.mode in {None, "unattended-auth"}) and len(self.app.session.target_paths) > 1
@@ -760,6 +803,9 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
             self.refresh_bindings()
 
     async def on_data_table_row_selected(self, event):
+        if self.config_selection() is not None:
+            event.data_table.action_mark_cursor()
+            return
         if self.kind == 'defaults':
             if self.app.focused_default() and self.app.focused_setting() not in self.config_saved:
                 await self.app.accept_default()
@@ -803,6 +849,11 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         await self.app.close_view()
 
     def action_delete_assignment(self):
+        names = self.config_selection()
+        if names is not None:
+            self.app.push_screen(DeleteDialog(f'{len(names)} selected settings'),
+                lambda yes: self.app.apply_config_action('delete', names) if yes else None)
+            return
         if self.app.focused_cleanup_present():
             table = self.query_one(DataTable)
             name = str(table.get_row_at(table.cursor_row)[1])
@@ -844,6 +895,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         table = self.query_one(DataTable)
         if not table.row_count:
             return None
+        if table.ordered_rows[table.cursor_row].key.value in getattr(self, 'config_masked_names', ()):
+            return None
         cells = table.get_row_at(table.cursor_row)
         if not str(cells[-1]) or str(cells[-1]) == "Not provided":
             return None
@@ -882,6 +935,16 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         return None
 
     async def action_copy_value(self):
+        names = self.config_selection()
+        if names is not None:
+            try:
+                plan = self.app.config_action_plan('copy', names)
+                self.app.report_config_action('copy', plan)
+                if plan.copy_text is not None:
+                    await self._copy_with_feedback(plan.copy_text, lambda: None)
+            except Exception as error:
+                self.query_one('#error', Static).update(configuration_error_text(error))
+            return
         value, selected = self.copy_target()
         if value is None:
             return
@@ -900,12 +963,16 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
         return self.get_selected_text()
 
     def action_unset_setting(self):
+        names = self.config_selection()
+        if names is not None:
+            self.app.apply_config_action('unset', names)
+            return
         try:
             name = self.app.focused_setting()
             self.app.session.unset_saved(name)
             self.app.show_configuration()
         except Exception as error:
-            self.query_one("#error", Static).update(str(error))
+            self.query_one("#error", Static).update(configuration_error_text(error))
 
     def action_failure_up(self):
         self.query_one(VerticalScroll).scroll_up(animate=False)
@@ -946,6 +1013,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     #identity { height: auto; color: $text-muted; margin-bottom: 1; }
     #heading { text-style: bold; margin-bottom: 1; }
     #body { height: auto; margin-bottom: 1; }
+    #config-selection { height: 1; }
+    .compact-review #config-selection { display: none; }
     #config-description { height: auto; margin: 1 0; }
     #unit-summary { height: 1fr; min-height: 6; margin-bottom: 1; }
     #live-progress { height: auto; }
@@ -1088,6 +1157,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.screen.query_one("#dotenv-targets", Static).update(self.target_summary())
 
     def show(self, kind, title, text="", actions=(), rows=(), *, selected_row=None, configuration_error="", full_labels=None):
+        if kind not in {'defaults', 'input'}:
+            self.configuration_viewport = None
         if kind == 'tests' and full_labels is None and self.selection is not None:
             full_labels = {row.id: row.label for row in self.selection.groups()}
         screen = WorkbenchScreen(kind, title, text, actions, rows, selected_row=selected_row,
@@ -1304,6 +1375,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                   (("setup", "View authentication setup"), ("menu", "Main menu")))
 
     def show_configuration(self, *, selected_row=None):
+        if isinstance(self.screen, WorkbenchScreen) and self.screen.kind == "defaults":
+            from .config_viewport import capture_viewport
+            self.configuration_viewport = capture_viewport(self.screen.query_one(DataTable))
+        viewport = getattr(self, 'configuration_viewport', None)
+        if selected_row is not None and viewport is not None and selected_row != viewport.keys[viewport.index]:
+            self.configuration_viewport = None
         if selected_row is None and isinstance(self.screen, WorkbenchScreen):
             if self.screen.kind == "defaults":
                 selected_row = self.focused_setting()
@@ -1422,6 +1499,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def apply_configuration_snapshot(self, screen, snapshot):
         execution, result = snapshot.execution, snapshot.review
         screen.configuration_snapshot = snapshot
+        screen.config_masked_names = {name for name, resolved in result.fields.items()
+                                      if snapshot.schema.fields[name].sensitive and resolved.value}
         screen.query_one("#body", Static).update(self.configuration_review_text(result=execution, snapshot=snapshot))
         screen.query_one("#error", Static).update(self.configuration_review_blocker(result=execution))
         rows = self.configuration_rows(review=result, snapshot=snapshot)
@@ -1431,14 +1510,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         table = screen.query_one(DataTable)
         names = [row.key.value for row in table.ordered_rows]
         if names != [name for name, _ in rows]:
-            cursor = table.cursor_row
-            selected = names[cursor] if names else None
+            from .config_viewport import capture_viewport, restore_viewport
+            viewport = capture_viewport(table)
             table.clear()
             for name, cells in rows:
                 table.add_row(*(literal_cell(cell) for cell in cells), key=name)
-            index = next((i for i, (name, _) in enumerate(rows) if name == selected),
-                         min(cursor, len(rows) - 1))
-            table.move_cursor(row=index)
+            restore_viewport(table, viewport)
         saved, defaults = set(), set()
         for row in table.ordered_rows:
             name = row.key.value
@@ -1460,11 +1537,60 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         table = self.screen.query_one(DataTable)
         return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value if table.row_count else None
 
+    def config_action_plan(self, action, names):
+        from .config_bulk import BulkPlan, plan_cleanup, plan_review
+        screen = self.screen
+        if screen.kind == 'defaults':
+            snapshot = self.session.review_snapshot()
+            visible = {name for name, _ in self.configuration_rows(review=snapshot.review, snapshot=snapshot)}
+            visible_names = tuple(name for name in names if name in visible)
+            plan = plan_review(snapshot, visible_names, action)
+            skipped = set(plan.skipped) | (set(names) - visible)
+            # Preserve the original multi-row clipboard format when hidden rows
+            # disappear during conditional discovery.
+            if action == 'copy' and len(names) > 1 and len(visible_names) == 1 and plan.names:
+                plan = BulkPlan(plan.names, plan.skipped, f'{plan.names[0]}={plan.copy_text}')
+            return BulkPlan(plan.names, tuple(name for name in names if name in skipped), plan.copy_text)
+        rows = self.session.cleanup_rows(retained=self.cleanup_names)
+        return plan_cleanup(rows, names, action, membership=self.cleanup_names)
+
+    def report_config_action(self, action, plan):
+        verbs = {'accept': 'Accepted', 'unset': 'Unset', 'delete': 'Deleted', 'copy': 'Copyable'}
+        message = f'{verbs[action]}: {len(plan.names)} setting(s).'
+        if plan.skipped:
+            message += ' Skipped unavailable or ineligible settings: ' + ', '.join(plan.skipped) + '.'
+        self.screen.query_one('#error', Static).update(message)
+
+    def apply_config_action(self, action, names):
+        screen = self.screen
+        refresher = getattr(screen, 'configuration_refresher', None)
+        if refresher is not None:
+            refresher.invalidate()
+        try:
+            plan = self.config_action_plan(action, names)
+            if plan.names:
+                operation = {'accept': self.session.save_defaults,
+                             'unset': self.session.unset_saved_many,
+                             'delete': self.session.delete_keys}[action]
+                operation(plan.names)
+                self.operation_status = 0
+                if screen.kind == 'defaults':
+                    self.refresh_configuration_rows(screen)
+                else:
+                    self.cleanup_last_deleted = plan.names[-1]
+                    self.apply_cleanup_rows(screen, self.session.cleanup_rows(retained=self.cleanup_names))
+            self.report_config_action(action, plan)
+        except Exception as error:
+            screen.query_one('#error', Static).update(configuration_error_text(error))
+
     def focused_default(self):
         name = self.focused_setting()
         return name in self.screen.config_defaults
 
     async def accept_default(self):
+        if self.screen.kind == 'defaults' and self.screen.config_selection() is not None:
+            self.apply_config_action('accept', self.screen.config_selection())
+            return
         if self.screen.kind != "defaults" or not self.focused_default():
             return
         try:
@@ -1476,7 +1602,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 return
             self.show_configuration()
         except Exception as error:
-            self.screen.query_one("#error", Static).update(str(error))
+            self.screen.query_one("#error", Static).update(configuration_error_text(error))
 
     def setting_description(self):
         from api_agent.config.resolve import _matches
@@ -1495,6 +1621,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
     def edit_setting(self):
         if self.screen.kind != "defaults":
             return
+        from .config_viewport import capture_viewport
+        self.configuration_viewport = capture_viewport(self.screen.query_one(DataTable))
         self.prompt_name = self.focused_setting()
         if not self.prompt_name:
             return
@@ -2536,7 +2664,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         rows = [(row.name, ("✓", row.name, display_configuration(row.field, row.value) if row.resolved else "Inactive / unset", row.source if row.resolved else "")) for row in saved]
         location = "all agent / resource pack .env files" if self.context.external_pack else "agent .env file"
         self.show("cleanup", "Clear .env configuration",
-                  f"Select a row and delete it (with confirmation) from {location}.", rows=rows)
+                  f"Select rows and delete them (with confirmation) from {location}.", rows=rows)
+        self.screen.config_masked_names = {row.name for row in saved
+                                           if row.field.sensitive and row.value}
 
     def focused_cleanup_present(self):
         if self.screen.kind != "cleanup":
@@ -2628,6 +2758,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         # Declaration metadata belongs to the same display snapshot as values;
         # the fork must not replace the live session's execution schema.
         screen.cleanup_fields = {row.name: row.field for row in cleanup_rows}
+        screen.config_masked_names = {row.name for row in cleanup_rows
+                                      if row.field.sensitive and row.value}
         table = screen.query_one(DataTable)
         rows = [(row.name, ("✓" if row.present else "", row.name,
                  display_configuration(row.field, row.value) if row.resolved else "Inactive / unset",
@@ -2639,15 +2771,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if current == [tuple(literal_cell(cell) for cell in cells) for _, cells in rows]:
             screen.refresh_bindings()
             return
-        cursor = table.cursor_row
-        selected = current[cursor][1] if current else None
+        from .config_viewport import capture_viewport, restore_viewport
+        viewport = capture_viewport(table)
         table.clear()
         for key, cells in rows:
             table.add_row(*(literal_cell(cell) for cell in cells), key=key)
-        if rows:
-            row_index = next((i for i, (key, _) in enumerate(rows) if key == selected),
-                             min(cursor, len(rows) - 1))
-            table.move_cursor(row=row_index)
+        restore_viewport(table, viewport)
         screen.refresh_bindings()
 
     def delete_assignment(self, name):
@@ -2657,7 +2786,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.operation_status = 0
             self.refresh_rows()
         except Exception as error:
-            self.screen.query_one("#error", Static).update(str(error))
+            self.screen.query_one("#error", Static).update(configuration_error_text(error))
 
     def check_operation_start(self):
         from api_agent.auth.extensions import validate_operation

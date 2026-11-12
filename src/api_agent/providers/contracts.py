@@ -222,6 +222,7 @@ class AccessProvider(Protocol):
 
 
 OPERATION_METHODS = {
+    "test_prerequisites": {"prepare": "aprepare", "dispose_workers": "adispose_workers"},
     "api": {"invoke": "ainvoke"},
     "access": {"describe": "adescribe", "usage": "aread_usage"},
     "llm": {"describe": "adescribe", "complete": "acomplete", "stream": "astream", "usage": "aread_usage"},

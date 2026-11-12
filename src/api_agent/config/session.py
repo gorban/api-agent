@@ -210,6 +210,23 @@ class ConfigSession:
             self._restore(target, previous)
             raise
 
+    def _batch_edit(self, paths, edit):
+        """Roll back every touched file, including the write that raised."""
+        paths = tuple(dict.fromkeys(paths))
+        for path in paths:
+            if path.is_symlink():
+                raise ValueError(f'Refusing to edit symlink: {path}')
+        previous = {path: path.read_bytes() if path.exists() else None for path in paths}
+        try:
+            edit()
+        except BaseException as error:
+            for path in reversed(paths):
+                try:
+                    self._restore(path, previous[path])
+                except BaseException as rollback_error:
+                    error.add_note(f'Could not restore {path}: {rollback_error}')
+            raise
+
     @staticmethod
     def _auth_object(path, *, chosen_manager=None, registry=None):
         raw = read_dotenv(path).get('UNATTENDED_AUTH')
@@ -574,7 +591,13 @@ class ConfigSession:
                 raise ConfigError(f'{name}: default cannot be persisted through acknowledgement')
             values[name] = self.external_value(name, candidates[name].value)
         if values:
-            self._persist(values)
+            paths = [self.dotenv_path, *(path for path in self.target_paths
+                      if path != self.dotenv_path and set(values) & DotenvEditor(path).keys())]
+            def edit():
+                DotenvEditor(self.dotenv_path).update(values)
+                for path in paths[1:]:
+                    DotenvEditor(path).delete(values)
+            self._batch_edit(paths, edit)
             for name in values:
                 self._choices.pop(name, None)
         return self.result()
@@ -588,20 +611,35 @@ class ConfigSession:
                      if name in DotenvEditor(path).keys()), None)
 
     def unset_saved(self, name):
-        if name == 'UNATTENDED_AUTH':
+        return self.unset_saved_many([name])
+
+    def unset_saved_many(self, names):
+        names = tuple(dict.fromkeys(names))
+        if 'UNATTENDED_AUTH' in names:
             raise ConfigError('UNATTENDED_AUTH is managed by authentication setup')
-        path = self.saved_path(name)
-        if path is not None:
-            DotenvEditor(path).delete([name])
-            self._choices.pop(name, None)
+        grouped = {}
+        for name in names:
+            path = self.saved_path(name)
+            if path is not None:
+                grouped.setdefault(path, []).append(name)
+        def edit():
+            for path, keys in grouped.items():
+                DotenvEditor(path).delete(keys)
+        self._batch_edit(grouped, edit)
+        for keys in grouped.values():
+            for name in keys:
+                self._choices.pop(name, None)
         return self.result()
 
     def delete_keys(self, names):
-        names = tuple(names)
+        names = tuple(dict.fromkeys(names))
         if 'UNATTENDED_AUTH' in names:
             raise ConfigError('UNATTENDED_AUTH is managed by authentication setup')
-        for path in self.target_paths:
-            DotenvEditor(path).delete(names)
+        paths = [path for path in self.target_paths if set(names) & DotenvEditor(path).keys()]
+        def edit():
+            for path in paths:
+                DotenvEditor(path).delete(names)
+        self._batch_edit(paths, edit)
         for name in names:
             self._choices.pop(name, None)
         return self.result()
