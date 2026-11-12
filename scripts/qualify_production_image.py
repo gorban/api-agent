@@ -35,6 +35,13 @@ BASE_STDLIB_PATH_ALLOWLIST = (
     'usr/local/lib/python*/idlelib/stackviewer.py',
     'usr/local/lib/python*/ensurepip/*',
 )
+# The built-in GraphQL MCP provider's license notices and its prepared Node
+# assets are shipped deliberately; their npm layout would otherwise match
+# the forbidden names above.
+PROVIDER_ASSET_PATH_ALLOWLIST = (
+    'opt/api-agent/venv/lib/python*/site-packages/api_agent/api_providers/graphql_mcp/licenses/*',
+    'opt/api-agent/plans/.api-agent/graphql-mcp/*',
+)
 
 
 def forbidden_members(archive):
@@ -44,7 +51,8 @@ def forbidden_members(archive):
 
 def _allow_base_stdlib_path(path):
     from fnmatch import fnmatch
-    return any(fnmatch(path, pattern) for pattern in BASE_STDLIB_PATH_ALLOWLIST)
+    return any(fnmatch(path, pattern)
+               for pattern in BASE_STDLIB_PATH_ALLOWLIST + PROVIDER_ASSET_PATH_ALLOWLIST)
 
 
 def _forbidden_archive(body, label):
@@ -360,11 +368,13 @@ def qualify(root, evidence, *, tag='api-agent-runtime'):
             _run('docker', 'rm', '--force', container)
     flattened_hits = forbidden_members(evidence / 'flattened.tar')
     report = {'image': digest, 'commit': commit, 'layers': layer_hits, 'flattened': flattened_hits,
-              'base_stdlib_path_allowlist': BASE_STDLIB_PATH_ALLOWLIST}
+              'base_stdlib_path_allowlist': BASE_STDLIB_PATH_ALLOWLIST,
+              'provider_asset_path_allowlist': PROVIDER_ASSET_PATH_ALLOWLIST}
     (evidence / 'forbidden-content.json').write_text(json.dumps(report, sort_keys=True, indent=2) + '\n')
     (evidence / 'inspection-policy.json').write_text(json.dumps({
         'nested_archives': 'tar, wheel, and zip contents are recursively inspected',
         'base_stdlib_path_allowlist': BASE_STDLIB_PATH_ALLOWLIST,
+        'provider_asset_path_allowlist': PROVIDER_ASSET_PATH_ALLOWLIST,
         'base_stdlib_path_allowlist_reason': (
             'The digest-pinned Python base image supplies these paths; the production '
             'Dockerfile does not modify /usr/local/lib/python*.'),

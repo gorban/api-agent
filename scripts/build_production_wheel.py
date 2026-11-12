@@ -10,8 +10,11 @@ import tomllib
 
 
 _EXCLUDED_DIRECTORIES = frozenset({
-    '__pycache__', 'api_providers', 'testing', 'tests', 'tui', 'ui',
+    '__pycache__', 'testing', 'tests', 'tui', 'ui',
 })
+# Provider packages the image selects by file location at runtime, so no
+# import from the entrypoint reaches them.
+_PROVIDER_PACKAGES = ('llm_providers/bedrock', 'api_providers/graphql_mcp')
 _EXCLUDED_MODULE_FILES = frozenset({
     # Source-display and interactive-flow modules.  The import-closure tests
     # cover the entrypoint's import-time, startup, and request paths.
@@ -103,14 +106,9 @@ def _local_imports(module, source):
     return imports
 
 
-def production_import_closure(root):
-    """Return the local import-time closure of the production entrypoint.
-
-    Deferred startup and request imports are exercised independently by the
-    production-wheel test, which snapshots the actual interpreter module set.
-    """
+def _closure(root, pending):
     package_root = Path(root).resolve() / 'src' / 'api_agent'
-    pending, visited = ['api_agent.runtime.production'], set()
+    pending, visited = list(pending), set()
     while pending:
         module = pending.pop()
         if module in visited:
@@ -123,6 +121,24 @@ def production_import_closure(root):
             if imported not in visited and _module_source(package_root.parent, imported):
                 pending.append(imported)
     return frozenset(visited)
+
+
+def production_import_closure(root):
+    """Return the local import-time closure of the production entrypoint.
+
+    Deferred startup and request imports are exercised independently by the
+    production-wheel test, which snapshots the actual interpreter module set.
+    """
+    return _closure(root, ['api_agent.runtime.production'])
+
+
+def provider_import_closure(root):
+    """Return the local import-time closure of every module in the shipped provider packages."""
+    package = Path(root).resolve() / 'src' / 'api_agent'
+    return _closure(root, (
+        '.'.join(('api_agent', *source.relative_to(package).with_suffix('').parts))
+        for provider in _PROVIDER_PACKAGES
+        for source in sorted((package / provider).glob('*.py'))))
 
 
 def _ignore(directory, names):
@@ -140,7 +156,7 @@ def build(root, output):
     """Return one deterministic runtime wheel in ``output`` without dev assets."""
     root, output = Path(root).resolve(), Path(output).resolve()
     excluded_files = {'api_agent.' + module[:-3].replace('/', '.') for module in _EXCLUDED_MODULE_FILES}
-    retained = {module for module in production_import_closure(root)
+    retained = {module for module in production_import_closure(root) | provider_import_closure(root)
                 if module in excluded_files or _EXCLUDED_DIRECTORIES & set(module.split('.'))}
     if retained:
         raise RuntimeError(f'production import closure requires excluded modules: {sorted(retained)}')

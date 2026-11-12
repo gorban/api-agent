@@ -4,26 +4,32 @@ FROM python@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024
 
 COPY --from=uv /uv /uvx /bin/
 WORKDIR /build
-COPY pyproject.toml uv.lock LICENSE ./
-COPY scripts/build_production_wheel.py scripts/build_production_wheel.py
+COPY pyproject.toml uv.lock LICENSE mise.lock ./
+COPY scripts/build_production_wheel.py scripts/install_node_runtime.py scripts/
 COPY src src
 COPY cfg cfg
 COPY workflows/contracts workflows/contracts
 COPY demo/simple/functions.py demo/simple/functions.py
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra tracing --no-editable --no-install-project && \
+    uv sync --frozen --no-dev --extra tracing --extra bedrock --extra graphql --no-editable --no-install-project && \
     python scripts/build_production_wheel.py && \
     uv pip install --python .venv/bin/python --no-deps dist-production/api_agent_runtime-*.whl && \
+    python scripts/install_node_runtime.py mise.lock /opt/node && \
+    PATH=/opt/node/bin:$PATH .venv/bin/python -c "import asyncio,sys; from api_agent.api_providers.graphql_mcp import prepare_assets; asyncio.run(prepare_assets(sys.argv[1], npm='/opt/node/bin/npm'))" /build/owner/.api-agent/graphql-mcp && \
     find .venv -type d \( -name tests -o -name testing -o -name _tests -o -name __pycache__ \) -prune -exec rm -rf {} + && \
     find .venv -type f \( -name 'test_*.py' -o -name 'test_*.pyi' -o -name '*_support.pyi' -o -name '*.svg' \) -delete
 
 FROM python@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024f39 AS runtime
-ENV PATH=/opt/api-agent/venv/bin:$PATH \
+ENV PATH=/opt/api-agent/venv/bin:/opt/api-agent/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     API_AGENT_STATE_DIR=/var/lib/api-agent
 WORKDIR /opt/api-agent
 COPY --from=compile /build/.venv /opt/api-agent/venv
+COPY --from=compile /opt/node/bin/node /opt/api-agent/bin/node
+# The built-in GraphQL MCP provider reads its prepared Node assets from
+# <owner root>/.api-agent/graphql-mcp; the owner root defaults to the plan's directory.
+COPY --from=compile /build/owner/.api-agent /opt/api-agent/plans/.api-agent
 COPY LICENSE /opt/api-agent/LICENSE
 COPY demo/.private_resources/plans/useful_api_demo.json /opt/api-agent/plans/useful_api_demo.json
 RUN groupadd --gid 10001 apiagent && \
