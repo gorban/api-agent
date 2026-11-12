@@ -44,6 +44,8 @@ _MAX_JAR = 30_000_000
 _MAX_RECORDS = 1_000
 _MAX_LABEL = 256
 _MAX_REFERENCE = 65_536
+# Reaping the exited renderer after its group is stopped; matches the owned-group probe allowance.
+_CLEANUP_SECONDS = 5
 _ALLOWED_TAGS = frozenset("svg g a rect ellipse circle path line polygon polyline text tspan defs linearGradient stop title desc clipPath".split())
 _ALLOWED_ATTRS = frozenset("width height viewBox version xmlns xmlns:xlink id class style fill fill-opacity stroke stroke-width stroke-dasharray stroke-linecap stroke-linejoin x y x1 x2 y1 y2 cx cy rx ry r d points transform font-family font-size font-weight text-anchor text-decoration dominant-baseline opacity offset gradientUnits target href preserveAspectRatio role aria-label contentStyleType data-diagram-type data-entity-1 data-entity-2 data-link-type data-qualified-name data-source-line lengthAdjust textLength zoomAndPan type actuate show title".split())
 _STYLE_COLORS = frozenset({"none", "transparent", "currentcolor"})
@@ -824,7 +826,12 @@ def _read_regular_jar(path: Path) -> bytes:
 
 
 def _drain(process: subprocess.Popen[bytes], *, timeout: float) -> tuple[bytes, bytes]:
-    """Drain both pipes with one wall deadline and a finite combined byte cap."""
+    """Drain both pipes with one wall deadline and a finite combined byte cap.
+
+    The deadline covers only the exchange and the leader's exit. Disposal then
+    has its own allowance and cannot turn a result that finished in time into a
+    timeout; a result that finishes after the deadline is still a timeout.
+    """
     deadline = time.monotonic() + timeout
     buffers: dict[object, bytearray] = {}
     selector = selectors.DefaultSelector()
@@ -856,7 +863,7 @@ def _drain(process: subprocess.Popen[bytes], *, timeout: float) -> tuple[bytes, 
         # Keep the exited leader unreaped until its entire process group has
         # been stopped, including descendants that closed our pipes early.
         kill_owned_group(process.pid)
-        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        process.wait(timeout=_CLEANUP_SECONDS)
     except BaseException:
         if process.returncode is None:
             try:
@@ -873,10 +880,6 @@ def _drain(process: subprocess.Popen[bytes], *, timeout: float) -> tuple[bytes, 
         selector.close()
         for pipe in buffers:
             pipe.close()
-    # Disposal may take its bounded verification allowance after execution's
-    # budget expires, but that cannot make a late result admissible.
-    if time.monotonic() >= deadline:
-        raise subprocess.TimeoutExpired(process.args, timeout)
     if process.returncode:
         raise RenderError("renderer failed")
     return bytes(buffers[process.stdout]), bytes(buffers[process.stderr])
