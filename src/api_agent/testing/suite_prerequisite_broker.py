@@ -292,7 +292,8 @@ class SuitePrerequisiteBroker:
                 self._report_failure(error)
             self._emit('error', started, count=1)
             try:
-                sock.sendall(_encode({'status': 'error'}))
+                # The class name names the failure without its content-bearing message.
+                sock.sendall(_encode({'status': 'error', 'error': type(error).__qualname__}))
             except OSError:
                 pass
         finally:
@@ -419,7 +420,9 @@ def borrow_prerequisite(descriptor, handler, request, *, timeout):
         result = _read(sock, deadline=deadline)
         if (set(result) != {'status', 'lease_id', 'value'} or result['status'] != 'ready'
                 or type(result['lease_id']) is not str or type(result['value']) is not dict):
-            raise RuntimeError('prerequisite acquisition failed')
+            kind = result.get('error')
+            raise RuntimeError('prerequisite acquisition failed' + (
+                f': {kind}' if type(kind) is str and re.fullmatch(r'[A-Za-z_][\w.]{0,127}', kind) else ''))
         return PrerequisiteLease(sock, result['lease_id'], result['value'])
     except BaseException:
         sock.close()

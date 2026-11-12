@@ -128,6 +128,27 @@ class FailingHandler(Handler):
         return hashlib.sha256(request['account_scope'].encode()).hexdigest(), lambda: FailingOwner(self.starts, self.stops)
 
 
+class OddlyNamed(Exception):
+    pass
+
+
+OddlyNamed.__qualname__ = 'private detail: not a class name'
+
+
+class OddlyNamedHandler(Handler):
+    def prepare(self, request, *, deadline):
+        raise OddlyNamed()
+
+
+def test_borrower_drops_an_error_kind_that_is_not_a_plain_name(tmp_path):
+    ctx = multiprocessing.get_context('spawn')
+    broker = SuitePrerequisiteBroker(tmp_path, {'service': OddlyNamedHandler(ctx.Value('i', 0), ctx.Value('i', 0))}, owner_budget=5)
+    descriptor = broker.start()
+    with pytest.raises(RuntimeError, match='^prerequisite acquisition failed$'):
+        borrow_prerequisite(descriptor, 'service', {'account_scope': 'a' * 64}, timeout=5)
+    broker.close(timeout=5)
+
+
 def test_failed_start_is_shared_without_exposing_error_content(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -137,7 +158,7 @@ def test_failed_start_is_shared_without_exposing_error_content(tmp_path):
     broker = SuitePrerequisiteBroker(tmp_path, {'service': FailingHandler(starts, stops)}, owner_budget=5, event=events.append)
     descriptor = broker.start()
     def acquire():
-        with pytest.raises(RuntimeError, match='prerequisite acquisition failed'):
+        with pytest.raises(RuntimeError, match='^prerequisite acquisition failed: RuntimeError$'):
             borrow_prerequisite(descriptor, 'service', {'account_scope': 'a' * 64}, timeout=5)
     with ThreadPoolExecutor(max_workers=8) as executor:
         list(executor.map(lambda _: acquire(), range(8)))
@@ -342,7 +363,7 @@ def test_request_version_requires_exact_integer(tmp_path, version):
         request = {'version': version, 'token': descriptor['token'], 'handler': 'service',
                    'scope': {'account_scope': 'a' * 64}}
         sock.sendall(json.dumps(request).encode() + b'\n')
-        assert json.loads(sock.recv(100)) == {'status': 'error'}
+        assert json.loads(sock.recv(100)) == {'status': 'error', 'error': 'ValueError'}
     broker.close(timeout=5)
     assert starts.value == 0
 
@@ -549,7 +570,7 @@ def test_wrong_capability_token_cannot_invoke_parent_handler(tmp_path):
         sock.connect(descriptor['path'])
         request = {'version': 1, 'token': '0' * 64, 'handler': 'service', 'scope': {'account_scope': 'a' * 64}}
         sock.sendall(json.dumps(request).encode() + b'\n')
-        assert json.loads(sock.recv(100)) == {'status': 'error'}
+        assert json.loads(sock.recv(100)) == {'status': 'error', 'error': 'ValueError'}
     broker.close(timeout=5)
     assert resolutions.value == starts.value == stops.value == 0
 
@@ -569,7 +590,7 @@ def test_forged_release_keeps_real_borrower_until_trusted_ack(tmp_path):
                               'scope': {'account_scope': 'a' * 64}}))
         ready = _read(sock, deadline=time.monotonic() + 5)
         sock.sendall(_encode({'release': 'wrong-id'}))
-        assert _read(sock, deadline=time.monotonic() + 5) == {'status': 'error'}
+        assert _read(sock, deadline=time.monotonic() + 5) == {'status': 'error', 'error': 'ValueError'}
     assert broker.pending_lease_ids() == (ready['lease_id'],)
     with pytest.raises(PoolPending):
         broker.close(timeout=0)
@@ -849,7 +870,7 @@ def test_request_already_connected_is_rejected_after_admission_stops(tmp_path, m
                        'scope': {'account_scope': 'a' * 64}}
             sock.sendall(json.dumps(request).encode() + b'\n')
             resume.set()
-            assert json.loads(sock.recv(100)) == {'status': 'error'}
+            assert json.loads(sock.recv(100)) == {'status': 'error', 'error': 'RuntimeError'}
     finally:
         resume.set()
         broker.close(timeout=5)
@@ -868,7 +889,7 @@ def test_failure_callback_is_deduplicated_and_cannot_change_acquisition(tmp_path
         owner_budget=5, event=events.append, on_failure=report)
     descriptor = broker.start()
     def acquire(_):
-        with pytest.raises(RuntimeError, match='^prerequisite acquisition failed$'):
+        with pytest.raises(RuntimeError, match='^prerequisite acquisition failed: RuntimeError$'):
             borrow_prerequisite(descriptor, 'service', {'account_scope': 'a' * 64}, timeout=5)
     with ThreadPoolExecutor(max_workers=8) as executor:
         list(executor.map(acquire, range(8)))
