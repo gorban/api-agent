@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     python scripts/build_production_wheel.py && \
     uv pip install --python .venv/bin/python --no-deps dist-production/api_agent_runtime-*.whl && \
     python scripts/install_node_runtime.py mise.lock /opt/node && \
-    PATH=/opt/node/bin:$PATH .venv/bin/python -c "import asyncio,sys; from api_agent.api_providers.graphql_mcp import prepare_assets; asyncio.run(prepare_assets(sys.argv[1], npm='/opt/node/bin/npm'))" /build/owner/.api-agent/graphql-mcp && \
+    PATH=/opt/node/bin:$PATH .venv/bin/python -c "import asyncio,sys; from api_agent.api_providers.graphql_mcp import prepare_assets; asyncio.run(prepare_assets(sys.argv[1], npm='/opt/node/bin/npm'))" /build/graphql-mcp && \
     find .venv -type d \( -name tests -o -name testing -o -name _tests -o -name __pycache__ \) -prune -exec rm -rf {} + && \
     find .venv -type f \( -name 'test_*.py' -o -name 'test_*.pyi' -o -name '*_support.pyi' -o -name '*.svg' \) -delete
 
@@ -23,18 +23,19 @@ FROM python@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024
 ENV PATH=/opt/api-agent/venv/bin:/opt/api-agent/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    API_AGENT_STATE_DIR=/var/lib/api-agent
+    API_AGENT_STATE_DIR=/var/lib/api-agent \
+    GRAPHQL_MCP_ASSETS_DIR=/opt/api-agent/graphql-mcp
 WORKDIR /opt/api-agent
-COPY --from=compile /build/.venv /opt/api-agent/venv
-COPY --from=compile /opt/node/bin/node /opt/api-agent/bin/node
+COPY --from=compile --chown=10001:10001 /build/.venv /opt/api-agent/venv
+COPY --from=compile --chown=10001:10001 /opt/node/bin/node /opt/api-agent/bin/node
 # The built-in GraphQL MCP provider reads its prepared Node assets from
-# <owner root>/.api-agent/graphql-mcp; the owner root defaults to the plan's directory.
-COPY --from=compile /build/owner/.api-agent /opt/api-agent/plans/.api-agent
-COPY LICENSE /opt/api-agent/LICENSE
-COPY demo/.private_resources/plans/useful_api_demo.json /opt/api-agent/plans/useful_api_demo.json
+# GRAPHQL_MCP_ASSETS_DIR, whatever directory holds the plan.
+COPY --from=compile --chown=10001:10001 /build/graphql-mcp /opt/api-agent/graphql-mcp
+COPY --chown=10001:10001 LICENSE /opt/api-agent/LICENSE
+COPY --chown=10001:10001 demo/.private_resources/plans/useful_api_demo.json /opt/api-agent/plans/useful_api_demo.json
 RUN groupadd --gid 10001 apiagent && \
     useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/api-agent apiagent && \
-    chown -R apiagent:apiagent /opt/api-agent /var/lib/api-agent
+    chown apiagent:apiagent /opt/api-agent /var/lib/api-agent
 USER 10001:10001
 EXPOSE 8080
 ENTRYPOINT ["python", "-m", "api_agent.runtime.production"]

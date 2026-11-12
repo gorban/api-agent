@@ -189,13 +189,15 @@ runtime:
 - **GraphQL MCP** (`API_PROVIDER`). The image installs the locked `graphql`
   extra, a pinned Node runtime (checksummed in `mise.lock`) at
   `/opt/api-agent/bin/node`, and the provider's locked npm tree, prepared at
-  build time into `/opt/api-agent/plans/.api-agent/graphql-mcp`. The provider
-  reads its assets from `<owner root>/.api-agent/graphql-mcp`, and the owner
-  root defaults to the plan's directory, so a plan under `/opt/api-agent/plans`
-  starts without installing anything. A different `API_AGENT_OWNER_ROOT` has no
-  prepared assets and the provider fails closed at startup, because the image
-  has no `npm`. Select it by installed file location, for example
-  `.../api_agent/api_providers/graphql_mcp/factory.py:create`.
+  build time into `/opt/api-agent/graphql-mcp`. The image sets
+  `GRAPHQL_MCP_ASSETS_DIR` to that directory, so the provider finds its assets
+  whichever directory holds the plan or `API_AGENT_OWNER_ROOT` names. A set
+  directory is verified and never prepared at startup: an incomplete or
+  modified tree fails closed with `assets_missing`, `assets_invalid` or
+  `assets_integrity`. Without the setting, the provider reads
+  `<owner root>/.api-agent/graphql-mcp` and prepares it with `npm` on first
+  start, which the image does not ship. Select the provider by installed file
+  location, for example `.../api_agent/api_providers/graphql_mcp/factory.py:create`.
 
 `tests/unit/test_production_wheel.py` proves the wheel carries every file of
 both provider packages and the Node asset locks, and that an installed copy
@@ -207,6 +209,12 @@ notices and its prepared asset tree.
 
 Remaining gaps: the local-only proof does not establish collector delivery or
 production credentials. The qualifier still exercises only the deterministic
-LLM provider, so neither Bedrock nor GraphQL MCP has been run inside the image
-itself. The image's `graphql` extra also installs the Python `mcp` package,
-which no shipped code imports.
+LLM provider. The two bundled providers were exercised inside a built image
+without network access: both import, the GraphQL MCP provider's Node child
+completes its MCP initialization from the prepared assets, and the Bedrock
+provider constructs and fails at its credential step; the qualifier does not
+yet repeat those checks. The production configuration schema declares no
+`API_ENDPOINT`, so a GraphQL MCP provider selected through
+`API_AGENT_API_PROVIDER` receives no endpoint from the environment. The image's
+`graphql` extra also installs the Python `mcp` package, which no shipped code
+imports.

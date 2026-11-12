@@ -72,12 +72,13 @@ def test_inspector_allows_only_the_graphql_mcp_provider_assets_to_use_the_node_l
     allowed = [
         'opt/api-agent/venv/lib/python3.13/site-packages/api_agent/api_providers/graphql_mcp'
         '/licenses/third-party/express/node_modules/content-type/LICENSE',
-        'opt/api-agent/plans/.api-agent/graphql-mcp/node_modules/mcp-graphql/dist/index.js',
-        'opt/api-agent/plans/.api-agent/graphql-mcp/node_modules/pkg/tests/case.js',
+        'opt/api-agent/graphql-mcp/node_modules/mcp-graphql/dist/index.js',
+        'opt/api-agent/graphql-mcp/node_modules/pkg/tests/case.js',
     ]
     rejected = [
         'opt/api-agent/venv/lib/python3.13/site-packages/other/node_modules/pkg/index.js',
         'opt/api-agent/plans/node_modules/pkg/index.js',
+        'opt/api-agent/plans/.api-agent/graphql-mcp/node_modules/pkg/index.js',
         'opt/api-agent/node/bin/node',
     ]
     layer = tmp_path / 'layer.tar'

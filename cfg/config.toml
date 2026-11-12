@@ -326,6 +326,12 @@ validation = "positive"
 acknowledge_default = false
 help = "Deadline in seconds for each launcher Git probe (hook and worktree checks). Read from the process environment because it applies before configuration loads; .env files and options do not change it."
 
+[fields.GRAPHQL_MCP_ASSETS_DIR]
+type = "str"
+default = ""
+acknowledge_default = false
+help = "Absolute directory holding the GraphQL MCP provider's prepared Node assets. Empty uses <owner root>/.api-agent/graphql-mcp, preparing them on first start when npm is available. A set directory is verified, never prepared at startup, and does not depend on the owner root. Read from the process environment; .env files and options do not change it."
+
 [fields.BOOTSTRAP_DEPENDENCY_PROBE_TIMEOUT_SECONDS]
 type = "float"
 default = 20.0
