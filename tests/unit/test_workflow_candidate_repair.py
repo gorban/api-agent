@@ -198,13 +198,15 @@ def test_unavailable_schema_validation_is_not_candidate_repair(monkeypatch):
     assert type(failure.value) is not CandidateOutputError
 
 
-def test_correction_scrubs_registered_and_baseline_secrets_without_capture_flags():
+def test_correction_redacts_registered_secrets_without_capture_flags():
     from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
     from api_agent.workflows.execution import scrub_correction
     boundary = EmissionBoundary(ContentPolicy(False), secrets=['private-token'])
     feedback = scrub_correction({'reason': 'fix private-token', 'password': 'hidden'}, boundary=boundary)
-    assert 'private-token' not in repr(feedback) and 'hidden' not in repr(feedback)
-    assert 'hidden' not in repr(scrub_correction({'reason': 'fix', 'password': 'hidden'}))
+    assert 'private-token' not in repr(feedback)
+    # Only registered credentials are removed; authored fact names and values reach the model.
+    assert feedback == {'reason': 'fix [REDACTED]', 'password': 'hidden'}
+    assert scrub_correction({'reason': 'fix', 'password': 'hidden'}) == {'reason': 'fix', 'password': 'hidden'}
 
 
 def test_pending_feedback_is_admitted_before_another_billable_request():
@@ -444,6 +446,18 @@ async def test_task_local_authority_is_borrowed_without_any_journal():
         feedback = await project_correction({'reason': 'repair live-private-secret'})
     assert 'live-private-secret' not in repr(feedback)
     assert leases == ['open', 'closed']
+
+
+@pytest.mark.asyncio
+async def test_correction_feedback_for_the_model_keeps_ordinary_keys_and_redacts_secrets():
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    from api_agent.workflows.execution import project_correction
+    boundary = EmissionBoundary(ContentPolicy(False), secrets=['live-private-secret'])
+    facts = {'reason': 'repair live-private-secret', 'token_limit': 3, 'next_token': 'cursor',
+             'live-private-secret': 'leaked key'}
+    feedback = await project_correction(facts, services={'emissions': boundary})
+    assert feedback['token_limit'] == 3 and feedback['next_token'] == 'cursor'
+    assert 'live-private-secret' not in repr(feedback)
 
 
 def test_nested_child_effect_blocks_reexecution_of_its_native_parent():

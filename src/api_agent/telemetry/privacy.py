@@ -218,6 +218,7 @@ class EmissionBoundary:
     def __init__(self, policy=ContentPolicy(), *, secrets=(), assigned_ids=(), preserve_json_text=False):
         self.policy = policy
         self.preserve_json_text = preserve_json_text
+        self._key_names_public = False
         self._authority = _Authority()
         self._secrets = self._authority.secrets
         self._registered_json = None
@@ -445,7 +446,7 @@ class EmissionBoundary:
     def _key_credential(self, key, depth):
         if depth > 20:
             return True
-        if _credential_key(key):
+        if not self._key_names_public and _credential_key(key):
             return True
         # Decode only the printable detection view. Keep the original key for
         # ordinary output, but do not let a nonprinting shell hide JSON syntax.
@@ -731,6 +732,16 @@ class EmissionBoundary:
     def content_export(self, payload):
         """Explicit evidence callers retain content but share credential rules."""
         _, snapshot = self.snapshot_content()
+        return snapshot._export(payload)
+
+    def redacted_content(self, payload):
+        """Remove only registered credentials, for a destination such as the model that needs ordinary key names.
+
+        Telemetry and evidence keep using ``export``/``content_export``, which also drop
+        credential-like key names.
+        """
+        _, snapshot = self.snapshot_content()
+        snapshot._key_names_public = True
         return snapshot._export(payload)
 
     @staticmethod
