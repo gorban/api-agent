@@ -31,6 +31,8 @@ DIGEST_PREFIX = 'sha256:'
 SOURCE_KINDS = frozenset({'declaration', 'native_source', 'native_dependency'})
 DATA_KINDS = frozenset({'prompt', 'configuration', 'data', 'schema', 'asset', 'tool_instance'})
 MAX_PLAN_BYTES = 64 * 1024 * 1024
+ADDED_LINE_ENDING = ('it ends with a line ending the compiler does not write; '
+                     'exclude compiled plans from end-of-file and line-ending conversion')
 ARTIFACT_ROOT = PurePosixPath('/artifact')
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
@@ -244,6 +246,8 @@ def _parse(plan):
     except (TypeError, ValueError) as error:
         raise ArtifactRejected('plan is not canonical JSON') from error
     if canonical != plan:
+        if plan.rstrip(b'\r\n') == canonical:
+            raise ArtifactRejected('plan is not canonical JSON: ' + ADDED_LINE_ENDING)
         raise ArtifactRejected('plan is not canonical JSON')
     return value
 

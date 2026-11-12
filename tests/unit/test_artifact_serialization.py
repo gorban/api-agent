@@ -162,6 +162,14 @@ def test_parser_rejects_noncanonical_or_nonobject_json(body, message):
         artifact._parse(body)
 
 
+@pytest.mark.parametrize('ending', [b'\n', b'\r\n', b'\n\n'])
+def test_parser_names_a_trailing_line_ending_on_an_otherwise_canonical_plan(ending):
+    with pytest.raises(ArtifactRejected, match=(
+            '^plan is not canonical JSON: it ends with a line ending the compiler does not write; '
+            'exclude compiled plans from end-of-file and line-ending conversion$')):
+        artifact._parse(b'{}' + ending)
+
+
 def test_parser_reports_an_unencodable_decoded_value(monkeypatch):
     monkeypatch.setattr(artifact, 'canonical_json', lambda value: (_ for _ in ()).throw(TypeError()))
 
