@@ -4,6 +4,7 @@ import hmac
 import ipaddress
 import os
 import subprocess
+from dataclasses import dataclass
 from secrets import token_urlsafe
 
 import httpx
@@ -13,6 +14,18 @@ from api_agent.providers.control import CleanupPendingError, finish_cleanup
 from api_agent.providers.progress import component_timeout, independent_timeout_scope, report_timeout
 from api_agent.runtime.client_tls import require_verified_context
 from .provider import advertised_origin_identity as _readiness_identity
+
+
+STUDIO_OUTPUT_LIMIT = 64 * 1024
+
+
+@dataclass(frozen=True)
+class StudioProcessOutput:
+    """Complete child output for a trusted observer; never safe to export directly."""
+    output: bytes | None
+    byte_count: int
+    overflowed: bool
+    returncode: int | None
 
 
 class OwnedStudioProcess:
@@ -27,28 +40,55 @@ class OwnedStudioProcess:
         self._output_closed = False
         self._output_owned = False
 
-    def capture(self, callback, emissions):
-        """Read only this child's bounded output; no global handlers or threads."""
+    def capture(self, callback, emissions, *, diagnostic_callback=None):
+        """Drain output; the trusted diagnostic observer receives only a complete block.
+
+        The observer must validate and apply the emission boundary before exposing
+        any content. Oversized blocks are withheld in full, never truncated.
+        """
+        if diagnostic_callback is not None and (not callable(diagnostic_callback)
+                or not callable(getattr(emissions, 'register_secret', None))
+                or not callable(getattr(emissions, 'content_export', None))):
+            raise ValueError('Studio output capture requires an emission boundary')
         self._output_owned = True
         os.set_blocking(self.process.stdout.fileno(), False)
         with independent_timeout_scope():
-            self._reader = asyncio.create_task(self._capture(callback, emissions))
+            self._reader = asyncio.create_task(self._capture(callback, emissions, diagnostic_callback))
 
-    async def _capture(self, callback, emissions):
+    async def _capture(self, callback, emissions, diagnostic_callback):
         # Arbitrary streaming child text cannot be safely scrubbed before a
         # later fragment completes a credential carrier. Report activity only.
+        output = bytearray() if diagnostic_callback is not None else None
+        byte_count = 0
+        overflowed = False
         async with report_timeout('Studio process output', None):
             while True:
                 try:
                     data = os.read(self.process.stdout.fileno(), 4096)
                 except BlockingIOError:
-                    if self.process.poll() is not None:
+                    if diagnostic_callback is None and self.process.poll() is not None:
                         return
                     await asyncio.sleep(.02)
                     continue
                 if not data:
+                    if diagnostic_callback is not None:
+                        result = StudioProcessOutput(None if overflowed else bytes(output),
+                                                     byte_count, overflowed, self.process.poll())
+                        try:
+                            diagnostic_callback(result)
+                        except BaseException:
+                            # Diagnostics cannot replace the owning operation's outcome.
+                            pass
                     return
-                callback(f'UI process output: {len(data)} bytes received; content omitted.\n')
+                if diagnostic_callback is not None:
+                    byte_count += len(data)
+                    if byte_count > STUDIO_OUTPUT_LIMIT:
+                        overflowed = True
+                        output.clear()
+                    else:
+                        output.extend(data)
+                if callback is not None:
+                    callback(f'UI process output: {len(data)} bytes received; content omitted.\n')
                 await asyncio.sleep(0)
 
     async def _wait(self, timeout):
@@ -94,19 +134,29 @@ class OwnedStudioProcess:
 
 
 class StudioProcesses:
-    """A launch adapter; returned owners remain the UI provider's responsibility."""
+    """Launch owned children, with optional trusted complete-output observation.
+
+    ``diagnostic_callback`` runs synchronously once at stdout EOF with a
+    :class:`StudioProcessOutput`. It must validate and project the content through
+    the caller's emission policy before sharing it. The callback is not called
+    for a process that could not be spawned or a stream that never reaches EOF.
+    Returned owners remain the UI provider's responsibility.
+    """
     def __init__(self, *, ssl_context, timeout=15, cleanup_timeout=5,
-                 log_callback=None, emissions=None):
+                 log_callback=None, emissions=None, diagnostic_callback=None):
         self.ssl_context = require_verified_context(ssl_context)
         if (type(timeout) not in (int, float) or not 0 < timeout <= 600
                 or type(cleanup_timeout) not in (int, float) or not 0 < cleanup_timeout <= 10):
             raise ValueError('Invalid Studio process timeout')
         self.timeout, self.cleanup_timeout = timeout, cleanup_timeout
-        if log_callback is not None and (not callable(log_callback)
-                or not callable(getattr(emissions, 'register_secret', None))
-                or not callable(getattr(emissions, 'content_export', None))):
+        if ((log_callback is not None and not callable(log_callback))
+                or (diagnostic_callback is not None and not callable(diagnostic_callback))
+                or ((log_callback is not None or diagnostic_callback is not None) and (
+                not callable(getattr(emissions, 'register_secret', None))
+                or not callable(getattr(emissions, 'content_export', None))))):
             raise ValueError('Studio output capture requires an emission boundary')
         self.log_callback, self.emissions = log_callback, emissions
+        self.diagnostic_callback = diagnostic_callback
 
     async def start(self, argv, *, cwd, host, port, scheme, env, readiness_origin=None):
         if host != 'localhost':
@@ -121,7 +171,7 @@ class StudioProcesses:
         readiness_identity = (None if readiness_origin is None else
                               _readiness_identity(readiness_origin, scheme=scheme, port=port))
         token = token_urlsafe(32)
-        if self.log_callback is not None:
+        if self.log_callback is not None or self.diagnostic_callback is not None:
             from api_agent.telemetry.privacy import register_secret_async
             await register_secret_async(self.emissions, token)
         environment = dict(env, API_AGENT_UI_LAUNCH_TOKEN=token,
@@ -137,16 +187,18 @@ class StudioProcesses:
         try:
             async with component_timeout('Studio process launch', self.timeout) as budget:
                 # Popen completes ownership transfer before the next cancellation point.
+                capture_output = self.log_callback is not None or self.diagnostic_callback is not None
                 try:
                     child = subprocess.Popen(argv, cwd=cwd, env=environment, stdin=subprocess.PIPE,
-                                             stdout=subprocess.PIPE if self.log_callback is not None else subprocess.DEVNULL,
-                                             stderr=subprocess.STDOUT if self.log_callback is not None else subprocess.DEVNULL,
+                                             stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+                                             stderr=subprocess.STDOUT if capture_output else subprocess.DEVNULL,
                                              start_new_session=True)
                 except OSError:
                     raise SetupPrerequisiteError('Studio could not start Node.js') from None
                 process = OwnedStudioProcess(child, timeout=self.cleanup_timeout)
-                if self.log_callback is not None:
-                    process.capture(self.log_callback, self.emissions)
+                if capture_output:
+                    process.capture(self.log_callback, self.emissions,
+                                    diagnostic_callback=self.diagnostic_callback)
                 address = '[' + host + ']' if ':' in host else host
                 url = f'{scheme}://{address}:{port}/'
                 try:

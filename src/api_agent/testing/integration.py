@@ -1155,7 +1155,6 @@ def run_integration_tests(context, tests, **options):
                 inspection.abort()
         return execution
     except BaseException as error:
-        from .suite_lock import _cleanup_receipts
         retained = tuple(dict.fromkeys([*inspections, *getattr(error, 'inspections', ())]))
         error.inspections = retained
         cleanup_errors = []
@@ -1170,8 +1169,11 @@ def run_integration_tests(context, tests, **options):
                 cleanup_errors.append(cleanup)
         if cleanup_errors:
             error.confirmation_cleanup_errors = tuple(cleanup_errors)
-        if (not publication_attempted and (prepared or attempts or getattr(_RUNNER_OPERATION, 'prerequisites', None) is not None) and not cleanup_errors
-                and not any(_cleanup_receipts(error))):
+        # Publication snapshots completed evidence; it does not acknowledge or
+        # release any retained cleanup duty. Keep the original exception and
+        # its pending owners even when this partial report succeeds or fails.
+        if (not publication_attempted and
+                (prepared or attempts or getattr(_RUNNER_OPERATION, 'prerequisites', None) is not None)):
             cancelled |= not isinstance(error, Exception)
             infrastructure_failed = True
             execution = aggregate()

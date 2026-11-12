@@ -722,3 +722,109 @@ def test_preexisting_cancellation_count_does_not_reject_new_start(monkeypatch):
         await owner.aclose()
         assert child.terminations == 1
     asyncio.run(run())
+
+
+def test_diagnostic_capture_requires_emission_boundary():
+    with pytest.raises(ValueError, match='emission boundary'):
+        launcher(diagnostic_callback=lambda result: None)
+    with pytest.raises(ValueError, match='emission boundary'):
+        process.OwnedStudioProcess(Child()).capture(None, None, diagnostic_callback=lambda result: None)
+
+
+@pytest.mark.parametrize('callback, boundary', [
+    (1, SimpleNamespace(register_secret=lambda _: None, content_export=lambda _: None)),
+    (lambda _: None, SimpleNamespace(register_secret=lambda _: None)),
+])
+def test_diagnostic_capture_rejects_invalid_observer_or_boundary(callback, boundary):
+    with pytest.raises(ValueError, match='emission boundary'):
+        launcher(diagnostic_callback=callback, emissions=boundary)
+    with pytest.raises(ValueError, match='emission boundary'):
+        process.OwnedStudioProcess(Child()).capture(None, boundary, diagnostic_callback=callback)
+
+
+@pytest.mark.parametrize('payload, expected', [
+    (b'first\nsecond\n', b'first\nsecond\n'),
+    (b'', b''),
+    (b'x' * 65536, b'x' * 65536),
+    (b'x' * (65536 + 1), None),
+])
+def test_diagnostic_capture_reports_only_complete_bounded_output(payload, expected):
+    import os
+    from unittest.mock import Mock
+
+    async def run():
+        read_fd, write_fd = os.pipe()
+        child = Child()
+        child.stdout = os.fdopen(read_fd, 'rb', buffering=0)
+        results, activity = [], []
+        boundary = SimpleNamespace(register_secret=Mock(), content_export=Mock())
+        owned = process.OwnedStudioProcess(child, timeout=1)
+        owned.capture(activity.append, boundary, diagnostic_callback=results.append)
+        async def write():
+            # Write in pieces so a full pipe never blocks the event loop.
+            os.set_blocking(write_fd, False)
+            remaining = memoryview(payload)
+            while remaining:
+                try:
+                    remaining = remaining[os.write(write_fd, remaining):]
+                except BlockingIOError:
+                    await asyncio.sleep(.001)
+            assert results == []  # No partial output, even after multiple reads.
+            os.close(write_fd)
+        await write()
+        await owned._reader
+        assert len(results) == 1
+        assert results[0].output == expected
+        assert results[0].byte_count == len(payload)
+        assert results[0].overflowed is (expected is None)
+        assert all('content omitted' in line for line in activity)
+        await owned.aclose()
+        await owned.aclose()
+        assert len(results) == 1
+    asyncio.run(run())
+
+
+def test_diagnostic_capture_on_failed_start_drains_and_registers_token(monkeypatch):
+    import sys
+    from unittest.mock import Mock
+
+    async def run():
+        results = []
+        boundary = SimpleNamespace(register_secret=Mock(), content_export=Mock())
+        monkeypatch.setattr(process, 'token_urlsafe', lambda _: 'a' * 43)
+        with pytest.raises(SetupPrerequisiteError, match='exited'):
+            await launcher(timeout=2, diagnostic_callback=results.append, emissions=boundary).start(
+                (sys.executable, '-c', 'import sys; sys.stdout.write("finished\\n"); sys.exit(1)'),
+                cwd='.', host='127.0.0.1', port=port(), scheme='http', env={})
+        boundary.register_secret.assert_called_once_with('a' * 43)
+        assert len(results) == 1
+        assert results[0].output == b'finished\n'
+        assert results[0].byte_count == len(b'finished\n')
+        assert not results[0].overflowed
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('error_type', [RuntimeError, BaseException])
+def test_diagnostic_capture_observer_failure_does_not_replace_start_failure(error_type):
+    import os
+    import sys
+    from unittest.mock import Mock
+
+    def fail(_result):
+        raise error_type('observer failure')
+
+    async def run():
+        boundary = SimpleNamespace(register_secret=Mock(), content_export=Mock())
+        read_fd, write_fd = os.pipe()
+        child = Child()
+        child.stdout = os.fdopen(read_fd, 'rb', buffering=0)
+        owner = process.OwnedStudioProcess(child)
+        owner.capture(None, boundary, diagnostic_callback=fail)
+        os.close(write_fd)
+        await owner._reader
+        await owner.aclose()
+        with pytest.raises(SetupPrerequisiteError, match='exited'):
+            await launcher(timeout=2, diagnostic_callback=fail, emissions=boundary).start(
+                (sys.executable, '-c', 'print("done")'), cwd='.', host='127.0.0.1',
+                port=port(), scheme='http', env={})
+    asyncio.run(run())
