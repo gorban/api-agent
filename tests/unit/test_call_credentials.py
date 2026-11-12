@@ -135,3 +135,12 @@ def test_capture_registers_the_call_credential_without_outliving_the_next_call(b
 
     assert not scrubbed(boundary, 'token-1')
     assert scrubbed(boundary, 'token-2')
+
+
+@pytest.mark.asyncio
+async def test_a_journal_boundary_registers_a_secret_on_every_authority_it_keeps_live():
+    runtime, evidence = EmissionBoundary(ContentPolicy(True)), EmissionBoundary(ContentPolicy(True))
+
+    await _JournalBoundary(ContentPolicy(True), runtime, evidence).aregister_secret('configured')
+
+    assert all(scrubbed(authority, 'configured') for authority in (runtime, evidence))

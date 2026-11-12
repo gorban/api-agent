@@ -78,6 +78,17 @@ async def test_an_admitted_call_registers_rotating_credentials_through_the_provi
 
 
 @pytest.mark.asyncio
+async def test_an_admitted_call_without_new_credentials_keeps_the_current_ones(boundary, provider):
+    with bind_call_authority(boundary, ()):
+        _, first = await provider._join_credentials(['key-1'])
+        first.release()
+        _, catalog = await provider._join_credentials(())
+        catalog.release()
+
+        assert scrubbed(boundary, 'key-1')
+
+
+@pytest.mark.asyncio
 async def test_a_failed_handoff_releases_the_hold(boundary, provider, monkeypatch):
     _, current = await provider._join_credentials(['key-1'])
     current.release()

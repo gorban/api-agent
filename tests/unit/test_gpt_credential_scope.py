@@ -146,6 +146,17 @@ async def test_a_failed_call_releases_its_hold(boundary, provider, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_call_without_authentication_registers_nothing_for_itself(boundary, provider, monkeypatch):
+    async def discover(**kwargs):
+        return ()
+
+    monkeypatch.setattr(discovery, 'discover_selections', discover)
+
+    assert await provider.adescribe(auth=None) == ()
+    assert boundary._secrets == set()
+
+
+@pytest.mark.asyncio
 async def test_a_call_without_a_credential_authority_registers_nothing(monkeypatch):
     provider = GPTProvider({})
 
