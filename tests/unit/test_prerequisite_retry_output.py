@@ -483,7 +483,7 @@ def test_dense_overlapping_registered_output_has_bounded_diagnostics_and_owned_c
     driver.write_text(
         'import sys, time\n'
         'from api_agent.runtime.prerequisites import run_command, PrerequisiteError\n'
-        'from api_agent.testing.processes import disposal_complete\n'
+        'from api_agent.runtime.processes import disposal_complete\n'
         'import api_agent.runtime.prerequisites as prerequisites\n'
         'owned = []\n'
         'original_finalize = prerequisites.finalize\n'

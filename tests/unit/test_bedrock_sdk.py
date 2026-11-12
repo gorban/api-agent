@@ -410,8 +410,8 @@ def test_process_liveness_probe_does_not_hide_other_read_failures():
 async def test_cleanup_terminates_credential_process_descendant(auth, monkeypatch, tmp_path, parent_exits, startup_delay):
     import os
     import signal
-    from api_agent.testing.processes import _group_running
-    from api_agent.testing import processes
+    from api_agent.runtime.processes import _group_running
+    from api_agent.runtime import processes
 
     pidfile = tmp_path / 'helper.pid'
     # Prepare the synthetic worker before starting the inference deadline. The

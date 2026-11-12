@@ -25,7 +25,7 @@ from api_agent.runtime.managed_browser import managed_browser
 from api_agent.runtime.tasks import offload
 from .allure_source import (PreviewSnapshot, RunSource, ViewerError, validate_manifest,
                             verified_files)
-from .processes import finalize, wait_owned
+from api_agent.runtime.processes import finalize, wait_owned
 from .storage import RunStorage
 
 HISTORY_LAUNCHES = 20

@@ -32,7 +32,7 @@ from uuid import uuid4
 
 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment, snapshot_compose
 from api_agent.runtime.ownership import PROFILES
-from api_agent.testing.processes import disposal_complete, finalize, observe_exit, wait_owned
+from api_agent.runtime.processes import disposal_complete, finalize, observe_exit, wait_owned
 
 CONFIG_LABEL = 'api-agent.config'
 _ID = re.compile(r'[0-9a-f]{64}')

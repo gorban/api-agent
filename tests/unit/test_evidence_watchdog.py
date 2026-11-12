@@ -108,7 +108,7 @@ def test_darwin_measurement_race_with_child_exit_does_not_fail_capture(monkeypat
         def exiting(_pid):
             import os
             import signal
-            from api_agent.testing.processes import signal_owned_group
+            from api_agent.runtime.processes import signal_owned_group
             signal_owned_group(process.process, signal.SIGKILL)
             try:
                 os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
@@ -136,7 +136,7 @@ def test_exited_owned_leader_disposes_descendant_before_reaping(monkeypatch):
         # Establish the intended case before starting the short watchdog: the
         # leader exited successfully while its child retains the output pipe.
         deadline = asyncio.get_running_loop().time() + 5
-        from api_agent.testing.processes import observe_exit
+        from api_agent.runtime.processes import observe_exit
         while observe_exit(process.process) is None and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(.01)
         leader_exited = observe_exit(process.process) == 0
@@ -220,7 +220,7 @@ def test_raw_async_handle_rejected_before_exchange_without_taking_ownership(monk
 
 def test_repeated_cancellation_finishes_group_signal_and_pipe_drain(monkeypatch):
     import threading
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     async def scenario():
         drain = asyncio.Event()
         entered = threading.Event()
@@ -420,7 +420,7 @@ def test_shutdown_cancelling_all_tasks_retains_spawn_result_and_disposes_child(m
     import subprocess
     import sys
     import threading
-    from api_agent.testing.processes import disposal_complete, finalize
+    from api_agent.runtime.processes import disposal_complete, finalize
     async def scenario():
         entered, release, returned = threading.Event(), threading.Event(), threading.Event()
         children = []
@@ -468,7 +468,7 @@ def test_shutdown_cancelling_all_tasks_retains_spawn_result_and_disposes_child(m
 @pytest.mark.parametrize('failed', [False, True])
 def test_shutdown_cancelling_all_tasks_waits_for_owned_pipe_thread(monkeypatch, failed):
     import threading
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     async def scenario():
         child = await _sleeping_child()
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
@@ -548,7 +548,7 @@ def test_live_worker_measurement_failure_reports_only_numeric_errno(monkeypatch,
 def test_owned_zombie_rss_reconciles_before_waitid_delivery_then_finishes_exchange(monkeypatch):
     import errno
     from unittest.mock import Mock
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     async def scenario():
         child = await watchdog.spawn('/bin/sh', '-c', "printf '[]'",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -586,7 +586,7 @@ def test_failed_terminal_snapshot_preserves_controlled_memory_error_and_disposal
     import errno
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
 
     async def scenario():
         child = await _sleeping_child()

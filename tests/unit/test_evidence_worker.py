@@ -286,7 +286,7 @@ def test_cancelled_spawn_kills_descendant_after_leader_exits(monkeypatch):
                     'sys.exit(0)')
             process = await original(executable, '-c', code, **kwargs)
             children.append(process)
-            from api_agent.testing.processes import observe_exit
+            from api_agent.runtime.processes import observe_exit
             while observe_exit(process.process) is None:
                 await asyncio.sleep(.01)
             entered.set()
@@ -304,6 +304,6 @@ def test_cancelled_spawn_kills_descendant_after_leader_exits(monkeypatch):
         except asyncio.CancelledError:
             pass
         assert children[0].returncode == 0
-        from api_agent.testing.processes import disposal_complete
+        from api_agent.runtime.processes import disposal_complete
         assert disposal_complete(children[0].process)
     asyncio.run(scenario())

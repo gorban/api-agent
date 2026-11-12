@@ -1,12 +1,12 @@
 """Worker inspection control. Only lifecycle facts cross the process boundary."""
-from api_agent.testing.processes import observe_exit
+from api_agent.runtime.processes import observe_exit
 import json
 import os
 from pathlib import Path
 import threading
 import time
 
-from .processes import disposal_complete, finalize
+from api_agent.runtime.processes import disposal_complete, finalize
 from .suite_lock import CleanupLeaseOwner, retain_suite_cleanup
 
 

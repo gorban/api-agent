@@ -146,7 +146,7 @@ def test_production_wheel_build_rejects_retained_or_missing_artifacts(monkeypatc
         module['build'](ROOT, tmp_path)
 
 
-@pytest.mark.parametrize('module', ['api_agent.testing.processes', 'api_agent.api_providers.graphql_mcp'])
+@pytest.mark.parametrize('module', ['api_agent.testing.diagnostics', 'api_agent.tui.app'])
 def test_production_wheel_build_rejects_a_closure_reaching_an_excluded_package(monkeypatch, tmp_path, module):
     build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
     monkeypatch.setitem(build.__globals__, 'production_import_closure', lambda _: frozenset({module}))

@@ -531,7 +531,7 @@ def test_real_processes_coalesce_setup_and_disconnected_waiter_leaves_sibling(tm
     import subprocess
     import sys
     import time
-    from api_agent.testing.processes import finalize
+    from api_agent.runtime.processes import finalize
     config, events = synthetic_provider(tmp_path)
     gate = tmp_path / 'release-setup'
     config['SETUP_GATE'] = str(gate)

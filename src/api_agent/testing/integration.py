@@ -12,7 +12,7 @@ Run callbacks run synchronously on the calling thread; retained inspection
 completion events run on their monitor thread. ``after_run`` receives the
 final result after pytest completes; debug inspection handles retain owned workers.
 """
-from api_agent.testing.processes import observe_exit
+from api_agent.runtime.processes import observe_exit
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from functools import wraps
@@ -31,7 +31,7 @@ from uuid import uuid4
 from .collection import repository_label, CollectionError, collect_tests
 from .contracts import RunnerEvent, TestResult
 from .diagnostics import format_exception
-from .processes import finalize
+from api_agent.runtime.processes import finalize
 from .suite_lock import suite_locked
 from api_agent.providers.setup_transport import _diagnostic
 
@@ -66,7 +66,7 @@ def _admit_operation(function):
                     if callable(getattr(item, '_when_closed', None)) and not item.closed)
                 def close():
                     nonlocal recovered
-                    from .processes import disposal_complete
+                    from api_agent.runtime.processes import disposal_complete
                     with recovery._lock:
                         if recovery.closed:
                             recovery._acknowledge_closed()

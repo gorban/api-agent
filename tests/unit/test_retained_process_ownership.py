@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from api_agent.testing import processes
+from api_agent.runtime import processes
 
 pytestmark = pytest.mark.skipif(os.name != 'posix', reason='POSIX child reservation')
 

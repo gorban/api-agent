@@ -11,7 +11,7 @@ import coverage
 import pytest
 
 from api_agent.providers.progress import report_timeout_sync
-from api_agent.testing.processes import disposal_complete, finalize
+from api_agent.runtime.processes import disposal_complete, finalize
 
 HELPERS = Path(__file__).parent / 'helpers'
 CASES = HELPERS / 'setup_publication_cases.py'

@@ -607,7 +607,7 @@ async def test_cancelled_projection_spawn_reaps_child_that_already_exited(monkey
     async def delayed(_executable, *_args, **kwargs):
         process = await original(sys.executable, '-c', 'pass', **kwargs)
         processes.append(process)
-        from api_agent.testing.processes import wait_owned
+        from api_agent.runtime.processes import wait_owned
         assert await asyncio.to_thread(wait_owned, process.process, timeout=5) == 0
         assert process.returncode is None
         exited.set()
@@ -771,7 +771,7 @@ def test_fragment_limit_drift_fails_closed_before_releasing_oversized_part(monke
 
 @pytest.mark.asyncio
 async def test_projection_cleanup_accepts_proved_terminal_group_refusal(monkeypatch):
-    from api_agent.testing import processes
+    from api_agent.runtime import processes
     from api_agent.telemetry.privacy import EmissionBoundary
     original_spawn = evidence_watchdog.spawn
     children = []

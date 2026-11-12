@@ -11,7 +11,7 @@ import pytest
 
 from api_agent.runtime import prerequisites
 from api_agent.testing.diagnostics import CredentialScrubber
-from api_agent.testing.processes import disposal_complete
+from api_agent.runtime.processes import disposal_complete
 
 
 @pytest.fixture(autouse=True, params=['native', 'system-ps'])
@@ -19,7 +19,7 @@ def process_inspection_backend(request, monkeypatch):
     """Exercise native process inspection even on a host with procfs."""
     observed = []
     if request.param == 'system-ps':
-        from api_agent.testing import processes
+        from api_agent.runtime import processes
         original_run = subprocess.run
         def probe(argv, **kwargs):
             observed.append(argv)

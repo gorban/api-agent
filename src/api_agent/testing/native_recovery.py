@@ -179,7 +179,7 @@ class NativeRecoveryOwner(CleanupLeaseOwner):
 
     def recover(self):
         _private(self.directory, directory=True)
-        from .processes import disposal_complete
+        from api_agent.runtime.processes import disposal_complete
         states = sorted(self.directory.iterdir())
         if states and any(not disposal_complete(worker) for worker in self.workers):
             raise ValueError('Native recovery requires confirmed worker disposal')

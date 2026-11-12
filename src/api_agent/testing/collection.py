@@ -11,7 +11,7 @@ import subprocess
 import time
 import sys
 import tempfile
-from .processes import communicate_owned, observe_exit, finalize
+from api_agent.runtime.processes import communicate_owned, observe_exit, finalize
 from .classification import validate_features
 from .applicability import validate_platforms
 

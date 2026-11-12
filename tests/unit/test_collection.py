@@ -352,7 +352,8 @@ def test_cancellation_arriving_during_spawn_disposes_before_exchange(tmp_path, m
     import threading
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from api_agent.testing import collection, processes
+    from api_agent.runtime import processes
+    from api_agent.testing import collection
     cancel = threading.Event()
     original = subprocess.Popen
     children = []
@@ -380,7 +381,8 @@ def test_expired_collection_budget_disposes_before_exchange(tmp_path, monkeypatc
     import sys
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from api_agent.testing import collection, processes
+    from api_agent.runtime import processes
+    from api_agent.testing import collection
     original = subprocess.Popen
     children = []
     def spawn(*args, **kwargs):

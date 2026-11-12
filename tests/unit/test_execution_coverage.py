@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 from api_agent.testing import collection, runner, TestIdentity, SelectionModel, CollectionError
-from api_agent.testing import processes
+from api_agent.runtime import processes
 
 
 def identity(repo='base', name='test_one'):

@@ -593,7 +593,7 @@ async def test_cancel_generation_reaps_owned_process(cli, port):
         assert process.poll() is not None
         assert owner._processes == []
     finally:
-        from api_agent.testing.processes import finalize
+        from api_agent.runtime.processes import finalize
         await asyncio.to_thread(finalize, process)
         await owner.aclose()
 
