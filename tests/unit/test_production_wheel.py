@@ -365,6 +365,53 @@ assert not [name for name in sys.modules if name.startswith((
     assert completed.returncode == 0, completed.stderr
 
 
+def test_installed_runtime_composes_a_traced_run_of_a_plan_with_declared_tools(tmp_path):
+    from test_production_tools import FACTORY, IMPLEMENTATION, INSTANCE, declared_plan
+
+    plan, bindings = declared_plan(tmp_path, INSTANCE, {
+        'aq_bindings/tool_impl.toml': IMPLEMENTATION, 'aq_bindings/factory.py': FACTORY})
+    build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
+    runtime = build(ROOT, tmp_path / 'runtime')
+    site = tmp_path / 'site'
+    for wheel in (runtime, bindings):
+        with zipfile.ZipFile(wheel) as archive:
+            archive.extractall(site)
+    provider = tmp_path / 'llm.py'
+    provider.write_text('def create(config, services): return None\n')
+
+    completed = subprocess.run((sys.executable, '-I', '-c', '''import sys
+from types import SimpleNamespace
+sys.path.insert(0, sys.argv[1])
+from api_agent.runtime import production
+from api_agent.telemetry.tracing import TraceRuntime
+import api_agent.runtime.chat_composition as composition
+composition.declared_timeouts = lambda definition, values: {'GRAPH': 30}
+environment = {'API_AGENT_PRODUCTION_PLAN': sys.argv[2], 'API_AGENT_OWNER_ROOT': sys.argv[3],
+               'API_AGENT_LLM_PROVIDER': sys.argv[4] + ':create', 'API_AGENT_CHAT_ORIGIN': 'http://localhost:3000',
+               'API_AGENT_SESSION_NONCE': 'n' * 32, 'API_AGENT_STATE_DIR': sys.argv[3],
+               'SAMPLE_ENDPOINT': 'http://127.0.0.1:9/graphql',
+               'SAMPLE_HEADERS': '{"Authorization": "Bearer synthetic"}',
+               'TRACE_EXPORT_ENDPOINT': 'http://127.0.0.1:9/v1/traces'}
+settings = production.settings_from_environment(environment)
+definition = production.load_artifact(settings.plan.read_bytes())
+config = production.compose_tool_configuration(settings, definition)
+composed = production.compose_chat_runtime(
+    SimpleNamespace(pack_id='pack', owner_root=settings.owner_root), config,
+    callback_origin=settings.callback_origin, chat_origin=settings.chat_origin, tls_material=None,
+    graph=SimpleNamespace(definition=definition), llm_factory=lambda *_a, **_k: SimpleNamespace(),
+    on_error=None, nonce=settings.session_nonce)
+runtime = composed.runtime
+assert isinstance(runtime.tracing, TraceRuntime)
+assert [tool.id for tool in runtime.tool_plan.tools] == ['sample/compiled']
+assert runtime.tools_for(definition).for_node('intake')
+assert not [name for name in sys.modules if name.startswith((
+    'api_agent.testing', 'api_agent.tui', 'api_agent.ui', 'api_agent.workflows.definition',
+    'api_agent.workflows.native', 'api_agent.workflows.viewer'))]
+''', str(site), str(plan), str(tmp_path), str(provider)), capture_output=True, text=True)
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def _requirement_names(lines):
     from packaging.requirements import Requirement
     from packaging.utils import canonicalize_name
