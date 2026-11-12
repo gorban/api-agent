@@ -5,7 +5,9 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from api_agent.workflows import LayoutError
-from expiry_support import ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, calls_after, expiring, play
+from api_agent.workflows.execution import WorkflowError
+from expiry_support import (EFFECT_ENDS, EFFECT_FLOW, EFFECTED, ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, calls_after,
+                            expiring, play)
 from loop_support import build, edges, load, node, table
 from test_workflow_session_loop import stored
 
@@ -176,6 +178,91 @@ def test_a_node_that_dispatched_an_effect_fails_the_turn_instead_of_routing(tmp_
         calls, error = calls_after(expiring(tmp_path, *rows), {'work': ['effect', 'ok']})
 
         assert isinstance(error, TimeoutError) and calls == ['work']
+
+
+def effected(tmp_path, *rows, **kwargs):
+    return expiring(tmp_path, *(rows or EFFECTED), flow=EFFECT_FLOW, ends=EFFECT_ENDS, **kwargs)
+
+
+def test_an_expiry_after_an_effect_leaves_by_the_edge_that_requires_it_and_is_not_replayed(tmp_path):
+    values, calls, _ = play(effected(tmp_path), {'work': ['effect', 'ok']})
+
+    assert calls == ['work', 'recover']
+    assert values['recover'] == {'ok': False} and 'work' not in values
+
+
+def test_an_expiry_without_an_effect_ignores_the_effected_edge(tmp_path):
+    assert play(effected(tmp_path), {'work': ['hang', 'ok']})[1] == ['work', 'work', 'finish']
+    (tmp_path / 'exhausted').mkdir()
+    assert play(effected(tmp_path / 'exhausted'), {'work': ['hang', 'hang']})[1] == ['work', 'work', 'timed_out']
+
+
+def test_an_effect_in_an_earlier_run_does_not_make_a_later_plain_expiry_effected(tmp_path):
+    # The first run recorded nothing before expiring; only the run that expires after an effect is effected.
+    assert play(effected(tmp_path), {'work': ['hang', 'effect']})[1] == ['work', 'work', 'recover']
+
+
+def test_an_effected_expiry_takes_no_edge_that_does_not_require_the_effect(tmp_path):
+    # The replay edge would match this expiry, but a step that recorded an effect is never replayed.
+    rows = (('work', 'work', 'work.expired and work.expirations < NODE_TIMEOUT_PASSES'),
+            ('work', 'recover', 'work.expired and work.effected'), ('work', 'finish', 'otherwise'))
+
+    calls, error = calls_after(effected(tmp_path, *rows), {'work': ['effect']})
+
+    assert error is None and calls == ['work', 'recover']
+
+
+def test_the_effected_route_is_the_only_exit_of_an_effected_expiry(tmp_path):
+    rows = (('work', 'work', 'work.expired and work.expirations < NODE_TIMEOUT_PASSES'),
+            ('work', 'timed_out', 'work.expired and work.expirations >= NODE_TIMEOUT_PASSES'),
+            ('work', 'finish', 'otherwise'))
+
+    calls, error = calls_after(effected(tmp_path, *rows), {'work': ['effect', 'ok']})
+
+    assert isinstance(error, TimeoutError) and calls == ['work']
+
+
+def test_a_step_that_expired_after_an_effect_cannot_start_again_in_the_turn(tmp_path):
+    flow = EFFECT_FLOW
+    rows = (*EFFECTED[:1], ('work', 'finish', 'otherwise'), ('recover', 'work', 'not recover.ok and work.attempt < PLAN_PASSES'),
+            ('recover', 'END', 'otherwise'))
+    entry = expiring(tmp_path, *rows, flow=flow, ends=ENDS, keys=('NODE_TIMEOUT_PASSES', 'PLAN_PASSES'))
+
+    calls, error = calls_after(entry, {'work': ['effect', 'ok']}, config={'PLAN_PASSES': 3})
+
+    assert isinstance(error, WorkflowError) and 'cannot start again' in str(error)
+    assert calls == ['work', 'recover']
+
+
+def test_an_effect_inside_a_component_is_routed_by_the_components_effected_edge(tmp_path):
+    rows = (('group', 'timed_out', 'group.expired and group.effected'), ('group', 'finish', 'otherwise'))
+
+    values, calls, _ = play(group(tmp_path, *rows), {'work': ['effect']})
+
+    assert calls == ['prepare', 'work', 'timed_out']
+    assert set(values) == {'START', 'timed_out'}
+
+
+def test_a_component_that_expired_after_an_effect_cannot_start_again_in_the_turn(tmp_path):
+    flow = [('component', 'group'), ('node', 'finish'), ('node', 'recover'), ('node', 'timed_out')]
+    rows = (('group', 'recover', 'group.expired and group.effected'), ('group', 'finish', 'otherwise'),
+            ('recover', 'group', 'not recover.ok and group.attempt < PLAN_PASSES'), ('recover', 'END', 'otherwise'))
+    components = {'group': (['prepare', 'work'], '')}
+    entry = expiring(tmp_path, *rows, flow=flow, ends=ENDS, components=components, owners=(('group', 'GROUP_TIMEOUT'),),
+                     keys=('NODE_TIMEOUT_PASSES', 'PLAN_PASSES'))
+
+    calls, error = calls_after(entry, {'work': ['effect', 'ok']}, config={'PLAN_PASSES': 3})
+
+    assert isinstance(error, WorkflowError) and 'cannot start again' in str(error)
+    assert calls == ['prepare', 'work', 'recover']
+
+
+def test_an_ancestor_deadline_after_an_effect_is_still_not_routed(tmp_path):
+    entry = effected(tmp_path, owners=(('GRAPH', 'GRAPH_TIMEOUT'), ('work', 'NODE_TIMEOUT')))
+
+    calls, error = calls_after(entry, {'work': ['effect']}, config={'GRAPH_TIMEOUT': 0.1, 'NODE_TIMEOUT': 30})
+
+    assert isinstance(error, TimeoutError) and calls == ['work']
 
 
 def group(tmp_path, *rows, inner=(), children=('prepare', 'work'), owners=(('group', 'GROUP_TIMEOUT'),), extra=''):
@@ -349,3 +436,27 @@ def test_an_expiry_count_does_not_bound_another_steps_backward_edge(tmp_path):
 
     with pytest.raises(LayoutError, match='backward edge to work requires a bounded When'):
         load(expiring(tmp_path, *rows, flow=flow))
+
+
+def test_an_effected_edge_may_not_replay_its_own_step(tmp_path):
+    rows = (('work', 'work', 'work.expired and work.effected and work.attempt < NODE_TIMEOUT_PASSES'),
+            ('work', 'finish', 'otherwise'))
+
+    with pytest.raises(LayoutError, match='work.effected may only route to a step other than work'):
+        load(effected(tmp_path, *rows))
+
+
+def test_an_effected_condition_needs_the_step_to_declare_its_own_timeout_row(tmp_path):
+    rows = (('work', 'recover', 'work.effected'), ('work', 'finish', 'otherwise'))
+
+    with pytest.raises(LayoutError, match=r'work\.effected requires work to declare its own Timeouts row'):
+        load(effected(tmp_path, *rows, owners=(('finish', 'NODE_TIMEOUT'),)))
+
+
+@pytest.mark.parametrize('reserved', ['effected', 'expirations'])
+def test_the_output_schema_may_not_declare_the_other_expiry_names(tmp_path, reserved):
+    entry = effected(tmp_path)
+    node(tmp_path, 'work', outputs={'n': {'type': 'integer'}, reserved: {'type': 'boolean'}})
+
+    with pytest.raises(LayoutError, match=rf'work\.md\.html:\d+: Output schema declares reserved field {reserved}'):
+        load(entry)

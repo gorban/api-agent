@@ -42,13 +42,15 @@ class Predicate:
     expiring: frozenset = frozenset()
 
     def evaluate(self, values, *, attempt=1, max_passes=1, constants=None, visits=None, expired=None,
-                 expirations=None):
+                 expirations=None, effected=None):
         """``visits`` maps a step ID to its start count (an unstarted step reads 0), ``expired`` to
-        whether its latest run ended at its own declared timeout (an unstarted step reads false) and
-        ``expirations`` to how many of its runs did."""
+        whether its latest run ended at its own declared timeout (an unstarted step reads false),
+        ``expirations`` to how many of its runs did and ``effected`` to whether the latest such
+        expiry came after the run recorded an effect."""
         counters = {('attempt', step): (visits or {}).get(step, 0) for step in self.steps}
         counters.update({('expired', step): bool((expired or {}).get(step)) for step in self.expiring})
         counters.update({('expirations', step): (expirations or {}).get(step, 0) for step in self.expiring})
+        counters.update({('effected', step): bool((effected or {}).get(step)) for step in self.expiring})
         return _evaluate(self.tree.body, values, self.source_owners,
                          {'attempt': attempt, 'max_passes': max_passes}, constants or {}, counters)
 
@@ -116,16 +118,16 @@ def parse_predicate(text, fields):
 
     def contract(node):
         owner, path = _reference(node)
-        if (len(path) == 1 and path[0] in ('attempt', 'expired', 'expirations') and owner in steps
+        if (len(path) == 1 and path[0] in ('attempt', 'expired', 'expirations', 'effected') and owner in steps
                 and path[0] in fields.get(owner, {})):
             raise PredicateError(f'{owner}.{path[0]} is ambiguous: {owner} also declares an output field '
                                  f'named {path[0]}; rename that field')
         if path == ('attempt',) and owner in steps:
             return {'type': 'integer'}
-        if path in (('expired',), ('expirations',)) and owner in steps:
+        if path in (('expired',), ('expirations',), ('effected',)) and owner in steps:
             if owner not in expiring:
                 raise PredicateError(f'{owner}.{path[0]} requires {owner} to declare its own Timeouts row')
-            return {'type': 'boolean' if path == ('expired',) else 'integer'}
+            return {'type': 'integer' if path == ('expirations',) else 'boolean'}
         if owner == _SOURCE and fields is not None:
             owner = source_owners.get(path)
             if owner is None:
@@ -385,7 +387,7 @@ def backward_bound(predicate, source, target, limits):
     re-entering ``target``.
     """
     counters = ['attempt']
-    if source == target and edge_expiry(predicate.text, source, flag='expired') == 'requires':
+    if source == target and edge_expiry(predicate.text, source, flags=('expired',)) == 'requires':
         counters.append('expirations')
     for node in _conjuncts(predicate.tree.body):
         if (isinstance(node, ast.Compare) and isinstance(node.ops[0], (ast.Lt, ast.LtE))
@@ -404,18 +406,19 @@ def _conjuncts(node):
         yield node
 
 
-def _reads_expired(node, step, flag):
+def _reads_expired(node, step, flags):
     try:
-        return _reference(node) == (step, (flag,))
+        owner, path = _reference(node)
     except PredicateError:
         return False
+    return owner == step and len(path) == 1 and path[0] in flags
 
 
 @lru_cache(maxsize=1024)
-def edge_expiry(when, step, flag='expired'):
-    """How an edge condition text uses the ``<step>.<flag>`` expiry flag: ``'requires'`` when a
-    top-level conjunct is exactly that flag, ``'reads'`` when it appears anywhere else, otherwise
-    ``None``.
+def edge_expiry(when, step, flags=('expired', 'effected')):
+    """How an edge condition text uses the step's expiry flags (``<step>.expired`` and
+    ``<step>.effected``, the latter implying the former): ``'requires'`` when a top-level conjunct
+    is exactly one of them, ``'reads'`` when one appears anywhere else, otherwise ``None``.
 
     Condition texts that do not parse as predicates (native condition IDs, ``always``) use nothing.
     """
@@ -423,9 +426,14 @@ def edge_expiry(when, step, flag='expired'):
         tree = ast.parse(_normalize(when), mode='eval').body
     except (PredicateError, SyntaxError):
         return None
-    if any(_reads_expired(node, step, flag) for node in _conjuncts(tree)):
+    if any(_reads_expired(node, step, flags) for node in _conjuncts(tree)):
         return 'requires'
-    return 'reads' if any(_reads_expired(node, step, flag) for node in ast.walk(tree)) else None
+    return 'reads' if any(_reads_expired(node, step, flags) for node in ast.walk(tree)) else None
+
+
+def edge_effected(when, step):
+    """Whether a top-level conjunct of an edge condition text is exactly ``<step>.effected``."""
+    return edge_expiry(when, step, ('effected',)) == 'requires'
 
 
 def unbounded_edge_message(target):

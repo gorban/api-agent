@@ -103,6 +103,14 @@ EXPIRY_REPLAY = (('work', 'work', 'work.expired and work.expirations < NODE_TIME
                  ('work', 'timed_out', 'work.expired and work.expirations >= NODE_TIMEOUT_PASSES'),
                  ('work', 'finish', 'otherwise'))
 ENDS = (('finish', 'END', 'always'), ('timed_out', 'END', 'always'))
+# A step that expired after recording an effect leaves only by an edge that requires `.effected`, to a
+# target that never runs the step again; every other expiry is replayed or exhausted as usual.
+EFFECT_FLOW = [('node', 'work'), ('node', 'finish'), ('node', 'recover'), ('node', 'timed_out')]
+EFFECTED = (('work', 'recover', 'work.expired and work.effected'),
+            ('work', 'work', 'work.expired and work.expirations < NODE_TIMEOUT_PASSES'),
+            ('work', 'timed_out', 'work.expired and work.expirations >= NODE_TIMEOUT_PASSES'),
+            ('work', 'finish', 'otherwise'))
+EFFECT_ENDS = (*ENDS, ('recover', 'END', 'always'))
 
 
 def timeouts(*rows):
