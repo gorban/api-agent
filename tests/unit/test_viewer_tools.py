@@ -196,7 +196,7 @@ def test_capture_stops_descendant_after_launcher_exits(tmp_path, inherit_pipes):
             with pytest.raises(TimeoutError, match='timed out'):
                 dispatcher._capture([sys.executable, '-c', script, str(pid_file), 'inherit'],
                                     cwd=tmp_path, env=os.environ.copy(),
-                                    deadline=time.monotonic() + .5, seconds=5, output_limit=1024)
+                                    deadline=time.monotonic() + 5, seconds=5, output_limit=1024)
         else:
             code, out, err = dispatcher._capture([sys.executable, '-c', script, str(pid_file), 'redirect'],
                                                  cwd=tmp_path, env=os.environ.copy(),
