@@ -109,7 +109,7 @@ def test_common_decoder_rejects_duplicates_before_parsing_loses_them():
     assert decode_json('{"safe": 1}') == {'safe': 1}
 
 
-@pytest.mark.parametrize('max_depth', [-1, 65, True])
+@pytest.mark.parametrize('max_depth', [-1, 129, True])
 def test_invalid_depth_configuration_rejects(max_depth):
     with pytest.raises(ResponseValidationError):
         scrub_response({}, schema={}, max_depth=max_depth)

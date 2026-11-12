@@ -127,7 +127,7 @@ def test_tuple_list_cycle_retains_safe_siblings():
 def test_tuple_depth_matches_array_depth_without_erasing_safe_siblings():
     from api_agent.telemetry.redaction import JSONDepthError, normalized_json
     value = 'ordinary'
-    for _ in range(24):
+    for _ in range(130):
         value = (value,)
     with pytest.raises(JSONDepthError):
         normalized_json(value)

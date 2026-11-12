@@ -136,12 +136,22 @@ def test_guard_rejects_ambiguous_json_carriers(payload):
         guard_json(payload, {'{"token":"synthetic-credential"}'})
 
 
-def test_guard_rejects_deep_embedded_structured_carrier():
+def _nested_carrier(levels):
     nested = 'ordinary'
-    for _ in range(24):
+    for _ in range(levels):
         nested = {'child': nested}
+    return {'text': json.dumps(nested)}
+
+
+def test_guard_admits_tool_history_depth_embedded_carrier():
+    # Tool results re-sent as historical observations nest about 24 levels.
+    carrier = _nested_carrier(24)
+    assert guard_json(carrier, {'{"token":"synthetic-credential"}'}) == carrier
+
+
+def test_guard_rejects_deep_embedded_structured_carrier():
     with pytest.raises(CredentialProtectionError):
-        guard_json({'text': json.dumps(nested)}, {'{"token":"synthetic-credential"}'})
+        guard_json(_nested_carrier(130), {'{"token":"synthetic-credential"}'})
 
 
 def test_guard_bounds_encoded_size_before_emission():

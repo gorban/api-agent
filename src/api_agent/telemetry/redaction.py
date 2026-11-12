@@ -189,7 +189,7 @@ def _json_object(pairs):
 
 
 def normalized_json(value, depth=0):
-    if depth > 20:
+    if depth > 128:
         raise JSONDepthError('JSON nesting exceeds the safe bound.')
     if type(value) is str:
         return printable_value(value)
@@ -228,7 +228,7 @@ def _json_registrations(secrets):
 
 
 def _contains_json_registration(value, registrations, depth=0):
-    if depth > 20:
+    if depth > 128:
         raise AmbiguousJSON('Serialized JSON nesting exceeds the safe bound.')
     value = normalized_json(value)
     if _canonical_json(value) in registrations:
