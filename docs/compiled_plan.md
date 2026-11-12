@@ -39,6 +39,17 @@ workflow uses the feature, so other plans keep their bytes: `application_binding
 slot to name a UTF-8 prompt resource and the slot set to equal the placeholders
 the plan's prompts use.
 
+## Declarations a plan cannot carry yet
+
+The compiler rejects these declarations, so a workflow using them runs only in
+declaration mode and cannot reach the production entrypoint:
+
+- typed-state node prompts and their prompt slots (binding-grammar
+  `prompt_slots` above are supported);
+- helper native sources (declare them as native dependencies instead);
+- typed-state `Functions`;
+- typed-state limits, and timeout-expiry routing in any workflow.
+
 ## Canonical encoding and order
 
 The compiler emits identity-free mappings, including selected declarations,
@@ -88,6 +99,12 @@ and `regenerate` commands cover it, so a stale copy fails the pre-commit check.
 
 Use `python -m api_agent.workflows.artifact_plans check --root .` for the
 same freshness check CI and pre-commit run.
+
+A plan file is the compiler's exact bytes, with no trailing newline. Exclude
+plan files from end-of-file fixers and mark them `-text` in `.gitattributes`
+(this repository marks `**/.private_resources/plans/*.json` and
+`qualification/*.json`); otherwise the freshness check and the loader both
+report the added line ending.
 
 ## Demo production artifact
 
@@ -151,5 +168,15 @@ refusing loopback endpoint, records the real delivery-failure warning, and
 proves shutdown remains bounded.  The qualification-only image adds the
 deterministic provider without adding test tooling to the production image.
 
-Remaining gap: the local-only proof does not establish collector delivery or
-production credentials.
+A startup failure (an unreadable plan, invalid configuration, or a
+composition error such as a missing `GRAPH` timeout) is logged on stderr as a
+failure category and in-package stack locations, without exception text,
+before the ASGI server receives `runtime_start_failed`.
+
+Remaining gaps: the local-only proof does not establish collector delivery or
+production credentials. The image is qualified only with a deterministic LLM
+provider. The Bedrock provider cannot start in it: the image omits the
+`bedrock` extra and the `testing` package that its worker imports. The
+bundled GraphQL MCP API provider (`api_providers/`) is not in the runtime
+wheel either; `API_AGENT_API_PROVIDER` must select a provider installed in the
+image.
