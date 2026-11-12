@@ -196,3 +196,20 @@ def test_local_run_with_its_own_view_preparation_skips_view_tools(tmp_path, monk
     monkeypatch.setattr('api_agent.runtime.local_run.component_timeout', budget)
     with pytest.raises(Stop):
         asyncio.run(owner.start())
+
+
+@pytest.mark.parametrize('argv,adopted', [(['prepare'], True), (['generate'], True),
+                                          (['generate', '--api-agent-plantuml-jar', 'renderer.jar'], False),
+                                          (['check'], False)])
+def test_renderer_commands_adopt_the_launcher_tool_state(monkeypatch, tmp_path, argv, adopted):
+    from api_agent.runtime import mise_tools
+    from api_agent.workflows import viewer_build
+    calls = []
+    monkeypatch.setattr(mise_tools, 'adopt_launcher_state', lambda: calls.append('adopted'))
+    monkeypatch.setattr(viewer_build, 'prepare_renderer', lambda: tmp_path / 'renderer.jar')
+    monkeypatch.setattr(viewer_build, 'generate_views', lambda *args, **kwargs: ())
+    monkeypatch.setattr(viewer_build, 'check_views', lambda root: None)
+    monkeypatch.setattr(viewer_build, 'default_renderer', lambda path: object())
+    monkeypatch.setattr('api_agent.workflows.viewer_config.resolve_renderer_path', lambda **kwargs: 'renderer.jar')
+    assert viewer_build.main([*argv, '--root', str(tmp_path)]) == 0
+    assert calls == (['adopted'] if adopted else [])

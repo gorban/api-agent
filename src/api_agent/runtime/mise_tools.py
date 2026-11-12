@@ -21,6 +21,30 @@ TOOLS = {
 }
 # These install one release file, named by the tool's literal mise asset_pattern.
 FILE_TOOLS = frozenset({'plantuml'})
+# The isolated tool state ./launch.sh exports, relative to <root>/.api-agent/bootstrap.
+LAUNCHER_STATE = {
+    'MISE_CONFIG_DIR': 'mise/config', 'MISE_GLOBAL_CONFIG_FILE': 'mise/config/config.toml',
+    'MISE_SYSTEM_CONFIG_DIR': 'mise/system', 'MISE_SYSTEM_CONFIG_FILE': 'mise/system/config.toml',
+    'MISE_DATA_DIR': 'mise/data', 'MISE_CACHE_DIR': 'mise/cache', 'MISE_STATE_DIR': 'mise/state',
+}
+
+
+def adopt_launcher_state():
+    """Give a direct source-checkout command the tool state ./launch.sh selects."""
+    if os.environ.get('API_AGENT_MISE') == '1' or not (ROOT / 'mise.toml').is_file():
+        return
+    mise = shutil.which('mise')
+    if mise is None:
+        raise OSError('mise is required to prepare project tools; install it or run through ./launch.sh')
+    # Like ./launch.sh, record trust in the caller's mise state before isolating it.
+    result = subprocess.run([mise, '--no-env', '--no-hooks', '--quiet', 'trust', str(ROOT / 'mise.toml')],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode:
+        raise OSError('Could not trust the project mise.toml; check mise state-directory permissions')
+    state = ROOT / '.api-agent/bootstrap'
+    os.environ.update({name: str(state / suffix) for name, suffix in LAUNCHER_STATE.items()})
+    os.environ.update(API_AGENT_MISE='1', MISE_CEILING_PATHS=str(ROOT.parent),
+                      MISE_OVERRIDE_CONFIG_FILENAMES='mise.toml', MISE_ENV='', MISE_NO_ENV='1', MISE_NO_HOOKS='1')
 
 
 def ensure_tools(*names, timeout=300, cancellation=None):

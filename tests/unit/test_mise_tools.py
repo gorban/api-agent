@@ -319,3 +319,56 @@ def test_managed_allure_failure_has_context(monkeypatch):
     viewer = ManagedAllureViewer()
     with pytest.raises(allure_viewer.ViewerError, match='Unable to prepare Allure and Java'):
         asyncio.run(viewer._ready())
+
+
+def _launcher_exports():
+    import re
+    script = (Path(__file__).resolve().parents[2] / 'launch.sh').read_text()
+    return dict(re.findall(r'(MISE_[A-Z_]+)="\$state/([^"]+)"', script))
+
+
+@pytest.fixture
+def restored_environment():
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+def test_direct_source_commands_adopt_the_launcher_tool_state(fake_mise, restored_environment):
+    root, _, _, log = fake_mise
+    os.environ.pop('API_AGENT_MISE', None)
+    exports = _launcher_exports()
+    assert set(exports) == set(mise_tools.LAUNCHER_STATE)
+    mise_tools.adopt_launcher_state()
+    assert os.environ['API_AGENT_MISE'] == '1'
+    for name, suffix in exports.items():
+        assert os.environ[name] == str(root / '.api-agent/bootstrap' / suffix)
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls[0][0] == ['--no-env', '--no-hooks', '--quiet', 'trust', str(root / 'mise.toml')]
+    assert mise_tools.ensure_tools('plantuml')['plantuml'].name == 'plantuml-mit-1.2026.9.jar'
+
+
+def test_launched_and_installed_runs_keep_their_tool_state(fake_mise, restored_environment):
+    root, _, _, log = fake_mise
+    before = dict(os.environ)
+    mise_tools.adopt_launcher_state()
+    assert dict(os.environ) == before
+    os.environ.pop('API_AGENT_MISE')
+    (root / 'mise.toml').unlink()
+    mise_tools.adopt_launcher_state()
+    assert 'API_AGENT_MISE' not in os.environ and not log.exists()
+
+
+@pytest.mark.parametrize('failure', ['missing', 'untrusted'])
+def test_adopting_the_launcher_state_requires_a_working_mise(fake_mise, monkeypatch, restored_environment, failure):
+    os.environ.pop('API_AGENT_MISE', None)
+    if failure == 'missing':
+        monkeypatch.setattr(mise_tools.shutil, 'which', lambda name: None)
+        match = 'mise is required'
+    else:
+        monkeypatch.setenv('FAKE_MISE_FAIL', '1')
+        match = 'Could not trust'
+    with pytest.raises(OSError, match=match):
+        mise_tools.adopt_launcher_state()
+    assert 'API_AGENT_MISE' not in os.environ
