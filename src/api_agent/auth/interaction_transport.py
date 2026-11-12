@@ -8,6 +8,9 @@ import threading
 import time
 
 _LIMIT = 65536
+# One loopback call; a closed peer ends it at once, so this only bounds a stalled
+# peer and must outlast scheduling delays on a loaded host.
+_FRAME_SECONDS = 10
 _NOT_STARTED = object()
 
 
@@ -21,7 +24,7 @@ def validate_descriptor(value):
 
 
 def _receive(stream):
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + _FRAME_SECONDS
     def exact(size):
         data = bytearray()
         while len(data) < size:
@@ -64,7 +67,7 @@ class InteractionServer:
                     if owner.closed:
                         return
                     owner.connections.add(self.request)
-                self.request.settimeout(2)
+                self.request.settimeout(_FRAME_SECONDS)
                 try:
                     row = _receive(self.request)
                     if not isinstance(row, dict) or not secrets.compare_digest(row.get('token', ''), token):
@@ -188,7 +191,7 @@ class InteractionClient:
         from .interaction import Reply
         started = False
         try:
-            with socket.create_connection(('127.0.0.1', self.descriptor['port']), timeout=2) as stream:
+            with socket.create_connection(('127.0.0.1', self.descriptor['port']), timeout=_FRAME_SECONDS) as stream:
                 started = True
                 _send(stream, dict(row, token=self.descriptor['token']))
                 return _receive(stream)
