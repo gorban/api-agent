@@ -477,6 +477,12 @@ def test_compiled_format_rejection_exhausts_declared_passes():
     assert next(event for event in events if event['event'] == 'scope_end' and event['owner'] == 'first')['outcome'] == 'failed'
 
 
+def test_condition_lines_split_a_multiline_condition_at_its_own_alternatives():
+    from api_agent.workflows.predicates import condition_lines
+
+    assert condition_lines('(.a == 1\n and .b == 2) or .c == 3') == ['(.a == 1\n and .b == 2)', 'or .c == 3']
+
+
 def test_condition_lines_split_only_top_level_alternatives():
     from api_agent.workflows.predicates import condition_lines
     assert condition_lines('.step == "a" or .step == "b or c"') == ['.step == "a"', 'or .step == "b or c"']
