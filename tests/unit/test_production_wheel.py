@@ -40,6 +40,36 @@ def test_production_build_target_excludes_development_import_closure(tmp_path):
     assert 'Requires-Dist: pytest' not in requires
 
 
+def _requirements(lines):
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+    parsed = (Requirement(line) for line in lines)
+    return {(canonicalize_name(item.name), frozenset(item.extras), item.specifier) for item in parsed}
+
+
+def test_production_wheel_declares_the_project_dependencies_except_the_parser(tmp_path):
+    import tomllib
+    build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
+    declared = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['dependencies']
+
+    wheel = build(ROOT, tmp_path)
+    with zipfile.ZipFile(wheel) as archive:
+        metadata = next(name for name in archive.namelist() if name.endswith('.dist-info/METADATA'))
+        requires = [line.removeprefix('Requires-Dist: ') for line in archive.read(metadata).decode().splitlines()
+                    if line.startswith('Requires-Dist: ')]
+
+    assert _requirements(requires) == _requirements(
+        item for item in declared if not item.startswith('markdown-it-py'))
+
+
+def test_production_wheel_rejects_a_parser_exclusion_the_project_no_longer_declares(monkeypatch, tmp_path):
+    module = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))
+    monkeypatch.setitem(module['build'].__globals__, '_PARSER_DISTRIBUTIONS', frozenset({'absent-parser'}))
+
+    with pytest.raises(RuntimeError, match='absent-parser'):
+        module['build'](ROOT, tmp_path)
+
+
 def test_production_import_closure_never_imports_terminal_or_viewer_modules(tmp_path):
     module = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))
     closure = module['production_import_closure'](ROOT)
@@ -116,6 +146,15 @@ def test_production_wheel_build_rejects_retained_or_missing_artifacts(monkeypatc
         module['build'](ROOT, tmp_path)
 
 
+@pytest.mark.parametrize('module', ['api_agent.testing.processes', 'api_agent.api_providers.graphql_mcp'])
+def test_production_wheel_build_rejects_a_closure_reaching_an_excluded_package(monkeypatch, tmp_path, module):
+    build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
+    monkeypatch.setitem(build.__globals__, 'production_import_closure', lambda _: frozenset({module}))
+
+    with pytest.raises(RuntimeError, match=f'requires excluded modules: .*{module}'):
+        build(ROOT, tmp_path)
+
+
 def test_production_import_helper_supports_package_initializers(tmp_path):
     module = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))
     package = tmp_path / 'api_agent' / 'runtime'
@@ -143,6 +182,7 @@ def test_production_wheel_script_exits_with_main_result(monkeypatch, tmp_path):
         fixture = tmp_path / relative
         fixture.parent.mkdir(parents=True, exist_ok=True)
         fixture.write_text('pass\n')
+    (tmp_path / 'pyproject.toml').write_text('[project]\ndependencies = ["markdown-it-py==4.2.0"]\n')
 
     def build_wheel(command, *, cwd, check, capture_output, text):
         assert cwd == tmp_path
