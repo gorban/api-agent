@@ -31,6 +31,14 @@ def system_prompts(pack, questions):
     return [request.payload.messages[0].content[0].text for request in requests]
 
 
+def test_prompted_demo_declares_the_graph_timeout_chat_composition_requires():
+    from api_agent.workflows.configuration import declared_timeouts
+    definition = load_definition(DEMO / 'flow.md.html', base_root=ROOT, pack_root=DEMO / 'packs' / 'fleet',
+                                 entry_root='base')
+
+    assert declared_timeouts(definition)['GRAPH'] == 600.0
+
+
 def test_each_pack_fills_the_declared_prompt_slots():
     fleet = system_prompts('fleet', ['Which units are due?', 'And next week?'])
     construction = system_prompts('construction', ['Which projects are late?'])
