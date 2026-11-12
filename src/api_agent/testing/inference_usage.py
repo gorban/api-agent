@@ -322,7 +322,9 @@ def capture(event, tracker):
             quote = None
         else:
             quote = {'list_cost_usd': summary['list_cost_usd'], 'payment': None}
-        payments = [(attempt['quote'] or {}).get('payment') for attempt in ledger['attempts']]
+        # An attempt that observed no usage was never quoted and carries no payment evidence.
+        payments = [attempt['quote'].get('payment') for attempt in ledger['attempts']
+                    if attempt['quote'] is not None]
         if (ledger['complete'] and payments and payments[0] is not None
                 and all(payment == payments[0] for payment in payments)):
             quote = {'list_cost_usd': None if quote is None else quote['list_cost_usd'],
