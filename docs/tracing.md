@@ -118,6 +118,11 @@ Removal waits for open evidence leases, and a value that is also registered
 unscoped or by another owner stays scrubbed. Registrations made through an
 owner that is never closed stay for the life of the boundary.
 
+`boundary.call_credentials()` is the owner every operation of a boundary shares
+for the credential it authenticates with: each operation holds it, registers
+its credential in the `call` slot and releases the hold when it ends, so the
+registry keeps only the credentials of operations still running.
+
 Shared-provider integration tests use a trace runtime owned by their shared
 backend. Its `chat` spans and child `transport attempt` spans carry the same
 logical-call and physical-attempt IDs as accounting and Allure. These remote

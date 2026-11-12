@@ -469,6 +469,28 @@ def _credential_authorities(boundary):
     return tuple(owners)
 
 
+class _CallCredentials:
+    """The per-call credential owners of every authority a journal keeps live, used as one."""
+    def __init__(self, owners):
+        self._owners = owners
+
+    def register(self, *secrets, slot=None):
+        for owner in self._owners:
+            owner.register(*secrets, slot=slot)
+
+    async def aregister(self, *secrets, slot=None):
+        for owner in self._owners:
+            await owner.aregister(*secrets, slot=slot)
+
+    def hold(self):
+        from api_agent.telemetry.privacy import HeldCredentials
+        return HeldCredentials(owner.hold() for owner in self._owners)
+
+    def retire(self, slot=None):
+        for owner in self._owners:
+            owner.retire(slot)
+
+
 class _JournalBoundary:
     """Keep credential authorities live without replacing their registrations."""
     def __init__(self, policy, *boundaries):
@@ -485,6 +507,9 @@ class _JournalBoundary:
         from api_agent.telemetry.privacy import register_secret_async
         for boundary in self._boundaries:
             await register_secret_async(boundary, secret)
+
+    def call_credentials(self):
+        return _CallCredentials(tuple(boundary.call_credentials() for boundary in self._boundaries))
 
     def content_export(self, payload):
         # One original projection must see the union: sequential scrubbing can

@@ -97,9 +97,10 @@ def test_capture_auth_waits_for_publication_before_registration_and_use():
             assert not task.done()
             assert 'synthetic-late-secret' not in boundary._secrets
             lease.release()
-            await task
+            captured = await task
             capture_inference('input', {'text': 'synthetic-late-secret'}, 'cause', auth='synthetic-late-secret')
             assert 'synthetic-late-secret' not in repr(collector['rows'])
+            captured.release()
     asyncio.run(scenario())
 
 

@@ -137,6 +137,7 @@ class _Authority:
         # Unscoped registrations live as long as the authority. Scoped ones
         # live while a credential owner's slot or hold still claims them.
         self.permanent = set()
+        self.call_owner = None
         self.claims = {}
         self.unclaimed = set()
 
@@ -291,6 +292,13 @@ class EmissionBoundary:
     def credential_owner(self):
         """Return an owner whose registrations end with it instead of living as long as this authority."""
         return CredentialOwner(self)
+
+    def call_credentials(self):
+        """Return the owner shared by every operation of this authority for the credential it authenticates with."""
+        with self._authority.lock:
+            if self._authority.call_owner is None:
+                self._authority.call_owner = CredentialOwner(self)
+            return self._authority.call_owner
 
     def begin_evidence_lease(self):
         """Freeze new registrations until the returned owned lease is released."""
@@ -824,6 +832,23 @@ class CredentialOwner:
             slots, self._slots = self._slots, {}
             for secrets in slots.values():
                 self._authority.unclaim(secrets)
+
+
+class HeldCredentials:
+    """Holds taken together on several owners, released together."""
+
+    def __init__(self, holds):
+        self._holds = tuple(holds)
+
+    def release(self):
+        for hold in reversed(self._holds):
+            hold.release()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.release()
 
 
 class _CredentialHold:
