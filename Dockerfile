@@ -13,7 +13,7 @@ COPY demo/simple/functions.py demo/simple/functions.py
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra tracing --extra bedrock --extra graphql --no-editable --no-install-project && \
     python scripts/build_production_wheel.py && \
-    uv pip install --python .venv/bin/python --no-deps dist-production/api_agent_runtime-*.whl && \
+    uv pip install --python .venv/bin/python --no-deps dist-production/api_agent-*.whl && \
     python scripts/install_node_runtime.py mise.lock /opt/node && \
     PATH=/opt/node/bin:$PATH .venv/bin/python -c "import asyncio,sys; from api_agent.api_providers.graphql_mcp import prepare_assets; asyncio.run(prepare_assets(sys.argv[1], npm='/opt/node/bin/npm'))" /build/graphql-mcp && \
     find .venv -type d \( -name tests -o -name testing -o -name _tests -o -name __pycache__ \) -prune -exec rm -rf {} + && \
