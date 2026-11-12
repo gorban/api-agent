@@ -40,6 +40,7 @@ class _RegisteredSession(LLMSessionOwner):
     def __init__(self, provider, *, emissions, on_authentication_failure, **options):
         super().__init__(provider, **options)
         self.emissions = emissions
+        self._authentication_scope = emissions.credential_owner()
         self.on_authentication_failure = on_authentication_failure
 
     async def _authenticate(self, context):
@@ -51,11 +52,17 @@ class _RegisteredSession(LLMSessionOwner):
 
     async def call(self, operation, *, context=None):
         async def registered(*, auth):
-            if type(auth) is str and auth:
-                from api_agent.telemetry.privacy import register_secret_async
-                await register_secret_async(self.emissions, auth)
-            return await operation(auth=auth)
+            # A refreshed credential supersedes the previous one; the hold keeps
+            # it scrubbed until this operation has finished emitting.
+            with self._authentication_scope.hold():
+                if type(auth) is str and auth:
+                    await self._authentication_scope.aregister(auth, slot='call')
+                return await operation(auth=auth)
         return await super().call(registered, context=context)
+
+    async def _dispose(self):
+        await super()._dispose()
+        self._authentication_scope.close()
 
 
 @dataclass
