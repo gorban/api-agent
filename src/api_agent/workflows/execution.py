@@ -32,7 +32,7 @@ from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
 from api_agent.runtime.tasks import offload
-from .predicates import (component_controller, component_decision, edge_expiry, edge_source, entry_source, loop_edges,
+from .predicates import (component_controller, component_decision, edge_effected, edge_expiry, edge_source, entry_source, loop_edges,
                          MissingPredicateField, native_condition_id, parse_predicate, predicate_fields, state_predicate_fields,
                          unbounded_edge_message)
 
@@ -328,9 +328,10 @@ def _started(starts, step_id):
 
 
 def _entered(state, step_id):
-    """``state`` as ``step_id`` starts: one more start counted and its expiry flag cleared."""
+    """``state`` as ``step_id`` starts: one more start counted and its expiry flags cleared."""
     return dict(state, starts=_started(state.get('starts', {}), step_id),
-                expired={key: value for key, value in state.get('expired', {}).items() if key != step_id})
+                expired={key: value for key, value in state.get('expired', {}).items() if key != step_id},
+                effected={key: value for key, value in state.get('effected', {}).items() if key != step_id})
 
 
 class _SessionCommit:
@@ -373,6 +374,7 @@ class _State(TypedDict):
     starts: dict
     expired: dict
     expirations: dict
+    effected: dict
 
 
 
@@ -740,9 +742,11 @@ class Workflow:
         """The edges that apply after ``source``: the matching ones, else the fallback.
 
         After ``source`` ended at its own declared timeout only the edges that read its expiry
-        apply, and there is no fallback, so an expiry never continues as a finished run.
+        apply, and there is no fallback, so an expiry never continues as a finished run. When
+        the expired run had recorded effects, only the edges that require ``<source>.effected``
+        apply: no other route may replay the step.
         """
-        expired = state.get('expired', {})
+        expired, effected = state.get('expired', {}), state.get('effected', {})
         own = bool(expired.get(source))
         # Expired components discard their descendants, but retain a result
         # from an earlier completed visit. A node discards its own prior output.
@@ -752,26 +756,27 @@ class Workflow:
             try:
                 return self._condition(row['When'], state['values'], source=source, ancestry=state['ancestry'],
                                        visits=state.get('starts'), expired=expired,
-                                       expirations=state.get('expirations'), abandoned=abandoned)
+                                       expirations=state.get('expirations'), effected=effected, abandoned=abandoned)
             except MissingPredicateField as error:
                 if error.owner not in abandoned:
                     raise
                 return False
         choices = [row for row in edges if row['When'] not in ('always', 'otherwise')
-                   and (not own or row['When'] in self._expiry[source]) and matches(row)]
+                   and (not own or row['When'] in self._expiry[source])
+                   and (not effected.get(source) or edge_effected(row['When'], source)) and matches(row)]
         if not own:
             choices = choices or [row for row in edges if row['When'] in ('always', 'otherwise')]
         return choices
 
     def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None, expired=None,
-                   expirations=None, abandoned=()):
+                   expirations=None, effected=None, abandoned=()):
         if (source, identifier) in self._predicates:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
             results = {key: value for key, value in self._turn_state.get()['results'].items() if key not in abandoned}
             result = predicate.evaluate({**values, **results}, attempt=attempt,
                                         max_passes=maximum, visits=visits, expired=expired,
-                                        expirations=expirations,
+                                        expirations=expirations, effected=effected,
                                         constants={**self.pass_constants, **self.limit_values})
         else:
             result = self.conditions[identifier](deepcopy(values))
@@ -790,6 +795,7 @@ class Workflow:
             original_previous = state['previous']
             original_attempt_id = state['attempt_id']
             descendants = {item.id for item in self.layout.steps if self._owned_by(item, step.id)}
+            self._check_unsealed(step.id)
             current = _entered(state, step.id)
             feedback = {}
             turn = self._turn_state.get()
@@ -950,6 +956,7 @@ class Workflow:
             return dict(state, values={**values, step.id: output}, visit_id=budget.id)
         async def timed(state):
             frame = next((item for item in reversed(_REPAIRS.get()) if item.workflow is self), None)
+            self._check_unsealed(step.id)
             current = _entered(state, step.id)
             correction_attempt = 0
             while True:
@@ -1110,16 +1117,29 @@ class Workflow:
         """``state`` after ``owner``'s own declared timeout expired, or ``None`` when its edges cannot route that.
 
         The abandoned run leaves no output of its own or of the steps it owns, and an expiry is
-        routable only when one of the owner's expiry edges matches the resulting state.
+        routable only when one of the owner's expiry edges matches the resulting state. After a run
+        that dispatched effects that is only an edge requiring ``<owner>.effected``, and the owner
+        is sealed: it cannot start again in this turn.
         """
-        if not self._routes_expiry(owner, budget, nodes):
+        if owner not in self._expiry or not self._own_expiry(owner, budget):
             return None
+        contexts = self._turn_state.get()['contexts']
+        effected = any(context._dispatched() for context in map(contexts.get, nodes) if context is not None)
         expirations = state.get('expirations', {})
         after = dict(state, visit_id=budget.id, expired={**state.get('expired', {}), owner: True},
                      expirations={**expirations, owner: expirations.get(owner, 0) + 1},
+                     effected={**state.get('effected', {}), owner: effected},
                      values={key: value for key, value in state['values'].items() if key != owner and key not in nodes})
         edges = [row for row in self.layout.tables['Edges'] if row['From'] == owner]
-        return after if self._route_choices(owner, edges, after) else None
+        if not self._route_choices(owner, edges, after):
+            return None
+        if effected:
+            self._turn_state.get()['sealed'].add(owner)
+        return after
+
+    def _check_unsealed(self, step_id):
+        if step_id in self._turn_state.get()['sealed']:
+            raise WorkflowError(f'Step {step_id} cannot start again: its expired run dispatched effects')
 
     def _expiry_update(self, owner, state):
         expired, expirations = self._expiry[owner]
@@ -1569,7 +1589,8 @@ class Workflow:
         from .inference_history import InferenceHistory
         history = InferenceHistory()
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
-                                                  'contexts': {}, 'budgets': {}, 'runs': [], 'exits': {}, 'results': {}})
+                                                  'contexts': {}, 'budgets': {}, 'runs': [], 'exits': {}, 'results': {},
+                                                  'sealed': set()})
         completed = False
         try:
             selected_journal = self._journal.get()
@@ -1647,7 +1668,7 @@ class Workflow:
                 self._turn_state.get()['session'] = session
             prompts = self._prompt_texts()
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
-                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}, expired={}, expirations={}),
+                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}, expired={}, expirations={}, effected={}),
                 {'recursion_limit': self._recursion_limit})
             if commit is not None:
                 commit.merged = self._merge_session(session, self._turn_state.get()['runs'])

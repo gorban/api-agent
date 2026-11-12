@@ -818,9 +818,26 @@ failing the turn:
   `TimeoutError` raised by native code before the step's deadline, and a tool port timeout
   inside the node propagate as before; a component with its own `.expired` edges is routed
   by those edges. Without a `.expired` edge the behavior is unchanged: the turn fails.
-- A step that dispatched an effect (`operations@1` write, `mark_effect`) fails the turn
-  instead of routing, so nothing is replayed or continued after an uncertain write. A
-  component fails when any step it owns dispatched one.
+- A step that dispatched an effect (a call to an `operations@1` operation not declared
+  idempotent, or `mark_effect`) is never replayed or continued as if nothing happened, because
+  the write may or may not have applied. Its expiry leaves only by an edge that requires
+  `<step>.effected`, the engine flag that is true when the expired run had recorded an effect
+  (it implies `<step>.expired`, and a component is effected when any step it owns dispatched
+  one). No other expiry edge, replay edge included, applies to such a run, and without an
+  `.effected` edge the turn fails with the `TimeoutError`. Declare that route to a target that
+  answers for the uncertain outcome:
+
+  ```markdown
+  | work | outcome_unknown | work.expired and work.effected |
+  | work | work | work.expired and work.expirations < WORK_TIMEOUT_PASSES |
+  ```
+
+  The edge may not lead back to the step itself, and the step is sealed once it is taken: a
+  later start of that step (or of a component that owns it) in the same turn fails with
+  `cannot start again`, so no route can replay the write. A run that expired before any effect
+  is replayed and exhausted as above. Like `expired`, `effected` is reserved in `Output`
+  schemas and needs the step's own `Timeouts` row. Typed-state graphs (`Expired` and
+  `Expirations` columns) keep failing the turn after an effect.
 - A node inside a guarded component is routed within the pass, and the guard and pass
   limits apply to what follows. A guarded component's expiry abandons all its passes and
   is routed by its own edges.

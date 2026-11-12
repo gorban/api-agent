@@ -8,7 +8,7 @@ import pytest
 from api_agent.workflows.journal import WorkflowJournal, validate_journal
 from expiry_support import ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, expiring
 from loop_support import build, load
-from test_workflow_expiry import GROUP_ROUTE, group, looped
+from test_workflow_expiry import GROUP_ROUTE, effected, group, looped
 from test_workflow_loops_journal import routes, sign
 
 SAME_TARGET = (('work', 'finish', 'work.expired'), ('work', 'finish', 'otherwise'))
@@ -119,6 +119,26 @@ def test_an_edge_bound_names_only_a_known_counter(tmp_path, counter):
 
     with pytest.raises(ValueError, match='Invalid workflow projection edge'):
         validate_journal(sign(forged))
+
+
+def test_an_effected_expiry_route_is_recorded_and_validates(tmp_path):
+    payload, definition = recorded(effected(tmp_path), {'work': ['effect']})
+
+    (work,) = ended(payload, 'work')
+    assert (work['outcome'], work['reason']) == ('failed', 'declared_timeout_expired')
+    assert routes(payload) == [('START', 'work'), ('work', 'recover'), ('recover', 'END')]
+    assert payload['completeness'] == 'complete'
+    assert validate_journal(payload, expected_definition=definition) == payload
+
+
+def test_a_step_that_finished_cannot_claim_the_effected_edge(tmp_path):
+    payload, definition = recorded(effected(tmp_path))
+    forged = deepcopy(payload)
+    edge = next(event for event in forged['events'] if event['event'] == 'edge' and event['source'] == 'work')
+    edge.update(condition='work.expired and work.effected', target='recover')
+
+    with pytest.raises(ValueError, match='completeness mismatch'):
+        validate_journal(sign(forged), expected_definition=definition)
 
 
 def test_an_expired_component_journal_is_complete_and_names_the_component(tmp_path):

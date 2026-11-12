@@ -1,8 +1,8 @@
 """`<step>.expired` is an engine-maintained Boolean that only a step with its own Timeouts row may read."""
 import pytest
 
-from api_agent.workflows.predicates import (PredicateError, backward_bound, edge_expiry, parse_predicate,
-                                            predicate_fields)
+from api_agent.workflows.predicates import (PredicateError, backward_bound, edge_effected, edge_expiry,
+                                            parse_predicate, predicate_fields)
 from expiry_support import expiring
 from loop_support import load
 
@@ -97,3 +97,33 @@ def test_an_expiry_count_bounds_only_the_replay_of_the_step_that_expired(when, s
     predicate = parse_predicate(when, None)
 
     assert backward_bound(predicate, source, target, {'LIMIT'}) == bound
+
+
+@pytest.mark.parametrize('when,expired,effected', [
+    ('work.effected', 'requires', True),
+    ('work.expired and work.effected', 'requires', True),
+    ('work.expired and not work.effected', 'requires', False),
+    ('not work.effected', 'reads', False),
+    ('work.effected or work.attempt > 3', 'reads', False),
+    ('other.effected', None, False),
+    ('work.attempt > 3', None, False),
+    ('work.effected and', None, False),
+])
+def test_an_effected_condition_counts_as_reading_the_expiry(when, expired, effected):
+    assert edge_expiry(when, 'work') == expired
+    assert edge_effected(when, 'work') is effected
+
+
+def test_the_effected_flag_reads_false_unless_the_expiry_followed_an_effect(tmp_path):
+    predicate = parse_predicate('work.effected', fields(tmp_path))
+
+    assert predicate.evaluate({}) is False
+    assert predicate.evaluate({}, expired={'work': True}) is False
+    assert predicate.evaluate({}, effected={'finish': True}) is False
+    assert predicate.evaluate({}, effected={'work': True}) is True
+
+
+@pytest.mark.parametrize('owners', [(), (('finish', 'NODE_TIMEOUT'),), (('GRAPH', 'GRAPH_TIMEOUT'),)])
+def test_only_a_step_with_its_own_timeouts_row_has_the_effected_flag(tmp_path, owners):
+    with pytest.raises(PredicateError, match='work.effected requires work to declare its own Timeouts row'):
+        parse_predicate('work.effected', fields(tmp_path, owners))

@@ -10,7 +10,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
 from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID, timeout_owner_problem
-from .predicates import (PredicateError, backward_bound, edge_source, entry_problem, parse_predicate,
+from .predicates import (PredicateError, backward_bound, edge_effected, edge_source, entry_problem, parse_predicate,
                          predicate_fields, unbounded_edge_message)
 from . import session
 
@@ -130,7 +130,8 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
                 layout.row_error(row, str(error))
     for key, row in functions.items():
         for reserved, meaning in (('attempt', 'the engine start counter'), ('expired', 'the engine timeout expiry flag'),
-                                  ('expirations', 'the engine timeout expiry counter')):
+                                  ('expirations', 'the engine timeout expiry counter'),
+                                  ('effected', 'the engine flag for a timeout expiry after an effect')):
             if reserved in row['Output schema'].get('properties', {}):
                 layout.row_error(row, f'Output schema declares reserved field {reserved}; '
                                       f'<step>.{reserved} is {meaning}')
@@ -164,6 +165,9 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
                 predicate = parse_predicate(row['When'], predicate_fields(layout, source, entering))
             except PredicateError as error:
                 layout.row_error(row, str(error))
+        if entering is None and edge_effected(row['When'], source) and target == source:
+            layout.row_error(row, f'{source}.effected may only route to a step other than {source}: '
+                                  'a step that expired after an effect is never replayed')
         if (entering is None and target != 'END' and ordered.index(target) <= ordered.index(source)
                 and (predicate is None or backward_bound(predicate, source, target, limit_keys) is None)):
             layout.row_error(row, unbounded_edge_message(target))
