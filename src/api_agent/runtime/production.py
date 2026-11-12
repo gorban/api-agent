@@ -9,6 +9,7 @@ import argparse
 import asyncio
 from dataclasses import dataclass
 import ipaddress
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -267,7 +268,9 @@ class ProductionApplication:
             if event['type'] == 'lifespan.startup':
                 try:
                     await self._start()
-                except Exception:
+                except Exception as error:
+                    from api_agent.providers.setup_transport import _diagnostic
+                    logging.getLogger(__name__).error(_diagnostic(error, 'Runtime startup'))
                     await send({'type': 'lifespan.startup.failed', 'message': 'runtime_start_failed'})
                     return
                 await send({'type': 'lifespan.startup.complete'})
