@@ -38,7 +38,7 @@ def test_username_raw_whitespace_content_is_preserved(tmp_path):
 @pytest.mark.parametrize("body,timeout", [
     ("print('private-identity'); print('private-identity', file=sys.stderr); sys.exit(7)", 1),
     ("sys.stderr.write('Enter master password: private-identity'); sys.stderr.flush(); time.sleep(10)", 1),
-    ("time.sleep(10)", .05),
+    ("time.sleep(10)", 1),
 ])
 def test_username_failure_does_not_disclose_cli_identity(tmp_path, body, timeout):
     cli = fake_cli(tmp_path, body)

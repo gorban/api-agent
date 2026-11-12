@@ -946,12 +946,12 @@ def test_component_deadline_drains_child_offload_and_closes_scopes(fixture_graph
     _write(root, 'limit.toml', '''version = 1
 [fields.GROUP_LIMIT]
 type = "float"
-default = 0.02
+default = 0.3
 ''')
     source = root / 'native.py'
     source.write_text('import time\nfrom pathlib import Path\n' + source.read_text().replace(
         'def intake(state, context):', '''def intake(state, context):
-    time.sleep(0.08)
+    time.sleep(0.6)
     Path(context.request).write_text('finished')'''))
     entry.write_text(entry.read_text().replace(
         '1.  [node intake](intake.md.html)\n2.  [node finish](finish.md.html)',
