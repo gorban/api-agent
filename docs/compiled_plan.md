@@ -252,6 +252,28 @@ carry the stub's data, the stub to have received both the tool's schema
 introspection and the planned query with the configured headers, and a start
 without `API_ENDPOINT` to exit naming that field.
 
+It then repeats that run with `TRACE_EXPORT_ENDPOINT` set to a second loopback
+process inside the container (`qualification/trace_sink.py`), so tracing and a
+declared tool are proven together without any external network. The traced run
+must give the same tool evidence, deliver at least one export to the sink, and
+log no trace-delivery warning. Nothing on the production path serializes the
+tool plan: `ToolPlan.to_wire` is only called by the test harness, which the
+wheel excludes, so tracing needs no excluded module. The wheel test
+`test_installed_runtime_composes_a_traced_run_of_a_plan_with_declared_tools`
+composes the traced runtime and the plan's tools from the stripped layout and
+requires that no excluded module is imported.
+
+It then repeats that run with `TRACE_EXPORT_ENDPOINT` set to a second loopback
+process inside the container (`qualification/trace_sink.py`), so tracing and a
+declared tool are proven together without any external network. The traced run
+must give the same tool evidence, deliver at least one export to the sink, and
+log no trace-delivery warning. Nothing on the production path serializes the
+tool plan: `ToolPlan.to_wire` is only called by the test harness, which the
+wheel excludes, so tracing needs no excluded module. The wheel test
+`test_installed_runtime_composes_a_traced_run_of_a_plan_with_declared_tools`
+composes the traced runtime and the plan's tools from the stripped layout and
+requires that no excluded module is imported.
+
 Remaining gaps: the local-only proof does not establish collector delivery or
 production credentials. The two bundled providers were exercised inside a built
 image without network access: the GraphQL MCP tool is now exercised by the

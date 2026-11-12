@@ -457,6 +457,62 @@ def test_demo_tool_guard_rejects_each_regression(change, message):
         module['assert_demo_tool_results'](results)
 
 
+TRACED_DEMO_RESULTS = {**DEMO_RESULTS, 'trace_exports': [{'path': '/v1/traces', 'bytes': 3841}]}
+
+
+def test_traced_demo_guard_accepts_delivered_traces_beside_the_tool_evidence():
+    import copy
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+
+    module['assert_demo_tool_results'](copy.deepcopy(TRACED_DEMO_RESULTS), traced=True)
+
+
+@pytest.mark.parametrize(('change', 'message'), (
+    (lambda results: results.pop('trace_exports'), 'trace sink'),
+    (lambda results: results.update(trace_exports=[]), 'trace sink'),
+    (lambda results: results.update(trace_exports=[{'path': '/v1/metrics', 'bytes': 1}]), 'trace sink'),
+    (lambda results: results.update(container_logs='Trace delivery failed; tracing resources were closed. '
+                                                   'Some traces may be missing.'), 'trace delivery'),
+    (lambda results: results['stub_requests'].pop(1), 'configured endpoint'),
+))
+def test_traced_demo_guard_rejects_each_regression(change, message):
+    import copy
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    results = copy.deepcopy(TRACED_DEMO_RESULTS)
+
+    change(results)
+
+    with pytest.raises(RuntimeError, match=message):
+        module['assert_demo_tool_results'](results, traced=True)
+
+
+def test_untraced_demo_guard_does_not_require_a_trace_sink():
+    import copy
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    results = copy.deepcopy(DEMO_RESULTS)
+    results['container_logs'] = 'Trace delivery failed'
+
+    module['assert_demo_tool_results'](results)
+
+
+def test_trace_export_wait_returns_the_sink_log_once_it_has_exports_and_is_bounded(monkeypatch):
+    import json
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    row = json.dumps({'path': '/v1/traces', 'bytes': 7})
+    outputs = iter((SimpleNamespace(returncode=1, stdout=''), SimpleNamespace(returncode=0, stdout=''),
+                    SimpleNamespace(returncode=0, stdout=row + '\n')))
+    monkeypatch.setattr(module['subprocess'], 'run', lambda *a, **k: next(outputs))
+    monkeypatch.setattr(module['time'], 'sleep', lambda _: None)
+
+    assert module['_wait_trace_exports']('container') == [{'path': '/v1/traces', 'bytes': 7}]
+
+    monkeypatch.setattr(module['subprocess'], 'run', lambda *a, **k: SimpleNamespace(returncode=1, stdout=''))
+    ticks = iter((0, 0, 1000))
+    monkeypatch.setattr(module['time'], 'monotonic', lambda: next(ticks))
+    with pytest.raises(RuntimeError, match='trace sink never received'):
+        module['_wait_trace_exports']('container')
+
+
 def test_unconfigured_demo_start_withholds_only_the_endpoint_binding(monkeypatch):
     module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
     commands = []
@@ -512,7 +568,7 @@ def test_demo_scenario_starts_the_shipped_plan_with_its_endpoint_and_headers_bou
     monkeypatch.setitem(scope, '_wait_ready_external', lambda _: {'status': 200, 'body': ''})
     monkeypatch.setitem(scope, '_external_http', lambda *_a, **_k: {'status': 200, 'body': 'chat'})
     monkeypatch.setitem(scope, '_unconfigured_demo_start', lambda *_: {'exit_code': 3, 'logs': 'API_ENDPOINT'})
-    monkeypatch.setitem(scope, 'assert_demo_tool_results', lambda results: calls.append(('asserted', results)))
+    monkeypatch.setitem(scope, 'assert_demo_tool_results', lambda results, **_kwargs: calls.append(('asserted', results)))
     monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda **_kwargs: str(state))
     import api_agent.workflows.artifact_plans as plans
     monkeypatch.setattr(plans, 'compile_selected_plan', lambda _: b'plan')
@@ -526,6 +582,63 @@ def test_demo_scenario_starts_the_shipped_plan_with_its_endpoint_and_headers_bou
     assert results['stub_requests'] == [{'query': '{ greeting }', 'authorized': True}]
     assert json.loads((tmp_path / 'demo-tool-scenario.json').read_text())['chat'] == {'status': 200, 'body': 'chat'}
     assert ('docker', 'rm', '--force') == next(c for c in calls if c[:2] == ('docker', 'rm'))[:3]
+
+
+def _traced_demo_scenario(monkeypatch, tmp_path, *, traced):
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    scope = module['_demo_tool_qualification'].__globals__
+    state = tmp_path / 'state'
+    state.mkdir()
+    calls = []
+
+    def run(*command, cwd=None):
+        calls.append(command)
+        if command[:2] == ('docker', 'exec') and command[3:5] == ('python', '-c'):
+            return SimpleNamespace(stdout=module['hashlib'].sha256(b'plan').hexdigest() + '\n')
+        if command[:2] == ('docker', 'exec') and command[3] == 'cat':
+            return SimpleNamespace(stdout='{"query": "{ greeting }", "authorized": true}\n')
+        return SimpleNamespace(stdout='', stderr='')
+
+    monkeypatch.setitem(scope, '_run', run)
+    monkeypatch.setitem(scope, '_build_qualification_image', lambda *_: 'image')
+    monkeypatch.setitem(scope, '_published_port', lambda _: 8080)
+    monkeypatch.setitem(scope, '_wait_stub', lambda _: None)
+    monkeypatch.setitem(scope, '_wait_ready_external', lambda _: {'status': 200, 'body': ''})
+    monkeypatch.setitem(scope, '_external_http', lambda *_a, **_k: {'status': 200, 'body': 'chat'})
+    monkeypatch.setitem(scope, '_wait_trace_exports', lambda _: [{'path': '/v1/traces', 'bytes': 1}])
+    monkeypatch.setitem(scope, '_unconfigured_demo_start', lambda *_: {'exit_code': 3, 'logs': 'API_ENDPOINT'})
+    monkeypatch.setitem(scope, 'assert_demo_tool_results',
+                        lambda results, **kwargs: calls.append(('asserted', kwargs)))
+    monkeypatch.setattr(module['tempfile'], 'mkdtemp', lambda **_kwargs: str(state))
+    import api_agent.workflows.artifact_plans as plans
+    monkeypatch.setattr(plans, 'compile_selected_plan', lambda _: b'plan')
+    results = module['_demo_tool_qualification'](ROOT, tmp_path, tag='custom', traced=traced)
+    return module, calls, results
+
+
+def test_traced_demo_scenario_exports_to_an_in_container_sink_and_requires_its_deliveries(monkeypatch, tmp_path):
+    import json
+    module, calls, results = _traced_demo_scenario(monkeypatch, tmp_path, traced=True)
+
+    run_command = next(command for command in calls if command[:2] == ('docker', 'run'))
+    sink = module['TRACE_SINK_PORT']
+    assert f'TRACE_EXPORT_ENDPOINT=http://127.0.0.1:{sink}/v1/traces' in run_command
+    assert any(command[:2] == ('docker', 'exec') and '/opt/api-agent/providers/trace_sink.py' in command
+               and sink in command for command in calls)
+    assert results['trace_exports'] == [{'path': '/v1/traces', 'bytes': 1}]
+    assert ('asserted', {'traced': True}) in calls
+    assert 'trace_exports' in json.loads((tmp_path / 'demo-tool-traced-scenario.json').read_text())
+
+
+def test_untraced_demo_scenario_starts_no_trace_sink_and_exports_nothing(monkeypatch, tmp_path):
+    module, calls, results = _traced_demo_scenario(monkeypatch, tmp_path, traced=False)
+
+    run_command = next(command for command in calls if command[:2] == ('docker', 'run'))
+    assert not any(item.startswith('TRACE_') for item in run_command)
+    assert not any('trace_sink.py' in item for command in calls for item in command)
+    assert 'trace_exports' not in results
+    assert ('asserted', {'traced': False}) in calls
+    assert (tmp_path / 'demo-tool-scenario.json').is_file()
 
 
 def test_demo_scenario_removes_its_container_even_when_cleanup_fails(monkeypatch, tmp_path):
@@ -587,9 +700,40 @@ def test_stub_endpoint_serves_introspection_and_the_greeting_and_records_each_re
     assert [json.loads(line)['authorized'] for line in log.read_text().splitlines()] == [True, False]
 
 
+def test_trace_sink_accepts_posts_and_records_each_path_and_size(tmp_path):
+    import json
+    import socket
+    import subprocess
+    import sys
+    import time
+    import urllib.request
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+    log = tmp_path / 'exports.jsonl'
+    server = subprocess.Popen((sys.executable, str(ROOT / 'qualification/trace_sink.py'), str(port), str(log)))
+    try:
+        for _ in range(100):
+            try:
+                response = urllib.request.urlopen(urllib.request.Request(
+                    f'http://127.0.0.1:{port}/v1/traces', b'span-bytes'), timeout=5)
+                break
+            except OSError:
+                time.sleep(.1)
+        else:
+            raise AssertionError('sink did not start')
+        assert response.status == 200
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+    assert [json.loads(line) for line in log.read_text().splitlines()] == [{'path': '/v1/traces', 'bytes': 10}]
+
+
 def test_qualification_image_ships_the_stub_endpoint_and_both_plans():
     dockerfile = (ROOT / 'Dockerfile.qualification').read_text()
 
     assert 'COPY qualification/stub_graphql.py /opt/api-agent/providers/stub_graphql.py' in dockerfile
+    assert 'COPY qualification/trace_sink.py /opt/api-agent/providers/trace_sink.py' in dockerfile
     assert 'COPY qualification/simple_chat.json /opt/api-agent/plans/simple_chat.json' in dockerfile
     assert 'useful_api_demo.json /opt/api-agent/plans/useful_api_demo.json' in (ROOT / 'Dockerfile').read_text()

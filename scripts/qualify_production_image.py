@@ -49,6 +49,8 @@ STUB_PORT = '18080'
 STUB_REQUESTS = '/tmp/stub-requests.jsonl'
 STUB_AUTHORIZATION = 'Bearer qualification-token'
 STUB_GREETING = 'qualification-stub-greeting'
+TRACE_SINK_PORT = '14318'
+TRACE_SINK_REQUESTS = '/tmp/trace-requests.jsonl'
 
 
 def forbidden_members(archive):
@@ -137,8 +139,11 @@ def assert_tracing_export_failure(results):
         raise RuntimeError('qualification tracing export failure was not logged')
 
 
-def assert_demo_tool_results(results):
-    """Require the demo plan's declared tool to have reached the stub through its configured binding."""
+def assert_demo_tool_results(results, *, traced=False):
+    """Require the demo plan's declared tool to have reached the stub through its configured binding.
+
+    A traced run must also have delivered its traces to the container's sink without a delivery warning.
+    """
     if results.get('plan_digest') != results.get('compiled_digest'):
         raise RuntimeError('qualification demo plan differs from a fresh compile of demo/simple')
     if results.get('chat', {}).get('status') != 200:
@@ -154,6 +159,12 @@ def assert_demo_tool_results(results):
     unconfigured = results.get('unconfigured', {})
     if unconfigured.get('exit_code') in (0, None) or 'API_ENDPOINT' not in unconfigured.get('logs', ''):
         raise RuntimeError('qualification demo plan started without its configured endpoint')
+    if traced:
+        exports = results.get('trace_exports', [])
+        if not exports or any(row['path'] != '/v1/traces' for row in exports):
+            raise RuntimeError(f'qualification trace sink did not receive the traced run: {exports}')
+        if TRACE_FAILURE in results.get('container_logs', ''):
+            raise RuntimeError('qualification trace delivery failed during the traced demo run')
 
 
 def _lifecycle_status(response):
@@ -381,6 +392,20 @@ def _wait_stub(container):
         time.sleep(.25)
 
 
+def _wait_trace_exports(container):
+    """The sink's recorded exports, once the traced run has delivered at least one."""
+    deadline = time.monotonic() + timeouts()['ready']
+    while True:
+        read = subprocess.run(('docker', 'exec', container, 'cat', TRACE_SINK_REQUESTS),
+                              capture_output=True, text=True)
+        rows = [json.loads(line) for line in read.stdout.splitlines()] if read.returncode == 0 else []
+        if rows:
+            return rows
+        if time.monotonic() >= deadline:
+            raise RuntimeError('qualification trace sink never received an export')
+        time.sleep(.25)
+
+
 def _unconfigured_demo_start(image, environment):
     """Start the demo plan without its endpoint binding; production must refuse and name it."""
     options = [item for value in environment if not value.startswith('API_ENDPOINT=') for item in ('-e', value)]
@@ -389,11 +414,12 @@ def _unconfigured_demo_start(image, environment):
     return {'exit_code': started.returncode, 'logs': started.stdout + started.stderr}
 
 
-def _demo_tool_qualification(root, evidence, *, tag, base_image=None):
+def _demo_tool_qualification(root, evidence, *, tag, base_image=None, traced=False):
     """Run the bundled demo plan: its declared GraphQL tool must reach a stub endpoint in the container.
 
     The deterministic provider answers every model call and the stub is a loopback process
-    inside the container, so nothing leaves the host and no inference is spent.
+    inside the container, so nothing leaves the host and no inference is spent. A traced run
+    exports to a second loopback process, so the declared tool is also proven under tracing.
     """
     from api_agent.runtime.resource_pack import load_launch_context
     from api_agent.workflows.artifact_plans import compile_selected_plan
@@ -415,6 +441,8 @@ def _demo_tool_qualification(root, evidence, *, tag, base_image=None):
         'API_AGENT_STATE_DIR=/var/lib/api-agent',
         f'API_ENDPOINT=http://127.0.0.1:{STUB_PORT}/graphql',
         'API_HEADERS=' + json.dumps({'Authorization': STUB_AUTHORIZATION}))
+    if traced:
+        environment += (f'TRACE_EXPORT_ENDPOINT=http://127.0.0.1:{TRACE_SINK_PORT}/v1/traces',)
     results = {'compiled_digest': hashlib.sha256(
         compile_selected_plan(load_launch_context(root, root / 'demo'))).hexdigest()}
     try:
@@ -430,6 +458,9 @@ def _demo_tool_qualification(root, evidence, *, tag, base_image=None):
         _run('docker', 'exec', '--detach', name, 'python', '/opt/api-agent/providers/stub_graphql.py',
              STUB_PORT, STUB_REQUESTS, STUB_AUTHORIZATION)
         _wait_stub(name)
+        if traced:
+            _run('docker', 'exec', '--detach', name, 'python', '/opt/api-agent/providers/trace_sink.py',
+                 TRACE_SINK_PORT, TRACE_SINK_REQUESTS)
         port = _published_port(name)
         results['ready'] = _wait_ready_external(port)
         request = {'session_id': str(uuid.uuid4()),
@@ -438,11 +469,14 @@ def _demo_tool_qualification(root, evidence, *, tag, base_image=None):
         results['chat'] = _external_http(port, '/app/agent/chat', body=request)
         logged = _run('docker', 'exec', name, 'cat', STUB_REQUESTS).stdout
         results['stub_requests'] = [json.loads(line) for line in logged.splitlines()]
+        if traced:
+            results['trace_exports'] = _wait_trace_exports(name)
         logs = _run('docker', 'logs', name)
         results['container_logs'] = logs.stdout + logs.stderr
         results['unconfigured'] = _unconfigured_demo_start(image, environment)
-        (evidence / 'demo-tool-scenario.json').write_text(json.dumps(results, sort_keys=True, indent=2) + '\n')
-        assert_demo_tool_results(results)
+        label = 'demo-tool-traced-scenario.json' if traced else 'demo-tool-scenario.json'
+        (evidence / label).write_text(json.dumps(results, sort_keys=True, indent=2) + '\n')
+        assert_demo_tool_results(results, traced=traced)
         return results
     finally:
         try:
@@ -525,8 +559,10 @@ def qualify(root, evidence, *, tag='api-agent-runtime'):
     runtime = _runtime_qualification(root, evidence, tag=tag, base_image=digest)
     telemetry = _runtime_qualification(root, evidence, tag=tag, base_image=digest, trace_endpoint='http://127.0.0.1:1/v1/traces')
     demo = _demo_tool_qualification(root, evidence, tag=tag, base_image=digest)
+    traced_demo = _demo_tool_qualification(root, evidence, tag=tag, base_image=digest, traced=True)
     (evidence / 'runtime-scenarios.json').write_text(
-        json.dumps({'runtime': runtime, 'failing_telemetry': telemetry, 'demo_tool': demo},
+        json.dumps({'runtime': runtime, 'failing_telemetry': telemetry, 'demo_tool': demo,
+                    'demo_tool_traced': traced_demo},
                    sort_keys=True, indent=2) + '\n')
     return report
 
