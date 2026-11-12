@@ -146,13 +146,77 @@ def test_production_wheel_build_rejects_retained_or_missing_artifacts(monkeypatc
         module['build'](ROOT, tmp_path)
 
 
+@pytest.mark.parametrize('closure', ['production_import_closure', 'provider_import_closure'])
 @pytest.mark.parametrize('module', ['api_agent.testing.diagnostics', 'api_agent.tui.app'])
-def test_production_wheel_build_rejects_a_closure_reaching_an_excluded_package(monkeypatch, tmp_path, module):
+def test_production_wheel_build_rejects_a_closure_reaching_an_excluded_package(monkeypatch, tmp_path, closure, module):
     build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
-    monkeypatch.setitem(build.__globals__, 'production_import_closure', lambda _: frozenset({module}))
+    monkeypatch.setitem(build.__globals__, closure, lambda _: frozenset({module}))
 
     with pytest.raises(RuntimeError, match=f'requires excluded modules: .*{module}'):
         build(ROOT, tmp_path)
+
+
+PROVIDER_PACKAGES = ('llm_providers/bedrock', 'api_providers/graphql_mcp')
+
+
+def _source_files(package):
+    return {path.relative_to(ROOT / 'src').as_posix()
+            for path in (ROOT / 'src' / package).rglob('*')
+            if path.is_file() and '__pycache__' not in path.parts
+            and not path.name.endswith(('.md.html', '.svg', '.pyc'))
+            and not {'tests', 'node_modules'} & set(path.relative_to(ROOT).parts)}
+
+
+@pytest.mark.parametrize('package', ['api_agent/' + name for name in PROVIDER_PACKAGES])
+def test_production_wheel_ships_every_file_of_the_bundled_provider_packages(tmp_path, package):
+    build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
+
+    with zipfile.ZipFile(build(ROOT, tmp_path)) as archive:
+        names = set(archive.namelist())
+
+    assert _source_files(package) <= names
+
+
+def test_production_wheel_ships_the_graphql_mcp_node_runtime_assets(tmp_path):
+    build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
+    package = 'api_agent/api_providers/graphql_mcp/'
+
+    with zipfile.ZipFile(build(ROOT, tmp_path)) as archive:
+        names = set(archive.namelist())
+
+    assert {package + 'package.json', package + 'package-lock.json', package + 'tool.toml',
+            package + 'provider-dependencies.toml', package + 'licenses/mcp-graphql-MIT.txt',
+            package + 'licenses/third-party/express/node_modules/content-type/LICENSE'} <= names
+
+
+def test_installed_wheel_loads_both_bundled_providers_without_the_testing_package(tmp_path):
+    build = runpy.run_path(str(ROOT / 'scripts/build_production_wheel.py'))['build']
+    site = tmp_path / 'site'
+    with zipfile.ZipFile(build(ROOT, tmp_path)) as archive:
+        archive.extractall(site)
+
+    result = subprocess.run((
+        sys.executable, '-I', '-c',
+        "import asyncio,importlib,pkgutil,sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0,sys.argv[1])\n"
+        "site=Path(sys.argv[1]).resolve()\n"
+        "for name in ('api_agent.llm_providers.bedrock','api_agent.api_providers.graphql_mcp'):\n"
+        " package=importlib.import_module(name)\n"
+        " for info in pkgutil.walk_packages(package.__path__,name+'.'):\n"
+        "  assert Path(importlib.import_module(info.name).__file__).resolve().is_relative_to(site),info.name\n"
+        "from api_agent.llm_providers.bedrock import session_providers\n"
+        "from api_agent.api_providers.graphql_mcp import assets\n"
+        "acquirer=asyncio.run(session_providers.load_acquirer('',{},{}))\n"
+        "assert type(acquirer).__name__=='SDKProfileAcquirer'\n"
+        "directory=Path(assets.__file__).parent\n"
+        "assert assets._sha256(directory/'package.json')==assets._PACKAGE_SHA256\n"
+        "assert assets._sha256(directory/'package-lock.json')==assets._LOCK_SHA256\n"
+        "assert not [n for n in sys.modules if n.startswith(('api_agent.testing','api_agent.tui','api_agent.ui'))]\n",
+        str(site),
+    ), capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_production_import_helper_supports_package_initializers(tmp_path):
@@ -245,3 +309,34 @@ assert 'api_agent.workflows.definition' not in sys.modules
 ''', str(site), str(plan)), capture_output=True, text=True)
 
     assert completed.returncode == 0, completed.stderr
+
+
+def _requirement_names(lines):
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+    return {canonicalize_name(Requirement(line).name) for line in lines}
+
+
+def test_production_image_installs_the_extras_that_cover_each_bundled_provider_requirement():
+    import re
+    import tomllib
+    dockerfile = (ROOT / 'Dockerfile').read_text()
+    sync = next(line for line in dockerfile.splitlines() if 'uv sync' in line)
+    extras = re.findall(r'--extra (\S+)', sync)
+    declared = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['optional-dependencies']
+    installed = _requirement_names(item for extra in extras for item in declared[extra])
+
+    for package in PROVIDER_PACKAGES:
+        manifest = tomllib.loads((ROOT / 'src/api_agent' / package / 'provider-dependencies.toml').read_text())
+        assert _requirement_names(manifest['dependencies']) <= installed, package
+
+
+def test_production_image_prepares_the_graphql_mcp_assets_where_the_provider_reads_them():
+    dockerfile = (ROOT / 'Dockerfile').read_text()
+    prepared = '/build/owner/.api-agent/graphql-mcp'
+
+    assert prepared in dockerfile
+    assert 'COPY --from=compile /build/owner/.api-agent /opt/api-agent/plans/.api-agent' in dockerfile
+    assert 'COPY --from=compile /opt/node/bin/node /opt/api-agent/bin/node' in dockerfile
+    assert 'Path(owner_root) / ".api-agent" / "graphql-mcp"' in (
+        ROOT / 'src/api_agent/api_providers/graphql_mcp/factory.py').read_text()

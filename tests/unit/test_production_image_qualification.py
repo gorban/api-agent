@@ -67,6 +67,25 @@ def test_inspector_rejects_interactive_modules_in_application_paths_and_nested_a
     ]
 
 
+def test_inspector_allows_only_the_graphql_mcp_provider_assets_to_use_the_node_layout(tmp_path):
+    module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
+    allowed = [
+        'opt/api-agent/venv/lib/python3.13/site-packages/api_agent/api_providers/graphql_mcp'
+        '/licenses/third-party/express/node_modules/content-type/LICENSE',
+        'opt/api-agent/plans/.api-agent/graphql-mcp/node_modules/mcp-graphql/dist/index.js',
+        'opt/api-agent/plans/.api-agent/graphql-mcp/node_modules/pkg/tests/case.js',
+    ]
+    rejected = [
+        'opt/api-agent/venv/lib/python3.13/site-packages/other/node_modules/pkg/index.js',
+        'opt/api-agent/plans/node_modules/pkg/index.js',
+        'opt/api-agent/node/bin/node',
+    ]
+    layer = tmp_path / 'layer.tar'
+    _tar(layer, allowed + rejected)
+
+    assert module['forbidden_members'](layer) == sorted(rejected)
+
+
 def test_inspector_explicitly_allows_unmodified_base_stdlib_viewer_and_ensurepip_paths(tmp_path):
     module = runpy.run_path(str(ROOT / 'scripts/qualify_production_image.py'))
     bundled = tmp_path / 'pip.whl'
