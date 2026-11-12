@@ -772,9 +772,10 @@ A node or component with its own `## Timeouts` row (an `Owner` that is the step 
 engine-maintained Boolean `<step_id>.expired`. It is true while the step's latest run in
 the current turn ended because its own declared deadline passed, and false before the
 step first runs, after any run that ended otherwise, and at every restart of the step.
-Like `attempt` it is reserved: an `Output` schema may not declare a top-level `expired`.
-A condition that names `<step>.expired` for a step without its own `Timeouts` row is
-rejected at load.
+The engine also keeps `<step_id>.expirations`, the number of the step's runs in the
+current turn that ended that way (0 before the first). Like `attempt` both are reserved:
+an `Output` schema may not declare a top-level `expired` or `expirations`. A condition
+that names either for a step without its own `Timeouts` row is rejected at load.
 
 ```markdown
 ## Timeouts
@@ -787,8 +788,8 @@ rejected at load.
 
 | From | To | When |
 | --- | --- | --- |
-| work | work | work.expired and work.attempt < WORK_TIMEOUT_PASSES |
-| work | timed_out | work.expired and work.attempt >= WORK_TIMEOUT_PASSES |
+| work | work | work.expired and work.expirations < WORK_TIMEOUT_PASSES |
+| work | timed_out | work.expired and work.expirations >= WORK_TIMEOUT_PASSES |
 | work | next | otherwise |
 ```
 
@@ -806,6 +807,13 @@ failing the turn:
   the expired run.
 - A route back to the step is a backward edge and needs the usual bound, as above. The
   exhausted case is written explicitly (`>= LIMIT`) because edges must match exactly once.
+- A replay is best bounded by `<step>.expirations < LIMIT`, which counts only expiries, so
+  starts that came from an ordinary loop do not use up the replay budget (`attempt` counts
+  every start). Only the edge that replays its own source after its expiry may use it: the
+  condition must also require `<step>.expired` and the edge must lead from the step back
+  to itself. Any other backward edge keeps the `<target>.attempt` bound, because nothing
+  else raises the count. With `LIMIT = 2` the step starts again once after its first
+  expiry and the second expiry takes the exhausted route.
 - Only the step's own row counts. An enclosing component's or `GRAPH` deadline, a
   `TimeoutError` raised by native code before the step's deadline, and a tool port timeout
   inside the node propagate as before; a component with its own `.expired` edges is routed

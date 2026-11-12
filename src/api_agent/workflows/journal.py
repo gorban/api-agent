@@ -149,7 +149,8 @@ def projection(definition, *, component_passes=None, limits=None):
     if definition is None:
         raise ValueError('An admitted workflow definition is required')
     bound_graph = getattr(definition, 'schema_source', None) is None
-    bounds = {(row['From'], row['To'], row['When']): dict(key=bound[0], inclusive=bound[1])
+    bounds = {(row['From'], row['To'], row['When']): dict(key=bound[0], inclusive=bound[1],
+                                                         **({'counter': bound[2]} if bound[2] != 'attempt' else {}))
               for row, bound in (loop_edges(definition.layout) if bound_graph else ()) if bound is not None}
     steps = [dict(id=step.id, kind=step.kind, parent=step.parent)
              for step in definition.layout.steps]
@@ -239,12 +240,13 @@ def _routes_complete(projection_data, events):
     for row in projection_data['edges']:
         declared.setdefault((row['owner'], row['source'], row['target'], row['implicit']), set()).add(row['condition'])
     limits = {row['key']: row['value'] for row in projection_data.get('limits', ())}
-    # A bounded edge is taken only while its target has started fewer than the cap times,
-    # which is how the engine reads `<target>.attempt < LIMIT` (`<=` allows one more).
+    # A bounded edge is taken only while its target has started (or, for an `expirations` bound,
+    # expired) fewer than the cap times, which is how the engine reads `<target>.attempt < LIMIT`
+    # (`<=` allows one more).
     caps = {(row['owner'], row['source'], row['target'], row['condition']):
-            limits[row['bound']['key']] + row['bound']['inclusive']
+            (limits[row['bound']['key']] + row['bound']['inclusive'], row['bound'].get('counter', 'attempt'))
             for row in projection_data['edges'] if 'bound' in row}
-    starts = {}
+    starts, expirations = {}, {}
     scopes, open_scopes, routes, pending, trail = {}, [], {}, {}, {}
     passes, node_outcomes, component_outcomes = {}, {}, {}
     graph_roots = 0
@@ -298,6 +300,7 @@ def _routes_complete(projection_data, events):
             start['end'] = event
             open_scopes.pop()
             if _own_expiry(event):
+                expirations[start['owner']] = expirations.get(start['owner'], 0) + 1
                 # The abandoned run's inner routes stop where the expiry cut them off.
                 started = list(scopes)
                 for abandoned in started[started.index(sid):]:
@@ -314,8 +317,8 @@ def _routes_complete(projection_data, events):
             conditions = declared.get((owner, source, target, event.get('implicit')))
             if conditions is None or event.get('condition', 'always') not in conditions:
                 return False
-            cap = caps.get((owner, source, target, event.get('condition')))
-            if cap is not None and starts.get(target, 0) >= cap:
+            cap, counter = caps.get((owner, source, target, event.get('condition')), (None, None))
+            if cap is not None and (expirations if counter == 'expirations' else starts).get(target, 0) >= cap:
                 return False
             if key not in routes:
                 if source != 'START':
@@ -919,9 +922,10 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                 or not _condition_label(edge['condition'])
                 or type(edge['implicit']) is not bool
                 or 'bound' in edge and (
-                    type(edge['bound']) is not dict or set(edge['bound']) != {'key', 'inclusive'}
+                    type(edge['bound']) is not dict or set(edge['bound']) - {'counter'} != {'key', 'inclusive'}
                     or edge['bound']['key'] not in {row['key'] for row in recorded_limits}
-                    or type(edge['bound']['inclusive']) is not bool)):
+                    or type(edge['bound']['inclusive']) is not bool
+                    or edge['bound'].get('counter') not in (None, 'expirations'))):
             raise ValueError('Invalid workflow projection edge')
     admitted_edges = {tuple(edge[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
                       for edge in projection_data['edges']}

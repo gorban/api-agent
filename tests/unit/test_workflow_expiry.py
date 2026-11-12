@@ -5,7 +5,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from api_agent.workflows import LayoutError
-from expiry_support import ENDS, REPLAY, ROUTE, calls_after, expiring, play
+from expiry_support import ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, calls_after, expiring, play
 from loop_support import build, edges, load, node, table
 from test_workflow_session_loop import stored
 
@@ -44,6 +44,55 @@ def test_the_limit_value_bounds_the_replays(tmp_path, limit, runs):
     _, calls, _ = play(expiring(tmp_path, *REPLAY), {'work': ['hang'] * 5}, config={'NODE_TIMEOUT_PASSES': limit})
 
     assert calls == ['work'] * runs + ['timed_out']
+
+
+LOOPED = (('work', 'work', 'work.expired and work.expirations < NODE_TIMEOUT_PASSES'),
+          ('work', 'timed_out', 'work.expired and work.expirations >= NODE_TIMEOUT_PASSES'),
+          ('work', 'review', 'otherwise'),
+          ('review', 'work', 'review.ok and work.attempt < PLAN_PASSES'), ('review', 'finish', 'otherwise'))
+LOOP_FLOW = [('node', 'work'), ('node', 'review'), ('node', 'finish'), ('node', 'timed_out')]
+
+
+def looped(tmp_path):
+    return expiring(tmp_path, *LOOPED, flow=LOOP_FLOW, keys=('NODE_TIMEOUT_PASSES', 'PLAN_PASSES'))
+
+
+def test_an_ordinary_loop_does_not_use_up_the_expiry_replay(tmp_path):
+    # `work` has started twice by the time it first expires; counting starts would refuse the replay.
+    _, calls, _ = play(looped(tmp_path), {'work': ['ok', 'hang', 'ok']}, config={'PLAN_PASSES': 3})
+
+    assert calls == ['work', 'review', 'work', 'work', 'review', 'finish']
+
+
+def test_expiries_alone_decide_when_the_replay_is_exhausted(tmp_path):
+    _, calls, _ = play(looped(tmp_path), {'work': ['ok', 'hang', 'hang']}, config={'PLAN_PASSES': 3})
+
+    assert calls == ['work', 'review', 'work', 'work', 'timed_out']
+
+
+def test_the_first_expiry_is_replayed_once_by_default(tmp_path):
+    # Develop's single timeout retry: the node starts twice, then the error route.
+    _, calls, _ = play(expiring(tmp_path, *EXPIRY_REPLAY), {'work': ['hang', 'hang', 'hang']})
+
+    assert calls == ['work', 'work', 'timed_out']
+    (tmp_path / 'once').mkdir()
+    assert play(expiring(tmp_path / 'once', *EXPIRY_REPLAY), {'work': ['hang', 'ok']})[1] == ['work', 'work', 'finish']
+
+
+@pytest.mark.parametrize('limit,runs', [(1, 1), (3, 3)])
+def test_the_limit_value_bounds_the_expiry_replays(tmp_path, limit, runs):
+    _, calls, _ = play(expiring(tmp_path, *EXPIRY_REPLAY), {'work': ['hang'] * 5}, config={'NODE_TIMEOUT_PASSES': limit})
+
+    assert calls == ['work'] * runs + ['timed_out']
+
+
+def test_an_expired_component_counts_only_its_own_expiries(tmp_path):
+    rows = (('group', 'group', 'group.expired and group.expirations < NODE_TIMEOUT_PASSES'),
+            ('group', 'timed_out', 'group.expired and group.expirations >= NODE_TIMEOUT_PASSES'),
+            ('group', 'finish', 'otherwise'))
+
+    assert play(group(tmp_path, *rows), {'work': ['hang', 'hang']})[1] == [
+        'prepare', 'work', 'prepare', 'work', 'timed_out']
 
 
 def test_the_flag_is_visible_to_later_edges_and_clears_when_the_step_runs_again(tmp_path):
@@ -278,3 +327,25 @@ def test_expired_conditions_compose_with_other_conditions(tmp_path):
     rows = (('work', 'timed_out', 'work.expired or not work.attempt < 1'), ('work', 'finish', 'otherwise'))
 
     assert load(expiring(tmp_path, *rows)).layout.tables['Edges'][0]['When'] == rows[0][2]
+
+
+@pytest.mark.parametrize('when', [
+    'work.expirations < NODE_TIMEOUT_PASSES',
+    'not work.expired and work.expirations < NODE_TIMEOUT_PASSES',
+])
+def test_an_expiry_count_bounds_only_a_replay_after_the_expiry(tmp_path, when):
+    # Without the expiry in the condition the edge could loop without any expiry raising the count.
+    rows = (('work', 'work', when), ('work', 'finish', 'otherwise'))
+
+    with pytest.raises(LayoutError, match='backward edge to work requires a bounded When'):
+        load(expiring(tmp_path, *rows))
+
+
+def test_an_expiry_count_does_not_bound_another_steps_backward_edge(tmp_path):
+    flow = [('node', 'work'), ('node', 'review'), ('node', 'finish'), ('node', 'timed_out')]
+    rows = (('work', 'review', 'otherwise'),
+            ('review', 'work', 'work.expired and work.expirations < NODE_TIMEOUT_PASSES'),
+            ('review', 'finish', 'otherwise'))
+
+    with pytest.raises(LayoutError, match='backward edge to work requires a bounded When'):
+        load(expiring(tmp_path, *rows, flow=flow))

@@ -129,7 +129,8 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
             except (ValueError, ValidationError) as error:
                 layout.row_error(row, str(error))
     for key, row in functions.items():
-        for reserved, meaning in (('attempt', 'the engine start counter'), ('expired', 'the engine timeout expiry flag')):
+        for reserved, meaning in (('attempt', 'the engine start counter'), ('expired', 'the engine timeout expiry flag'),
+                                  ('expirations', 'the engine timeout expiry counter')):
             if reserved in row['Output schema'].get('properties', {}):
                 layout.row_error(row, f'Output schema declares reserved field {reserved}; '
                                       f'<step>.{reserved} is {meaning}')
@@ -164,7 +165,7 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
             except PredicateError as error:
                 layout.row_error(row, str(error))
         if (entering is None and target != 'END' and ordered.index(target) <= ordered.index(source)
-                and (predicate is None or backward_bound(predicate, target, limit_keys) is None)):
+                and (predicate is None or backward_bound(predicate, source, target, limit_keys) is None)):
             layout.row_error(row, unbounded_edge_message(target))
     for rows in edge_groups.values():
         whens = {row['When'] for row in rows}
