@@ -276,8 +276,8 @@ leaves the port untimed.
 
 The `verified-read@1` interface always offers the four fixed operations above.
 A pack that ships its own tool can instead choose the `operations@1` interface,
-where the *implementation* names the operations it offers and whether each one
-only reads or can change something. Nodes then select those names directly. The
+where the *implementation* names the operations it offers and which of them are
+idempotent. Nodes then select those names directly. The
 fixed interface, its gate and its grants are unchanged.
 
 An implementation declares an `[operations.<name>]` table per operation:
@@ -288,20 +288,25 @@ interface = "operations@1"
 factory = "factory.py:create_tool"
 
 [operations.introspect]
-effect = "read"
+idempotent = true
 
 [operations.query]
-effect = "read"
+idempotent = true
 
 [operations.mutate]
-effect = "write"
 ```
+
+An operation is *idempotent* when repeating the call leaves the world as the first
+call did. This is not the same as read-only: a write that sets a value can be
+idempotent, and a read that consumes a token cannot. An operation that does not
+declare `idempotent = true` is non-idempotent, so a write stays protected unless
+its implementation says otherwise.
 
 Names match `[a-z][a-z0-9_]{0,63}`, contain no double underscore and are not a
 Python keyword. `describe`, `prepare`, `verify`, `execute`, `invoke`, `aclose`,
 `astart` and `for_invocation` are reserved. At least one operation is required,
-`effect` is the only key and must be `"read"` or `"write"`, and
-only `operations@1` implementations may declare operations. The instance
+`idempotent` is the only key and must be a boolean (`false` is the same as
+leaving it out), and only `operations@1` implementations may declare operations. The instance
 descriptor is ordinary (`interface = "operations@1"`, with `implementation`,
 `bindings`, `services` and the rest as for any tool).
 
@@ -324,7 +329,7 @@ class Owner:
 An optional `astart()` runs at runtime start like any tool owner. An owner may
 define a synchronous `for_invocation()` that returns a per-invocation view with
 the same `invoke`/`aclose` methods, exactly as for the fixed interface. There is
-no `describe`/`validate` step: the operation names and effects come from the
+no `describe`/`validate` step: the operation names and idempotency come from the
 implementation declaration, and the owner validates its own arguments.
 
 A node lists the operations it uses, by name, in its own Tools table:
@@ -364,12 +369,14 @@ async def lookup(inputs, context):
 A node cannot reach an undeclared port, another node's port, an operation of
 the implementation that it did not list, or an operation the implementation does
 not declare; each fails before the owner is called. Positional arguments are
-rejected. A call to a `write` operation is recorded in the invocation's effects
-and marks the active node as having dispatched an effect, the same as executing a
-verified call, so replay and candidate-correction protections apply. `read`
-operations are not recorded. Calls to these operations do not go through the
-verified-read tool conversation or schema/evidence capture: the owner is
-responsible for validating its arguments and results.
+rejected. A call to an operation that is not declared idempotent is recorded in
+the invocation's effects and marks the active node as having dispatched an
+effect, the same as executing a verified call, so replay, candidate-correction
+and timeout-replay protections apply. A call to an idempotent operation is not
+recorded, so a step that made only such calls can still be corrected or replayed.
+Calls to these operations do not go through the verified-read tool conversation
+or schema/evidence capture: the owner is responsible for validating its arguments
+and results.
 
 ### Who can reach a tool
 

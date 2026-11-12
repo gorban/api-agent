@@ -13,12 +13,12 @@ def grammar(request):
     return request.param
 
 
-def test_declared_subsets_admit_and_carry_effects(tmp_path, grammar):
+def test_declared_subsets_admit_and_carry_idempotency(tmp_path, grammar):
     plan = compose(tmp_path, build(tmp_path, grammar))
 
     [tool] = plan.tools
     assert tool.interface == OPERATIONS_INTERFACE
-    assert tool.operations == {'introspect': 'read', 'query': 'read', 'mutate': 'write'}
+    assert tool.operations == {'introspect': True, 'query': True, 'mutate': False}
     assert tool.admission.interface == OPERATIONS_INTERFACE
     assert [(use.scope, use.operations) for use in plan.definitions[0].tool_usages] == [
         ('reader', ('introspect', 'query')), ('writer', ('mutate',))]
@@ -29,7 +29,7 @@ def test_declared_operations_survive_the_worker_packet(tmp_path, grammar):
 
     restored = ToolPlan.from_wire(plan.to_wire())
 
-    assert restored.tools[0].operations == {'introspect': 'read', 'query': 'read', 'mutate': 'write'}
+    assert restored.tools[0].operations == {'introspect': True, 'query': True, 'mutate': False}
     assert restored.tools[0].admission.interface == OPERATIONS_INTERFACE
 
 

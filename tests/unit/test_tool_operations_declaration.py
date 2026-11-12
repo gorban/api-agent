@@ -12,15 +12,23 @@ from api_agent.workflows.layout import LayoutError
 
 def declaration(**changes):
     data = {'version': 1, 'interface': OPERATIONS_INTERFACE, 'factory': 'factory.py:create_tool',
-            'operations': {'introspect': {'effect': 'read'}, 'mutate': {'effect': 'write'}}}
+            'operations': {'introspect': {'idempotent': True}, 'mutate': {}}}
     data.update(changes)
     return data
 
 
-def test_valid_declaration_exposes_ordered_effects():
+def test_valid_declaration_exposes_which_operations_are_idempotent():
     data = implementation_declaration(declaration())
 
-    assert declared_operations(data) == {'introspect': 'read', 'mutate': 'write'}
+    assert declared_operations(data) == {'introspect': True, 'mutate': False}
+
+
+def test_an_operation_is_non_idempotent_unless_it_declares_otherwise():
+    operations = {'a': {}, 'b': {'idempotent': False}, 'c': {'idempotent': True}}
+
+    data = implementation_declaration(declaration(operations=operations))
+
+    assert declared_operations(data) == {'a': False, 'b': False, 'c': True}
 
 
 def test_other_interfaces_declare_no_operations():
@@ -31,20 +39,21 @@ def test_other_interfaces_declare_no_operations():
     (None, 'requires an operations table'),
     ([], 'requires an operations table'),
     ({}, 'at least one operation'),
-    ({'Query': {'effect': 'read'}}, 'invalid operation name'),
-    ({'1query': {'effect': 'read'}}, 'invalid operation name'),
-    ({'a' * 65: {'effect': 'read'}}, 'invalid operation name'),
-    ({'query__x': {'effect': 'read'}}, 'invalid operation name'),
-    ({'class': {'effect': 'read'}}, 'reserved operation name'),
-    ({'import': {'effect': 'read'}}, 'reserved operation name'),
-    ({'describe': {'effect': 'read'}}, 'reserved operation name'),
-    ({'execute': {'effect': 'write'}}, 'reserved operation name'),
-    ({'invoke': {'effect': 'read'}}, 'reserved operation name'),
-    ({'aclose': {'effect': 'read'}}, 'reserved operation name'),
+    ({'Query': {'idempotent': True}}, 'invalid operation name'),
+    ({'1query': {'idempotent': True}}, 'invalid operation name'),
+    ({'a' * 65: {'idempotent': True}}, 'invalid operation name'),
+    ({'query__x': {'idempotent': True}}, 'invalid operation name'),
+    ({'class': {'idempotent': True}}, 'reserved operation name'),
+    ({'import': {'idempotent': True}}, 'reserved operation name'),
+    ({'describe': {'idempotent': True}}, 'reserved operation name'),
+    ({'execute': {}}, 'reserved operation name'),
+    ({'invoke': {'idempotent': True}}, 'reserved operation name'),
+    ({'aclose': {'idempotent': True}}, 'reserved operation name'),
     ({'query': 'read'}, 'must be a table'),
-    ({'query': {}}, 'effect'),
-    ({'query': {'effect': 'delete'}}, 'effect'),
-    ({'query': {'effect': 'read', 'extra': True}}, 'effect'),
+    ({'query': {'idempotent': 'yes'}}, 'idempotent'),
+    ({'query': {'idempotent': 1}}, 'idempotent'),
+    ({'query': {'effect': 'read'}}, 'idempotent'),
+    ({'query': {'idempotent': True, 'extra': True}}, 'idempotent'),
 ])
 def test_invalid_operations_reject(operations, message):
     data = declaration()

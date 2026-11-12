@@ -140,7 +140,7 @@ class NodeResolver:
 
 
 class OperationsGate:
-    """One borrowed operations@1 view; the implementation's declared effects bound its calls."""
+    """One borrowed operations@1 view; the implementation's declared operations bound its calls."""
     def __init__(self, owner, operations, *, timeout=None, tool_alias=None, tool_instance=None):
         self.owner, self.operations, self.timeout = owner, operations, timeout
         self.tool_alias, self.tool_instance = tool_alias, tool_instance
@@ -149,7 +149,7 @@ class OperationsGate:
         if operation not in self.operations:
             raise ContractError('Tool operation is not declared by its implementation')
         async with component_timeout('Tool execution', self.timeout):
-            if self.operations[operation] == 'write':
+            if not self.operations[operation]:
                 from api_agent.workflows.execution import mark_active_effect
                 mark_active_effect()
             return await self.owner.call(operation, arguments)
@@ -236,7 +236,7 @@ class ToolInvocation:
         if isinstance(base, OperationsGate):
             if args:
                 raise ContractError('Tool operations accept keyword arguments only')
-            if base.operations.get(operation) == 'write':
+            if base.operations.get(operation) is False:
                 self.effects.append(use.scope)
             return await base.invoke(operation, kwargs)
         if operation not in FIXED_OPERATIONS:
