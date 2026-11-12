@@ -238,6 +238,9 @@ def condition_lines(when):
         tokens = list(tokenize.generate_tokens(io.StringIO(when).readline))
     except (tokenize.TokenError, IndentationError):
         return [when]
+    offsets = [0]
+    for line in io.StringIO(when):
+        offsets.append(offsets[-1] + len(line))
     starts, depth = [0], 0
     for token in tokens:
         if token.type == tokenize.OP and token.string in '([{':
@@ -245,7 +248,8 @@ def condition_lines(when):
         elif token.type == tokenize.OP and token.string in ')]}':
             depth -= 1
         elif token.type == tokenize.NAME and token.string == 'or' and depth == 0:
-            starts.append(token.start[1])
+            row, column = token.start
+            starts.append(offsets[row - 1] + column)
     return [when[start:end].strip() for start, end in zip(starts, [*starts[1:], len(when)])]
 
 
