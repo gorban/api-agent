@@ -8,6 +8,10 @@ import tempfile
 from .collection import repository_label
 
 
+def _discard(text):
+    """Drop provider progress text when the caller shows no output."""
+
+
 def _load(path, symbol):
     spec = importlib.util.spec_from_file_location('api_agent_marker_services_' + sha256(str(path).encode()).hexdigest()[:16], path)
     module = importlib.util.module_from_spec(spec)
@@ -38,7 +42,7 @@ def acquired_test_services(context, tests, environment, *, output=None):
     with ExitStack() as stack, tempfile.TemporaryDirectory(prefix='api-agent-services-') as directory:
         for (owner, marker), (path, symbol) in selected.items():
             services = {'owner_root': owner, 'environment': {**environment, **added}, 'directory': Path(directory),
-                        'output': output or (lambda text: None)}
+                        'output': output or _discard}
             values = stack.enter_context(_load(path, symbol)(services))
             if (not isinstance(values, dict) or any(
                     type(key) is not str or not key.isidentifier() or type(value) is not str

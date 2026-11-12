@@ -86,7 +86,7 @@ def test_selected_marker_holds_its_service_for_the_run_and_exports_its_environme
     ctx = context(base, owner)
     tests = collect_tests(ctx, 'unit', ['tag:needs_service'])
 
-    result = run_unit_tests(ctx, tests, test_environment={'SUFFIX': 'x'}, require_full_coverage=False)
+    result = run_unit_tests(ctx, tests, test_environment={'SUFFIX': 'x', 'UNUSED': None}, require_full_coverage=False)
 
     assert result.exit_code == 0, result.output
     assert [test.status for test in result.tests] == ['passed']
@@ -157,6 +157,15 @@ def test_providers_receive_owner_environment_scratch_and_output(tmp_path):
 
     assert lines == ['hello']
     assert seen.read_text() == repr((str(tmp_path.resolve()), 'v', True))
+
+
+def test_provider_output_is_dropped_when_the_caller_shows_none(tmp_path):
+    path = provider(tmp_path, 'quiet', '    services["output"]("hello")\n    yield {"A": "1"}\n')
+    ctx = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, test_prerequisites=(('m', path, 'acquire'),))
+    label = repository_label(ctx, tmp_path)
+
+    with acquired_test_services(ctx, [identity(label, 'm')], {}) as values:
+        assert values == {'A': '1'}
 
 
 def test_tests_of_another_owner_do_not_select_a_providers_service(tmp_path):
