@@ -428,7 +428,7 @@ def test_frame_absolute_deadline_and_closed_accept(monkeypatch):
             pass
         def recv(self, size):
             return b'\0'
-    values = iter((0, 1, 3))
+    values = iter((0, 1, module._FRAME_SECONDS + 1))
     monkeypatch.setattr(module.time, 'monotonic', lambda: next(values))
     with pytest.raises(TimeoutError):
         module._receive(Stream())
@@ -525,3 +525,19 @@ def test_terminal_fragmented_prompts_preserve_input_after_progress():
             channel.close()
     finally:
         os.close(write_fd)
+
+
+def test_a_stalled_server_answer_still_reaches_the_client(monkeypatch):
+    import time
+    server = InteractionServer(Interaction())
+    channel = InteractionClient(server.descriptor).open('Keeper')
+    original = server._dispatch
+    def stalled(row):
+        if row.get('action') == 'check':
+            time.sleep(2.5)  # A loaded host can delay the server thread past the old 2 s bound.
+        return original(row)
+    monkeypatch.setattr(server, '_dispatch', stalled)
+    try:
+        channel.check_open()
+    finally:
+        server.close()
