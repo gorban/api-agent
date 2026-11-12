@@ -80,6 +80,13 @@ def test_selectors_follow_the_pytest_hierarchy_and_globs():
             select_tests(tests, [selector])
 
 
+@pytest.mark.parametrize('node_id', ['tests/unit/test_a.py::test_x[a*b]', 'tests/unit/test_a.py::test_x[a?]'])
+def test_an_exact_test_id_with_glob_characters_selects_itself(node_id):
+    tests = [_identity(node_id), _identity('tests/unit/test_a.py::test_x[ab]')]
+
+    assert select_tests(tests, [node_id]) == [tests[0]]
+
+
 def test_hierarchy_and_glob_selectors_stay_ambiguous_across_repositories():
     tests = [_identity('tests/unit/test_a.py::test_x[1]', repo) for repo in ('base', 'pack')]
     for selector in ('tests/unit/test_a.py::test_x', 'tests/unit', '*test_x*'):
