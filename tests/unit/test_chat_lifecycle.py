@@ -296,6 +296,7 @@ def test_cancel_before_execution_and_closed_admission():
 def test_slow_cleanup_task_remains_owned_across_retry_and_new_receipt():
     async def exercise():
         engine = registry()
+        engine.expiry = EVENTUAL
         entered, release = asyncio.Event(), asyncio.Event()
         calls = []
         async def finish():
@@ -315,6 +316,9 @@ def test_slow_cleanup_task_remains_owned_across_retry_and_new_receipt():
         with pytest.raises(CleanupPendingError):
             await receipt.value.retry()
         assert calls == ['retry']
+        # The short budget made the stalled retries fail fast; the released ones
+        # must not race it on a slow host.
+        engine.cleanup_timeout = EVENTUAL
         release.set()
         with pytest.raises(CleanupPendingError):
             await receipt.value.retry()
