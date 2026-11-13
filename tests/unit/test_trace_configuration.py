@@ -51,8 +51,8 @@ def test_tracing_dependencies_selected_only_by_operation_preflight():
     context = SimpleNamespace(base_root=root, pack_root=root / 'demo')
     assert not any(item.startswith('opentelemetry') for item in requirements(context))
     wanted = requirements(context, groups=('tracing',))
-    assert 'opentelemetry-sdk==1.45.1' in wanted
-    assert 'opentelemetry-exporter-otlp-proto-http==1.45.1' in wanted
+    assert 'opentelemetry-sdk==1.45.2' in wanted
+    assert 'opentelemetry-exporter-otlp-proto-http==1.45.2' in wanted
 
 
 @pytest.mark.parametrize('mode', ['OTEL', '', 'LangFuse'])
