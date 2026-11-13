@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from api_agent.runtime.prerequisites import PrerequisiteError
+from api_agent.runtime.prerequisites import PrerequisiteError, ServiceLease
 from api_agent.runtime.ownership import StackScope
 from test_prerequisites import setup
 
@@ -246,6 +246,76 @@ def test_container_network_inspections_are_batched(setup):
     assert scope.project + '_default' in references
     inspections = [command for command, _ in engine.commands if command[1:3] == ('inspect', '--format')]
     assert [len(command[4:]) for command in inspections] == [32, 3]
+
+
+def test_release_preserves_referenced_network_without_scanning_unrelated_definitions(setup):
+    create, engine, _, scope, _ = setup
+    manager = create()
+    name = next(iter(manager.specs))
+    # Put the leased definition behind several batches of unrelated, stopped
+    # definitions. Saved network references, rather than endpoint liveness, matter.
+    for _ in range(96):
+        identifier = engine.add(name, running=False, foreign=True)
+        engine.records[identifier]['NetworkSettings'] = {'Networks': {'unrelated': {'NetworkID': 'b' * 64}}}
+    leased = engine.add(name, running=False)
+    manager.lease = ServiceLease('invocation', scope.id, (), (), (leased,))
+    manager._prepare_network(120)
+    engine.commands.clear()
+
+    manager._prune_networks(120)
+
+    inspections = [command for command, _ in engine.commands if command[1:3] == ('inspect', '--format')]
+    assert len(inspections) == 1
+    assert inspections[0][4] == leased
+    assert scope.project + '_default' in engine.networks
+    assert not any(command[1:3] == ('network', 'rm') for command, _ in engine.commands)
+
+
+@pytest.mark.parametrize('reference', ['foreign', 'network-id', 'none'])
+def test_absent_lease_network_name_still_requires_complete_saved_definition_scan(setup, reference):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    name = next(iter(manager.specs))
+    leased = engine.add(name, running=False)
+    engine.records[leased]['NetworkSettings'] = {'Networks': {}}
+    engine.records[leased]['HostConfig'] = {'NetworkMode': 'a' * 64 if reference == 'network-id' else 'bridge'}
+    if reference == 'foreign':
+        engine.add(name, running=False, foreign=True)
+    manager.lease = ServiceLease('invocation', scope.id, (), (), (leased,))
+    engine.commands.clear()
+
+    manager._prune_networks(clock.now() + 120)
+
+    commands = [command for command, _ in engine.commands]
+    assert ('docker', 'ps', '-a', '--no-trunc', '--format', '{{.ID}}') in commands
+    inspections = [command for command in commands if command[1:3] == ('inspect', '--format')]
+    assert len(inspections) == 1
+    assert set(inspections[0][4:]) == set(engine.records)
+    assert (scope.project + '_default' in engine.networks) is (reference != 'none')
+    assert (('docker', 'network', 'rm', 'a' * 64) in commands) is (reference == 'none')
+
+
+@pytest.mark.parametrize('response', ['', 'not-json', '{"networks":[],"mode":"bridge"}'])
+def test_unverifiable_reference_batch_preserves_network(setup, response):
+    create, engine, clock, scope, _ = setup
+    manager = create()
+    manager._prepare_network(clock.now() + 120)
+    leased = engine.add(next(iter(manager.specs)), running=False)
+    manager.lease = ServiceLease('invocation', scope.id, (), (), (leased,))
+    original = engine.run
+    def inspect(command, **options):
+        if command[1:3] == ('inspect', '--format'):
+            return response
+        return original(command, **options)
+    manager.runner = inspect
+    engine.commands.clear()
+
+    with pytest.raises(PrerequisiteError, match='Container network references could not be verified'):
+        manager._prune_networks(clock.now() + 120)
+
+    assert scope.project + '_default' in engine.networks
+    assert not any(command[1:3] == ('network', 'rm') for command, _ in engine.commands)
 
 
 def test_old_network_candidates_are_inspected_in_batches(setup):
