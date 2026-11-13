@@ -233,7 +233,8 @@ def test_completed_chat_wins_over_stale_wait_snapshot(monkeypatch,outcome):
 def test_stalled_heartbeat_io_fails_and_drains_request(monkeypatch):
     from api_agent.providers.progress import component_timeout
     monkeypatch.setattr(h,'_INTERVAL',.001)
-    monkeypatch.setattr(h,'component_timeout',lambda name,timeout:component_timeout(name,.01))
+    # Long enough for the heartbeat request to reach the stalled transport on a slow host.
+    monkeypatch.setattr(h,'component_timeout',lambda name,timeout:component_timeout(name,1))
     async def scenario():
         stopped=[]
         async def reply(message):
