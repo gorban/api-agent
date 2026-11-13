@@ -251,21 +251,21 @@ async def test_change_during_screenshot_recovers_on_a_restored_second_attempt(mo
 
 
 @pytest.mark.asyncio
-async def test_repeated_layout_failure_reports_the_moved_element_once(monkeypatch):
+async def test_repeated_unpaused_layout_failure_reports_the_moved_element_once(monkeypatch):
     from playwright.async_api import async_playwright
     monkeypatch.setattr(evidence, 'CAPTURE_RETRY_DELAY_SECONDS', 0)
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page()
-            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
-              <body style="margin:0"><main id="panel"><section id="private" data-testid="private">
+            await page.route('**/*', lambda route: route.fulfill(content_type='text/html', body=f'''
+              <body style="margin:0"><main id="panel"><section id="private" data-testid="private" style="background-image:url({_PIXEL})">
                 <p style="margin:20px 0">Confidential answer</p>
               </section><button id="send">Send</button></main></body>'''))
             await page.goto(_ORIGIN + '/')
             reasons, details, stages = [], [], []
-            assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
-                _ORIGIN, content_mask_selector='#private', content_mask_anchor='#panel',
+            assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(True)),
+                _ORIGIN,
                 unavailable=reasons.append, failure_detail=details.append,
                 stage=lambda name, _elapsed: stages.append(name)) is None
             # The same element moving the same way twice is deterministic: stop early.
@@ -274,10 +274,10 @@ async def test_repeated_layout_failure_reports_the_moved_element_once(monkeypatc
             [detail] = details
             assert detail['reason'] == 'content_layout' and detail['attempts'] == 2
             shift = detail['layout_shift']
-            assert (shift['tag'], shift['testid'], shift['kind']) == ('section', 'private', 'content')
+            assert (shift['tag'], shift['testid'], shift['kind']) == ('section', 'private', 'opaque')
             assert shift['shifted'] >= 1 and shift['before'] != shift['after']
             assert set(shift['before']) == {'x', 'y', 'width', 'height'}
-            assert await page.locator('#private').get_attribute('style') is None
+            assert await page.locator('#private').get_attribute('style') == f'background-image:url({_PIXEL})'
         finally:
             await browser.close()
 

@@ -73,6 +73,28 @@ def _proxied_context(page):
     return SimpleNamespace(new_cdp_session=lambda _: page.context.new_cdp_session(page))
 
 
+async def _native_capture_hook(page, action, *, after=False):
+    """Exercise real compositor capture, including a debugger-paused page."""
+    async def create_session(_):
+        session = await page.context.new_cdp_session(page)
+        send = session.send
+        async def evaluate(expression):
+            result = await send('Runtime.evaluate', {'expression': expression, 'returnByValue': True})
+            assert 'exceptionDetails' not in result
+            return result['result'].get('value')
+        async def intercepted(method, params=None):
+            if method == 'Page.captureScreenshot' and not after:
+                await action(evaluate)
+            result = await send(method, params or {})
+            if method == 'Page.captureScreenshot' and after:
+                await action(evaluate)
+            return result
+        session.send = intercepted
+        return session
+    return SimpleNamespace(url=page.url, frames=page.frames, once=page.once,
+        context=SimpleNamespace(new_cdp_session=create_session))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('surface', ['popover', 'dialog'])
 async def test_content_mask_hides_transient_top_layer_descendants(surface):
@@ -93,23 +115,20 @@ async def test_content_mask_hides_transient_top_layer_descendants(surface):
             await page.goto(origin + '/')
             before = await page.locator('#private').bounding_box()
             controls = await page.locator('#send').bounding_box()
-            async def screenshot(**kwargs):
-                assert await page.locator('#private').bounding_box() == before
-                assert await page.locator('#send').bounding_box() == controls
-                await page.locator('#escape').evaluate('''(node, surface) => {
-                  if (surface === 'popover') node.showPopover(); else node.showModal();
-                }''', surface)
-                image = await page.screenshot(**kwargs)
-                await page.locator('#escape').evaluate('''(node, surface) => {
-                  if (surface === 'popover') node.hidePopover(); else node.close();
-                }''', surface)
-                return image
-            proxy = SimpleNamespace(url=page.url, frames=page.frames, screenshot=screenshot,
-                evaluate=page.evaluate, evaluate_handle=page.evaluate_handle,
-                locator=page.locator, context=_proxied_context(page))
+            calls = []
+            async def scheduled_popup(evaluate):
+                calls.append(True)
+                assert await evaluate("Object.fromEntries(['x','y','width','height'].map(k=>[k,document.querySelector('#send').getBoundingClientRect()[k]]))") == controls
+                expression = "document.querySelector('#escape').showPopover()" if surface == 'popover' else "document.querySelector('#escape').showModal()"
+                await evaluate('window.capturePopupCount=0;setTimeout(()=>{window.capturePopupCount++;' + expression + '},0)')
+                await asyncio.sleep(.05)
+                assert await evaluate('window.capturePopupCount') == 0
+            proxy = await _native_capture_hook(page, scheduled_popup)
             image = await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
                 origin, content_mask_selector='#private', content_mask_anchor='#panel')
             assert image is not None
+            assert calls == [True]
+            await page.wait_for_function('window.capturePopupCount === 1')
             region = await _region_pixels(page, image,
                 {'x': 300, 'y': 250, 'width': 200, 'height': 50})
             assert not region['red'] and not region['ink']
@@ -120,7 +139,7 @@ async def test_content_mask_hides_transient_top_layer_descendants(surface):
 
 
 @pytest.mark.asyncio
-async def test_content_mask_rejects_size_containment_that_moves_outer_controls():
+async def test_paused_content_mask_preserves_outer_controls_without_size_containment():
     from playwright.async_api import async_playwright
     origin = 'http://localhost:9000'
     async with async_playwright() as playwright:
@@ -136,8 +155,8 @@ async def test_content_mask_rejects_size_containment_that_moves_outer_controls()
             reasons = []
             assert await capture_studio_viewport(page, EmissionBoundary(ContentPolicy(False)),
                 origin, content_mask_selector='#private', content_mask_anchor='#panel',
-                unavailable=reasons.append) is None
-            assert reasons == ['content_layout']
+                unavailable=reasons.append) is not None
+            assert reasons == []
             assert await page.locator('#send').bounding_box() == before
             assert await page.locator('#private').get_attribute('style') is None
             assert await page.locator('html > div').count() == 0
@@ -220,22 +239,18 @@ async def test_content_mask_original_nodes_reject_changed_geometry_and_always_cl
                 <section id="private" style="height:400px">Confidential</section>
               </div><button>Send</button></main></body>'''))
             await page.goto(origin + '/')
-            async def screenshot(**kwargs):
-                image = await page.screenshot(**kwargs)
+            calls = []
+            async def mutation_after_capture(evaluate):
+                calls.append(True)
                 if mutation == 'content_move':
-                    await page.locator('#private').evaluate(
-                        "node => node.style.setProperty('transform', 'translateX(400px)', 'important')")
+                    await evaluate("document.querySelector('#private').style.setProperty('transform', 'translateX(400px)', 'important')")
                 elif mutation == 'content_replace':
-                    await page.locator('#private').evaluate('node => node.replaceWith(node.cloneNode(true))')
+                    await evaluate("document.querySelector('#private').replaceWith(document.querySelector('#private').cloneNode(true))")
                 elif mutation == 'content_resize':
-                    await page.locator('#scroll').evaluate("node => node.style.height = '40px'")
+                    await evaluate("document.querySelector('#scroll').style.height = '40px'")
                 else:
                     raise RuntimeError('capture failed')
-                return image
-            proxy = SimpleNamespace(url=page.url, frames=page.frames,
-                screenshot=screenshot, evaluate=page.evaluate,
-                evaluate_handle=page.evaluate_handle, locator=page.locator,
-                context=_proxied_context(page))
+            proxy = await _native_capture_hook(page, mutation_after_capture, after=True)
             reasons = []
             if mutation == 'capture_failure':
                 with pytest.raises(RuntimeError, match='capture failed'):
@@ -246,6 +261,7 @@ async def test_content_mask_original_nodes_reject_changed_geometry_and_always_cl
                     origin, content_mask_selector='#private', content_mask_anchor='#panel',
                     unavailable=reasons.append) is None
                 assert reasons == ['content_mask_geometry']
+            assert calls == [True]
             assert await page.locator('html > div').count() == 0
             if mutation != 'content_replace':
                 assert await page.locator('#private').evaluate("node => [node.style.height,node.style.opacity,node.style.contentVisibility]") == ['400px','','']
@@ -599,31 +615,25 @@ async def test_masked_capture_rejects_changes_outside_hidden_transcript(mutation
                 </div></body>'''))
             await page.goto(origin + '/')
 
-            async def changing_screenshot(**kwargs):
-                image = await page.screenshot(**kwargs)
+            calls = []
+            async def changing_screenshot(evaluate):
+                calls.append(True)
                 if mutation == 'outside_text':
-                    await page.locator('#toolbar').evaluate(
-                        "node => node.textContent = 'Changed controls'")
+                    await evaluate("document.querySelector('#toolbar').textContent = 'Changed controls'")
                 elif mutation == 'outside_clone':
-                    await page.locator('#toolbar').evaluate(
-                        'node => node.replaceWith(node.cloneNode(true))')
+                    await evaluate("document.querySelector('#toolbar').replaceWith(document.querySelector('#toolbar').cloneNode(true))")
                 elif mutation == 'portal':
-                    await page.locator('#private').evaluate(
-                        'node => document.body.appendChild(node)')
+                    await evaluate("document.body.appendChild(document.querySelector('#private'))")
                 else:
-                    await page.locator('#conversation').evaluate(
-                        "node => node.style.setProperty('opacity', '1', 'important')")
-                return image
-
-            proxy = SimpleNamespace(url=page.url, frames=page.frames,
-                screenshot=changing_screenshot, evaluate=page.evaluate,
-                evaluate_handle=page.evaluate_handle, locator=page.locator,
-                context=_proxied_context(page))
+                    await evaluate("document.querySelector('#conversation').style.setProperty('opacity', '1', 'important')")
+            proxy = await _native_capture_hook(page, changing_screenshot, after=True)
             reasons = []
             assert await capture_studio_viewport(proxy, EmissionBoundary(ContentPolicy(False)),
                 origin, content_mask_selector='#conversation', content_mask_anchor='#panel',
                 unavailable=reasons.append) is None
-            assert reasons == ['isolation_verify' if mutation == 'root_style' else 'document_changed']
+            expected = {'root_style': 'isolation_verify', 'portal': 'content_mask_geometry'}
+            assert reasons == [expected.get(mutation, 'document_changed')]
+            assert calls == [True]
         finally:
             await browser.close()
 
@@ -934,11 +944,13 @@ def test_new_registration_during_capture_invalidates_pixels(registration_phase):
     rows = [{'index':0,'parent':-1,'forced':False,'texts':['late-secret']}]
     async def evaluate(script, arguments):
         if isinstance(arguments, str):
-            if registration_phase == 'cleanup': boundary.register_secret('late-secret')
+            if registration_phase == 'cleanup':
+                boundary.register_secret('late-secret')
             return None
         return rows
     async def screenshot(**kwargs):
-        if registration_phase == 'screenshot': boundary.register_secret('late-secret')
+        if registration_phase == 'screenshot':
+            boundary.register_secret('late-secret')
         return b'png'
     async def handle_evaluate(script):
         if registration_phase == 'cleanup' and 'previous' in script:
@@ -965,7 +977,8 @@ def test_browser_policy_bounds_dom_data_before_export(body):
                 await page.goto('http://localhost:9000/')
                 assert await capture_studio_viewport(page,EmissionBoundary(ContentPolicy(True)),'http://localhost:9000') is None
                 assert await page.evaluate("[...document.querySelectorAll('*')].every(node => [...node.attributes].every(attr => !attr.name.startsWith('data-evidence-')))")
-            finally:await browser.close()
+            finally:
+                await browser.close()
     asyncio.run(exercise())
 
 
@@ -2712,7 +2725,8 @@ def test_capture_admits_all_keyframe_literals_before_any_animation_phase(owned, 
                 await _painted_baseline(page)
                 assert await page.locator('header').evaluate("node => node.getAnimations({subtree:true}).length") == 1
                 assert await page.locator('header').evaluate("(node, property) => getComputedStyle(node, '::before').getPropertyValue(property)", property_name) == safe
-                phase = lambda value: "document.querySelector('header').getAnimations({subtree:true}).forEach(animation=>animation.currentTime=" + str(value) + ')'
+                def phase(value):
+                    return "document.querySelector('header').getAnimations({subtree:true}).forEach(animation=>animation.currentTime=" + str(value) + ')'
                 session = await page.context.new_cdp_session(page)
                 send = session.send
                 async def phase_send(method, params=None):

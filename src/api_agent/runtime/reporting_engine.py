@@ -15,6 +15,10 @@ from .compose import controlled_engine_environment
 from .prerequisites import PrerequisiteError, PrerequisiteCancelled, run_command
 from api_agent.providers.progress import report_timeout_sync
 
+# A complete CLI/socket handshake includes bounded inventory pagination and
+# compatibility checks. Keep that setup budget distinct from one socket read.
+ENGINE_IDENTITY_TIMEOUT_SECONDS = 30
+
 
 class DeadlineSocket(socket.socket):
     """SocketIO/makefile reads retain an absolute budget despite trickle traffic."""
@@ -132,7 +136,7 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
                         response.close()
                 finally:
                     client.close()
-        with report_timeout_sync('Reporting engine identity', 5) as budget:
+        with report_timeout_sync('Reporting engine identity', ENGINE_IDENTITY_TIMEOUT_SECONDS) as budget:
             direct = get('/info')
             def inventory():
                 identifiers = []

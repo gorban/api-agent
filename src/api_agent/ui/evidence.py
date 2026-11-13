@@ -263,7 +263,7 @@ _PREPARE = r'''({trustedIcons, ownedFrameSelector, ownedShadowSelector, chromeOw
   // content root there escapes the clipping its mask relies on.
   const topLayered = node => node.matches(':popover-open, :modal, :fullscreen') ||
     getComputedStyle(node).overlay === 'auto';
-  if (isolatedRoots.some(node => (plans.get(node).contentMasked || !preserveContentFocus) && topLayered(node)))
+  if (isolatedRoots.some(node => topLayered(node)))
     return {saved, urlProperties, reason:'content_top_layer'};
   // Skipping a subtree may blur its focused control. Recover only that
   // capture-induced loss; any newer focus or user interaction takes priority.
@@ -667,6 +667,26 @@ _INSPECT = r'''({marker, token, verify, trustedIcons, allowFrames, ownedFrameSel
 }'''
 
 
+class _ShadowDocumentChanged(Exception):
+    """An audit's node disappeared before its description was read."""
+
+
+async def _shadow_node_removed(session, root, identifier):
+    # Re-query the native DOM rather than interpreting exception prose. Unknown
+    # protocol failures remain closed unless this exact node is now absent.
+    try:
+        # Keep the original document handle. Calling getDocument again can
+        # rebuild frontend node IDs even when the DOM did not change.
+        nodes = await session.send('DOM.querySelectorAll', {
+            'nodeId': root, 'selector': '*'})
+        identifiers = nodes['nodeIds']
+        return (type(identifiers) is list and len(identifiers) <= 10000
+            and all(type(item) is int and item > 0 for item in identifiers)
+            and identifier not in identifiers)
+    except Exception:
+        return False
+
+
 async def _closed_author_shadow(session, owned_shadow_selector=None):
     """Audit direct closed roots without serializing masked iframe descendants."""
     document = await session.send('DOM.getDocument', {'depth': 0, 'pierce': False})
@@ -683,8 +703,13 @@ async def _closed_author_shadow(session, owned_shadow_selector=None):
             raise ValueError('Owned shadow host unavailable')
         admitted = set(selected['nodeIds'])
     for identifier in identifiers:
-        described = await session.send('DOM.describeNode', {
-            'nodeId': identifier, 'depth': -1 if identifier in admitted else 0, 'pierce': True})
+        try:
+            described = await session.send('DOM.describeNode', {
+                'nodeId': identifier, 'depth': -1 if identifier in admitted else 0, 'pierce': True})
+        except Exception:
+            if await _shadow_node_removed(session, document['root']['nodeId'], identifier):
+                raise _ShadowDocumentChanged() from None
+            raise
         stack = [described['node']]
         visited = 0
         while stack:
@@ -1150,10 +1175,10 @@ async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/
     ordinary form values and exact authored navigation SVGs remain visible.
     An explicit ``owned_frames`` contract admits original
     application frame pixels after frame identity and literal credential checks.
-    A focused control inside a declared content root also uses debugger-paused
-    capture: opacity and clipping preserve focus while application callbacks wait.
-    Unpaused content roots retain strong subtree suppression, including transient
-    top-layer painting. Native animation time is leased without losing callbacks.
+    Declared content masks also use debugger-paused capture: opacity and clipping
+    preserve layout and focus while application callbacks wait. Unpaused surfaces
+    retain strong subtree suppression, including transient top-layer painting.
+    Native animation time is leased without losing callbacks.
     Browser strings remain transient and are never attachment metadata, except
     a moved element's bounded tag and test id, which the live credential
     boundary screens. The caller owns exception isolation.
@@ -1234,7 +1259,8 @@ async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/
                 await cdp.send('Animation.setPlaybackRate', {'playbackRate': 0})
         except Exception:
             return reject('animation_timeline')
-        needs_pause = owned_frames is not None
+        needs_pause = owned_frames is not None or (
+            boundary.policy.allow_content is not True and bool(content_mask_selector))
         if boundary.policy.allow_content is not True and owned_frames is None:
             try:
                 top = (await cdp.send('Page.getFrameTree'))['frameTree']['frame']
@@ -1245,7 +1271,7 @@ async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/
                     'contextId':world['executionContextId'], 'returnByValue':True}))
                 if type(focused_content) is not bool:
                     return reject('focus_inspection')
-                needs_pause = focused_content
+                needs_pause = needs_pause or focused_content
             except Exception:
                 return reject('focus_inspection')
         if needs_pause:
@@ -1303,6 +1329,8 @@ async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/
             if await _closed_author_shadow(cdp, owned_shadow_selector):
                 return reject('closed_shadow')
             mark('parent_audit')
+        except _ShadowDocumentChanged:
+            return reject('document_changed')
         except Exception:
             return reject('shadow_audit')
         async def prepare_capture():
@@ -1384,6 +1412,8 @@ async def _capture_viewport_once(page, boundary, origin, *, unavailable, path='/
         mark('verified')
         try:
             closed_shadow = await _closed_author_shadow(cdp, owned_shadow_selector)
+        except _ShadowDocumentChanged:
+            return reject('document_changed')
         except Exception:
             return reject('shadow_audit')
         if closed_shadow:
