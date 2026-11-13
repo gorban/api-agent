@@ -66,12 +66,16 @@ def test_interrupted_command_retains_already_captured_output(tmp_path, cancelled
         reaped_status.append(process.returncode)
 
     monkeypatch.setattr(prerequisites, 'finalize', record_cleanup)
-    started = time.monotonic()
+    # Interrupt only after the child has written and the runner has had time to read it,
+    # however slowly the child starts: the marker moves the cancellation or the clock.
+    written = tmp_path / 'written'
     args = command_args(tmp_path)
-    args['deadline'] = started + (5 if cancelled else .4)
-    args['cancelled'] = lambda: cancelled and time.monotonic() - started > .4
+    args['deadline'] = time.monotonic() + 60
+    args['now'] = lambda: time.monotonic() + (0 if cancelled or not written.exists() else 1000)
+    args['cancelled'] = lambda: cancelled and written.exists()
     command = (sys.executable, '-c',
-               'import os,time; os.write(2,b"before interruption"); time.sleep(30)')
+               'import os,sys,time; os.write(2,b"before interruption"); time.sleep(1);'
+               ' open(sys.argv[1], "w").close(); time.sleep(30)', str(written))
     with pytest.raises(PrerequisiteError, match='cancelled' if cancelled else 'deadline exceeded') as caught:
         run_command(command, **args)
     stderr_section = caught.value.local_details.split('\nstderr (', 1)[1]

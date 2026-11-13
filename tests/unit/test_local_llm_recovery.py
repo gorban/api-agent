@@ -64,8 +64,18 @@ def recovery(tmp_path):
 
     loader = AsyncMock(side_effect=load)
     owner = LocalLLM({'LLM_PROVIDER': 'synthetic', 'NO_STD_IN': True}, tmp_path,
-        loader=loader, cleanup_timeout=.05)
+        loader=loader, cleanup_timeout=5)
     return owner, generations, events, loader
+
+
+def impatient(owner):
+    """A stalled cleanup is under test, so it must be reported pending quickly; the fixture's budget is long."""
+    owner._timeout = owner.inspection._timeout = .05
+
+
+def patient(owner):
+    """Restore the long budget before the stalled work is released, so its disposal cannot race a slow host."""
+    owner._timeout = owner.inspection._timeout = 5
 
 
 def value():
@@ -164,6 +174,7 @@ def test_active_completion_finishes_before_generation_retirement(recovery):
 
 def test_active_generation_timeout_retains_owner_without_cancelling_call(recovery):
     owner, generations, events, loader = recovery
+    impatient(owner)
     async def run():
         await owner.describe()
         old = generations[0].implementation
@@ -176,6 +187,7 @@ def test_active_generation_timeout_retains_owner_without_cancelling_call(recover
         assert not completion.done() and loader.await_count == 1
         assert caught.value.owners == (owner,)
         assert ('provider-close', 0) not in events
+        patient(owner)
         old.release.set()
         await completion
         await caught.value.retry()
@@ -186,12 +198,14 @@ def test_active_generation_timeout_retains_owner_without_cancelling_call(recover
 
 def test_failed_cleanup_is_retried_before_new_setup(recovery):
     owner, generations, events, loader = recovery
+    impatient(owner)
     async def run():
         await fail_next_readiness(owner, generations)
         old = generations[0]
         old.aclose.side_effect = [RuntimeError('Synthetic disposal failure'), None]
         with pytest.raises(CleanupPendingError) as caught: await owner.ensure_ready()
         assert loader.await_count == 1 and owner.shared._closed
+        patient(owner)
         await caught.value.retry()
         assert loader.await_count == 2 and old.aclose.await_count == 2
         assert events.count(('auth-close', 0)) == 1
@@ -262,6 +276,7 @@ def test_nested_callback_cannot_recover_its_own_failed_generation(recovery):
 
 def test_cleanup_timeout_retains_receipt_and_blocks_new_generation(recovery):
     owner, generations, events, loader = recovery
+    impatient(owner)
     async def run():
         await fail_next_readiness(owner, generations)
         entered = asyncio.Event()
@@ -271,6 +286,7 @@ def test_cleanup_timeout_retains_receipt_and_blocks_new_generation(recovery):
         generations[0].aclose.side_effect = close
         with pytest.raises(CleanupPendingError) as caught: await owner.describe()
         assert entered.is_set() and loader.await_count == 1
+        patient(owner)
         generations[0].aclose.side_effect = None
         await caught.value.retry()
         assert loader.await_count == 2
@@ -280,6 +296,7 @@ def test_cleanup_timeout_retains_receipt_and_blocks_new_generation(recovery):
 
 def test_pending_credential_helper_blocks_new_generation(recovery):
     owner, generations, events, loader = recovery
+    impatient(owner)
     async def run():
         await fail_next_readiness(owner, generations)
         release = asyncio.Event()
@@ -287,6 +304,7 @@ def test_pending_credential_helper_blocks_new_generation(recovery):
         owner._helpers.add(helper)
         with pytest.raises(CleanupPendingError) as caught: await owner.ensure_ready()
         assert loader.await_count == 1 and not helper.done()
+        patient(owner)
         release.set()
         await helper
         await caught.value.retry()
@@ -421,6 +439,7 @@ def test_recovery_preserves_interactive_and_selected_account_options(recovery):
 @pytest.mark.parametrize('touch_provider', [True, False])
 def test_cancellation_resistant_outer_callback_stays_owned_until_acknowledged(recovery, touch_provider):
     owner, generations, events, loader = recovery
+    impatient(owner)
     async def run():
         entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         retained = []
@@ -449,6 +468,7 @@ def test_cancellation_resistant_outer_callback_stays_owned_until_acknowledged(re
             assert ('provider-close', 0) not in events
             assert not owner.inspection._closed
         finally:
+            patient(owner)
             release.set()
             await asyncio.gather(action, *retained, return_exceptions=True)
             await owner.aclose()
@@ -459,6 +479,7 @@ def test_cancellation_resistant_outer_callback_stays_owned_until_acknowledged(re
 
 def test_recovery_cannot_replace_generation_of_cancelled_surviving_callback(recovery):
     owner, generations, events, loader = recovery
+    impatient(owner)
     async def run():
         entered, cancelled, release, blocked = (asyncio.Event() for _ in range(4))
         retained = []
@@ -492,6 +513,7 @@ def test_recovery_cannot_replace_generation_of_cancelled_surviving_callback(reco
             assert loader.await_count == 2
             assert not any(event[0] == 'complete' for event in events)
         finally:
+            patient(owner)
             release.set()
             await asyncio.gather(action, *retained, return_exceptions=True)
             await owner.aclose()
@@ -526,8 +548,6 @@ def test_rejected_recovery_allocation_closes_fresh_coroutine(recovery, monkeypat
 @pytest.mark.parametrize('next_action', ['describe', 'complete'])
 def test_per_call_auth_failure_recovers_on_very_next_action(recovery, next_action):
     owner, generations, events, loader = recovery
-    # No stalled cleanup is under test here, so disposal must not race the fixture's short budget.
-    owner._timeout = owner.inspection._timeout = 5
     async def run():
         await owner.ensure_ready()
         old = generations[0].implementation
