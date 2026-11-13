@@ -1366,7 +1366,8 @@ def test_failed_operation_entry_reports_selected_cleanup_scope_without_acquisiti
 
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_cleanup_attempt_retains_stalled_callback_and_retries_same_task(local, cancelled):
-    local.owner.CLEANUP_ATTEMPT_SECONDS = .01
+    # A cancellation must reach an attempt that is still within its budget; only expiry needs the short one.
+    local.owner.CLEANUP_ATTEMPT_SECONDS = 5 if cancelled else .01
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
     async def stalled():
@@ -1384,6 +1385,7 @@ def test_cleanup_attempt_retains_stalled_callback_and_retries_same_task(local, c
                 attempt.cancel()
             with pytest.raises(CleanupPendingError) as caught:
                 await attempt
+            local.owner.CLEANUP_ATTEMPT_SECONDS = .01
             closing = local.owner._closing
             assert entered.is_set() and not closing.done()
             assert local.owner.snapshot.phase == 'cleanup-pending'

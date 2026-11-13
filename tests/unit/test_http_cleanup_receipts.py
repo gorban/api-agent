@@ -283,6 +283,8 @@ def test_progress_entry_failure_preserves_already_running_callback_task(monkeypa
         assert callbacks[0].entries[0].task is task and calls == ['started']
         monkeypatch.setattr(asyncio,'create_task',original)
         release.set()
+        # The retry keeps the short disposal budget, so let the released callback finish before it acknowledges.
+        await asyncio.wait_for(asyncio.wait({task}),30)
         await error.value.retry()
         assert calls == ['started','closed'] and not callbacks
     asyncio.run(run())
