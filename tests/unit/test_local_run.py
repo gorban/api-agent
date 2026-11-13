@@ -407,7 +407,8 @@ def test_blocked_plan_keeps_cleanup_receipt_until_worker_settles(local, monkeypa
         assert release.wait(2)
         return original(*args, **kwargs)
     local.owner.plan_factory = blocked
-    local.owner.CLEANUP_ATTEMPT_SECONDS = .02
+    # The attempt must outlast the startup settlement so the settlement's receipt is the one reported.
+    local.owner.CLEANUP_ATTEMPT_SECONDS = 5
     @asynccontextmanager
     async def short_settlement(name, timeout):
         async with component_timeout(name, .02 if name == 'Local startup settlement' else timeout) as budget:
@@ -1522,12 +1523,13 @@ def test_finish_cleanup_propagates_error_without_retained_ownership(local, failu
 def test_finish_cleanup_preserves_owner_when_cancelled_during_retry_delay(local, monkeypatch):
     local.owner.CLEANUP_ATTEMPT_SECONDS = .01
     local.owner.CLEANUP_RETRY_SECONDS = 10
-    retry_entered, release = asyncio.Event(), asyncio.Event()
+    retry_entered, entered, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     real_sleep = asyncio.sleep
     callbacks = []
     closing = None
     async def held_cleanup():
         callbacks.append('entered')
+        entered.set()
         await release.wait()
     async def observed_sleep(delay, result=None):
         if asyncio.current_task() is closing and delay == local.owner.CLEANUP_RETRY_SECONDS:
@@ -1548,6 +1550,8 @@ def test_finish_cleanup_preserves_owner_when_cancelled_during_retry_delay(local,
             assert not closing.done()
             assert local.owner._closing is retained
             assert not retained.done()
+            # A slow host may start the held callback only after the attempt budget has elapsed.
+            await asyncio.wait_for(entered.wait(), timeout=5)
             assert callbacks == ['entered']
         finally:
             release.set()
