@@ -22,6 +22,8 @@ TOOLS = {
 }
 # These install one release file, named by the tool's literal mise asset_pattern.
 FILE_TOOLS = frozenset({'plantuml'})
+# Background JVMs must not open a desktop app window or take focus (macOS Dock).
+HEADLESS_JAVA_OPTION = '-Djava.awt.headless=true'
 # The isolated tool state ./launch.sh exports, relative to <root>/.api-agent/bootstrap.
 LAUNCHER_STATE = {
     'MISE_CONFIG_DIR': 'mise/config', 'MISE_GLOBAL_CONFIG_FILE': 'mise/config/config.toml',

@@ -1044,7 +1044,10 @@ class PlantUMLRenderer:
                 puml.write_bytes(source)
                 jar = Path(directory) / "renderer.jar"
                 jar.write_bytes(jar_bytes)
-                args = [self.java, "-Xmx256m", "-DPLANTUML_SECURITY_PROFILE=SANDBOX", "-jar", str(jar), *RENDER_OPTIONS, str(puml)]
+                from api_agent.runtime.mise_tools import HEADLESS_JAVA_OPTION
+
+                args = [self.java, "-Xmx256m", HEADLESS_JAVA_OPTION, "-DPLANTUML_SECURITY_PROFILE=SANDBOX",
+                        "-jar", str(jar), *RENDER_OPTIONS, str(puml)]
                 try:
                     process = subprocess.Popen(args, cwd=directory, env={"PATH": os.environ.get("PATH", ""), "HOME": directory, "LANG": "C.UTF-8"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
                 except FileNotFoundError as exc:
