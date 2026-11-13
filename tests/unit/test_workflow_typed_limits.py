@@ -57,7 +57,10 @@ def finish(state, context):
     return {'trail': [*state['trail'], 'finish']}
 '''
 
-LIMITS = '''version = 1
+# Long enough that a loaded host cannot exhaust it before the scope's own work starts.
+TIMEOUT = 0.5
+
+LIMITS = f'''version = 1
 
 [fields.TIMEOUT_RETRIES]
 type = "int"
@@ -80,11 +83,11 @@ default = -1
 
 [fields.NODE_TIMEOUT]
 type = "float"
-default = 0.05
+default = {TIMEOUT}
 
 [fields.GROUP_TIMEOUT]
 type = "float"
-default = 0.05
+default = {TIMEOUT}
 
 [fields.LONG_TIMEOUT]
 type = "float"
@@ -397,7 +400,7 @@ def test_component_timeouts_are_enforced_for_the_component_and_its_children(tmp_
 
     assert starts['group']['timeout_key'] == 'GROUP_TIMEOUT'
     assert starts['plan_request']['declared_timeout'] == 30.0
-    assert starts['plan_request']['effective_timeout'] <= 0.05
+    assert starts['plan_request']['effective_timeout'] <= TIMEOUT
 
 
 @pytest.mark.parametrize(('rows', 'message'), [
@@ -452,7 +455,7 @@ def test_expired_node_routes_by_its_ordinary_edges_and_records_the_expiry(tmp_pa
     ends = [event for event in events if event['event'] == 'scope_end' and event['owner'] == 'plan_request']
     assert [(event['outcome'], event.get('reason')) for event in ends] == [
         ('failed', 'declared_timeout_expired'), ('passed', None)]
-    assert workflow.timeouts['plan_request'] == 0.05
+    assert workflow.timeouts['plan_request'] == TIMEOUT
     assert any(event['event'] == 'edge' and event.get('condition') ==
                '.timed_out == "plan_request" and .timeout_retries <= TIMEOUT_RETRIES' for event in events)
 

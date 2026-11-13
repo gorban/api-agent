@@ -543,11 +543,12 @@ def test_reasoning_shorter_parent_deadline_is_preserved():
     requests=[]
     async def reply(sent):
         requests.append(sent)
-        await asyncio.sleep(1)
+        await asyncio.Event().wait()
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
             with pytest.raises(TimeoutError):
-                async with component_timeout('Synthetic parent', .03):
+                # The parent is far shorter than the 300 second call budget yet long enough for every call to start.
+                async with component_timeout('Synthetic parent', 3):
                     await c.run_pairs(client,'http://127.0.0.1:1','nonce',timeout_seconds=300)
     asyncio.run(run())
     assert len(requests) == 6
