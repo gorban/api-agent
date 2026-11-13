@@ -774,7 +774,8 @@ def test_cancel_rpc_has_own_deadline_after_presenter_failure(client, monkeypatch
 
     process.readline = readline
     original_timeout = asyncio.timeout
-    monkeypatch.setattr(setup.asyncio, 'timeout', lambda _: original_timeout(.01))
+    # Only the cancel request's own deadline is shortened; every other deadline stays as declared.
+    monkeypatch.setattr(setup.asyncio, 'timeout', lambda delay: original_timeout(.01 if delay == 3 else delay))
 
     async def present(url):
         raise OSError('browser unavailable')
