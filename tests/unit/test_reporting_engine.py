@@ -323,6 +323,46 @@ def test_identity_passes_inherited_remaining_budget_into_connection(engine, monk
     assert timeout == .25 and remaining <= .25
 
 
+def test_complete_engine_handshake_tolerates_slow_cli_without_weakening_identity(engine, monkeypatch):
+    from api_agent.providers import progress
+    clock = [0.0]
+    monkeypatch.setattr(progress, '_clock', lambda: clock[0])
+    original = engine.runner
+    commands = []
+    def slow(command, **kwargs):
+        if kwargs['deadline'] <= kwargs['now']():
+            raise PrerequisiteError('Prerequisite deadline exceeded.')
+        commands.append(command[1])
+        result = original(command, **kwargs)
+        if command[1] == 'info':
+            clock[0] += 6
+        return result
+    engine.runner = slow
+
+    identity = identify(engine)
+
+    assert len(identity) == 64 and commands == ['info', 'ps']
+
+
+def test_slow_cli_still_rejects_mismatched_container_inventory(engine, monkeypatch):
+    from api_agent.providers import progress
+    clock = [0.0]
+    monkeypatch.setattr(progress, '_clock', lambda: clock[0])
+    original = engine.runner
+    def slow(command, **kwargs):
+        if kwargs['deadline'] <= kwargs['now']():
+            raise PrerequisiteError('Prerequisite deadline exceeded.')
+        result = original(command, **kwargs)
+        if command[1] == 'info':
+            clock[0] += 6
+        return result
+    engine.runner = slow
+    engine.cli_ids = ['b' * 64]
+
+    with pytest.raises(PrerequisiteError, match='inventories did not agree'):
+        identify(engine)
+
+
 
 def test_compatibility_response_ids_and_inventory_changes_do_not_change_fallback_key(engine):
     engine.cli = {'host': {'hostname': 'host'}, 'store': {'graphRoot': '/store'}}
