@@ -764,7 +764,8 @@ class PrerequisiteManager:
                 return
             # This snapshot is protected against managed creation by the guard;
             # processes outside that lock are not serialized by it.
-            references = self._container_network_references(deadline, cleanup=cleanup)
+            references = self._container_network_references(deadline, cleanup=cleanup,
+                preserve=names if not aged and self.lease is not None else ())
             candidates = [name for name in names if name not in references]
             for record in self._network_records(candidates, deadline, cleanup=cleanup):
                 name = record.get('Name', record.get('name'))
@@ -811,7 +812,7 @@ class PrerequisiteManager:
                 raise PrerequisiteError('Network cleanup inventory could not be verified; remaining networks were preserved.') from error
             yield from records
 
-    def _container_network_references(self, deadline, *, cleanup):
+    def _container_network_references(self, deadline, *, cleanup, preserve=()):
         """Inspect saved definitions; network filters may only see live endpoints."""
         executable = self.plan.command[0]
         identifiers = self._command((executable, 'ps', '-a', '--no-trunc', '--format', '{{.ID}}'),
@@ -820,6 +821,12 @@ class PrerequisiteManager:
         try:
             if any(not _ID.fullmatch(identifier) for identifier in identifiers):
                 raise ValueError()
+            # Prioritize lease definitions still present in the fresh inventory.
+            # Positive references only preserve networks. Absence still requires
+            # inspecting every saved definition before deletion is considered.
+            priority = set(self.lease.container_ids) if self.lease is not None else set()
+            identifiers.sort(key=lambda identifier: identifier not in priority)
+            protected = frozenset(preserve)
             template = '{"networks":{{json .NetworkSettings.Networks}},"mode":{{json .HostConfig.NetworkMode}}}'
             for offset in range(0, len(identifiers), 32):
                 batch = identifiers[offset:offset + 32]
@@ -842,6 +849,8 @@ class PrerequisiteManager:
                             if not isinstance(identifier, str):
                                 raise ValueError()
                             references.add(identifier)
+                if protected and protected <= references:
+                    return references
         except (ValueError, TypeError, AttributeError, KeyError) as error:
             raise PrerequisiteError('Container network references could not be verified; remaining networks were preserved.') from error
         return references
