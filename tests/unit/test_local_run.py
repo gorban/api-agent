@@ -1416,6 +1416,9 @@ def test_cancelled_cleanup_pending_observer_cannot_mask_receipt(local):
             assert local.calls == ['operation-start', 'browser-start']
         finally:
             release.set()
+        # The short budget made the stalled attempt fail fast; the released retry
+        # must not race it on a slow host.
+        local.owner.CLEANUP_ATTEMPT_SECONDS = 5
         await caught.value.retry()
         assert local.calls == ['operation-start', 'browser-start', 'browser-stop', 'operation-stop']
         assert local.owner.pending_cleanup is None
