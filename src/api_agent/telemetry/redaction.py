@@ -46,8 +46,8 @@ def overlapping_ranges(text: str, secret: str):
                 run_start, run_stop = start, stop
             matched = prefix[matched - 1]
         index += 1
-    if run_start is not None:
-        yield run_start, run_stop
+    # The containment check above guarantees at least one match.
+    yield run_start, run_stop
 
 
 from array import array
