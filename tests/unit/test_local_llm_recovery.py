@@ -526,6 +526,8 @@ def test_rejected_recovery_allocation_closes_fresh_coroutine(recovery, monkeypat
 @pytest.mark.parametrize('next_action', ['describe', 'complete'])
 def test_per_call_auth_failure_recovers_on_very_next_action(recovery, next_action):
     owner, generations, events, loader = recovery
+    # No stalled cleanup is under test here, so disposal must not race the fixture's short budget.
+    owner._timeout = owner.inspection._timeout = 5
     async def run():
         await owner.ensure_ready()
         old = generations[0].implementation
