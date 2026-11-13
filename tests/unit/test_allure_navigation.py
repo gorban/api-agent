@@ -261,6 +261,7 @@ def test_main_menu_history_and_refresh_are_separate_from_suite_execution(tmp_pat
                 assert len(viewer.calls)==1
                 app._allure_opening=False
                 await app.choose('refresh-allure')
+                await app.workers.wait_for_complete()
                 await pilot.pause()
                 assert len(viewer.calls)==2
             await app.close_view()
