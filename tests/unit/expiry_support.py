@@ -3,14 +3,17 @@ import asyncio
 
 from loop_support import CONFIG as LOOP_CONFIG, INPUTS, OUTPUTS, build, edges, graph, limits, table
 
-CONFIG = LOOP_CONFIG + '''
+# Long enough that a loaded host cannot exhaust it before the scope's own work starts.
+TIMEOUT = 0.5
+
+CONFIG = LOOP_CONFIG + f'''
 [fields.NODE_TIMEOUT]
 type = "float"
-default = 0.1
+default = {TIMEOUT}
 
 [fields.GROUP_TIMEOUT]
 type = "float"
-default = 0.1
+default = {TIMEOUT}
 
 [fields.GRAPH_TIMEOUT]
 type = "float"

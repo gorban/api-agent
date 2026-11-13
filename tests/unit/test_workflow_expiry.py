@@ -6,8 +6,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from api_agent.workflows import LayoutError
 from api_agent.workflows.execution import WorkflowError
-from expiry_support import (EFFECT_ENDS, EFFECT_FLOW, EFFECTED, ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, calls_after,
-                            expiring, play)
+from expiry_support import (EFFECT_ENDS, EFFECT_FLOW, EFFECTED, ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, TIMEOUT,
+                            calls_after, expiring, play)
 from loop_support import build, edges, load, node, table
 from test_workflow_session_loop import stored
 
@@ -160,7 +160,7 @@ def test_the_graph_deadline_is_not_the_nodes_expiry(tmp_path, step):
     rows = (('work', 'END', 'work.expired'), ('work', 'finish', 'otherwise'))
     entry = expiring(tmp_path, *rows, owners=(('GRAPH', 'GRAPH_TIMEOUT'), ('work', 'NODE_TIMEOUT')))
 
-    calls, error = calls_after(entry, {'work': [step]}, config={'GRAPH_TIMEOUT': 0.1, 'NODE_TIMEOUT': 30})
+    calls, error = calls_after(entry, {'work': [step]}, config={'GRAPH_TIMEOUT': TIMEOUT, 'NODE_TIMEOUT': 30})
 
     # A node that turns the graph's cancellation into its own TimeoutError still did not expire itself.
     assert isinstance(error, TimeoutError) and calls == ['work']
@@ -260,7 +260,7 @@ def test_a_component_that_expired_after_an_effect_cannot_start_again_in_the_turn
 def test_an_ancestor_deadline_after_an_effect_is_still_not_routed(tmp_path):
     entry = effected(tmp_path, owners=(('GRAPH', 'GRAPH_TIMEOUT'), ('work', 'NODE_TIMEOUT')))
 
-    calls, error = calls_after(entry, {'work': ['effect']}, config={'GRAPH_TIMEOUT': 0.1, 'NODE_TIMEOUT': 30})
+    calls, error = calls_after(entry, {'work': ['effect']}, config={'GRAPH_TIMEOUT': TIMEOUT, 'NODE_TIMEOUT': 30})
 
     assert isinstance(error, TimeoutError) and calls == ['work']
 
@@ -327,7 +327,7 @@ def test_the_enclosing_component_deadline_is_not_the_nodes_expiry(tmp_path):
     inner = (('work', 'recover', 'work.expired'), ('work', 'after', 'otherwise'),
              ('after', 'END', 'always'), ('recover', 'END', 'always'))
     owners = (('work', 'NODE_TIMEOUT'), ('group', 'GROUP_TIMEOUT'))
-    config = {'NODE_TIMEOUT': 30, 'GROUP_TIMEOUT': 0.1}
+    config = {'NODE_TIMEOUT': 30, 'GROUP_TIMEOUT': TIMEOUT}
 
     unrouted = group(tmp_path, ('group', 'finish', 'always'), inner=inner, children=('work', 'after', 'recover'),
                      owners=owners)
