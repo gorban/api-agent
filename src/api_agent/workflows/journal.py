@@ -100,6 +100,12 @@ def _encoded(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
 
 
+def journal_digest(payload):
+    """Hash journal content using its canonical encoding, excluding only its own digest."""
+    unsigned = {key: value for key, value in payload.items() if key != 'sha256'}
+    return sha256(_encoded(unsigned)).hexdigest()
+
+
 def _schema_field(key):
     return (type(key) is str and _SAFE_LABEL.fullmatch(key)
             and (not _UNSAFE_FIELD.search(key) or key in _COUNTS or key in ('reasoning_effort', 'max_output_tokens', 'max_completion_tokens', 'max_tokens')))
@@ -884,7 +890,7 @@ class WorkflowJournal:
                 payload['execution_context'] = dict(self.execution_context)
             if self.semantic_identity is not None:
                 payload['semantic_identity'] = dict(self.semantic_identity)
-            payload['sha256'] = sha256(_encoded(payload)).hexdigest()
+            payload['sha256'] = journal_digest(payload)
             return payload
 
 
@@ -896,8 +902,7 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
     if len(_encoded(payload)) > _MAX_BYTES + 1024 * 1024:
         raise ValueError('Workflow journal exceeds retention bound')
     expected = payload.get('sha256')
-    unsigned = {key: value for key, value in payload.items() if key != 'sha256'}
-    if type(expected) is not str or sha256(_encoded(unsigned)).hexdigest() != expected:
+    if type(expected) is not str or journal_digest(payload) != expected:
         raise ValueError('Workflow journal digest mismatch')
     if 'execution_context' in payload:
         from .run_context import validate_execution_context
