@@ -47,7 +47,7 @@ def test_actual_node_http_readiness_and_owned_disposal():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('kwargs', [dict(timeout=0), dict(timeout=-1), dict(timeout=601),
+@pytest.mark.parametrize('kwargs', [dict(timeout=0), dict(timeout=-1),
     dict(timeout=float('inf')), dict(timeout=float('nan')), dict(timeout=True),
     dict(cleanup_timeout=0), dict(cleanup_timeout=11)])
 def test_invalid_timeout(kwargs):
@@ -55,7 +55,7 @@ def test_invalid_timeout(kwargs):
         launcher(**kwargs)
 
 
-@pytest.mark.parametrize('timeout', [61, 600])
+@pytest.mark.parametrize('timeout', [61, 600, 10800])
 def test_extended_startup_timeout_is_allowed(timeout):
     assert launcher(timeout=timeout).timeout == timeout
 

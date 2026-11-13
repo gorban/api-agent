@@ -14,4 +14,5 @@ python.compile = false
 "core:java" = { version = "temurin-21.0.13+9.0.LTS", lazy = true }
 "github:allure-framework/allure2" = { version = "2.46.1", lazy = true, lazy_bins = ["allure"] }
 "aqua:FiloSottile/mkcert" = { version = "1.4.4", lazy = true, lazy_bins = ["mkcert"] }
+"conda:openssl" = { version = "3.5.9", lazy = true, lazy_bins = ["openssl"] }
 "github:plantuml/plantuml" = { version = "1.2026.9", lazy = true, lazy_bins = ["plantuml-mit-1.2026.9.jar"], asset_pattern = "plantuml-mit-1.2026.9.jar" }

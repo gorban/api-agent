@@ -1,8 +1,10 @@
 """Launch the included static UI through an injected process lifecycle owner."""
 import asyncio
+import ipaddress
 import os
 from pathlib import Path
 import shutil
+import socket
 from urllib.parse import urlsplit
 
 import httpx
@@ -18,14 +20,21 @@ def app_directory():
     return installed if installed.is_dir() else Path(__file__).resolve().parents[3] / 'apps' / 'api-agent-ui'
 
 
-def listener_plan(value):
+def listener_plan(value, *, allow_advertised=False):
+    """Validate a local origin; providers still own and pin their bind transport."""
     try:
         url = urlsplit(value)
         port = url.port if url.port is not None else (443 if url.scheme == 'https' else 80)
-        valid = (url.scheme in {'http', 'https'} and url.hostname in {'localhost', '127.0.0.1', '::1'}
+        local = url.hostname in {'localhost', '127.0.0.1', '::1'}
+        if allow_advertised and not local:
+            advertised_origin_identity(value, scheme='https', port=port)
+            addresses = {ipaddress.ip_address(row[4][0]) for row in socket.getaddrinfo(
+                url.hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)}
+            local = bool(addresses) and all(address.is_loopback for address in addresses)
+        valid = (url.scheme in {'http', 'https'} and local
                  and not url.username and not url.password and url.path in {'', '/'}
                  and not url.query and not url.fragment and 0 < port < 65536)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OSError):
         valid = False
     if not valid:
         raise ValueError('ui_listener_invalid')

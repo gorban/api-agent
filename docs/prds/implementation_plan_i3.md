@@ -2,11 +2,11 @@
 
 [Local HTTPS preparation](implementation_plan_i.md)
 
-- [x] Keep mkcert pinned in the project mise configuration and prepare it only at
-  the existing HTTPS boundary. Prefer that selected executable over an installed
+- [x] Keep mkcert and OpenSSL pinned in the project mise configuration and prepare
+  them only at the existing HTTPS boundary. Prefer selected executables over installed
   system copy. Reuse the normal local CA; do not reset trust or generate a new CA
   merely to change executable versions.
-- [x] Support the host OpenSSL-compatible CLI, including LibreSSL, without relying
+- [x] Support OpenSSL-compatible CLIs, including LibreSSL, without relying
   on the OpenSSL-specific `x509 -ext` option. Read only the subject-alternative-name
   extension from portable certificate text. Never accept subject/issuer text,
   unrelated extension values, duplicate or missing SAN blocks as hostname proof.
@@ -22,6 +22,6 @@
   installed/relocated artifacts and independent/external review before delivery.
 - [ ] Human verify HTTPS preparation and browser trust on the affected macOS host.
 
-Mise supplies the pinned mkcert executable. Host OpenSSL/trust and account
-permissions retain their existing prerequisite policy; a working system mkcert is
-not a substitute for selected-version preparation.
+Mise supplies pinned mkcert and OpenSSL executables at the HTTPS boundary, without
+requiring a host OpenSSL installation. Host trust and account permissions remain
+prerequisites; system tool copies do not replace selected-version preparation.

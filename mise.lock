@@ -2,6 +2,46 @@
 
 lockfile_version = 3
 
+[conda-packages.linux-arm64."_openmp_mutex-4.5-20_gnu"]
+url = "https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda"
+checksum = "sha256:a2527b1d81792a0ccd2c05850960df119c2b6d8f5fdec97f2db7d25dc23b1068"
+
+[conda-packages.linux-arm64."ca-certificates-2026.10.23-hbd8a1cb_0"]
+url = "https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.10.23-hbd8a1cb_0.conda"
+checksum = "sha256:95619b9c1184be7175392eeb0ee7eeb5ccf25d280951f4225f2d62e725790be3"
+
+[conda-packages.linux-arm64."libgcc-16.2.0-h205dda4_7"]
+url = "https://conda.anaconda.org/conda-forge/linux-aarch64/libgcc-16.2.0-h205dda4_7.conda"
+checksum = "sha256:eae7a3449d5a3b5351c5427137c076cc3fc826645c7bfc42dc10772b783826f1"
+
+[conda-packages.linux-arm64."libgomp-16.2.0-h8acb6b2_7"]
+url = "https://conda.anaconda.org/conda-forge/linux-aarch64/libgomp-16.2.0-h8acb6b2_7.conda"
+checksum = "sha256:4406fd67c5beeb99b9372f9bf07aa3e40ca141e337eceebac3ff64aa72799494"
+
+[conda-packages.linux-x64."_openmp_mutex-4.5-20_gnu"]
+url = "https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda"
+checksum = "sha256:1dd3fffd892081df9726d7eb7e0dea6198962ba775bd88842135a4ddb4deb3c9"
+
+[conda-packages.linux-x64."ca-certificates-2026.10.23-hbd8a1cb_0"]
+url = "https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.10.23-hbd8a1cb_0.conda"
+checksum = "sha256:95619b9c1184be7175392eeb0ee7eeb5ccf25d280951f4225f2d62e725790be3"
+
+[conda-packages.linux-x64."libgcc-16.2.0-ha9f2e26_7"]
+url = "https://conda.anaconda.org/conda-forge/linux-64/libgcc-16.2.0-ha9f2e26_7.conda"
+checksum = "sha256:e031634c3a928f9594eba868bc46ef5230d6571a364a0c63215b06c4563bfcea"
+
+[conda-packages.linux-x64."libgomp-16.2.0-he0feb66_7"]
+url = "https://conda.anaconda.org/conda-forge/linux-64/libgomp-16.2.0-he0feb66_7.conda"
+checksum = "sha256:92a0bb350c7be6a4eedcb4e111c60aefd176018e6b1c009a6e025dbe9bbcd758"
+
+[conda-packages.macos-arm64."ca-certificates-2026.10.23-hbd8a1cb_0"]
+url = "https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.10.23-hbd8a1cb_0.conda"
+checksum = "sha256:95619b9c1184be7175392eeb0ee7eeb5ccf25d280951f4225f2d62e725790be3"
+
+[conda-packages.macos-x64."ca-certificates-2026.10.23-hbd8a1cb_0"]
+url = "https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.10.23-hbd8a1cb_0.conda"
+checksum = "sha256:95619b9c1184be7175392eeb0ee7eeb5ccf25d280951f4225f2d62e725790be3"
+
 [[tools."aqua:FiloSottile/mkcert"]]
 version = "1.4.4"
 backend = "aqua:FiloSottile/mkcert"
@@ -76,6 +116,44 @@ url = "https://registry.npmjs.org/npm/-/npm-11.16.0.tgz"
 [tools."aqua:npm/cli"."platforms.macos-x64"]
 checksum = "sha256:30fc15697c771002878665c29f49dddde9aa8667fa5719854b2f52d3cd19230b"
 url = "https://registry.npmjs.org/npm/-/npm-11.16.0.tgz"
+
+[[tools."conda:openssl"]]
+version = "3.5.9"
+backend = "conda:openssl"
+specifiers = ["3.5.9"]
+
+[tools."conda:openssl".options]
+channel = "conda-forge"
+
+[tools."conda:openssl"."platforms.linux-arm64"]
+checksum = "sha256:320f6b7aa380d07fb58bbd0c31d913753e9c96baffb95c9a5bab3a9923af1957"
+url = "https://conda.anaconda.org/conda-forge/linux-aarch64/openssl-3.5.9-he6ad1d5_0.conda"
+conda_deps = [
+    "ca-certificates-2026.10.23-hbd8a1cb_0",
+    "libgcc-16.2.0-h205dda4_7",
+    "_openmp_mutex-4.5-20_gnu",
+    "libgomp-16.2.0-h8acb6b2_7",
+]
+
+[tools."conda:openssl"."platforms.linux-x64"]
+checksum = "sha256:2f46a2753a354bd3d5bcda405623f0b3b51e67ed9f3c2f13aa3bc1fa78bc19bb"
+url = "https://conda.anaconda.org/conda-forge/linux-64/openssl-3.5.9-h781a0a9_0.conda"
+conda_deps = [
+    "ca-certificates-2026.10.23-hbd8a1cb_0",
+    "libgcc-16.2.0-ha9f2e26_7",
+    "_openmp_mutex-4.5-20_gnu",
+    "libgomp-16.2.0-he0feb66_7",
+]
+
+[tools."conda:openssl"."platforms.macos-arm64"]
+checksum = "sha256:a26829f8d4ed2631216a8543ef7704d2cff90ce43e381015530ab21cf762b681"
+url = "https://conda.anaconda.org/conda-forge/osx-arm64/openssl-3.5.9-h55eecbc_0.conda"
+conda_deps = ["ca-certificates-2026.10.23-hbd8a1cb_0"]
+
+[tools."conda:openssl"."platforms.macos-x64"]
+checksum = "sha256:4747221abec91a82a8ebd7e8b36eac90c21c74435f9473c86c0e41a9305f2183"
+url = "https://conda.anaconda.org/conda-forge/osx-64/openssl-3.5.9-h332eb6d_0.conda"
+conda_deps = ["ca-certificates-2026.10.23-hbd8a1cb_0"]
 
 [[tools."github:allure-framework/allure2"]]
 version = "2.46.1"

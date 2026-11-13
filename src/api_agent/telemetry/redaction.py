@@ -10,6 +10,10 @@ def overlapping_ranges(text: str, secret: str):
     """
     if not secret:
         raise ValueError('Matching value must be nonempty.')
+    # Most schema/metadata fragments contain no registered value. Let the
+    # native string search reject those before constructing a prefix table.
+    if secret not in text:
+        return
     prefix = [0] * len(secret)
     matched = 0
     for index in range(1, len(secret)):
@@ -55,6 +59,8 @@ import re
 
 def printable_value(value):
     """Use the provider's strict printable credential detection contract."""
+    if value.isprintable():
+        return value
     return ''.join(character for character in value if character.isprintable())
 
 

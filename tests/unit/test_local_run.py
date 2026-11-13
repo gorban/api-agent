@@ -475,13 +475,16 @@ def test_wait_without_start_rejected(local):
 
 
 @pytest.mark.parametrize('requires_api', [False, True])
-def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local, monkeypatch, requires_api):
+@pytest.mark.parametrize('ui_origin', ['https://localhost:9443', 'https://ui.example.test:4200'])
+def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local, monkeypatch, requires_api, ui_origin):
     from api_agent.runtime import local_run
     from api_agent.runtime import client_tls
     from api_agent.runtime.local_tools import selected_application
     from api_agent.workflows.definition import load_definition
     from api_agent.ui import process
     config, origin, material = local.config, 'https://localhost:8443', SimpleNamespace(ca_file=Path('/synthetic-ca'))
+    config.values['UI_LISTENER_URL'] = ui_origin
+    config.values['UI_PREPARATION_TIMEOUT_SECONDS'] = 10800
     config.values['LLM_REASONING_EFFORT'] = ''
     config.values['API_PROVIDER'] = 'adapter.py:create'
     base = Path(__file__).resolve().parents[2]
@@ -505,12 +508,15 @@ def test_runtime_defers_provider_activation_and_wraps_real_graph_callbacks(local
         assert local.owner.llm_factory.call_args.kwargs['trace'] is runtime.tracing
         assert result.services['studio_backend'].lifecycle.on_error == local.owner._execution_error
         assert result.services['studio_backend'].timeout == 600
+        assert result.services['studio_backend'].origins == frozenset({ui_origin})
+        assert result.services['studio_backend'].client_address_policy == 'loopback'
         if requires_api:
             assert runtime.factory_plan[0][:2] == ('api', 'adapter.py:create')
         else:
             assert runtime.factory_plan == ()
         assert not {'tools', 'tool_owner', 'runtime', 'tool_plan'} & set(vars(local.owner._graph))
         assert result.services['ui_processes'] == 'process-owner'
+        assert process.StudioProcesses.call_args.kwargs['timeout'] == 10800
         assert await result.services['studio_backend'].describe(auth=None) == ()
         context = object()
         assert await result.services['studio_backend'].complete('request', auth=None, context=context) == 'graph-result'
@@ -614,6 +620,7 @@ def test_ui_credential_binder_keeps_selected_account(local, monkeypatch):
     async def run():
         await local.owner._ui(browser_owner=object())
         assert bind.call_args.args == (local.config.values, ('ui',), 3)
+        assert bind.call_args.kwargs['interaction_owner'] is local.owner.interaction_owner
         await local.owner.aclose()
     asyncio.run(run())
 

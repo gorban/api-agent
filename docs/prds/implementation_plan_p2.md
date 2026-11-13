@@ -15,7 +15,7 @@ Existing Python requirements remain authoritative and npm continues to use its l
 - [ ] Prepare Python and uv through the root mise inventory before entering the
   existing Python bootstrap. Preserve its existing base/development dependency
   preparation and reuse; do not claim it is a minimal TUI-only environment.
-- [ ] Acquire Node/npm at the existing source-frontend and included GraphQL MCP setup boundaries, mkcert
+- [ ] Acquire Node/npm at the existing source-frontend and included GraphQL MCP setup boundaries, mkcert/OpenSSL
   at the existing HTTPS boundary, and Java/Allure when the default report viewer
   is selected. Preserve explicit custom executable overrides.
 - [ ] Keep Playwright package/driver/browser preparation with the existing invoking
@@ -46,7 +46,7 @@ engine, client and the Compose capabilities actually used when selecting:
   LocalStack selection rather than interpreting a loopback URL as permission.
 - [ ] Manage selected application containers through existing owners, but never
   install, provision or start the user's container engine.
-- [ ] Diagnose host browser libraries/fonts, graphical sessions, OpenSSL,
+- [ ] Diagnose host browser libraries/fonts, graphical sessions,
   certificate trust, helper authentication, credentials, registry permission and
   external access where consumed. Do not promise that mise and Docker supply every
   host capability or maintain distribution-specific privileged installers.
