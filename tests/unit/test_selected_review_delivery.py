@@ -14,7 +14,7 @@ from test_tui import fixture
 def test_selected_review_delivery_requires_current_owner(tmp_path, change):
     async def scenario():
         app = fixture(tmp_path)
-        screen = SimpleNamespace(query_one=Mock())
+        screen = SimpleNamespace(query_one=Mock(), query=Mock(return_value=[object()]))
         selection = SimpleNamespace(selected_tests=())
         state = SimpleNamespace(screen=screen, session=app.session, selection=selection,
                                 mode='integration', show=Mock())
@@ -63,7 +63,7 @@ def test_selected_review_resolution_runs_in_background_fork(tmp_path, monkeypatc
     import threading
     app = fixture(tmp_path)
     selection = SimpleNamespace(selected_tests=())
-    state = SimpleNamespace(screen=SimpleNamespace(query_one=Mock()), session=app.session,
+    state = SimpleNamespace(screen=SimpleNamespace(query_one=Mock(), query=Mock(return_value=[object()])), session=app.session,
         selection=selection, mode='integration', show=Mock(), background_reads=app.background_reads)
     ui_thread = threading.get_ident()
     original = type(app.session).review_snapshot
