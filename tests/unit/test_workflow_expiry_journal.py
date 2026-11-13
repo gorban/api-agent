@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from api_agent.workflows.journal import WorkflowJournal, validate_journal
-from expiry_support import ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, expiring
+from expiry_support import ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, TIMEOUT, expiring
 from loop_support import build, load
 from test_workflow_expiry import GROUP_ROUTE, effected, group, looped
 from test_workflow_loops_journal import routes, sign
@@ -40,7 +40,7 @@ def test_a_routed_expiry_is_recorded_on_the_scope_that_expired(tmp_path):
 
     (work,) = ended(payload, 'work')
     assert (work['outcome'], work['reason']) == ('failed', 'declared_timeout_expired')
-    assert work['declared_timeout'] == work['effective_timeout'] == 0.1
+    assert work['declared_timeout'] == work['effective_timeout'] == TIMEOUT
     # The turn's outcome follows the final route: the graph scope passes.
     assert ended(payload, 'GRAPH')[0]['outcome'] == 'passed'
     assert routes(payload) == [('START', 'work'), ('work', 'timed_out'), ('timed_out', 'END')]
@@ -192,7 +192,7 @@ def test_an_expiry_forged_onto_a_step_that_declared_no_expiry_edge_is_rejected(t
     payload, definition = recorded(expiring(tmp_path, ('work', 'finish', 'always')))
     forged = deepcopy(payload)
     work = ended(forged, 'work')[0]
-    work.update(outcome='failed', reason='declared_timeout_expired', declared_timeout=0.1, effective_timeout=0.1)
+    work.update(outcome='failed', reason='declared_timeout_expired', declared_timeout=TIMEOUT, effective_timeout=TIMEOUT)
     marker = deepcopy(work)
     marker.update(event='node', event_id=str(uuid4()), outcome='failed', node='work')
     forged['events'].insert(forged['events'].index(work), marker)
