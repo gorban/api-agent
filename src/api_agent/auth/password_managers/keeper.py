@@ -69,7 +69,10 @@ def _passkey(value, username, relying_party_id):
     from cryptography.hazmat.primitives.asymmetric import ec
     if not isinstance(value, dict):
         raise ManagerError('Keeper passkey is invalid.')
-    if value.get('username') != username or value.get('relyingParty') != relying_party_id:
+    if value.get('relyingParty') != relying_party_id:
+        # A passkey for another site cannot answer this one; the login remains usable.
+        return None
+    if value.get('username') != username:
         raise ManagerError('Keeper passkey does not match the selected account and relying party.')
     count = value.get('signCount')
     if type(count) is not int or not 0 <= count <= 0xffffffff:

@@ -82,7 +82,15 @@ def test_missing_record_and_missing_credential_are_distinct(selected):
     assert result.available and not result.password_available and not result.passkey_available
 
 
-@pytest.mark.parametrize('change', ['record-duplicate', 'uid', 'returned-uid', 'title', 'login', 'rp',
+def test_passkey_for_another_relying_party_leaves_the_login_usable(selected):
+    selected.passkey['relyingParty'] = 'other.test'
+    selected.fields[3]['value'] = ['synthetic password']
+    result, _ = read(selected)
+    assert result.available and result.username == USERNAME
+    assert result.password_available and not result.passkey_available
+
+
+@pytest.mark.parametrize('change', ['record-duplicate', 'uid', 'returned-uid', 'title', 'login',
     'passkey-user', 'passkey-duplicate', 'counter', 'kty', 'curve', 'd', 'x', 'y', 'key-ops', 'ext', 'alg'])
 def test_invalid_or_ambiguous_selected_material_is_rejected_without_values(selected, change):
     if change == 'record-duplicate': selected.listing.append(deepcopy(selected.listing[0]))
@@ -90,7 +98,6 @@ def test_invalid_or_ambiguous_selected_material_is_rejected_without_values(selec
     if change == 'returned-uid': selected.fields[0]['value'] = encoded(b'different-record')
     if change == 'title': selected.fields[1]['value'] = 'Other login'
     if change == 'login': selected.fields[2]['value'] = ['wrong@example.test']
-    if change == 'rp': selected.passkey['relyingParty'] = 'other.test'
     if change == 'passkey-user': selected.passkey['username'] = 'wrong@example.test'
     if change == 'passkey-duplicate': selected.fields[-1]['value'].append(deepcopy(selected.passkey))
     if change == 'counter': selected.passkey['signCount'] = True
