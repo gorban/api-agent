@@ -89,8 +89,11 @@ def test_composition_preserves_selected_application_and_result_projection(monkey
     from api_agent.runtime import chat_composition
 
     projection = (lambda result: result) if has_projection else None
+    progress = (lambda update: None) if has_projection else None
     graph = SimpleNamespace(definition=SimpleNamespace(tool_usages=()), complete=AsyncMock(),
                             project_result=projection)
+    if has_projection:
+        graph.project_progress = progress
     monkeypatch.setattr(chat_composition, 'declared_timeouts', Mock(return_value={'GRAPH': 5}))
     runtime = SimpleNamespace(services={}, emissions=Mock(), tracing=None)
     config = SimpleNamespace(values={}, tool_plan=None)
@@ -103,4 +106,5 @@ def test_composition_preserves_selected_application_and_result_projection(monkey
         runtime_factory=Mock(return_value=runtime), nonce='n' * 32)
 
     assert composed.backend.result_projector is projection
+    assert composed.backend.progress_projector is progress
     assert composed.runtime.services['workflow_application'] is graph

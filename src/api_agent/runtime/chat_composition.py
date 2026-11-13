@@ -63,6 +63,7 @@ def compose_chat_runtime(context, config, *, callback_origin, tls_material, grap
         policy=ModelSelectionPolicy(config.values), origin=chat_origin or callback_origin, nonce=nonce,
         scrub=lambda message: 'Selected provider rejected the request.',
         result_projector=getattr(graph, 'project_result', None),
+        progress_projector=getattr(graph, 'project_progress', None),
         timeout=timeout,
         on_error=on_error,
         reasoning_default=config.values.get('LLM_REASONING_EFFORT') or None,

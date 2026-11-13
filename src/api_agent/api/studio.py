@@ -64,7 +64,7 @@ class StudioBackend:
                  scrub, timeout=120, body_limit=131072, reasoning_default=None, stream=None,
                  on_error=None, max_output_tokens=200000, trace_owner=None,
                  advertised_origin=None, permitted_origins=None, client_address_policy='loopback',
-                 result_projector=None):
+                 result_projector=None, progress_projector=None):
         if client_address_policy not in ('loopback', 'any'):
             raise ValueError('Invalid Studio bridge configuration')
         origins = (origin,) if permitted_origins is None else tuple(permitted_origins)
@@ -90,7 +90,9 @@ class StudioBackend:
             raise ValueError('Invalid output-token ceiling')
         if result_projector is not None and not callable(result_projector):
             raise ValueError('Invalid application result projector')
-        self.result_projector = result_projector
+        if progress_projector is not None and not callable(progress_projector):
+            raise ValueError('Invalid application progress projector')
+        self.result_projector, self.progress_projector = result_projector, progress_projector
         self.trace_owner = trace_owner
         self.max_output_tokens = max_output_tokens
         self.owner, self.describe, self.complete, self.policy = owner, describe, complete, policy
@@ -341,17 +343,25 @@ class StudioBackend:
                         raise ContractError('Application summary exceeds byte limit')
                     summaries.append(text)
                     await queue.put(('reasoning_token', {'content': text}))
+                def progress_failed():
+                    self.lifecycle.report_error(ContractError('Application progress projection failed.'))
                 async def invoke(context):
                     from contextlib import nullcontext
                     from ..providers.presentation import summary_delivery, reasoning_progress
+                    from .progress_relay import relay_progress
                     async def completed_progress(update):
                         if update.complete:
                             completed_summaries.append(update.text)
                     from ..workflows.run_context import conversation, turn
                     from ..workflows.node_summary import display_selection
                     grouping = conversation(row['conversation_id']) if 'conversation_id' in row else nullcontext()
-                    with grouping, turn(session_id), display_selection(selection), summary_delivery(summary if capability == 'chat_stream' else None), reasoning_progress(completed_progress if capability == 'chat_stream' else None):
-                        async with report_timeout('Studio completion', self.timeout):
+                    projecting = capability == 'chat_stream' and self.progress_projector is not None
+                    # A bound projector owns reasoning display; raw provider summaries would repeat it.
+                    raw_summary = summary if capability == 'chat_stream' and not projecting else None
+                    with grouping, turn(session_id), display_selection(selection), summary_delivery(raw_summary), reasoning_progress(completed_progress if capability == 'chat_stream' else None):
+                        async with report_timeout('Studio completion', self.timeout), (
+                                relay_progress(self.progress_projector, lambda name, payload: queue.put((name, payload)), progress_failed)
+                                if projecting else nullcontext()):
                             if capability == 'chat_stream' and self.stream is not None:
                                 async def operation(*, auth):
                                     return self.stream(value, auth=auth, context=context)
