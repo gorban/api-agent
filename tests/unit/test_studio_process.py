@@ -69,6 +69,11 @@ def test_listener_rejected_before_spawn(host, port_value, scheme, monkeypatch):
         asyncio.run(launcher().start(('node',), cwd='.', host=host, port=port_value, scheme=scheme, env={}))
 
 
+# Each wait inside a disposal is half of this and the whole disposal is bounded by it, so a host stall
+# shorter than that cannot expire the escalation between the signal and the exit it expects.
+DISPOSAL_TIMEOUT = .5
+
+
 class Child:
     def __init__(self, *, exit_on='terminate'):
         self.exit_on, self.code, self.terminations, self.kills = exit_on, None, 0, 0
@@ -88,7 +93,7 @@ class Child:
 def test_direct_child_disposal_escalation_is_idempotent(exit_on):
     async def run():
         child = Child(exit_on=exit_on)
-        owned = process.OwnedStudioProcess(child, timeout=.08)
+        owned = process.OwnedStudioProcess(child, timeout=DISPOSAL_TIMEOUT)
         await owned.aclose()
         await owned.aclose()
         assert child.terminations == 1
@@ -99,7 +104,7 @@ def test_direct_child_disposal_escalation_is_idempotent(exit_on):
 def test_failed_disposal_retains_retry_without_resignalling():
     async def run():
         child = Child(exit_on='never')
-        owned = process.OwnedStudioProcess(child, timeout=.04)
+        owned = process.OwnedStudioProcess(child, timeout=DISPOSAL_TIMEOUT)
         with pytest.raises(CleanupPendingError) as pending:
             await owned.aclose()
         assert pending.value.owners == (owned,)
@@ -115,7 +120,7 @@ def test_failed_disposal_retains_retry_without_resignalling():
 def test_cancelling_disposal_waiter_does_not_cancel_owned_cleanup():
     async def run():
         child = Child(exit_on='kill')
-        owned = process.OwnedStudioProcess(child, timeout=.08)
+        owned = process.OwnedStudioProcess(child, timeout=DISPOSAL_TIMEOUT)
         task = asyncio.create_task(owned.aclose())
         await asyncio.sleep(.01)
         task.cancel()
