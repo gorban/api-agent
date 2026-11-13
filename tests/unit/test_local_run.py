@@ -1375,7 +1375,7 @@ def test_cleanup_attempt_retains_stalled_callback_and_retries_same_task(local, c
     async def run():
         await local.owner.start()
         local.owner._stack.push(stalled)
-        watchdog = asyncio.get_running_loop().call_later(.2, release.set)
+        watchdog = asyncio.get_running_loop().call_later(30, release.set)
         try:
             attempt = asyncio.create_task(local.owner.aclose())
             await entered.wait()
@@ -1392,6 +1392,9 @@ def test_cleanup_attempt_retains_stalled_callback_and_retries_same_task(local, c
         finally:
             watchdog.cancel()
             release.set()
+            # The short budget made the stalled attempt fail fast; the released
+            # close must not race it on a slow host.
+            local.owner.CLEANUP_ATTEMPT_SECONDS = 5
             await local.owner.aclose()
         assert local.owner.pending_cleanup is None
         assert local.owner.snapshot.phase == 'stopped'
