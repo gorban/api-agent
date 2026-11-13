@@ -700,7 +700,7 @@ async def test_acquisition_uses_transport_deadline(fake_process):
         entered.set()
         await asyncio.Event().wait()
     with pytest.raises(TimeoutError):
-        await sdk.SDKTransport(timeout=.01).call('completions', {}, auth=acquire)
+        await sdk.SDKTransport(timeout=.25).call('completions', {}, auth=acquire)
     assert entered.is_set()
     assert not fake_process[1]
 
