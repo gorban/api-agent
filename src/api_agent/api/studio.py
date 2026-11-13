@@ -345,6 +345,8 @@ class StudioBackend:
                     await queue.put(('reasoning_token', {'content': text}))
                 def progress_failed():
                     self.lifecycle.report_error(ContractError('Application progress projection failed.'))
+                def progress_dropped():
+                    self.lifecycle.report_error(ContractError('Application progress dropped: queue capacity exceeded.'))
                 async def invoke(context):
                     from contextlib import nullcontext
                     from ..providers.presentation import summary_delivery, reasoning_progress
@@ -360,7 +362,7 @@ class StudioBackend:
                     raw_summary = summary if capability == 'chat_stream' and not projecting else None
                     with grouping, turn(session_id), display_selection(selection), summary_delivery(raw_summary), reasoning_progress(completed_progress if capability == 'chat_stream' else None):
                         async with report_timeout('Studio completion', self.timeout), (
-                                relay_progress(self.progress_projector, lambda name, payload: queue.put((name, payload)), progress_failed)
+                                relay_progress(self.progress_projector, lambda name, payload: queue.put((name, payload)), progress_failed, on_drop=progress_dropped)
                                 if projecting else nullcontext()):
                             if capability == 'chat_stream' and self.stream is not None:
                                 async def operation(*, auth):

@@ -257,3 +257,207 @@ def test_progress_frames_are_valid_application_events(name, value):
     from api_agent.api import chat_contract
     body = chat_contract.frame(name, value).decode()
     assert body.startswith(f'event: {name}\ndata: ') and json.loads(body.splitlines()[1][6:]) == value
+
+
+@pytest.mark.parametrize('kind', ['call', 'tool'])
+def test_a_stalled_projector_does_not_block_workflow_progress(kind):
+    from api_agent.api.progress_relay import QUEUE_SIZE, relay_progress
+
+    async def scenario():
+        projecting, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        failures, events = [], []
+
+        async def projector(update):
+            projecting.set()
+            await release.wait()
+            return 'shown'
+
+        async def publish(name, value):
+            events.append((name, value))
+
+        async def execute():
+            async with relay_progress(projector, publish, lambda: failures.append('projection'), on_drop=lambda: failures.append('overflow')):
+                await publish_call_progress('plan', None, 'first', LLMResult(Message('assistant', (TextContent('x'),))))
+                await projecting.wait()
+                for _ in range(QUEUE_SIZE + 3):
+                    if kind == 'call':
+                        await publish_call_progress('plan', None, 'next', LLMResult(Message('assistant', (TextContent('x'),))))
+                    else:
+                        await publish_tool_progress('start', 'lookup')
+                completed.set()
+
+        task = asyncio.create_task(execute())
+        try:
+            await asyncio.wait_for(completed.wait(), 5)
+        finally:
+            release.set()
+            await task
+        assert failures == ['overflow']
+        assert len(events) == QUEUE_SIZE + 1
+
+    run(scenario)
+
+
+def test_relay_retains_only_the_explicit_projection_scope_per_update():
+    from contextvars import ContextVar
+    from api_agent.api.progress_relay import relay_progress
+    from api_agent.providers.presentation import (
+        call_progress_bound, current_progress_projection_scope, progress_projection_scope,
+    )
+
+    async def scenario():
+        unrelated = ContextVar('unrelated', default=None)
+        seen, failures = [], []
+        first, second = object(), object()
+
+        async def projector(update):
+            assert unrelated.get() is None
+            assert not call_progress_bound()
+            seen.append(current_progress_projection_scope())
+            await publish_tool_progress('start', 'nested')
+            return 'shown'
+
+        async def publish(_name, _value):
+            pass
+
+        async with relay_progress(projector, publish, lambda: failures.append('failed'), on_drop=lambda: failures.append('dropped')):
+            token = unrelated.set('workflow authority')
+            try:
+                for scope in (first, second):
+                    with progress_projection_scope(scope):
+                        await publish_call_progress('plan', None, 'r', LLMResult(Message('assistant', (TextContent('x'),))))
+                assert current_progress_projection_scope() is None
+            finally:
+                unrelated.reset(token)
+        assert seen == [first, second]
+        assert failures == []
+        assert current_progress_projection_scope() is None
+
+    run(scenario)
+
+
+def test_studio_reports_dropped_progress_separately_from_projection_failure():
+    from api_agent.api.progress_relay import QUEUE_SIZE
+    recorded = []
+
+    async def scenario():
+        projecting, release = asyncio.Event(), asyncio.Event()
+
+        async def projector(update):
+            projecting.set()
+            await release.wait()
+            return 'shown'
+
+        async def complete(value, *, auth, context):
+            await publish_call_progress('plan', None, 'r', LLMResult(Message('assistant', (TextContent('x'),))))
+            await projecting.wait()
+            for _ in range(QUEUE_SIZE + 2):
+                await publish_tool_progress('start', 'lookup')
+            release.set()
+            return LLMResult(Message('assistant', (TextContent('hello'),)))
+
+        backend, _ = setup_bridge(progress_projector=projector, complete=complete, on_error=recorded.append)
+        try:
+            events = await frames(backend)
+        finally:
+            await backend.aclose()
+        assert events[-1][0] == 'done'
+        assert next(value for name, value in events if name == 'result')['response_text'] == 'hello'
+
+    run(scenario)
+    assert [str(error) for error in recorded] == ['Application progress dropped: queue capacity exceeded.']
+
+
+def test_invalid_unicode_projection_is_skipped_and_later_progress_and_answer_complete():
+    recorded = []
+
+    async def projector(update):
+        return '\ud800' if update.response_text == 'bad' else 'valid progress'
+
+    async def scenario():
+        backend, _ = setup_bridge(progress_projector=projector, on_error=recorded.append,
+            complete=workflow(progress('plan', 'bad'), progress('write', 'good')))
+        try:
+            events = await asyncio.wait_for(frames(backend), 5)
+        finally:
+            await backend.aclose()
+        assert [value['content'] for name, value in events if name == 'reasoning_token'] == ['valid progress']
+        assert next(value for name, value in events if name == 'result')['response_text'] == 'hello'
+        assert events[-1][0] == 'done'
+
+    run(scenario)
+    assert [str(error) for error in recorded] == ['Application progress projection failed.']
+
+
+def test_cancelled_projector_cannot_strand_the_answer_behind_queued_updates():
+    recorded = []
+
+    async def projector(update):
+        raise asyncio.CancelledError
+
+    async def scenario():
+        backend, _ = setup_bridge(progress_projector=projector, on_error=recorded.append,
+            complete=workflow(progress('plan', 'one'), progress('write', 'two')))
+        try:
+            events = await asyncio.wait_for(frames(backend), 5)
+        finally:
+            await backend.aclose()
+        assert events[-1][0] == 'done'
+        assert next(value for name, value in events if name == 'result')['response_text'] == 'hello'
+        assert not [task for task in asyncio.all_tasks() if 'worker' in repr(task.get_coro())]
+
+    run(scenario)
+    assert [str(error) for error in recorded] == ['Application progress projection failed.']
+
+
+def test_failed_progress_publication_does_not_kill_the_relay_worker():
+    from api_agent.api.progress_relay import relay_progress
+
+    async def scenario():
+        failures, published = [], []
+
+        async def projector(update):
+            return update.response_text
+
+        async def publish(name, value):
+            if value.get('content') == 'bad':
+                raise ValueError('closed progress consumer')
+            published.append(name)
+
+        async with asyncio.timeout(5), relay_progress(projector, publish, lambda: failures.append('failed'),
+                on_drop=lambda: failures.append('dropped')):
+            await publish_call_progress('plan', None, 'a', LLMResult(Message('assistant', (TextContent('bad'),))))
+            await publish_tool_progress('start', 'lookup')
+            await publish_call_progress('write', None, 'b', LLMResult(Message('assistant', (TextContent('good'),))))
+        assert failures == ['failed']
+        assert published == ['tool_start', 'reasoning_token']
+
+    run(scenario)
+
+
+def test_parent_turn_cancellation_still_cancels_the_progress_worker_and_drain():
+    from api_agent.api.progress_relay import relay_progress
+
+    async def scenario():
+        started = asyncio.Event()
+
+        async def projector(update):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def publish(_name, _value):
+            pass
+
+        async def execute():
+            async with relay_progress(projector, publish, lambda: None, on_drop=lambda: None):
+                await publish_call_progress('plan', None, 'a', LLMResult(Message('assistant', (TextContent('x'),))))
+
+        task = asyncio.create_task(execute())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not [item for item in asyncio.all_tasks()
+            if getattr(item.get_coro(), '__qualname__', '') in ('relay_progress.<locals>.worker', 'Queue.join')]
+
+    run(scenario)
