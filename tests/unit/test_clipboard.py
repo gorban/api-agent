@@ -9,6 +9,7 @@ from textual.widgets._footer import FooterKey
 
 from api_agent.tui import clipboard
 from api_agent.tui.app import WorkbenchScreen
+from test_result_completion_footer import wait_until
 from test_tui import fixture
 
 
@@ -137,9 +138,11 @@ def test_copy_selected_effective_values_and_last_shortcut(tmp_path, monkeypatch,
                 visible = [b.binding for b in screen.active_bindings.values() if b.binding.show]
                 assert visible[-1].action == action
                 assert visible[-1].key_display == label
-                hints = [hint for hint in screen.query(FooterKey)
-                         if hint.description == 'Copy value']
-                assert len(hints) == 1
+                def copy_hints():
+                    return [hint for hint in screen.query(FooterKey)
+                            if hint.description == 'Copy value']
+                await wait_until(pilot, lambda: len(copy_hints()) == 1)
+                hints = copy_hints()
                 assert hints[0].key == key and hints[0].key_display == label
                 assert hints[0].render().plain.strip() == f'{label} Copy value'
                 assert not hints[0].has_class('-disabled')
