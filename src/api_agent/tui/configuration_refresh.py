@@ -2,6 +2,8 @@
 from copy import copy, deepcopy
 from dataclasses import dataclass
 
+from textual.widgets import DataTable
+
 
 def controls(session):
     """Inputs owned by UI actions, as opposed to files reread by the resolver."""
@@ -89,6 +91,10 @@ class ReviewRefresher:
                     source_retries = 0
                     continue
                 if self.app.session is not session or controls(session) != inputs:
+                    return
+                if not self.screen.query(DataTable):
+                    # The screen is closing and its table is gone; the next
+                    # display of the screen reads and fills it again.
                     return
                 if error is None and current:
                     try:

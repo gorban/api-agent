@@ -11,7 +11,7 @@ from test_tui import fixture
 
 
 def state_for(app):
-    screen = SimpleNamespace(query_one=Mock())
+    screen = SimpleNamespace(query_one=Mock(), query=Mock(return_value=[object()]))
     state = SimpleNamespace(screen=screen, session=app.session,
                             cleanup_names=frozenset({'COUNT'}),
                             background_reads=app.background_reads,

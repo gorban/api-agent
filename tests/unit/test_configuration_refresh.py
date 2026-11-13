@@ -48,7 +48,7 @@ def test_fork_keeps_live_resolver_and_definition_eviction_independent(tmp_path):
 def test_pending_refresh_coalesces_and_discards_stale_external_values(tmp_path, monkeypatch, change):
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
-        screen = SimpleNamespace(query_one=Mock())
+        screen = SimpleNamespace(query_one=Mock(), query=Mock(return_value=[object()]))
         state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         refresher = ReviewRefresher(state, screen)
@@ -93,7 +93,7 @@ def test_pending_refresh_coalesces_and_discards_stale_external_values(tmp_path, 
 def test_late_or_failed_refresh_cannot_overwrite_newer_ui(tmp_path, monkeypatch, change):
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
-        screen = SimpleNamespace(query_one=Mock())
+        screen = SimpleNamespace(query_one=Mock(), query=Mock(return_value=[object()]))
         state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         refresher = ReviewRefresher(state, screen)
@@ -299,7 +299,7 @@ def test_pending_review_applies_external_value_source_and_unset_together(tmp_pat
 def test_continuously_changed_sources_stop_after_bounded_attempts(tmp_path, monkeypatch):
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
-        screen = SimpleNamespace(query_one=Mock())
+        screen = SimpleNamespace(query_one=Mock(), query=Mock(return_value=[object()]))
         state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         from api_agent.config.session import ReviewSnapshot
@@ -317,7 +317,7 @@ def test_continuously_changed_sources_stop_after_bounded_attempts(tmp_path, monk
 def test_newer_request_gets_its_own_source_retry_budget(tmp_path, monkeypatch):
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
-        screen = SimpleNamespace(query_one=Mock())
+        screen = SimpleNamespace(query_one=Mock(), query=Mock(return_value=[object()]))
         state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         refresher = ReviewRefresher(state, screen)
@@ -341,7 +341,7 @@ def test_newer_request_gets_its_own_source_retry_budget(tmp_path, monkeypatch):
 def test_transient_source_read_failure_is_retried(tmp_path, monkeypatch, where):
     async def scenario():
         app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
-        screen = SimpleNamespace(query_one=Mock())
+        screen = SimpleNamespace(query_one=Mock(), query=Mock(return_value=[object()]))
         state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
                                 apply_configuration_snapshot=Mock())
         from api_agent.config.session import ReviewSnapshot
@@ -389,3 +389,25 @@ def test_runtime_token_replacement_invalidates_pending_refresh_controls(tmp_path
     current = session.review_snapshot()
     assert current.runtime_required_fields == old.runtime_required_fields == ('ROUTE',)
     assert current.runtime_requirement_token is not old.runtime_requirement_token
+
+
+@pytest.mark.parametrize('refresher_type', ['review', 'cleanup'])
+def test_refresh_leaves_a_screen_without_a_table_untouched(tmp_path, refresher_type):
+    # A read finishing while the screen is closing finds the screen current but
+    # its table already removed; there is nothing left to update.
+    from api_agent.tui.configuration_refresh import CleanupRefresher
+
+    async def scenario():
+        app = fixture(tmp_path, fields={'COUNT': {'type': 'int', 'default': 3}})
+        screen = SimpleNamespace(query_one=Mock(), query=Mock(return_value=[]))
+        state = SimpleNamespace(screen=screen, session=app.session, background_reads=app.background_reads,
+                                cleanup_names=frozenset(), apply_configuration_snapshot=Mock(),
+                                apply_cleanup_rows=Mock())
+        refresher = (ReviewRefresher if refresher_type == 'review' else CleanupRefresher)(state, screen)
+        await refresher.run()
+        state.apply_configuration_snapshot.assert_not_called()
+        state.apply_cleanup_rows.assert_not_called()
+        screen.query_one.assert_not_called()
+        screen.query.assert_called_once_with(DataTable)
+        assert refresher.worker is None
+    asyncio.run(scenario())
