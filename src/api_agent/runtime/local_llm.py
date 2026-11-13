@@ -412,6 +412,9 @@ class LocalLLM(_Owner):
         source_observer = current_source_capture_observer()
         async def complete():
             nonlocal request, accounted_failure_id
+            from api_agent.workflows.evidence_finalization import enroll
+            # Even when cancelled, the owning visit stays open until this call is journaled.
+            enroll(asyncio.current_task())
             request = configured_request(request, self.config.get('LLM_CACHE_POLICY'),
                 reasoning_effort=self.config.get('LLM_REASONING_EFFORT'))
             await async_request_to_wire(request)

@@ -489,6 +489,48 @@ def test_local_cancelled_call_retains_cancelled_terminal_outcome(selected):
     asyncio.run(run())
 
 
+def test_cancelled_node_journals_its_call_before_the_visit_closes(selected):
+    from api_agent.workflows.attribution import bind_workflow_visit
+    from api_agent.workflows.evidence_finalization import finalize
+    from api_agent.workflows.journal import WorkflowJournal
+    from test_workflow_observations import definition
+    owner, implementation, _, _, _ = selected
+    entered = asyncio.Event()
+    async def slow_teardown(value, *, auth):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+            raise
+    implementation.acomplete = slow_teardown
+    journal = WorkflowJournal(definition())
+    # A caller-owned context, as Studio supplies, is not drained by the request itself.
+    context = OperationContext('turn')
+    async def node():
+        journal.observe(dict(event='scope_start',scope_id='visit',kind='node',owner='Make'))
+        try:
+            with bind_workflow_visit(journal,'visit'):
+                try:
+                    await owner.complete(request(),context=context)
+                finally:
+                    await finalize()
+        finally:
+            journal.observe(dict(event='scope_end',scope_id='visit',kind='node',owner='Make'))
+    async def run():
+        task = asyncio.create_task(node())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        events = [row for row in journal.finalize()['events'] if row['event'] != 'capture']
+        assert [row['event'] for row in events] == ['scope_start','call','scope_end']
+        assert events[1]['outcome'] == 'cancelled'
+        await context.aclose()
+        await owner.aclose()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('model',['synthetic@revision','synthetic model (v1)','模型@版本'])
 @pytest.mark.parametrize('failing',[False,True])
 def test_optional_accounting_preserves_contract_valid_provider_result_and_identifier(selected,model,failing):
