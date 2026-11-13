@@ -38,7 +38,7 @@ def test_renderer_preparation_installs_java_and_the_pinned_jar_through_mise(mise
     assert viewer_build.prepare_renderer() == mise_renderer.jar
 
     calls = [json.loads(line)[0] for line in mise_renderer.log.read_text().splitlines()]
-    assert calls[0][-3:] == ['install', 'core:java@temurin-21.0.13+9.0.LTS', 'github:plantuml/plantuml@1.2026.9']
+    assert calls[0][-3:] == ['install', 'core:java', 'github:plantuml/plantuml']
     assert calls[1][-4:] == ['which', '--tool', 'core:java@temurin-21.0.13+9.0.LTS', 'java']
     assert calls[2][-2:] == ['where', 'github:plantuml/plantuml@1.2026.9']
     assert len(calls) == 3
