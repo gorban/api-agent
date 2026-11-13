@@ -478,10 +478,11 @@ def test_guard_exhaustion_reports_failed_component_lifecycle(runtime_layout):
 
 def test_async_node_cannot_accept_output_after_swallowing_timeout(runtime_layout, tmp_path):
     events = []
-    runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=0.01', owner='first_draft')]
+    # The limit leaves a slow host time to start the node, which must be running when it expires.
+    runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=1', owner='first_draft')]
     async def ignore_timeout(inputs, context):
         try:
-            await asyncio.sleep(1)
+            await asyncio.sleep(60)
         except asyncio.CancelledError:
             return produce(inputs, context)
     compiled = workflow(runtime_layout, ignore_timeout, services={'observe': events.append})
