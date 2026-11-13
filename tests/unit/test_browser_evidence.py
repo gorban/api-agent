@@ -224,7 +224,8 @@ def test_extended_capture_keeps_parent_deadline_and_drains_cancelled_policy():
             finally:
                 cleaned.append(True)
         with pytest.raises(TimeoutError):
-            async with component_timeout('Short parent', 0.05):
+            # Long enough for the policy to start on a slow host, far below the capture timeout.
+            async with component_timeout('Short parent', 1):
                 await evidence.capture_ui_evidence([SimpleNamespace(pages=[object()])],
                     EmissionBoundary(ContentPolicy(True)), submitted.append,
                     capture_policy=policy, capture_timeout_seconds=30)
