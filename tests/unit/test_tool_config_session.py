@@ -1,4 +1,5 @@
 """Actual launch configuration retains the selected graph's tool membership."""
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 
@@ -258,8 +259,13 @@ async def test_selected_missing_tool_input_returns_to_review_or_blocks(selection
             rows = {str(key.value) for key in app.screen.query_one(DataTable).rows}
             assert {'API_ENDPOINT', 'API_2_ENDPOINT'} <= rows
         else:
+            async def reported():
+                # The recollection and requirement check run in a worker; the error appears once it finishes.
+                while not any('Missing required configuration: API_ENDPOINT, API_2_ENDPOINT' in str(error.render())
+                              for error in app.screen.query('#error').results(Static)):
+                    await asyncio.sleep(.01)
+            await asyncio.wait_for(reported(), 30)
             assert app.screen.kind == 'tests'
-            assert 'Missing required configuration: API_ENDPOINT, API_2_ENDPOINT' in str(app.screen.query_one('#error', Static).render())
         assert not app.test_run_active()
 
 
