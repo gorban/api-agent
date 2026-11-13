@@ -11,6 +11,8 @@ from .contracts import ContractError
 
 _summary_sink = ContextVar('llm_display_summary_sink', default=None)
 _progress_sink = ContextVar('llm_reasoning_progress_sink', default=None)
+_call_sink = ContextVar('llm_call_progress_sink', default=None)
+_tool_sink = ContextVar('tool_progress_sink', default=None)
 _delivered = ContextVar('llm_delivered_reasoning', default=None)
 _display_section = ContextVar('llm_display_reasoning_section', default=None)
 
@@ -33,6 +35,55 @@ def reasoning_progress(sink):
     finally:
         _progress_sink.reset(token)
         _delivered.reset(delivered)
+
+
+@dataclass(frozen=True)
+class CallProgress:
+    """One completed model call made by a workflow node; content stays in memory."""
+    node: str
+    attempt: str | None
+    request_id: str
+    response_text: str = field(repr=False)
+    reasoning_summary: str = field(repr=False)
+    tool_calls: tuple = field(default=(), repr=False)
+
+
+@contextmanager
+def call_progress(sink):
+    """Report each completed node model call to an async sink(CallProgress)."""
+    token = _call_sink.set(sink)
+    try:
+        yield
+    finally:
+        _call_sink.reset(token)
+
+
+@contextmanager
+def tool_progress(sink):
+    """Report tool dispatch to an async sink(kind, tool), kind being 'start' or 'end'."""
+    token = _tool_sink.set(sink)
+    try:
+        yield
+    finally:
+        _tool_sink.reset(token)
+
+
+def call_progress_bound():
+    return _call_sink.get() is not None
+
+
+async def publish_call_progress(node, attempt, request_id, result):
+    sink = _call_sink.get()
+    if sink is not None:
+        await sink(CallProgress(node, attempt, request_id,
+            ''.join(part.text for part in result.payload.content), result.reasoning_summary or '',
+            tuple((call.name, call.arguments) for call in result.payload.calls)))
+
+
+async def publish_tool_progress(kind, tool):
+    sink = _tool_sink.get()
+    if sink is not None:
+        await sink(kind, tool)
 
 
 @contextmanager

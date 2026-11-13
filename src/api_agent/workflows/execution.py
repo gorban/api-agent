@@ -897,6 +897,8 @@ class Workflow:
             if row.get('Display summary', '-') != '-':
                 from .node_summary import SummaryServices
                 services = SummaryServices(services, row['Display summary'])
+            from .node_summary import ProgressServices
+            services = ProgressServices.bind(services, step.id, state.get('attempt_id'))
             context = NodeContext(step.id, state['ancestry'], tuple(state['prompts'][item['File']] for item in prompts
                 if item['When'] == 'always' or self._condition(item['When'], values)), services,
                 budget.id, state.get('attempt_id'), row, state.get('_correction'),
@@ -1192,6 +1194,8 @@ class Workflow:
             if function_row is not None and function_row.get('Display summary', '-') != '-':
                 from .node_summary import SummaryServices
                 services = SummaryServices(services, function_row['Display summary'])
+            from .node_summary import ProgressServices
+            services = ProgressServices.bind(services, row['ID'], None)
             context = NodeContext(row['ID'], (), (), services, request=self._request.get(),
                                   resources=self.definition.declared_resources, visit_id=budget.id,
                                   response_contract=function_row)

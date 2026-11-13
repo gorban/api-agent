@@ -235,6 +235,9 @@ Typed semantics:
   so `context.response_request(messages)` works in typed `llm` nodes exactly as
   in the binding grammar. `Display summary` wraps the node's `complete` service
   in the same way.
+- When a request-local `call_progress` sink is bound, a node's `llm` and `complete`
+  services also report each completed call with the node's step id (outermost,
+  after any display-summary projection). Unbound, services are unchanged.
 - An Output schema violation in a node that declares an output mode raises
   `CandidateCorrection` (`reason: output_schema`). Typed graphs have no guarded
   components, so nothing repairs it: the error reaches the caller, as in the

@@ -42,6 +42,27 @@ Incremental summary delivery depends on the selected provider/operation. Buffere
 workflow calls can publish an available summary after each node call; this does
 not imply native per-token streaming or fabricate summaries when none are supplied.
 
+### Live call and tool progress
+
+An application may supply `StudioBackend(progress_projector=...)`, an async
+callable taking a `CallProgress` (`node`, `attempt`, `request_id`, `response_text`,
+`reasoning_summary`, `tool_calls`) and returning display text or `None`. For
+`chat_stream` only, Studio binds `providers.presentation.call_progress` and
+`tool_progress`; the workflow engine then reports each completed model call
+(after any display-summary projection) with its step id, and each tool dispatch
+with its name. Studio streams non-empty projected text as
+`reasoning_token {content, section}`, where `section` is `node:attempt` (or the
+node id when no attempt is known), and tool lifecycle as `tool_start {tool}` and
+`tool_end {tool}`, in workflow order before `token` and `result`.
+
+Projection runs in one task per turn so it never delays the workflow; the turn
+waits for it inside the existing Studio completion budget. A projector failure or
+non-text result skips that update and reports only a fixed classification to
+`on_error`; it never fails the turn. Output is bounded to 4096 frames and 64 KiB
+of text per turn; excess frames are dropped. While a projector is bound, raw
+provider summaries are not streamed live, because the projection owns reasoning
+display. Without a projector, frames are unchanged.
+
 The following POST-SSE envelope is a **browser adapter contract**, independently
 specified for controlled tests and the opt-in completion bridge:
 

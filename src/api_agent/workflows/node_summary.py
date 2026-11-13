@@ -10,7 +10,7 @@ from referencing.jsonschema import DRAFT202012
 
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.llm import Message, ResponsePolicy, StructuredOutput, TextContent
-from api_agent.providers.presentation import present_summary
+from api_agent.providers.presentation import call_progress_bound, present_summary, publish_call_progress
 from api_agent.providers.rich_inference import async_valid_schema, response_json
 
 _selection = ContextVar('workflow_display_selection', default=None)
@@ -85,6 +85,39 @@ class SummaryServices(MutableMapping):
                                 response=None, reasoning_summary=summary)
             await present_summary(projected, request_id=request.request_id)
             return projected
+        return complete
+
+    def __setitem__(self, key, value):
+        self.services[key] = value
+
+    def __delitem__(self, key):
+        del self.services[key]
+
+    def __iter__(self):
+        return iter(self.services)
+
+    def __len__(self):
+        return len(self.services)
+
+
+class ProgressServices(MutableMapping):
+    """Report each completed model call to the request's progress sink, outermost."""
+    def __init__(self, services, node, attempt):
+        self.services, self.node, self.attempt = services, node, attempt
+
+    @classmethod
+    def bind(cls, services, node, attempt):
+        return cls(services, node, attempt) if call_progress_bound() else services
+
+    def __getitem__(self, key):
+        value = self.services[key]
+        if key not in ('llm', 'complete') or not callable(value):
+            return value
+
+        async def complete(request, *args, **kwargs):
+            result = await value(request, *args, **kwargs)
+            await publish_call_progress(self.node, self.attempt, request.request_id, result)
+            return result
         return complete
 
     def __setitem__(self, key, value):

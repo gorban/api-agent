@@ -5,6 +5,7 @@ import inspect
 from uuid import uuid4
 
 from api_agent.providers.bounded_schema import async_isolated_schema_verdict
+from api_agent.providers.presentation import publish_tool_progress
 from api_agent.providers.progress import component_timeout
 from api_agent.providers.tools import (MAX_ARGUMENT_BYTES, PreparedCall, ToolResult,
                                        ToolSpec, ToolValidationError, canonical)
@@ -155,6 +156,7 @@ class ToolGate:
             'tool_instance': observation.instance, 'arguments': arguments}, request_schema,
             before_dispatch=before_dispatch)
         outcome = 'failure'
+        await publish_tool_progress('start', observation.alias)
         try:
             async with component_timeout('Tool execution', self.timeout):
                 from api_agent.tooling.operations import FIXED_IDEMPOTENT
@@ -175,7 +177,10 @@ class ToolGate:
             except BaseException:
                 observation.loss()
             observation.end(outcome)
+            if outcome != 'cancelled':
+                await publish_tool_progress('end', observation.alias)
             raise
+        await publish_tool_progress('end', observation.alias)
         try:
             response_schema = {'type': 'object', 'properties': {
                 'status': {'type': 'string'},
