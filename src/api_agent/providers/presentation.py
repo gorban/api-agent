@@ -13,6 +13,7 @@ _summary_sink = ContextVar('llm_display_summary_sink', default=None)
 _progress_sink = ContextVar('llm_reasoning_progress_sink', default=None)
 _call_sink = ContextVar('llm_call_progress_sink', default=None)
 _tool_sink = ContextVar('tool_progress_sink', default=None)
+_projection_scope = ContextVar('progress_projection_scope', default=None)
 _delivered = ContextVar('llm_delivered_reasoning', default=None)
 _display_section = ContextVar('llm_display_reasoning_section', default=None)
 
@@ -66,6 +67,24 @@ def tool_progress(sink):
         yield
     finally:
         _tool_sink.reset(token)
+
+
+@contextmanager
+def progress_projection_scope(value):
+    """Bind opaque in-memory application state for deferred progress projection.
+
+    Relays retain only this state for their bounded pending updates, without
+    copying workflow authority or recursively binding model/tool progress sinks.
+    """
+    token = _projection_scope.set(value)
+    try:
+        yield
+    finally:
+        _projection_scope.reset(token)
+
+
+def current_progress_projection_scope():
+    return _projection_scope.get()
 
 
 def call_progress_bound():
