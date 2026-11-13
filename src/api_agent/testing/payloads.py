@@ -681,8 +681,8 @@ class PayloadStore:
         original = result.pop('sha256')
         if incomplete:
             reduced.pop('sha256')
-            reduced['sha256'] = _digest(reduced)
-            from api_agent.workflows.journal import validate_journal
+            from api_agent.workflows.journal import journal_digest, validate_journal
+            reduced['sha256'] = journal_digest(reduced)
             validate_journal(reduced)
             result.update(version=3, kind='workflow_journal', evidence_status='incomplete',
                           unverified_original_sha256=original, reduced_sha256=reduced['sha256'],

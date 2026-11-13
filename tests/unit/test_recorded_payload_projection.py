@@ -529,11 +529,13 @@ def test_shared_wire_remains_visible_on_parent_capture_and_separate_timed_call()
     assert node['attachments'] == [captured] and leaf['attachments'] == [specific]
 
 
-def test_omitted_wire_creates_verified_incomplete_journal_and_detects_corruption():
+@pytest.mark.parametrize('text', ['partial', 'Café — €', '漢字 🧪'])
+def test_omitted_wire_creates_verified_incomplete_journal_and_detects_corruption(text):
     from api_agent.testing.payloads import PayloadStore, _digest
 
     call, test_id = str(uuid4()), 'test.py::test_graph'
-    original, request, response = packet(call, str(uuid4()), test_id)
+    original, request, response = packet(call, str(uuid4()), test_id,
+        response={'output': {'text': text, 'items': [None, False]}})
     files = {}
     class Recorder:
         def record_artifact(self, name, body):
@@ -553,6 +555,9 @@ def test_omitted_wire_creates_verified_incomplete_journal_and_detects_corruption
                    if event.get('cause_id') == call and event.get('direction') == 'input')
     assert capture['reason'] == 'truncated'
     assert capture['values'] == {'llm_request': {}}
+    output = next(event for event in restored['events']
+                  if event.get('cause_id') == call and event.get('direction') == 'output')
+    assert output['values'] == {'llm_response': response}
 
     tampered = deepcopy(durable)
     tampered['reduced_sha256'] = '0' * 64
@@ -561,14 +566,16 @@ def test_omitted_wire_creates_verified_incomplete_journal_and_detects_corruption
         hydrate_journal(tampered, lambda ref: json.loads(files[ref['source']]))
 
 
-def test_recording_publishes_incomplete_journal_when_wire_exceeds_budget(tmp_path, monkeypatch):
+@pytest.mark.parametrize('text', ['partial', 'Café — €'])
+def test_recording_publishes_incomplete_journal_when_wire_exceeds_budget(tmp_path, monkeypatch, text):
     import api_agent.testing.payloads as payloads
 
     monkeypatch.setattr(payloads, 'MAX_TOTAL', 1600)
     test = TestIdentity('base::test.py::test_graph', 'base', 'test.py', 'test.py::test_graph')
     call = str(uuid4())
     journal, request, response = packet(call, str(uuid4()), test.node_id,
-        wire={'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': 'a' * 2000}]}]})
+        wire={'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': 'a' * 2000}]}]},
+        response={'output': {'text': text, 'items': [None, False]}})
     outcome = TestResult(test, 'passed', .01)
 
     def runner(context, tests, **hooks):
@@ -599,14 +606,16 @@ def test_recording_publishes_incomplete_journal_when_wire_exceeds_budget(tmp_pat
     assert request_capture['values'] == {'llm_request': {}}
 
 
-def test_recording_preserves_graph_when_node_payload_exceeds_remaining_wire_budget(tmp_path, monkeypatch):
+@pytest.mark.parametrize('text', ['partial', '漢字 🧪'])
+def test_recording_preserves_graph_when_node_payload_exceeds_remaining_wire_budget(tmp_path, monkeypatch, text):
     import api_agent.testing.payloads as payloads
 
     monkeypatch.setattr(payloads, 'MAX_TOTAL', 1600)
     test = TestIdentity('base::test.py::test_graph', 'base', 'test.py', 'test.py::test_graph')
     call = str(uuid4())
     journal, request, response = packet(call, str(uuid4()), test.node_id,
-        wire={'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': 'a' * 1100}]}]})
+        wire={'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': 'a' * 1100}]}]},
+        response={'output': {'text': text, 'items': [None, False]}})
     outcome = TestResult(test, 'passed', .01)
 
     def runner(context, tests, **hooks):
