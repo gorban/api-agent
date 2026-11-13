@@ -125,6 +125,23 @@ def test_late_inventory_does_not_replace_covered_screen(tmp_path):
     asyncio.run(scenario())
 
 
+def test_inventory_finished_before_menu_composition_is_rendered_by_the_menu(tmp_path):
+    async def scenario():
+        app=app_for(tmp_path,[Container('a','running','image','running')],mode=None)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            app.container_summary='Running containers: checking…'
+            app.show_menu()
+            assert app.screen.kind=='menu' and not app.screen.query('#body')
+            # The inventory read can finish before the new menu has composed.
+            app.container_summary='Managed containers: 1 running, 0 stopped'
+            app.update_managed_container_menu()
+            await pilot.pause()
+            assert '1 running' in str(app.screen.query_one('#body',Static).content)
+    asyncio.run(scenario())
+
+
 def test_inventory_failure_and_pending_reader_cleanup_are_recoverable(tmp_path):
     async def scenario():
         attempts=[];allow=False

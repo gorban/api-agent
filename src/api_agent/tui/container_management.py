@@ -75,9 +75,14 @@ class ContainerManagement:
                 self.update_managed_container_menu()
 
     def update_managed_container_menu(self):
-        if getattr(self.screen, 'kind', None) == 'menu':
-            self.screen.query_one('#body', Static).update(self.container_summary)
-            button = self.screen.query_one('#mode-cleanup-containers', Button)
+        screen = self.screen
+        if getattr(screen, 'kind', None) == 'menu':
+            # A menu that has not composed yet renders this body when it does.
+            screen.body = self.container_summary
+            if not screen.query('#body'):
+                return
+            screen.query_one('#body', Static).update(self.container_summary)
+            button = screen.query_one('#mode-cleanup-containers', Button)
             button.label = 'Container management'
             button.disabled = False
 
