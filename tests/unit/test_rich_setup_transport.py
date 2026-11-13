@@ -123,10 +123,11 @@ def test_short_ipc_waiter_does_not_shorten_sibling_shared_authentication():
     async def scenario():
         auth_started=asyncio.Event()
         auth_complete=asyncio.Event()
+        release_auth=asyncio.Event()
         session=AsyncMock(return_value=SECRET)
         async def setup(**kwargs):
             auth_started.set()
-            await asyncio.sleep(.15)
+            await release_auth.wait()
             auth_complete.set()
             return session
         adapter=SimpleNamespace(asetup=AsyncMock(side_effect=setup))
@@ -135,16 +136,18 @@ def test_short_ipc_waiter_does_not_shorten_sibling_shared_authentication():
         registry=SetupRegistry('operation','selection',lambda:owner)
         server=SetupServer(registry,CAP)
         endpoint=await server.start()
-        clients=[SetupClient(endpoint,worker_id=f'worker-{i}',timeout=2) for i in range(2)]
+        clients=[SetupClient(endpoint,worker_id=f'worker-{i}',timeout=30) for i in range(2)]
         def short_call():
-            with report_timeout_sync('Short graph node',.05):
+            with report_timeout_sync('Short graph node',1):
                 with pytest.raises((ContractError,ProviderAccessError)):
                     clients[0].complete(REQUEST)
         try:
             short=asyncio.create_task(asyncio.to_thread(short_call))
-            await asyncio.wait_for(auth_started.wait(),1)
+            await asyncio.wait_for(auth_started.wait(),30)
             sibling=asyncio.create_task(asyncio.to_thread(clients[1].complete,REQUEST))
             await short
+            assert not auth_complete.is_set()
+            release_auth.set()
             assert await sibling == result
             assert auth_complete.is_set()
             adapter.asetup.assert_awaited_once()
