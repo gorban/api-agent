@@ -761,6 +761,17 @@ def fake_renderer(tmp_path, monkeypatch):
     return make
 
 
+def test_renderer_java_runs_headless(fake_renderer, tmp_path):
+    recorded = tmp_path / "java-arguments"
+    renderer = fake_renderer(f'printf "%s\\n" "$@" > {recorded}; exit 2')
+
+    with pytest.raises(RenderError):
+        renderer.render(b"@startuml\nA\n@enduml\n")
+    arguments = recorded.read_text().splitlines()
+    assert "-Djava.awt.headless=true" in arguments
+    assert arguments.index("-Djava.awt.headless=true") < arguments.index("-jar")
+
+
 def test_renderer_rejects_failed_process(fake_renderer):
     renderer = fake_renderer('printf "failure" >&2; exit 2')
 

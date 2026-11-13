@@ -579,6 +579,23 @@ async def test_cli_failures_are_bounded(cli, port, mode):
     await owner.aclose()
 
 
+@pytest.mark.parametrize('inherited', [None, '-Xmx1g'])
+@async_test
+async def test_allure_java_runs_headless_without_dropping_inherited_options(port, tmp_path, monkeypatch, inherited):
+    if inherited is None:
+        monkeypatch.delenv('JAVA_OPTS', raising=False)
+    else:
+        monkeypatch.setenv('JAVA_OPTS', inherited)
+    recorded = tmp_path / 'java-opts'
+    owner = viewer.ManagedAllureViewer(port)
+    try:
+        await owner._command(['/bin/sh', '-c', f'printf "%s" "$JAVA_OPTS" > {recorded}'])
+    finally:
+        await owner.aclose()
+    expected = '-Djava.awt.headless=true' if inherited is None else '-Xmx1g -Djava.awt.headless=true'
+    assert recorded.read_text() == expected
+
+
 @async_test
 async def test_cancel_generation_reaps_owned_process(cli, port):
     owner = viewer.ManagedAllureViewer(port)

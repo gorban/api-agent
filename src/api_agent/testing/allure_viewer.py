@@ -203,8 +203,13 @@ class ManagedAllureViewer:
         async with report_timeout('Allure CLI version' if version else 'Allure report generation',
                                   15 if version else self.timeout) as budget:
             with tempfile.TemporaryFile() as output:
+                from api_agent.runtime.mise_tools import HEADLESS_JAVA_OPTION
+
+                inherited = os.environ.get('JAVA_OPTS', '').strip()
+                environment = {**os.environ,
+                               'JAVA_OPTS': ' '.join(filter(None, (inherited, HEADLESS_JAVA_OPTION)))}
                 try:
-                    process = subprocess.Popen(arguments, stdout=output, stderr=output,
+                    process = subprocess.Popen(arguments, stdout=output, stderr=output, env=environment,
                                                start_new_session=os.name == 'posix')
                 except OSError:
                     raise ViewerError('Allure could not start; install Allure 2 and check Java on PATH') from None
