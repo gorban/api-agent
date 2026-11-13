@@ -218,9 +218,9 @@ def prepare_local_https(cert_dir, hostname='localhost', *, extra_sans=('localhos
     if runner is _default_runner:
         from api_agent.runtime.mise_tools import ensure_tools
         try:
-            ensure_tools('mkcert', timeout=timeout)
+            ensure_tools('mkcert', 'openssl', timeout=timeout)
         except (OSError, TimeoutError) as exc:
-            raise HTTPSPreparationError('Unable to prepare mkcert for local HTTPS') from exc
+            raise HTTPSPreparationError('Unable to prepare mkcert/OpenSSL for local HTTPS') from exc
     for command in ('mkcert', 'openssl'):
         if runner is _default_runner and shutil.which(command) is None:
             raise HTTPSPreparationError(f'{command} is required for local HTTPS; install {command} and retry')

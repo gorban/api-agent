@@ -17,6 +17,7 @@ TOOLS = {
     'java': 'core:java',
     'allure': 'github:allure-framework/allure2',
     'mkcert': 'aqua:FiloSottile/mkcert',
+    'openssl': 'conda:openssl',
     'plantuml': 'github:plantuml/plantuml',
 }
 # These install one release file, named by the tool's literal mise asset_pattern.
@@ -129,7 +130,9 @@ def ensure_tools(*names, timeout=300, cancellation=None):
         return path
 
     with report_timeout_sync('Managed executable preparation', timeout) as budget:
-        run(['install', *(versions[name] for name in names)], budget)
+        # Select the declarations so mise retains their lockfile source, including
+        # transitive packages. An explicit tool@version can lose that source.
+        run(['install', *(TOOLS[name] for name in names)], budget)
         paths = []
         files = {}
         java_home = None

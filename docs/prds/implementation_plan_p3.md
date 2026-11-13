@@ -5,7 +5,7 @@
 ## Base inventory
 
 - [ ] Keep one root `mise.toml` and checked `mise.lock` with explicit tool versions.
-  Request only Python/uv at entry. Node/npm, Java/Allure and mkcert are optional
+  Request only Python/uv at entry. Node/npm, Java/Allure and mkcert/OpenSSL are optional
   and prepared at their established operation boundaries.
 - [ ] Preserve backend identities, platform URLs/checksums and the mise minimum
   version. Launch consumes pins; it does not silently refresh them.
@@ -16,7 +16,7 @@
   precedence and caller-relative paths in the existing Python bootstrap.
 - [ ] Support ZIP startup without Git. Git-dependent features retain their own
   capability requirement; automatic Git acquisition is not promised.
-- [ ] Keep engine access, host OpenSSL/trust and account permissions outside the
+- [ ] Keep engine access, host certificate trust and account permissions outside the
   downloadable executable inventory unless separately qualified.
 
 The actual versioned inventory is [mise.toml](../../mise.toml), with its

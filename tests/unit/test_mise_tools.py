@@ -21,7 +21,7 @@ def test_only_selected_pinned_tools_are_prepared(fake_mise):
     root, bin_dir, tools, log = fake_mise
     mise_tools.ensure_tools('java', 'allure')
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert calls[0][0][-3:] == ['install', 'core:java@temurin-21.0.13+9.0.LTS', 'github:allure-framework/allure2@2.46.1']
+    assert calls[0][0][-3:] == ['install', 'core:java', 'github:allure-framework/allure2']
     assert [call[0][-1] for call in calls[1:]] == ['java', 'allure']
     assert calls[1][0][-2] == 'core:java@temurin-21.0.13+9.0.LTS'
     assert all(call[1:] == [str(root), ''] for call in calls)
@@ -48,7 +48,7 @@ def test_file_tool_returns_its_declared_release_file(fake_mise, tmp_path):
     files = mise_tools.ensure_tools('plantuml')
     assert files == {'plantuml': tmp_path / 'installs/plantuml/plantuml-mit-1.2026.9.jar'}
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert [call[0][-2:] for call in calls] == [['install', 'github:plantuml/plantuml@1.2026.9'],
+    assert [call[0][-2:] for call in calls] == [['install', 'github:plantuml/plantuml'],
                                                ['where', 'github:plantuml/plantuml@1.2026.9']]
     assert all(call[1:] == [str(root), ''] for call in calls)
     assert os.environ['PATH'] == str(bin_dir)
@@ -255,7 +255,7 @@ def test_custom_allure_command_does_not_prepare_managed_tools(monkeypatch):
         asyncio.run(viewer._ready())
 
 
-def test_default_https_prepares_only_mkcert(tmp_path, monkeypatch):
+def test_default_https_prepares_both_tls_tools(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(mise_tools, 'ensure_tools', lambda *a, **k: calls.append(a))
     def runner(*args, **kwargs):
@@ -264,7 +264,28 @@ def test_default_https_prepares_only_mkcert(tmp_path, monkeypatch):
     monkeypatch.setattr(https, 'shutil', SimpleNamespace(which=lambda _: '/synthetic'))
     with pytest.raises(RuntimeError, match='default runner invoked'):
         prepare_local_https(tmp_path)
-    assert calls == [('mkcert',)]
+    assert calls == [('mkcert', 'openssl')]
+
+
+def test_https_prepares_openssl_when_it_is_absent_from_system_path(fake_mise, tmp_path, monkeypatch):
+    _, _, tools, log = fake_mise
+    assert shutil.which('openssl') is None
+    openssl_dir = tmp_path / 'openssl-bin'
+    openssl_dir.mkdir()
+    executable = openssl_dir / 'openssl'
+    (tools / 'openssl').rename(executable)
+    executable.chmod(0o755)
+    (tools / 'mkcert').chmod(0o755)
+    monkeypatch.setenv('FAKE_MISE_OPENSSL', str(executable))
+    def trust_setup(argv, **kwargs):
+        assert argv == ['mkcert', '-install']
+        assert shutil.which('openssl') == str(executable)
+        raise RuntimeError('managed TLS tools ready')
+    monkeypatch.setattr(https, '_default_runner', trust_setup)
+    with pytest.raises(RuntimeError, match='managed TLS tools ready'):
+        prepare_local_https(tmp_path / 'certs')
+    calls = [json.loads(line)[0] for line in log.read_text().splitlines()]
+    assert calls[0][-3:] == ['install', 'aqua:FiloSottile/mkcert', 'conda:openssl']
 
 
 def test_default_allure_prepares_java_and_allure(monkeypatch):

@@ -100,13 +100,14 @@ def fake_mise(tmp_path, monkeypatch):
 "core:java" = "temurin-21.0.13+9.0.LTS"
 "github:allure-framework/allure2" = "2.46.1"
 "aqua:FiloSottile/mkcert" = "1.4.4"
+"conda:openssl" = "3.5.9"
 "github:plantuml/plantuml" = { version = "1.2026.9", asset_pattern = "plantuml-mit-1.2026.9.jar" }
 ''')
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
     tool_dir = tmp_path / 'tools'
     tool_dir.mkdir()
-    for name in ('node', 'npm', 'mkcert', 'java', 'allure'):
+    for name in ('node', 'npm', 'mkcert', 'openssl', 'java', 'allure'):
         (tool_dir / name).write_text('synthetic')
     installed = tmp_path / 'installs' / 'plantuml'
     installed.mkdir(parents=True)

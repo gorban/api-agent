@@ -55,7 +55,9 @@ class PreparedUISession:
                 if not location:
                     raise ContractError('Selected UI provider is required')
                 origin = self.config.get('UI_LISTENER_URL', 'https://localhost:9443')
-                listener_plan(origin)
+                # A provider can pin an advertised HTTPS name to loopback; the
+                # included provider retains its stricter literal listener policy.
+                await asyncio.to_thread(listener_plan, origin, allow_advertised=True)
                 self.provider = await self.loader(location, self.config, self.services, kind='ui')
                 implementation = self.provider.require('ui', 'launch')
                 self.owns_llm_sessions = 'session_owned_inference' in implementation.capabilities.features

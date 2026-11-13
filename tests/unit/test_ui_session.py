@@ -48,6 +48,51 @@ def test_anonymous_original_handoff_and_idempotent_cleanup(resources):
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize('addresses', [['127.0.0.1'], ['::1'], ['127.0.0.1', '::1']])
+def test_selected_provider_can_prepare_an_advertised_https_origin(resources, monkeypatch, addresses):
+    r = resources
+    origin = 'https://ui.example.test:4200'
+    monkeypatch.setattr('api_agent.ui.provider.socket.getaddrinfo',
+        lambda *args, **kwargs: [(None, None, None, None, (address, 0)) for address in addresses])
+    r.owner = PreparedUISession({'UI_PROVIDER': 'selected', 'UI_LISTENER_URL': origin},
+        {}, browser_owner=r.browser_owner, loader=r.loader)
+    async def exercise():
+        assert await r.owner.start() is r.session
+        r.provider.astart.assert_awaited_once()
+        r.page.goto.assert_awaited_once_with(origin)
+        await r.owner.aclose()
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('addresses', [[], ['192.0.2.1'], ['127.0.0.1', '192.0.2.1']])
+def test_advertised_ui_rejects_missing_remote_or_mixed_addresses_before_launch(resources, monkeypatch, addresses):
+    r = resources
+    monkeypatch.setattr('api_agent.ui.provider.socket.getaddrinfo',
+        lambda *args, **kwargs: [(None, None, None, None, (address, 0)) for address in addresses])
+    r.owner = PreparedUISession({'UI_PROVIDER': 'selected', 'UI_LISTENER_URL': 'https://ui.example.test:4200'},
+        {}, browser_owner=r.browser_owner, loader=r.loader)
+    async def exercise():
+        with pytest.raises(ValueError, match='ui_listener_invalid'):
+            await r.owner.start()
+        r.loader.assert_not_called()
+        r.browser_owner.start.assert_not_awaited()
+    asyncio.run(exercise())
+
+
+def test_advertised_ui_resolution_failure_is_reported_before_launch(resources, monkeypatch):
+    r = resources
+    def unavailable(*args, **kwargs):
+        raise OSError('resolver unavailable')
+    monkeypatch.setattr('api_agent.ui.provider.socket.getaddrinfo', unavailable)
+    r.owner = PreparedUISession({'UI_PROVIDER': 'selected', 'UI_LISTENER_URL': 'https://ui.example.test:4200'},
+        {}, browser_owner=r.browser_owner, loader=r.loader)
+    async def exercise():
+        with pytest.raises(ValueError, match='ui_listener_invalid'):
+            await r.owner.start()
+        r.loader.assert_not_called()
+    asyncio.run(exercise())
+
+
 def test_preparation_updated_page_and_scoped_credentials(resources):
     r = resources
     r.implementation.capabilities = ProviderCapabilities('ui', ('launch', 'prepare_session'), ('ui',))
@@ -127,7 +172,7 @@ def test_start_failure_retains_cleanup_duty(resources):
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize('config', [{}, {'UI_PROVIDER':'selected', 'UI_LISTENER_URL':'https://example.com'}])
+@pytest.mark.parametrize('config', [{}, {'UI_PROVIDER':'selected', 'UI_LISTENER_URL':'https://localhost/path'}])
 def test_missing_or_invalid_selection(resources, config):
     resources.owner.config = config
     async def exercise():

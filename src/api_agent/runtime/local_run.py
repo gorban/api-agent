@@ -210,6 +210,7 @@ class LocalRunOwner:
         from api_agent.ui.process import StudioProcesses
         from api_agent.runtime.client_tls import verified_client_context
         nonce = token_urlsafe(32)
+        ui_origin = config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/')
         from api_agent.runtime.chat_composition import compose_chat_runtime
         def runtime_factory(*args, **kwargs):
             runtime = compose_runtime(*args, **kwargs)
@@ -224,12 +225,14 @@ class LocalRunOwner:
             on_error=self._execution_error, on_status=self._workflow_event,
             interaction_owner=self.interaction_owner,
             runtime_factory=runtime_factory, nonce=nonce,
-            chat_origin=config.values.get('UI_LISTENER_URL', 'https://localhost:9443').rstrip('/'),
+            chat_origin=ui_origin,
+            permitted_browser_origins=(ui_origin,),
             extra_services=lambda runtime: {
                 'ui_access_token': nonce,
                 'ensure_llm_ready': lambda: composed.llm.ensure_ready(),
                 'ui_processes': StudioProcesses(
                     ssl_context=verified_client_context(str(material.ca_file)),
+                    timeout=config.values.get('UI_PREPARATION_TIMEOUT_SECONDS', 60),
                     log_callback=lambda text: self._log('ui', text),
                     emissions=runtime.emissions),
             })
@@ -244,7 +247,7 @@ class LocalRunOwner:
         def credentials_for(roles, selected):
             return bind_role_credentials(values, roles, selected,
                 registry=registry_for_owner(self.context.owner_root), emissions=runtime.emissions,
-                pending_tasks=self._llm._helpers)
+                pending_tasks=self._llm._helpers, interaction_owner=self.interaction_owner)
         owner = PreparedUISession(values, runtime.services, browser_owner=browser_owner,
             user_index=index, credentials_for=credentials_for)
         # Register before preparation so partial setup remains owned.

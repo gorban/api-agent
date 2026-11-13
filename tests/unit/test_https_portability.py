@@ -105,7 +105,7 @@ def test_managed_mkcert_preparation_precedes_system_executable(tmp_path, monkeyp
     monkeypatch.setattr(mise_tools, 'ensure_tools', prepare)
     with pytest.raises(https.HTTPSPreparationError, match='mkcert trust setup failed'):
         https.prepare_local_https(tmp_path / 'certs', timeout=10, interactive=False)
-    assert calls == [(('mkcert',), 10)]
+    assert calls == [(('mkcert', 'openssl'), 10)]
     assert marker.read_text() == 'managed'
 
 
