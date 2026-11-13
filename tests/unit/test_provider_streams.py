@@ -201,8 +201,11 @@ def test_deadline_budget_and_approved_failures():
             except asyncio.CancelledError:
                 await release.wait()
             assert not auth.closed
+        # The deadline must outlast setup on a slow host so the operation starts
+        # and is left pending; only then does expiry exercise cleanup.
         with pytest.raises(OperationalError, match='deadline'):
-            await llm.call(operation, context=OperationContext('work', time.monotonic()+.02))
+            await llm.call(operation, context=OperationContext('work', time.monotonic()+1))
+        assert entered.is_set()
         with pytest.raises(CleanupPendingError):
             await llm.aclose()
         assert not auth.closed and not driver.stop.called
@@ -219,11 +222,19 @@ def test_deadline_budget_and_approved_failures():
         await llm.aclose()
         llm, *_ = owner()
         async def events(**kwargs):
-            await asyncio.sleep(.02)
+            await asyncio.Event().wait()
             yield StreamEvent(TextContent('text'))
-        with pytest.raises(OperationalError, match='deadline'):
-            async with llm.stream(events, context=OperationContext('stream', time.monotonic()+.01)) as stream:
+        tight = []
+        class Tightening(OperationContext):
+            def remaining(self):
+                return .01 if tight else 60.0
+        context = Tightening('stream')
+        with pytest.raises(OperationalError, match='deadline') as error:
+            async with llm.stream(events, context=context) as stream:
+                # Time left at the read's entry check but gone before the first event.
+                tight.append(True)
                 await anext(stream)
+        assert error.value.execution == 'possibly_executed'
         await llm.aclose()
     run(scenario())
 
