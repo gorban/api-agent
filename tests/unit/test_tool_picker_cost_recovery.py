@@ -150,6 +150,8 @@ async def test_late_preconflict_history_cannot_restore_retired_price(conflicting
             elif transition == 'retired':
                 app.show_menu()
             await pilot.pause()
+            # A recovered selection prices itself in a worker; the late history must meet that estimate.
+            await app.workers.wait_for_complete()
             current = app.cost_estimator
             release.set()
             await stale
@@ -290,6 +292,7 @@ async def test_account_change_clears_cost_when_new_estimate_unavailable(tmp_path
         await pilot.pause()
         await pilot.press('right_square_bracket')
         await pilot.pause()
+        await app.workers.wait_for_complete()
 
         assert app.session.result().values['UNATTENDED_USER_INDEX'] == 1
         assert app.cost_estimator is None
