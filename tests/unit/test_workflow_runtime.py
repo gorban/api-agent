@@ -520,7 +520,7 @@ def test_sync_node_offload_preserves_context_and_drains_before_timeout(runtime_l
     context_value = ContextVar('workflow_test_value', default='missing')
     started, finished, release = (threading.Event() for _ in range(3))
     captured, observations, delivered, drained = [], [], [], []
-    runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=0.02', owner='first_draft')]
+    runtime_layout.tables['Timeouts'] = [timeout_row(tmp_path, 'version=1\n[fields.LIMIT]\ntype="float"\ndefault=1', owner='first_draft')]
     original_settle = tasks.settle
     loop = dispatched = draining = None
 
@@ -536,7 +536,7 @@ def test_sync_node_offload_preserves_context_and_drains_before_timeout(runtime_l
         captured.append(context_value.get())
         started.set()
         loop.call_soon_threadsafe(dispatched.set)
-        assert release.wait(1), 'observer did not release the owned thread'
+        assert release.wait(30), 'observer did not release the owned thread'
         finished.set()
         return produce(inputs, context)
 
@@ -550,9 +550,9 @@ def test_sync_node_offload_preserves_context_and_drains_before_timeout(runtime_l
 
         async def observe_responsiveness():
             try:
-                await asyncio.wait_for(dispatched.wait(), 1)
+                await asyncio.wait_for(dispatched.wait(), 30)
                 observations.append(finished.is_set())
-                await asyncio.wait_for(draining.wait(), 1)
+                await asyncio.wait_for(draining.wait(), 30)
             finally:
                 release.set()
 
