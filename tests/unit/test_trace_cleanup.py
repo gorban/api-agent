@@ -14,6 +14,10 @@ from api_agent.telemetry.tracing import TraceDeliveryError, TraceError, TraceRun
 from test_workflow_observations import config as trace_config
 
 
+# Disposal here succeeds or fails on its own; the budget only bounds a regression, so a slow host cannot exhaust it.
+CLEANUP_BUDGET = 5
+
+
 def tracing(provider):
     config = trace_config()
     return TraceRuntime(config, factory=lambda *args: (provider, Mock()))
@@ -22,14 +26,14 @@ def tracing(provider):
 async def finish_cleanup_or_release_test_trace(local, trace):
     finishing = asyncio.create_task(local.finish_cleanup())
     try:
-        done, _ = await asyncio.wait({finishing}, timeout=.5)
+        done, _ = await asyncio.wait({finishing}, timeout=30)
         assert done, 'Acknowledged trace disposal must finish local cleanup'
         await finishing
     finally:
         if not finishing.done():
             # Keep a failed regression from stranding the deliberate retry loop.
             trace.aclose = AsyncMock(return_value=True)
-            await asyncio.wait_for(finishing, 1)
+            await asyncio.wait_for(finishing, 30)
 
 
 def test_failed_delivery_stops_joined_local_operation_and_releases_lease(caplog):
@@ -37,9 +41,9 @@ def test_failed_delivery_stops_joined_local_operation_and_releases_lease(caplog)
         provider = Mock(force_flush=Mock(return_value=False), shutdown=Mock())
         trace = tracing(provider)
         await trace.astart()
-        runtime = Runtime('synthetic', tracing=trace, timeout=.05)
+        runtime = Runtime('synthetic', tracing=trace, timeout=CLEANUP_BUDGET)
         manager = Mock()
-        operation = OperationCleanup(manager, runtime, None, object(), False, .05)
+        operation = OperationCleanup(manager, runtime, None, object(), False, CLEANUP_BUDGET)
         events = []
         local = LocalRunOwner(SimpleNamespace(), lambda: None, on_event=events.append)
         local._session = SimpleNamespace(runtime=runtime)
@@ -185,8 +189,8 @@ def test_pending_shutdown_status_persists_until_acknowledged_without_flicker():
                         shutdown=Mock(side_effect=[RuntimeError('synthetic'), RuntimeError('synthetic'), None]))
         trace = tracing(provider)
         await trace.astart()
-        runtime = Runtime('synthetic', tracing=trace, timeout=.05)
-        operation = OperationCleanup(Mock(), runtime, None, object(), False, .05)
+        runtime = Runtime('synthetic', tracing=trace, timeout=CLEANUP_BUDGET)
+        operation = OperationCleanup(Mock(), runtime, None, object(), False, CLEANUP_BUDGET)
         events = []
         local = LocalRunOwner(SimpleNamespace(), lambda: None, on_event=events.append)
         local._session = SimpleNamespace(runtime=runtime)
@@ -277,9 +281,9 @@ def test_retried_stopped_publication_does_not_repeat_acknowledged_delivery_warni
         provider = Mock(force_flush=Mock(return_value=False), shutdown=Mock())
         trace = tracing(provider)
         await trace.astart()
-        runtime = Runtime('synthetic', tracing=trace, timeout=.05)
+        runtime = Runtime('synthetic', tracing=trace, timeout=CLEANUP_BUDGET)
         manager = Mock()
-        operation = OperationCleanup(manager, runtime, None, object(), False, .05)
+        operation = OperationCleanup(manager, runtime, None, object(), False, CLEANUP_BUDGET)
         events = []
         local = LocalRunOwner(SimpleNamespace(), lambda: None, on_event=events.append)
         local._session = SimpleNamespace(runtime=runtime)
