@@ -10,6 +10,7 @@ from textual.widgets import DataTable
 
 from api_agent.tui.app import WorkbenchScreen
 from test_historical_cost_tui import Snapshot
+from test_result_completion_footer import wait_until
 from test_test_table import identities
 from test_tui import fixture
 
@@ -35,8 +36,8 @@ def test_history_finishes_before_picker_composition(tmp_path, monkeypatch):
             await pilot.pause()
             assert observed == [True]
             table = app.screen.query_one(DataTable)
-            assert table.row_count
-            assert all(str(table.get_row_at(i)[4]) == '2.000000' for i in range(table.row_count))
+            await wait_until(pilot, lambda: table.row_count and all(
+                str(table.get_row_at(i)[4]) == '2.000000' for i in range(table.row_count)))
     asyncio.run(scenario())
 
 
