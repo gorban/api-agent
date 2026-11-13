@@ -33,8 +33,8 @@ synthetic span alone does not establish application instrumentation compatibilit
 
 ## Bounded manual bridge
 
-The optional SDK/exporter dependencies now select 1.45.1 together (API 1.45.1,
-semantic-convention package 0.66b1). The manual observation adapter emits graph,
+The optional SDK/exporter dependencies now select 1.45.2 together (API 1.45.2,
+semantic-convention package 0.66b2). The manual observation adapter emits graph,
 component and node spans with explicit parent context, and one CLIENT span per
 admitted terminal leaf call. It emits chat operation, requested model and
 input/output token attributes without aggregating them again at parent scopes.
