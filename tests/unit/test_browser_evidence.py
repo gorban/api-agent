@@ -240,7 +240,8 @@ def test_expired_extended_capture_cannot_publish_late_pixels(monkeypatch):
     @asynccontextmanager
     async def accelerated(name, seconds):
         declared.append(seconds)
-        async with component_timeout(name, 0.05):
+        # Long enough for the policy to start on a slow host, far below the declared 30 seconds.
+        async with component_timeout(name, 1):
             yield
     monkeypatch.setattr(evidence, 'component_timeout', accelerated)
     async def policy(*_):
