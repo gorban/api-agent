@@ -19,7 +19,14 @@ class RecoveryApp(App):
 
 async def open_channel(app, label='Keeper'):
     channel = await asyncio.to_thread(app.transport.open, label)
-    await asyncio.sleep(.05)
+    if app.transport.active is channel:
+        # Queued or already-cancelled channels never mount; a presented one is ready once it is mounted with its input focused.
+        async def mounted():
+            screen = channel.screen
+            while not (app.screen is screen and screen.is_mounted and screen.query('TextArea')
+                       and getattr(app.focused, 'id', None) == 'manager-input'):
+                await asyncio.sleep(.01)
+        await asyncio.wait_for(mounted(), 30)
     return channel
 
 
