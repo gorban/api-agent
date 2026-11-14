@@ -4,9 +4,11 @@ Adapters must call ``export`` before recording/exporting payloads. Attach
 ``OwnedLogFilter`` only to handlers owned by this application. This module does
 not install logging hooks or instrument providers automatically.
 """
+from collections import OrderedDict
 from dataclasses import dataclass
 from array import array
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -39,6 +41,16 @@ class ContentPolicy:
 
 
 _DROP = object()
+_MISS = object()
+# Large unchanged values (system prompts, earlier turns, tool results) recur in
+# every capture of a growing conversation. Their scan result depends only on
+# the value, its depth, and the boundary's credential rules, so it is reused.
+_SCAN_REUSE_MIN_CHARS = 2048
+_SCAN_REUSE_MAX_ENTRIES = 512
+_SCAN_REUSE_MAX_CHARS = 16 * 1024 * 1024
+_SCAN_REUSE = OrderedDict()
+_SCAN_REUSE_SIZE = 0
+_SCAN_REUSE_LOCK = threading.Lock()
 # Interoperable JSON integer range; bounds also prevent Python's integer-string
 # digit limit and float-conversion overflow from breaking diagnostic emission.
 _MAX_JSON_INTEGER = (1 << 53) - 1
@@ -205,6 +217,56 @@ class _EvidenceLease:
                 loop.call_soon_threadsafe(wake)
             except RuntimeError:
                 pass
+
+
+def clear_scan_reuse():
+    """Forget every reused scan result."""
+    global _SCAN_REUSE_SIZE
+    with _SCAN_REUSE_LOCK:
+        _SCAN_REUSE.clear()
+        _SCAN_REUSE_SIZE = 0
+
+
+def _plain_json(value, ancestors=()):
+    """Whether ``value`` is a shallow, acyclic tree of exact JSON types, so its encoding identifies it.
+
+    Only exact types are inspected; no method of an unsupported object runs.
+    """
+    kind = type(value)
+    if kind is float:
+        return math.isfinite(value)
+    if value is None or kind in (str, bool, int):
+        return True
+    if kind not in (dict, list) or len(ancestors) == 32 or id(value) in ancestors:
+        return False
+    ancestors = (*ancestors, id(value))
+    if kind is dict:
+        return all(type(key) is str and _plain_json(item, ancestors) for key, item in value.items())
+    return all(_plain_json(item, ancestors) for item in value)
+
+
+def _reused(key):
+    with _SCAN_REUSE_LOCK:
+        stored = _SCAN_REUSE.get(key)
+        if stored is not None:
+            _SCAN_REUSE.move_to_end(key)
+    if stored is None:
+        return _MISS
+    return _DROP if stored[0] is None else json.loads(stored[0])
+
+
+def _remember(key, result):
+    global _SCAN_REUSE_SIZE
+    encoded = None if result is _DROP else json.dumps(result, ensure_ascii=False, allow_nan=False)
+    size = 256 + len(encoded or '')
+    if size > _SCAN_REUSE_MAX_CHARS:
+        return
+    with _SCAN_REUSE_LOCK:
+        _SCAN_REUSE_SIZE -= _SCAN_REUSE.pop(key, (None, 0))[1]
+        _SCAN_REUSE[key] = (encoded, size)
+        _SCAN_REUSE_SIZE += size
+        while len(_SCAN_REUSE) > _SCAN_REUSE_MAX_ENTRIES or _SCAN_REUSE_SIZE > _SCAN_REUSE_MAX_CHARS:
+            _SCAN_REUSE_SIZE -= _SCAN_REUSE.popitem(last=False)[1][1]
 
 
 class EmissionBoundary:
@@ -562,9 +624,32 @@ class EmissionBoundary:
                 result.append(admitted)
         return result
 
+    def _reuse_key(self, value, depth):
+        if type(value) is str:
+            kind, encoded = 'text', value
+        elif type(value) in (dict, list) and _plain_json(value):
+            kind, encoded = 'node', json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        else:
+            return None
+        if len(encoded) < _SCAN_REUSE_MIN_CHARS:
+            return None
+        rules = json.dumps([sorted(self._secrets), self._key_names_public, self.preserve_json_text])
+        return (kind, depth, hashlib.sha256(encoded.encode('utf-8', 'surrogatepass')).hexdigest(),
+                hashlib.sha256(rules.encode()).hexdigest())
+
     def _json(self, value, seen, depth):
         if depth > 20:
             return _DROP
+        key = self._reuse_key(value, depth)
+        if key is None:
+            return self._scan(value, seen, depth)
+        result = _reused(key)
+        if result is _MISS:
+            result = self._scan(value, seen, depth)
+            _remember(key, result)
+        return result
+
+    def _scan(self, value, seen, depth):
         # Compare each original JSON node before key filtering or syntax
         # masking can fragment a registered container or quoted string.
         if self._registered_native(value, seen, depth):
