@@ -33,6 +33,7 @@ class ProfileEstimator(EstimateSnapshot):
                 overlaps[key(row)] = row
             if child.card != card:
                 card = None
+        self.sync_unavailable = any(getattr(child, 'sync_unavailable', False) for child in self.children)
         cache = getattr(first, 'cache', None)
         if isinstance(cache, HistoryProjection) and all(getattr(child, 'cache', None) is cache for child in self.children):
             super().__init__(predictions, card=card, now=first.now, ignored_settings=first.ignored_settings)

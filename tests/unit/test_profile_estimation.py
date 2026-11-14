@@ -162,3 +162,10 @@ def test_existing_history_prediction_survives_dormant_cap_change_with_real_sourc
     assert predictions[0]['estimated_cost_usd'] == predictions[1]['estimated_cost_usd']
     assert predictions[0]['estimated_cost_usd'] > 0
     assert history == before
+
+
+def test_profile_estimator_surfaces_partial_history_refresh():
+    child = EstimateSnapshot({'t': {'estimated_cost_usd': None}})
+    child.sync_unavailable = True
+    snapshot = ProfileEstimator((child,))
+    assert snapshot.sync_unavailable is True

@@ -3,29 +3,50 @@ from copy import deepcopy
 import math
 from datetime import datetime, timezone
 
-from api_agent.providers.costs import validate_quote, period_seconds, qualified_charge
-from .estimation import quota_reset_observed, reported_charge
+from api_agent.providers.costs import validate_quote, period_seconds
+from .estimation import quota_reset_observed
 
 
-def retain_quota_estimate(summary, artifact, *, selected_count):
+def retain_quota_estimate(summary, artifact, *, selected_count, logical_owners=None):
     """Keep account-boundary estimates without inventing model-price weights.
 
     Only a sole selected and recorded owner can receive the whole estimate.
     Call inventory completeness and historical price eligibility stay unchanged.
     """
+    if summary['estimated_cost_usd'] is not None:
+        return
+    from .quota_estimates import quota_calls_compatible, configured_quota_estimate
     amount = summary.get('raw_quota_cost_usd')
-    if summary['estimated_cost_usd'] is not None or amount is None:
-        return
     policy = artifact['quota']['payment_policy']
-    calls = [call for row in artifact['tests'] for call in row['calls']]
-    if not calls or policy is None or any(
-            (call.get('quote') or {}).get('payment') != policy
-            or reported_charge({'calls_complete': True, 'calls': [call]}) is not None
-            or any(qualified_charge(attempt['billing'], attempt['usage'] or {}) is not None
-                   for attempt in (call.get('transport_attempts') or {}).get('attempts', ()))
-            for call in calls):
+    policy_source = 'provider_quote'
+    if amount is None or policy is None:
+        observed = configured_quota_estimate(artifact['quota'], artifact['tests'])
+        if observed is None:
+            return
+        amount, policy, policy_source = observed['estimated_cost_usd'], observed['policy'], observed['policy_source']
+    # A quoted call cannot establish the policy of differently configured rows.
+    if (any(any((row.get('compatibility') or {}).get(name) is not None
+                for name in ('LLM_PAY_PERIOD', 'LLM_QUOTA_PERIOD', 'LLM_PAY_PERIOD_LIMIT'))
+            for row in artifact['tests'])
+            and configured_quota_estimate(artifact['quota'], artifact['tests']) is None):
         return
-    summary.update(estimated_cost_usd=amount, cost_basis='quota_payment')
+    calls = [call for row in artifact['tests'] for call in row['calls']]
+    if ((not calls and not summary.get('prompt_count')) or policy is None
+            or not quota_calls_compatible(artifact['tests'], policy)):
+        return
+    summary.update(estimated_cost_usd=amount, raw_quota_cost_usd=amount, cost_basis='quota_payment',
+                   quota_estimate_policy=policy, quota_estimate_policy_source=policy_source)
+    owners = logical_owners or {row['test_id']: row['test_id'] for row in artifact['tests']}
+    selected = {owners.get(row['test_id'], row['test_id']) for row in artifact['tests']}
+    if selected_count == 1 and len(selected) == 1 and len(artifact['tests']) > 1:
+        prompts = sum(summary['test_costs'].get(row['test_id'], {}).get('prompt_count', 0)
+                      for row in artifact['tests'])
+        if prompts:
+            summary['logical_quota_estimate'] = dict(test_id=next(iter(selected)),
+                estimated_cost_usd=amount, raw_quota_cost_usd=amount, basis='quota_payment',
+                cost_per_prompt_usd=amount / prompts)
+            summary['unallocated_cost_usd'] = 0.0
+        return
     if selected_count != 1 or len(artifact['tests']) != 1:
         return
     test = artifact['tests'][0]

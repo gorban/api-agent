@@ -37,7 +37,7 @@ def confirmation_outcome(statuses, allowance):
     return 'failed', True
 
 
-def logical_usage(report, owners):
+def logical_usage(report, owners, *, predictions=None, advance_predictions=None):
     """Project physical usage for the logical-test UI; artifacts stay physical."""
     from copy import deepcopy
     from math import fsum
@@ -85,5 +85,16 @@ def logical_usage(report, owners):
         row['historical_average'] = None
         row['advance_prediction'] = None
         costs[key] = row
+    for identity, prediction in (predictions or {}).items():
+        if identity in costs and prediction.get('basis') == 'historical_selected_quota':
+            costs[identity]['historical_average'] = deepcopy(prediction)
+    advance = predictions if advance_predictions is None else advance_predictions
+    for identity, prediction in (advance or {}).items():
+        if identity in costs and prediction.get('basis') == 'historical_selected_quota':
+            costs[identity]['advance_prediction'] = deepcopy(prediction)
+    estimate = result.get('logical_quota_estimate')
+    if estimate and estimate['test_id'] in costs:
+        costs[estimate['test_id']].update({key: value for key, value in estimate.items() if key != 'test_id'})
+        costs[estimate['test_id']].update(known_zero=False, incomplete=False)
     result['test_costs'] = costs
     return result

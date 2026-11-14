@@ -3,11 +3,12 @@ from contextlib import nullcontext
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import json
+import logging
 import threading
 from hashlib import sha256
 
 from api_agent.telemetry.estimation import EstimateSnapshot, predictions_for, calibration, key, payment_per_point, quota_allowed, calibration_key, quota_reset_observed, matching_compatibility
-from api_agent.telemetry.history import HistoryCache, MAX_BYTES
+from api_agent.telemetry.history import HistoryCache, MAX_ACCOUNTING_BYTES
 from .history_projection import HistoryProjection, ProjectionCancelled, check_projection
 from .collection import repository_label
 from .storage import RunStorage
@@ -128,6 +129,11 @@ class HistoricalEstimator(EstimateSnapshot):
                     row['basis'] = 'historical_quota'
                     row['variation'] *= scale
                     row['calibration'] = dict(fit, scale_factor=scale, provenance=json.loads(candidate))
+        from api_agent.telemetry.quota_estimates import quota_predictions_for
+        for identity, prediction in quota_predictions_for(tests, records, fingerprints, self.compatibility,
+                ignored_settings=ignored_settings).items():
+            if predictions[identity]['estimated_cost_usd'] is None:
+                predictions[identity].update(prediction)
         check_projection()
         if isinstance(cache, HistoryProjection):
             super().__init__(predictions, card=card, now=self.now, ignored_settings=ignored_settings)
@@ -170,13 +176,15 @@ class HistoricalEstimator(EstimateSnapshot):
         try:
             if self.cache is not None:
                 # Reuse the storage reader's no-follow regular-file checks.
-                payload = RunStorage._read_source(Path(directory) / 'accounting.json', max_bytes=MAX_BYTES)
-                if len(payload) <= MAX_BYTES:
+                payload = RunStorage._read_source(Path(directory) / 'accounting.json', max_bytes=MAX_ACCOUNTING_BYTES)
+                if len(payload) <= MAX_ACCOUNTING_BYTES:
                     self.cache.ingest(self.origin, manifest, payload)
                     if self.scope is not None:
                         self.cache.bind(self.origin, self.scope, manifest['run_id'])
-        except Exception:
-            pass
+        except Exception as error:
+            logging.getLogger(__name__).warning(
+                "Cost history ingestion failed (%s); Allure evidence is unchanged, historical estimates may be incomplete.",
+                type(error).__name__)
 
 
 def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=None, test_configs=None):

@@ -54,7 +54,7 @@ def test_quota_fallback_never_relabels_mixed_billing(case):
     elif case == 'no_policy':
         artifact['quota']['payment_policy'] = None
     elif case == 'other_payment':
-        quote['payment'] = None
+        quote['payment'] = dict(PAYMENT, usd=200)
     elif case == 'transport_charge':
         from api_agent.providers.generation_attempts import TransportAttemptLedger
         from api_agent.providers.llm import Usage
@@ -282,3 +282,99 @@ def test_discontinuous_quota_never_creates_raw_or_negative_cost(usage):
     assert report['raw_quota_cost_usd'] is None
     assert report['estimated_cost_usd'] == .23 and report['cost_basis'] == 'list_price'
     assert report['test_costs']['test']['estimated_cost_usd'] == .23
+
+
+def test_quota_boundary_estimate_does_not_require_every_call_quote():
+    from api_agent.telemetry.costs import retain_quota_estimate
+    artifact = {'quota': {'payment_policy': PAYMENT}, 'tests': [{
+        'test_id': 't', 'calls_complete': False,
+        'calls': [{'quote': {'payment': PAYMENT}}, {'quote': None}],
+        'stabilized_estimate': {'estimated_cost_usd': None}}]}
+    summary = {'raw_quota_cost_usd': 10., 'estimated_cost_usd': None,
+               'unallocated_cost_usd': 10., 'test_costs': {'t': {
+                   'prompt_count': 2, 'estimated_cost_usd': None}}}
+    retain_quota_estimate(summary, artifact, selected_count=1)
+    assert summary['estimated_cost_usd'] == 10.
+    assert summary['test_costs']['t']['cost_per_prompt_usd'] == 5.
+    assert artifact['tests'][0]['calls_complete'] is False
+
+
+def test_single_logical_quota_cost_includes_confirmations_without_pricing_attempts():
+    from api_agent.telemetry.costs import retain_quota_estimate
+    from api_agent.testing.confirmations import logical_usage
+    ids = ['t', 't::confirmation:2', 't::confirmation:3']
+    artifact = {'quota': {'payment_policy': PAYMENT}, 'tests': [dict(
+        test_id=identity, calls_complete=False, calls=[{'quote': None}],
+        stabilized_estimate={'estimated_cost_usd': None}) for identity in ids]}
+    summary = dict(raw_quota_cost_usd=3., estimated_cost_usd=None,
+        unallocated_cost_usd=3., test_costs={identity: dict(prompt_count=2,
+            estimated_cost_usd=None, basis='unavailable') for identity in ids})
+    owners = dict.fromkeys(ids, 't')
+    retain_quota_estimate(summary, artifact, selected_count=1, logical_owners=owners)
+    projected = logical_usage(summary, owners)
+    assert projected['test_costs']['t']['estimated_cost_usd'] == 3.
+    assert projected['test_costs']['t']['cost_per_prompt_usd'] == .5
+    assert projected['test_costs']['t']['prompt_count'] == 6
+    assert all(row['stabilized_estimate']['estimated_cost_usd'] is None for row in artifact['tests'])
+    assert all(row['estimated_cost_usd'] is None for row in summary['test_costs'].values())
+
+
+def test_current_boundary_with_unquoted_calls_uses_declared_policy():
+    from test_quota_selection_history import single_selection
+    from api_agent.telemetry.costs import retain_quota_estimate
+    test, _, _, artifact = single_selection()
+    artifact['quota']['payment_policy'] = None
+    summary = dict(estimated_cost_usd=None, raw_quota_cost_usd=None, prompt_count=1,
+                   test_costs={test.id: dict(prompt_count=1, estimated_cost_usd=None)})
+    retain_quota_estimate(summary, artifact, selected_count=1)
+    assert summary['estimated_cost_usd'] == 1.
+    assert summary['quota_estimate_policy_source'] == 'configured_allocation'
+    assert artifact['quota']['payment_policy'] is None
+
+
+def test_raw_provider_quote_cannot_override_an_unquoted_rows_declared_payment():
+    from copy import deepcopy
+    from test_quota_selection_history import single_selection
+    from api_agent.telemetry.costs import retain_quota_estimate
+    test, _, _, artifact = single_selection()
+    policy = artifact['quota']['payment_policy']
+    artifact['tests'][0]['calls'][0]['quote'] = {'payment': policy}
+    other = deepcopy(artifact['tests'][0])
+    other['test_id'] = 'other'
+    other['calls'][0]['quote'] = None
+    other['compatibility']['LLM_PAY_PERIOD_LIMIT'] = 200.
+    artifact['tests'].append(other)
+    summary = dict(estimated_cost_usd=None, raw_quota_cost_usd=1., prompt_count=2,
+        test_costs={identity: dict(prompt_count=1, estimated_cost_usd=None) for identity in (test.id, 'other')})
+    retain_quota_estimate(summary, artifact, selected_count=2)
+    assert summary['estimated_cost_usd'] is None
+
+
+def test_raw_quota_cannot_price_another_declared_provider():
+    from copy import deepcopy
+    from test_quota_selection_history import single_selection
+    from api_agent.telemetry.costs import retain_quota_estimate
+    test, _, _, artifact = single_selection()
+    artifact['tests'][0]['calls'][0]['quote'] = {'payment': artifact['quota']['payment_policy']}
+    other = deepcopy(artifact['tests'][0])
+    other['test_id'] = 'other'
+    other['calls'][0]['quote'] = None
+    other['compatibility']['_COST_PROVIDER_IDENTITY'] = 'b' * 64
+    artifact['tests'].append(other)
+    summary = dict(estimated_cost_usd=None, raw_quota_cost_usd=1., prompt_count=2,
+        test_costs={identity: dict(prompt_count=1, estimated_cost_usd=None) for identity in (test.id, 'other')})
+    retain_quota_estimate(summary, artifact, selected_count=2)
+    assert summary['estimated_cost_usd'] is None
+
+
+def test_logical_quota_without_observed_prompts_keeps_the_suite_amount_unallocated():
+    from api_agent.telemetry.costs import retain_quota_estimate
+    ids = ('t', 't::confirmation:2')
+    artifact = dict(quota={'payment_policy': PAYMENT}, tests=[dict(test_id=identity,
+        calls=[{'quote': None}], stabilized_estimate={}) for identity in ids])
+    summary = dict(raw_quota_cost_usd=1., estimated_cost_usd=None, unallocated_cost_usd=1.,
+                   test_costs={identity: {'prompt_count': 0} for identity in ids})
+    retain_quota_estimate(summary, artifact, selected_count=1, logical_owners=dict.fromkeys(ids, 't'))
+    assert summary['estimated_cost_usd'] == 1.
+    assert summary['unallocated_cost_usd'] == 1.
+    assert 'logical_quota_estimate' not in summary
