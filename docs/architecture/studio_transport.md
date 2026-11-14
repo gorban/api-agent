@@ -57,8 +57,21 @@ projected call text as `reasoning_token {content, section}`, and
 `reasoning_section_end {section}` when a step ends whose section a label or text
 opened; `section` is `node:attempt` (or the node id when no attempt is known).
 Tool lifecycle streams as `tool_start {tool}` and `tool_end {tool}`. All frames
-keep workflow order before `token` and `result`; the projector is not called for
-a step's end.
+keep workflow order before the final `token` and `result`; the projector is not
+called for a step's end.
+
+A model request may name, in `GenerationOptions.answer_stream`, the top-level
+string field of its structured reply that is the visible answer and a
+presentation label; providers never receive it. While Studio streams a chat, such
+a call made by a workflow node streams from the provider: the newly decoded text
+of that field streams as `token {content, section, presentation}` with the node's
+`section`, without the projector, and the node still receives only the completed
+reply. A later attempt has a new section, so the display replaces an earlier
+draft. When answer text streamed, the final `token` carries the authoritative
+answer in section `answer:final` with the last streamed presentation, replacing
+the draft; otherwise it is unchanged. Answer text is bounded to 128 KiB per turn,
+after which later answer frames are dropped until the final `token`; deltas that
+find the frame queue full are held in order instead of dropped.
 
 Projection runs in one task per turn so it never delays the workflow; the turn
 waits for it inside the existing Studio completion budget. A projector failure or

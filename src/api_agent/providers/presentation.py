@@ -13,6 +13,8 @@ _summary_sink = ContextVar('llm_display_summary_sink', default=None)
 _progress_sink = ContextVar('llm_reasoning_progress_sink', default=None)
 _call_sink = ContextVar('llm_call_progress_sink', default=None)
 _tool_sink = ContextVar('tool_progress_sink', default=None)
+_answer_sink = ContextVar('answer_progress_sink', default=None)
+_call_owner = ContextVar('progress_call_owner', default=None)
 _projection_scope = ContextVar('progress_projection_scope', default=None)
 _delivered = ContextVar('llm_delivered_reasoning', default=None)
 _display_section = ContextVar('llm_display_reasoning_section', default=None)
@@ -65,6 +67,45 @@ def call_progress(sink):
         yield
     finally:
         _call_sink.reset(token)
+
+
+@dataclass(frozen=True)
+class AnswerProgress:
+    """Answer text newly decoded from a workflow node's streaming model call."""
+    node: str
+    attempt: str | None
+    text: str = field(repr=False)
+    presentation: str
+
+
+@contextmanager
+def answer_progress(sink):
+    """Stream requests that name an answer field and report each AnswerProgress to an async sink."""
+    token = _answer_sink.set(sink)
+    try:
+        yield
+    finally:
+        _answer_sink.reset(token)
+
+
+@contextmanager
+def progress_call_owner(node, attempt):
+    """Attribute model calls made inside this scope to one workflow node attempt."""
+    token = _call_owner.set((node, attempt))
+    try:
+        yield
+    finally:
+        _call_owner.reset(token)
+
+
+def current_progress_call_owner():
+    return _call_owner.get()
+
+
+async def publish_answer_progress(update):
+    sink = _answer_sink.get()
+    if sink is not None:
+        await sink(update)
 
 
 @contextmanager
@@ -188,6 +229,10 @@ async def complete_with_progress(provider, request, *, auth=None):
     """
     delivery = _summary_sink.get()
     payload = request.payload
+    streaming = 'stream' in getattr(getattr(provider, 'capabilities', None), 'operations', ())
+    answer, owner = payload.generation.answer_stream, _call_owner.get()
+    if answer is not None and owner is not None and _answer_sink.get() is not None and streaming:
+        return await _complete_answer(provider, request, auth, answer, owner)
     if ((delivery is None and _progress_sink.get() is None) or payload.tools or payload.structured is not None
             or payload.response is not None
             or 'stream' not in getattr(getattr(provider, 'capabilities', None), 'operations', ())):
@@ -224,6 +269,56 @@ async def complete_with_progress(provider, request, *, auth=None):
             await close()
     if (result is None or text != ''.join(part.text for part in result.payload.content)
             or summary != (result.reasoning_summary or '')):
+        raise ContractError('Provider progress differs from completed result')
+    if summary:
+        await _completed_progress(result, request.request_id, display=False, display_id=display_id)
+    return result
+
+
+async def _complete_answer(provider, request, auth, answer, owner):
+    """Stream one answer-bearing call; the graph still receives only the completed result."""
+    from .answer_stream import AnswerFieldDecoder
+    decoder = AnswerFieldDecoder(answer.field)
+    result = None
+    summary = ''
+    text = released = ''
+    section = object()
+    display_id = request.request_id or str(uuid4())
+    events = provider.astream(request, auth=auth)
+    try:
+        async for event in events:
+            if result is not None:
+                raise ContractError('Provider emitted content after stream completion')
+            if event.kind == 'reasoning_summary':
+                summary += event.payload.text
+                if len(summary.encode('utf-8')) > 65536:
+                    raise ContractError('Provider display reasoning exceeds byte limit')
+                await _display_fragment(event.payload.text, section)
+                progress = _progress_sink.get()
+                if progress is not None:
+                    await progress(ReasoningProgress(display_id, event.payload.text))
+            elif event.kind == 'answer':
+                # A provider that decodes and guards the field itself owns the display.
+                decoder = None
+                released += event.payload.text
+                await publish_answer_progress(AnswerProgress(owner[0], owner[1], event.payload.text, answer.presentation))
+            elif event.kind == 'text':
+                text += event.payload.text
+                if len(text.encode('utf-8')) > 524288:
+                    raise ContractError('Provider answer exceeds byte limit')
+                shown = decoder.feed(event.payload.text) if decoder is not None else ''
+                if shown:
+                    released += shown
+                    await publish_answer_progress(AnswerProgress(owner[0], owner[1], shown, answer.presentation))
+            elif event.kind == 'completed':
+                result = event.payload
+    finally:
+        close = getattr(events, 'aclose', None)
+        if callable(close):
+            await close()
+    final_text = '' if result is None else ''.join(part.text for part in result.payload.content)
+    if (result is None or text != final_text or summary != (result.reasoning_summary or '')
+            or not AnswerFieldDecoder(answer.field).feed(final_text).startswith(released)):
         raise ContractError('Provider progress differs from completed result')
     if summary:
         await _completed_progress(result, request.request_id, display=False, display_id=display_id)
