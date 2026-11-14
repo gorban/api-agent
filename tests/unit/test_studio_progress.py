@@ -6,7 +6,8 @@ import pytest
 
 from api_agent.providers.llm import LLMResult, Message, TextContent
 from api_agent.providers.presentation import (
-    CallProgress, StepProgress, present_summary, publish_call_progress, publish_step_progress, publish_tool_progress,
+    AnswerProgress, CallProgress, StepProgress, present_summary, publish_answer_progress, publish_call_progress,
+    publish_step_progress, publish_tool_progress,
 )
 from test_studio_bridge import payload, request, setup_bridge
 
@@ -33,6 +34,8 @@ def workflow(*steps):
                     reasoning_summary=step.reasoning_summary or None))
             elif type(step) is StepProgress:
                 await publish_step_progress(step.node, step.attempt, step.phase)
+            elif type(step) is AnswerProgress:
+                await publish_answer_progress(step)
             elif step == 'fail':
                 raise ValueError('workflow failed')
             else:
@@ -84,6 +87,64 @@ def test_step_labels_open_sections_that_close_when_their_step_ends():
                          ('reasoning_section_end', {'section': 'plan:a1'}),
                          ('reasoning_token', {'content': 'write: two', 'section': 'write:b1'}),
                          ('reasoning_section_end', {'section': 'write:b1'})]
+    run(scenario)
+
+
+def test_streamed_answer_tokens_precede_an_authoritative_final_answer_section():
+    async def projector(update):
+        return None
+    async def scenario():
+        backend, _ = setup_bridge(progress_projector=projector, complete=workflow(
+            AnswerProgress('render', 'r1', 'Hel', 'HTML'), ('start', 'lookup'), AnswerProgress('render', 'r1', 'lo', 'HTML')))
+        try:
+            events = await frames(backend)
+        finally:
+            await backend.aclose()
+        tokens = [value for name, value in events if name == 'token']
+        assert tokens == [{'content': 'Hel', 'section': 'render:r1', 'presentation': 'HTML'},
+                          {'content': 'lo', 'section': 'render:r1', 'presentation': 'HTML'},
+                          {'content': 'hello', 'section': 'answer:final', 'presentation': 'HTML'}]
+        assert [name for name, _ in events].index('tool_start') == 3
+    run(scenario)
+
+
+def test_answer_tokens_arriving_while_studio_waits_still_mark_the_final_section():
+    async def projector(update):
+        return None
+
+    async def complete(value, *, auth, context):
+        await asyncio.sleep(0.05)
+        await publish_answer_progress(AnswerProgress('render', 'r1', 'Hi', 'Text'))
+        await asyncio.sleep(0.05)
+        return LLMResult(Message('assistant', (TextContent('hello'),)))
+
+    async def scenario():
+        backend, _ = setup_bridge(progress_projector=projector, complete=complete)
+        try:
+            events = await frames(backend)
+        finally:
+            await backend.aclose()
+        assert [value for name, value in events if name == 'token'] == [
+            {'content': 'Hi', 'section': 'render:r1', 'presentation': 'Text'},
+            {'content': 'hello', 'section': 'answer:final', 'presentation': 'Text'}]
+    run(scenario)
+
+
+def test_answer_text_past_its_byte_bound_is_dropped_and_reported_once(monkeypatch):
+    from api_agent.api import progress_relay
+
+    async def scenario():
+        failures, events = [], []
+
+        async def publish(name, value):
+            events.append((name, value))
+        monkeypatch.setattr(progress_relay, 'MAX_ANSWER_BYTES', 4)
+        async with progress_relay.relay_progress(lambda update: None, publish, lambda: failures.append('projection'),
+                                                 on_drop=lambda: failures.append('dropped')):
+            for text in ('abc', 'de', 'f'):
+                await publish_answer_progress(AnswerProgress('render', None, text, 'Text'))
+        assert events == [('token', {'content': 'abc', 'section': 'render', 'presentation': 'Text'})]
+        assert failures == ['dropped']
     run(scenario)
 
 
@@ -323,6 +384,80 @@ def test_a_stalled_projector_does_not_block_workflow_progress(kind):
             await task
         assert failures == ['overflow']
         assert len(events) == QUEUE_SIZE + 1
+
+    run(scenario)
+
+
+def test_answer_deltas_behind_a_stalled_projector_coalesce_instead_of_dropping():
+    from api_agent.api.progress_relay import QUEUE_SIZE, relay_progress
+
+    async def scenario():
+        projecting, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        failures, events = [], []
+
+        async def projector(update):
+            projecting.set()
+            await release.wait()
+            return None
+
+        async def publish(name, value):
+            events.append((name, value))
+
+        async def execute():
+            async with relay_progress(projector, publish, lambda: failures.append('projection'), on_drop=lambda: failures.append('overflow')):
+                await publish_call_progress('plan', None, 'first', LLMResult(Message('assistant', (TextContent('x'),))))
+                await projecting.wait()
+                for index in range(QUEUE_SIZE + 5):
+                    await publish_answer_progress(AnswerProgress('render', 'r1', str(index % 10), 'Text'))
+                await publish_answer_progress(AnswerProgress('render', 'r2', 'X', 'Text'))
+                completed.set()
+
+        task = asyncio.create_task(execute())
+        try:
+            await asyncio.wait_for(completed.wait(), 5)
+        finally:
+            release.set()
+            await task
+        texts = {}
+        for name, value in events:
+            texts[value['section']] = texts.get(value['section'], '') + value['content']
+        assert texts == {'render:r1': ''.join(str(index % 10) for index in range(QUEUE_SIZE + 5)), 'render:r2': 'X'}
+        assert failures == []
+
+    run(scenario)
+
+
+def test_distinct_answer_deltas_past_the_held_bound_are_dropped_and_reported():
+    from api_agent.api.progress_relay import MAX_HELD_ANSWERS, QUEUE_SIZE, relay_progress
+
+    async def scenario():
+        projecting, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        failures, events = [], []
+
+        async def projector(update):
+            projecting.set()
+            await release.wait()
+            return None
+
+        async def publish(name, value):
+            events.append((name, value))
+
+        async def execute():
+            async with relay_progress(projector, publish, lambda: failures.append('projection'), on_drop=lambda: failures.append('overflow')):
+                await publish_call_progress('plan', None, 'first', LLMResult(Message('assistant', (TextContent('x'),))))
+                await projecting.wait()
+                for index in range(QUEUE_SIZE + MAX_HELD_ANSWERS + 2):
+                    await publish_answer_progress(AnswerProgress('render', f'r{index % 2}', 'x', 'Text'))
+                completed.set()
+
+        task = asyncio.create_task(execute())
+        try:
+            await asyncio.wait_for(completed.wait(), 5)
+        finally:
+            release.set()
+            await task
+        assert 'overflow' in failures
+        assert len(events) == QUEUE_SIZE + MAX_HELD_ANSWERS
 
     run(scenario)
 

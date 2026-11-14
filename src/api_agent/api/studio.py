@@ -27,6 +27,7 @@ from ..providers.progress import report_timeout
 
 
 _HOST = re.compile(r'(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z')
+FINAL_ANSWER_SECTION = 'answer:final'
 
 
 def _origin(value):
@@ -465,6 +466,7 @@ class StudioBackend:
     async def _raw_events(self, session_id, turn, queue, hints):
         settled = False
         summary_emitted = False
+        answer_presentation = streamed_answer = None
         waiter = None
         try:
             waiter = _spawn(self.lifecycle.wait_turn(self._owner_id, turn))
@@ -474,6 +476,8 @@ class StudioBackend:
                 if not queue.empty():
                     name, payload = queue.get_nowait()
                     summary_emitted = summary_emitted or name == 'reasoning_token'
+                    if name == 'token' and 'section' in payload:
+                        streamed_answer, answer_presentation = True, payload['presentation']
                     yield chat_contract.frame(name, payload)
                     continue
                 read = _spawn(queue.get())
@@ -482,6 +486,8 @@ class StudioBackend:
                     if read in done:
                         name, payload = read.result()
                         summary_emitted = summary_emitted or name == 'reasoning_token'
+                        if name == 'token' and 'section' in payload:
+                            streamed_answer, answer_presentation = True, payload['presentation']
                         yield chat_contract.frame(name, payload)
                 finally:
                     if not read.done():
@@ -499,7 +505,10 @@ class StudioBackend:
             if self.stream is None or self.result_projector is not None:
                 if terminal.result.get('reasoning_summary') and not summary_emitted:
                     yield chat_contract.frame('reasoning_token', {'content': terminal.result['reasoning_summary']})
-                yield chat_contract.frame('token', {'content': terminal.result['response_text']})
+                # A new section makes the display replace any streamed draft.
+                final = ({'section': FINAL_ANSWER_SECTION, 'presentation': answer_presentation}
+                         if streamed_answer else {})
+                yield chat_contract.frame('token', {'content': terminal.result['response_text'], **final})
             yield chat_contract.frame('response_complete', {'session_id': session_id})
             yield chat_contract.frame('result', terminal.result)
             from api_agent.telemetry.outcomes import report_outcome, ExecutionOutcome, OutcomeState

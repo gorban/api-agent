@@ -10,7 +10,7 @@ from referencing.jsonschema import DRAFT202012
 
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.llm import Message, ResponsePolicy, StructuredOutput, TextContent
-from api_agent.providers.presentation import call_progress_bound, present_summary, publish_call_progress
+from api_agent.providers.presentation import call_progress_bound, present_summary, progress_call_owner, publish_call_progress
 from api_agent.providers.rich_inference import async_valid_schema, response_json
 
 _selection = ContextVar('workflow_display_selection', default=None)
@@ -115,7 +115,8 @@ class ProgressServices(MutableMapping):
             return value
 
         async def complete(request, *args, **kwargs):
-            result = await value(request, *args, **kwargs)
+            with progress_call_owner(self.node, self.attempt):
+                result = await value(request, *args, **kwargs)
             await publish_call_progress(self.node, self.attempt, request.request_id, result)
             return result
         return complete

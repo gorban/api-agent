@@ -322,10 +322,12 @@ class LLMResult:
 @dataclass(frozen=True)
 class StreamEvent:
     payload: TextContent | ToolCall | LLMResult = field(repr=False)
-    kind: Literal["text", "reasoning_summary", "tool_call", "completed"] = "text"
+    kind: Literal["text", "reasoning_summary", "tool_call", "answer", "completed"] = "text"
 
     def __post_init__(self):
-        expected = {"text": TextContent, "reasoning_summary": TextContent, "tool_call": ToolCall, "completed": LLMResult}
+        # "answer" is guarded decoded text of a request's answer_stream field.
+        expected = {"text": TextContent, "reasoning_summary": TextContent, "tool_call": ToolCall,
+                    "answer": TextContent, "completed": LLMResult}
         _require(type(self.kind) is str and self.kind in expected and isinstance(self.payload, expected[self.kind]))
 
     @property
