@@ -12,7 +12,7 @@ from referencing import Registry
 from referencing.jsonschema import DRAFT202012
 from referencing.exceptions import NoSuchResource, Unresolvable
 from .contracts import ContractError, ProviderAccessError, CandidateOutputError
-from .llm import (CompletionRequest, GenerationOptions, LLMRequest, LLMResult,
+from .llm import (AnswerStream, CompletionRequest, GenerationOptions, LLMRequest, LLMResult,
                   Message, TextContent, Tool, ToolCall, ToolResult, StructuredOutput, Usage, CacheBoundary, cache_boundary_indexes, ResponsePolicy, ResponseEvidence)
 
 
@@ -473,13 +473,16 @@ def request_to_wire(request, *, _validate_instances=True):
         row['reasoning_effort'] = payload.generation.reasoning_effort
     if payload.generation.display_summary:
         row['display_summary'] = True
+    if payload.generation.answer_stream is not None:
+        row['answer_stream'] = dict(field=payload.generation.answer_stream.field,
+                                    presentation=payload.generation.answer_stream.presentation)
     request_from_wire(row, _validate_instances=_validate_instances)
     return row
 
 
 def request_from_wire(row, *, _validate_instances=True):
     keys = ('version','selected_llm','request_id','messages','tools','structured','max_output_tokens','cache_policy')
-    extras = tuple(key for key in ('reasoning_effort', 'display_summary', 'temperature', 'response') if type(row) is dict and key in row)
+    extras = tuple(key for key in ('reasoning_effort', 'display_summary', 'answer_stream', 'temperature', 'response') if type(row) is dict and key in row)
     _exact(row, (*keys, *extras))
     _bounded(row)
     try:
@@ -521,8 +524,12 @@ def request_from_wire(row, *, _validate_instances=True):
                 del pending[result.call_id]
         if pending:
             raise ValueError()
+        answer_stream = None
+        if 'answer_stream' in row:
+            _exact(row['answer_stream'], ('field', 'presentation'))
+            answer_stream = AnswerStream(row['answer_stream']['field'], row['answer_stream']['presentation'])
         return LLMRequest(_identifier(row['selected_llm']), CompletionRequest(messages, tuple(tools),
-            GenerationOptions(row['max_output_tokens'], temperature=row.get('temperature'), cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort'), display_summary=row.get('display_summary', False)), structured, response), _identifier(row['request_id'], empty=True))
+            GenerationOptions(row['max_output_tokens'], temperature=row.get('temperature'), cache_policy=row['cache_policy'], reasoning_effort=row.get('reasoning_effort'), display_summary=row.get('display_summary', False), answer_stream=answer_stream), structured, response), _identifier(row['request_id'], empty=True))
     except (ValueError, TypeError):
         raise ContractError('Invalid rich inference request') from None
 
