@@ -3,7 +3,7 @@ from hashlib import sha256
 import pytest
 
 from api_agent.testing.storage import RunStorage
-from api_agent.telemetry.history import MAX_BYTES
+from api_agent.telemetry.history import MAX_BYTES, MAX_ACCOUNTING_BYTES
 
 
 def test_accounting_only_verified_and_late_upload(monkeypatch):
@@ -17,13 +17,13 @@ def test_accounting_only_verified_and_late_upload(monkeypatch):
     storage = RunStorage('bucket', client=client)
     good = {'run_id': 'one', 'files': {'accounting.json': sha256(b'{}').hexdigest(), 'video.mp4': 'digest'}}
     missing = {'run_id': 'two', 'files': {}}
-    oversized = {'run_id': 'three', 'files': {'accounting.json': sha256(b' ' * (MAX_BYTES + 1)).hexdigest()}}
+    oversized = {'run_id': 'three', 'files': {'accounting.json': sha256(b' ' * (MAX_ACCOUNTING_BYTES + 1)).hexdigest()}}
     corrupt = {'run_id': 'four', 'files': {'accounting.json': sha256(b'good').hexdigest()}}
     monkeypatch.setattr(storage, 'history', lambda repo, **kwargs: [good, missing, oversized, corrupt])
     from api_agent.testing.storage import StorageError
     with pytest.raises(StorageError): list(storage.accounting_history('repo'))
     client.objects['allure/repo/one/accounting.json'] = b'{}'
-    client.objects['allure/repo/three/accounting.json'] = b' ' * (MAX_BYTES + 1)
+    client.objects['allure/repo/three/accounting.json'] = b' ' * (MAX_ACCOUNTING_BYTES + 1)
     client.objects['allure/repo/four/accounting.json'] = b'bad'
     with pytest.raises(StorageError): list(storage.accounting_history('repo'))
     monkeypatch.setattr(storage, 'history', lambda repo, **kwargs: [good])
@@ -46,3 +46,12 @@ def test_history_deadline_checks(monkeypatch):
     with pytest.raises(StorageError): storage.history('repo', budget=Budget())
     monkeypatch.setattr(storage, 'history', lambda *args, **kwargs: [{}])
     with pytest.raises(TimeoutError): list(storage.accounting_history('repo', budget=SimpleNamespace(remaining=0)))
+
+
+def test_remote_accounting_larger_than_manifest_limit_is_verified(monkeypatch):
+    payload = b'{}' + b' ' * MAX_BYTES
+    manifest = {'run_id': 'one', 'files': {'accounting.json': sha256(payload).hexdigest()}}
+    client = type('Client', (), {'get_object': lambda self, **kwargs: {'Body': io.BytesIO(payload)}})()
+    storage = RunStorage('bucket', client=client)
+    monkeypatch.setattr(storage, 'history', lambda *args, **kwargs: [manifest])
+    assert list(storage.accounting_history('repo')) == [(manifest, payload)]

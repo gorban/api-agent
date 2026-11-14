@@ -11,6 +11,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 
 MAX_BYTES = 2_000_000
+MAX_ACCOUNTING_BYTES = 16 * 1024 * 1024
 
 
 def cache_path():
@@ -115,7 +116,7 @@ class HistoryCache:
 
     def ingest(self, origin, manifest, payload):
         from api_agent.telemetry.accounting import validate_accounting
-        if not isinstance(origin, str) or not origin or type(payload) is not bytes or len(payload) > MAX_BYTES:
+        if not isinstance(origin, str) or not origin or type(payload) is not bytes or len(payload) > MAX_ACCOUNTING_BYTES:
             raise ValueError('Invalid history evidence')
         validate_manifest(manifest)
         run_id = manifest['run_id']

@@ -513,7 +513,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             bases = {row.get('basis') for row in test_costs.values() if not row.get('known_zero')}
             usage_summary['cost_basis'] = next(iter(bases)) if len(bases) == 1 else 'mixed' if bases else 'no_llm_calls'
             from api_agent.telemetry.costs import retain_quota_estimate
-            retain_quota_estimate(usage_summary, artifact, selected_count=len(tests))
+            retain_quota_estimate(usage_summary, artifact, selected_count=len(tests), logical_owners=logical_owners)
             total, prompts = usage_summary['estimated_cost_usd'], usage_summary['prompt_count']
             usage_summary['cost_per_prompt_usd'] = None if total is None or not prompts else total / prompts
             from api_agent.telemetry.usage_costs import attach_category_costs
@@ -797,7 +797,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         presentation_usage = usage_summary if usage_summary is not None else usage.report()
         if identity.mode == 'e2e':
             from .confirmations import logical_usage
-            presentation_usage = logical_usage(presentation_usage, logical_owners)
+            presentation_usage = logical_usage(presentation_usage, logical_owners, predictions=estimator.predictions,
+                advance_predictions=getattr(estimator, 'advance_predictions', estimator.predictions))
         return RecordedIntegrationResult(execution, identity, directory if local_directory else None,
                                          presentation_usage, manifest, persisted,
                                          monotonic() - started_at)

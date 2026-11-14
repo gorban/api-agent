@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 import pytest
 
-from api_agent.telemetry.history import HistoryCache, MAX_BYTES, cache_path
+from api_agent.telemetry.history import HistoryCache, MAX_BYTES, MAX_ACCOUNTING_BYTES, cache_path
 from api_agent.testing.cost_history import estimator_for
 from api_agent.providers.rates import bundled_rate_card
 
@@ -77,7 +77,7 @@ def test_reject_history(tmp_path, change):
     origin = 'one'
     if change == 'origin': origin = None
     elif change == 'bytes': payload = 'text'
-    elif change == 'oversized': payload = b' ' * (MAX_BYTES + 1)
+    elif change == 'oversized': payload = b' ' * (MAX_ACCOUNTING_BYTES + 1)
     elif change == 'uuid': manifest['run_id'] = 'bad'
     elif change == 'status': manifest['status'] = 'running'
     elif change == 'schema': manifest['schema'] = 2
@@ -204,7 +204,7 @@ def test_adapter_unqualified_and_unknown_prediction(tmp_path, monkeypatch):
     history.pop()
     snapshot = HistoricalEstimator(tests, settings, Cache(), 'origin', 'repo', bundled_rate_card(), now=datetime(2026, 10, 10, tzinfo=timezone.utc))
     assert snapshot.predictions['t']['basis'] == 'historical_list_price'
-    (tmp_path / 'accounting.json').write_bytes(b' ' * (MAX_BYTES + 1))
+    (tmp_path / 'accounting.json').write_bytes(b' ' * (MAX_ACCOUNTING_BYTES + 1))
     snapshot.ingest(tmp_path, {})
 
 
@@ -671,3 +671,25 @@ def test_stopped_history_preserves_cache_and_skips_rebuilding_predictions(tmp_pa
         assert not hasattr(snapshot, 'sync_unavailable')
     finally:
         cache.close()
+
+
+def test_large_verified_accounting_survives_cache_and_local_ingestion(tmp_path):
+    from api_agent.testing.cost_history import HistoricalEstimator
+    manifest, payload = fixture()
+    payload += b' ' * MAX_BYTES
+    manifest['files']['accounting.json'] = sha256(payload).hexdigest()
+    cache = HistoryCache(tmp_path / 'cache')
+    snapshot = HistoricalEstimator([], {}, cache, 'origin', 'repo', None)
+    (tmp_path / 'accounting.json').write_bytes(payload)
+    snapshot.ingest(tmp_path, manifest)
+    assert [item[0]['run_id'] for item in cache.records('origin')] == [manifest['run_id']]
+    cache.close()
+
+
+def test_history_ingestion_failure_warns_without_private_exception(tmp_path, caplog):
+    from api_agent.testing.cost_history import HistoricalEstimator
+    snapshot = HistoricalEstimator([], {}, HistoryCache(tmp_path / 'cache'), 'origin', 'repo', None)
+    snapshot.ingest(tmp_path, {})
+    assert 'Cost history ingestion failed' in caplog.text
+    assert str(tmp_path) not in caplog.text
+    snapshot.cache.close()

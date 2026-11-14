@@ -378,6 +378,12 @@ class EstimateSnapshot:
             prediction = predictions_for((test,), records, self.card,
                 {test.id: row.get('source_fingerprint')}, row.get('compatibility'),
                 ignored_settings=self.ignored_settings)[test.id]
+            from .quota_estimates import quota_predictions_for
+            quota_prediction = quota_predictions_for((test,), records,
+                {test.id: row.get('source_fingerprint')}, row.get('compatibility'),
+                ignored_settings=self.ignored_settings).get(test.id)
+            if prediction['estimated_cost_usd'] is None and quota_prediction is not None:
+                prediction.update(quota_prediction)
             # Reuse only pre-run-qualified calibration, never the new sample.
             calibrated = stabilized.get(test.id, {}).get('calibration')
             if prediction['quota_eligible'] and calibrated is not None:

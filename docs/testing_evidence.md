@@ -164,6 +164,25 @@ inventory is conservatively incomplete for cost estimation; an empty recorder
 does not establish zero spend. Complete provider accounting remains a separate
 integration requirement.
 
+A validated account quota boundary can still provide a **selected-suite cost
+estimate** when call prices or inventory are incomplete. It does not price
+unknown tokens. The whole boundary belongs to the selected suite; a multi-test
+suite is not split into guessed per-test shares. A sole logical test includes
+all its confirmation attempts. Zero quota change is a coarse observation, not
+proof of free inference. Changed reset windows and decreasing percentages are
+unusable boundaries.
+
+Historical quota-only predictions require a completed sole logical selection,
+verified confirmation metadata, matching source, effective configuration and
+payment policy. When old call receipts lack a payment quote, the recorded
+allocation settings can supply a separately identified configured-allocation
+estimate; the immutable missing quote remains missing. Positive observations
+may train that estimate without claiming
+complete calls; zero changes do not train a zero-cost prediction. Missing
+compatible observations remain unavailable. Accounting history accepts verified
+artifacts up to 16 MiB independently of the smaller manifest limit. Failed local
+ingestion emits a content-free warning; it does not invalidate the test outcome.
+
 ### Delegated provider accounting
 
 Delegated runtimes publish structural usage through

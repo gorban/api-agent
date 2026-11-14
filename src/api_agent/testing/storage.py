@@ -450,7 +450,7 @@ class RunStorage:
 
     def accounting_history(self, repo, *, budget=None):
         """Reconcile every finalized manifest, including late uploads, without media."""
-        from api_agent.telemetry.history import MAX_BYTES
+        from api_agent.telemetry.history import MAX_ACCOUNTING_BYTES
         for manifest in self.history(repo, budget=budget, require_accounting=True,
                                      max_pages=None if budget is not None else 100):
             if budget is not None and budget.remaining == 0:
@@ -460,8 +460,8 @@ class RunStorage:
             try:
                 body = self._client().get_object(Bucket=self.bucket, Key=self._key(repo, manifest['run_id'], 'accounting.json'))['Body']
                 with _ResourceCleanup(body):
-                    payload = body.read(MAX_BYTES + 1)
-                if len(payload) > MAX_BYTES or hashlib.sha256(payload).hexdigest() != manifest['files']['accounting.json']:
+                    payload = body.read(MAX_ACCOUNTING_BYTES + 1)
+                if len(payload) > MAX_ACCOUNTING_BYTES or hashlib.sha256(payload).hexdigest() != manifest['files']['accounting.json']:
                     raise StorageError('Could not load Allure history')
                 yield manifest, payload
             except CleanupPendingError:
