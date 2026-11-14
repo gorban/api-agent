@@ -1,4 +1,4 @@
-"""Order application-projected call progress and tool lifecycle frames behind a turn.
+"""Order application-projected step, call progress and tool lifecycle frames behind a turn.
 
 Projection runs in one task so a slow projector never delays the workflow. The turn
 waits for it before completing, inside the caller's existing timeout budget.
@@ -7,7 +7,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from ..providers.presentation import (
-    call_progress, current_progress_projection_scope, progress_projection_scope, tool_progress,
+    StepProgress, call_progress, current_progress_projection_scope, progress_projection_scope, tool_progress,
 )
 
 QUEUE_SIZE = 16
@@ -23,13 +23,16 @@ def section(update):
 async def relay_progress(projector, publish, on_failure, *, on_drop):
     """Bind progress sinks; publish(name, payload) receives frames in workflow order.
 
-    A projector failure or invalid result skips that update and calls on_failure().
+    A step start's projected label opens its section; the step's end closes a section
+    that a label or projected text opened. A projector failure or invalid result
+    skips that update and calls on_failure().
     Frames past the queue, count or text byte limits are dropped, never failing the
     turn. Queue overflow calls on_drop() once; producers never wait for capacity.
     """
     pending = asyncio.Queue(maxsize=QUEUE_SIZE)
     frames = text_bytes = 0
     overflow_reported = False
+    opened = set()
 
     async def worker():
         nonlocal frames, text_bytes
@@ -42,6 +45,12 @@ async def relay_progress(projector, publish, on_failure, *, on_drop):
                     frames += 1
                     await publish('tool_' + update[0], {'tool': update[1]})
                     continue
+                if type(update) is StepProgress and update.phase == 'end':
+                    if section(update) in opened:
+                        opened.discard(section(update))
+                        frames += 1
+                        await publish('reasoning_section_end', {'section': section(update)})
+                    continue
                 with progress_projection_scope(scope):
                     text = await projector(update)
                 if text is not None and type(text) is not str:
@@ -50,7 +59,9 @@ async def relay_progress(projector, publish, on_failure, *, on_drop):
                 if text and text_bytes + size <= MAX_TEXT_BYTES:
                     frames += 1
                     text_bytes += size
-                    await publish('reasoning_token', {'content': text, 'section': section(update)})
+                    opened.add(section(update))
+                    name = 'reasoning_section' if type(update) is StepProgress else 'reasoning_token'
+                    await publish(name, {'content': text, 'section': section(update)})
             except Exception:
                 on_failure()
             finally:

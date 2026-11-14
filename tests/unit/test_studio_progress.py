@@ -5,7 +5,9 @@ import json
 import pytest
 
 from api_agent.providers.llm import LLMResult, Message, TextContent
-from api_agent.providers.presentation import CallProgress, present_summary, publish_call_progress, publish_tool_progress
+from api_agent.providers.presentation import (
+    CallProgress, StepProgress, present_summary, publish_call_progress, publish_step_progress, publish_tool_progress,
+)
 from test_studio_bridge import payload, request, setup_bridge
 
 
@@ -29,6 +31,8 @@ def workflow(*steps):
                 await publish_call_progress(step.node, step.attempt, step.request_id, LLMResult(
                     Message('assistant', (TextContent(step.response_text),)),
                     reasoning_summary=step.reasoning_summary or None))
+            elif type(step) is StepProgress:
+                await publish_step_progress(step.node, step.attempt, step.phase)
             elif step == 'fail':
                 raise ValueError('workflow failed')
             else:
@@ -57,6 +61,29 @@ def test_projected_text_and_tool_frames_precede_the_answer_in_workflow_order():
         by_name = [value for name, value in events if name in ('reasoning_token', 'tool_start', 'tool_end')]
         assert by_name == [{'content': 'plan: one', 'section': 'plan:a1'}, {'tool': 'lookup'},
                            {'tool': 'lookup'}, {'content': 'write: two', 'section': 'write:b1'}]
+    run(scenario)
+
+
+def test_step_labels_open_sections_that_close_when_their_step_ends():
+    async def projector(update):
+        if type(update) is StepProgress:
+            return {'plan': 'Planning'}.get(update.node) if update.phase == 'start' else None
+        return f'{update.node}: {update.response_text}'
+    async def scenario():
+        backend, _ = setup_bridge(progress_projector=projector, complete=workflow(
+            StepProgress('plan', 'a1', 'start'), progress('plan', 'one'), StepProgress('plan', 'a1', 'end'),
+            StepProgress('quiet', 'q1', 'start'), StepProgress('quiet', 'q1', 'end'),
+            StepProgress('write', 'b1', 'start'), progress('write', 'two', 'b1'), StepProgress('write', 'b1', 'end')))
+        try:
+            events = await frames(backend)
+        finally:
+            await backend.aclose()
+        shown = [(name, value) for name, value in events if name.startswith('reasoning')]
+        assert shown == [('reasoning_section', {'content': 'Planning', 'section': 'plan:a1'}),
+                         ('reasoning_token', {'content': 'plan: one', 'section': 'plan:a1'}),
+                         ('reasoning_section_end', {'section': 'plan:a1'}),
+                         ('reasoning_token', {'content': 'write: two', 'section': 'write:b1'}),
+                         ('reasoning_section_end', {'section': 'write:b1'})]
     run(scenario)
 
 
@@ -252,6 +279,8 @@ def test_projector_must_be_callable():
 
 
 @pytest.mark.parametrize('name,value', [('reasoning_token', {'content': 'text', 'section': 'plan:a1'}),
+                                        ('reasoning_section', {'content': 'Planning', 'section': 'plan:a1'}),
+                                        ('reasoning_section_end', {'section': 'plan:a1'}),
                                         ('tool_start', {'tool': 'lookup'}), ('tool_end', {'tool': 'lookup'})])
 def test_progress_frames_are_valid_application_events(name, value):
     from api_agent.api import chat_contract

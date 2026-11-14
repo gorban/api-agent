@@ -49,9 +49,17 @@ class CallProgress:
     tool_calls: tuple = field(default=(), repr=False)
 
 
+@dataclass(frozen=True)
+class StepProgress:
+    """A workflow node attempt starting or ending; phase is 'start' or 'end'."""
+    node: str
+    attempt: str | None
+    phase: str
 @contextmanager
 def call_progress(sink):
-    """Report each completed node model call to an async sink(CallProgress)."""
+    """Report node attempt steps and completed node model calls to an async sink.
+    The sink receives StepProgress and CallProgress updates in workflow order.
+    """
     token = _call_sink.set(sink)
     try:
         yield
@@ -99,6 +107,10 @@ async def publish_call_progress(node, attempt, request_id, result):
             tuple((call.name, call.arguments) for call in result.payload.calls)))
 
 
+async def publish_step_progress(node, attempt, phase):
+    sink = _call_sink.get()
+    if sink is not None:
+        await sink(StepProgress(node, attempt, phase))
 async def publish_tool_progress(kind, tool):
     sink = _tool_sink.get()
     if sink is not None:
