@@ -6,7 +6,7 @@ import pytest
 
 from api_agent.providers.llm import (CompletionRequest, LLMRequest, LLMResult, Message,
     ResponsePolicy, StructuredOutput, TextContent, ToolCall)
-from api_agent.providers.presentation import (CallProgress, call_progress, publish_call_progress,
+from api_agent.providers.presentation import (CallProgress, StepProgress, call_progress, publish_call_progress,
     publish_tool_progress, tool_progress)
 from api_agent.workflows.node_summary import ProgressServices
 from test_tool_gate import Owner, ToolGate, consume
@@ -51,10 +51,16 @@ def test_legacy_node_reports_structured_and_plain_calls_with_its_step_id():
     events, sink = recorder()
     with call_progress(sink):
         asyncio.run(flow.arun({'user_input': 'user'}))
+    calls = [event for event in events if type(event) is CallProgress]
     assert [(event.node, event.request_id, event.response_text, event.reasoning_summary)
-            for event in events] == [
+            for event in calls] == [
         ('first_draft', 'plain', 'Hello.', ''), ('first_draft', 'structured', '{"answer":true}', 'Checked.')]
-    assert all(isinstance(event.attempt, str) and event.attempt for event in events)
+    assert all(isinstance(event.attempt, str) and event.attempt for event in calls)
+    own = [event for event in events if event.node == 'first_draft']
+    # The step's start and end bracket its calls under the same attempt, which keys the UI section.
+    assert [type(event).__name__ for event in own] == ['StepProgress', 'CallProgress', 'CallProgress', 'StepProgress']
+    assert (own[0].phase, own[-1].phase) == ('start', 'end')
+    assert {event.attempt for event in own} == {calls[0].attempt}
 
 
 def test_typed_node_reports_its_step_id_without_an_attempt():
@@ -75,8 +81,10 @@ def test_typed_node_reports_its_step_id_without_an_attempt():
         events, sink = recorder()
         with call_progress(sink):
             typed.run(typed.admit(entry), {'topic': 'good'}, services={'llm': llm})
-    assert [(event.node, event.attempt, event.request_id, event.response_text) for event in events] == [
-        ('decide', None, 'typed', 'Decided.')]
+    assert [(event.node, event.attempt, event.request_id, event.response_text)
+            for event in events if type(event) is CallProgress] == [('decide', None, 'typed', 'Decided.')]
+    assert [(type(event).__name__, getattr(event, 'phase', None)) for event in events if event.node == 'decide'] == [
+        ('StepProgress', 'start'), ('CallProgress', None), ('StepProgress', 'end')]
 
 
 def test_unbound_sink_leaves_node_services_untouched():

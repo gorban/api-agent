@@ -31,6 +31,7 @@ from jsonschema import Draft202012Validator
 from langgraph.graph import END, START, StateGraph
 
 from api_agent.providers.progress import component_timeout
+from api_agent.providers.presentation import publish_step_progress
 from api_agent.runtime.tasks import offload
 from .predicates import (component_controller, component_decision, edge_effected, edge_expiry, edge_source, entry_source, loop_edges,
                          MissingPredicateField, native_condition_id, parse_predicate, predicate_fields, state_predicate_fields,
@@ -977,10 +978,12 @@ class Workflow:
                                            attempt=frame.attempt if frame is not None else current['ancestry'][-1][1] if current['ancestry'] else 1,
                                            attempt_id=current.get('attempt_id'),
                                            max_passes=frame.maximum if frame is not None else current['ancestry'][-1][2] if current['ancestry'] else 1) as budget:
+                        await publish_step_progress(step.id, current.get('attempt_id'), 'start')
                         if frame is not None:
                             current['_guard_attempt'] = frame.guard_attempt
                             current['_repair_limit'] = (frame.attempt, frame.maximum)
                         result = await execute(current, budget)
+                        await publish_step_progress(step.id, current.get('attempt_id'), 'end')
                         return {key: value for key, value in result.items() if not key.startswith('_')}
                 except TimeoutError:
                     expired = self._expired_state(step.id, budget, (step.id,),
@@ -1189,6 +1192,7 @@ class Workflow:
         outcome = 'failed'
         expired = False
         try:
+            await publish_step_progress(row['ID'], None, 'start')
             services = self._turn_state.get()['llm_history'].services(self._services.get(), row['ID'])
             function_row = self._typed_functions.get(row['ID'])
             if function_row is not None and function_row.get('Display summary', '-') != '-':
@@ -1246,6 +1250,7 @@ class Workflow:
             outcome = self._scope_outcome('node', row['ID'], {**state, **result}, budget.id)
             self._event('node', scope_id=budget.id, node=row['ID'], visit_id=visit_id,
                         elapsed=time.monotonic() - started, kind=row['Kind'], outcome=outcome)
+            await publish_step_progress(row['ID'], None, 'end')
             return result
         except BaseException as error:
             from api_agent.telemetry.outcomes import report_failure, OutcomeState

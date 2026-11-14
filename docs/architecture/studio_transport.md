@@ -45,15 +45,20 @@ not imply native per-token streaming or fabricate summaries when none are suppli
 ### Live call and tool progress
 
 An application may supply `StudioBackend(progress_projector=...)`, an async
-callable taking a `CallProgress` (`node`, `attempt`, `request_id`, `response_text`,
+callable taking a `StepProgress` (`node`, `attempt`, `phase` of `start` or `end`)
+or a `CallProgress` (`node`, `attempt`, `request_id`, `response_text`,
 `reasoning_summary`, `tool_calls`) and returning display text or `None`. For
 `chat_stream` only, Studio binds `providers.presentation.call_progress` and
-`tool_progress`; the workflow engine then reports each completed model call
-(after any display-summary projection) with its step id, and each tool dispatch
-with its name. Studio streams non-empty projected text as
-`reasoning_token {content, section}`, where `section` is `node:attempt` (or the
-node id when no attempt is known), and tool lifecycle as `tool_start {tool}` and
-`tool_end {tool}`, in workflow order before `token` and `result`.
+`tool_progress`; the workflow engine then reports each node attempt's start and
+successful end, each completed model call (after any display-summary projection)
+with its step id, and each tool dispatch with its name. Studio streams a step
+start's projected label as `reasoning_section {content, section}`, non-empty
+projected call text as `reasoning_token {content, section}`, and
+`reasoning_section_end {section}` when a step ends whose section a label or text
+opened; `section` is `node:attempt` (or the node id when no attempt is known).
+Tool lifecycle streams as `tool_start {tool}` and `tool_end {tool}`. All frames
+keep workflow order before `token` and `result`; the projector is not called for
+a step's end.
 
 Projection runs in one task per turn so it never delays the workflow; the turn
 waits for it inside the existing Studio completion budget. A projector failure or
