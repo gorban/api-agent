@@ -102,6 +102,24 @@ class Tool:
 
 
 @dataclass(frozen=True)
+class AnswerStream:
+    """The top-level string field of a structured reply shown as the answer while it streams.
+
+    A presentation hint for the caller's display; providers never receive it.
+    """
+    field: str
+    presentation: str
+
+    def __post_init__(self):
+        _require(type(self.field) is str and 0 < len(self.field) <= 64
+                 and (self.field[0].isalpha() or self.field[0] == '_')
+                 and all(character.isalnum() or character == '_' for character in self.field)
+                 and self.field.isascii())
+        _require(type(self.presentation) is str and 0 < len(self.presentation) <= 32
+                 and self.presentation.isprintable())
+
+
+@dataclass(frozen=True)
 class GenerationOptions:
     max_output_tokens: int | None = None
     temperature: float | None = None
@@ -109,9 +127,11 @@ class GenerationOptions:
 
     reasoning_effort: Literal["", "off", "low", "medium", "high"] | None = None
     display_summary: bool = False
+    answer_stream: AnswerStream | None = None
 
     def __post_init__(self):
         _require(type(self.display_summary) is bool)
+        _require(self.answer_stream is None or isinstance(self.answer_stream, AnswerStream))
         _require(self.reasoning_effort is None or (type(self.reasoning_effort) is str and self.reasoning_effort in ("", "off", "low", "medium", "high")))
         _require(self.max_output_tokens is None or (type(self.max_output_tokens) is int and self.max_output_tokens > 0))
         _require(self.temperature is None or (type(self.temperature) in {int, float} and math.isfinite(self.temperature) and self.temperature >= 0))
