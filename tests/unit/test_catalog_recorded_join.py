@@ -89,7 +89,8 @@ def test_recorded_discovery_rejects_mismatches_and_records_safe_error(tmp_path, 
         'GPT_AUTH_MODE': 'api_key', 'GPT_API_MODE': 'responses', 'UNATTENDED_USER_INDEX': 0,
         'UNATTENDED_AUTH': {'password_manager': {'manager': 'keeper', 'cli_path': 'synthetic-cli'},
             'roles': {'LLM User': [{'vault': 'synthetic-vault', 'user': 'selected-entry'}, {'vault': 'other', 'user': 'must-not-read'}]}},
-        'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic', 'ALLURE_RESULTS_DIR': tmp_path / 'allure', 'TEST_PARALLEL_JOBS': jobs}
+        'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic', 'ALLURE_RESULTS_DIR': tmp_path / 'allure', 'TEST_PARALLEL_JOBS': jobs,
+        'LOG_CONTENT': True}
     selected = [test for test in collect_tests(context, 'integration', config=config) if test.repo == 'base']
     saved = []
     result = run_recorded_integration(context, selected, config, accepted=True,

@@ -1405,3 +1405,46 @@ def test_partial_config_preserves_raw_integration_suite_mode(tmp_path, mode):
     assert result.exit_code == 0
     assert [row.identity.id for row in result.tests] == [test.id for test in selected]
     assert [row.status for row in result.tests] == ['passed']
+
+
+def test_failed_test_exposes_machine_report_phase(tmp_path):
+    base = fixture_repo(tmp_path / 'base', 'def test_ok():\n    assert False\n')
+    ctx = context(base)
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+                                   config={'TUI_MODE': 'integration'})
+    assert result.tests[0].status == 'failed'
+    assert result.tests[0].failure_phase == 'call'
+
+
+def test_worker_trace_warning_relay_uses_only_fixed_code_and_preserves_pass(tmp_path):
+    base = fixture_repo(tmp_path / 'base', '''
+import json, os
+from api_agent.testing.trace_warning import emit_worker
+
+def test_ok():
+    emit_worker('setup')
+    with open(os.environ['API_AGENT_INTEGRATION_EVENTS'], 'a') as stream:
+        stream.write(json.dumps({'kind': 'trace_warning', 'node': '', 'code': 'narrative-sentinel'}) + '\\n')
+''')
+    ctx = context(base)
+    events = []
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+                                   parallel_jobs=0, on_event=events.append)
+    assert result.exit_code == 0 and result.tests[0].status == 'passed'
+    assert [event.text for event in events if event.kind == 'trace_warning'] == ['setup']
+
+
+def test_warning_callback_failure_does_not_fail_passing_test(tmp_path):
+    base = fixture_repo(tmp_path / 'base', '''
+from api_agent.testing.trace_warning import emit_worker
+
+def test_ok():
+    emit_worker('setup')
+''')
+    ctx = context(base)
+    def callback(event):
+        if event.kind == 'trace_warning':
+            raise RuntimeError('diagnostic sink unavailable')
+    result = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True,
+                                   parallel_jobs=0, on_event=callback)
+    assert result.exit_code == 0 and result.tests[0].status == 'passed'

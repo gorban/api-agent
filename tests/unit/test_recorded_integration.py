@@ -242,7 +242,7 @@ def test_returned_usage_is_the_single_frozen_persisted_report(tmp_path, monkeypa
 def test_recorded_evidence_always_scrubs_configured_and_dynamic_credentials(tmp_path):
     from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
     context, test, config = fixture(tmp_path)
-    config.update(PROVIDER_SECRET='provider-private', EXTENSION_SECRET='extension-private', LOG_CONTENT=False)
+    config.update(PROVIDER_SECRET='provider-private', EXTENSION_SECRET='extension-private', LOG_CONTENT=True)
     def run(context, tests, **hooks):
         hooks['before_run']()
         outcome = TestResult(test, 'failed', .1, 'provider-private extension-private trace evidence')
@@ -703,3 +703,50 @@ def test_prerequisite_diagnostics_are_retained_without_content_flags(tmp_path):
     rows = [json.loads(path.read_text()) for path in result.directory.glob('*-result.json')]
     assert any(item['source'] == 'prerequisite-events.json'
                for row in rows for item in row.get('attachments', ()))
+
+@pytest.mark.parametrize('log_content', [False, True])
+@pytest.mark.parametrize('trace_content', [False, True])
+def test_failure_recording_obeys_log_permission_independently_of_trace(tmp_path, log_content, trace_content):
+    from dataclasses import replace
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+
+    context, test, config = fixture(tmp_path)
+    config.update(LOG_CONTENT=log_content, TRACELOOP_TRACE_CONTENT=trace_content)
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=('credential-sentinel',))
+
+    def runner(context, tests, **hooks):
+        on_result = hooks['on_result']
+        def deliver(outcome):
+            on_result(replace(outcome, traceback='assert state == narrative-sentinel credential-sentinel'))
+        return fake_runner('failed')(context, tests, **dict(hooks, on_result=deliver))
+
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+        runner=runner, storage=Storage(), evidence_boundary=boundary,
+        content_policy=ContentPolicy(log_content))
+    rows = list(result.directory.glob('*-result.json'))
+    assert rows
+    text = rows[0].read_text()
+    assert ('narrative-sentinel' in text) is log_content
+    assert 'credential-sentinel' not in text
+    assert json.loads(text)['status'] == 'failed'
+
+
+def test_fixed_trace_warning_is_retained_in_allure_when_content_disabled(tmp_path):
+    from api_agent.testing.contracts import RunnerEvent
+    context, test, config = fixture(tmp_path)
+    config['LOG_CONTENT'] = False
+
+    def runner(context, tests, **hooks):
+        hooks['on_event'](RunnerEvent('trace_warning', text='setup'))
+        hooks['on_event'](RunnerEvent('trace_warning', text='narrative-sentinel'))
+        hooks['on_event'](RunnerEvent('trace_warning', text='setup'))
+        return fake_runner()(context, tests, **hooks)
+
+    result = recorded.run_recorded_integration(context, [test], config, accepted=True,
+                                               runner=runner, storage=Storage())
+    warnings = json.loads((result.directory / 'trace-warnings.json').read_text())
+    assert warnings == [{'code': 'setup', 'message': 'WARNING: Tracing setup failed; continuing without tracing.'}]
+    row = json.loads(next(result.directory.glob('*-result.json')).read_text())
+    assert any(item['source'] == 'trace-warnings.json' for item in row['attachments'])
+    assert result.exit_code == 0 and result.manifest['status'] == 'completed'
+    assert 'narrative-sentinel' not in json.dumps(warnings)

@@ -274,3 +274,39 @@ def test_passive_recovery_authority_survives_an_empty_selected_plan(source):
     assert planned.inventory.verify(source.scope) == catalog.pairs
     assert len(planned.inventory.pairs) == 3
     assert not (source.fixture / 'ABSENT').exists()
+
+
+def test_engine_mismatch_reports_only_safe_control_names():
+    record = inspected()
+    record['HostConfig']['Runtime'] = 'secret-runtime-value'
+    record['HostConfig']['Privileged'] = True
+    with pytest.raises(ComposeError) as failure:
+        verify_isolation(isolation_fragment(POLICY), record, network='owned_default')
+    message = str(failure.value)
+    assert 'Runtime' in message and 'Privileged' in message
+    assert 'secret-runtime-value' not in message
+
+
+def test_missing_engine_control_names_are_reported_without_record_contents():
+    record = inspected()
+    del record['HostConfig']['Tmpfs']
+    with pytest.raises(ComposeError, match='Tmpfs'):
+        verify_isolation(isolation_fragment(POLICY), record, network='owned_default')
+
+
+def test_engine_compatibility_record_is_rejected_for_each_mismatched_control():
+    # Sanitized Docker-compatible inspect metadata from a distinct engine.
+    record = {'Config': {'User': '65532:65532'}, 'HostConfig': {
+        'Runtime': 'oci', 'Privileged': False, 'ReadonlyRootfs': True,
+        'CapDrop': ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'KILL',
+                    'NET_BIND_SERVICE', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID',
+                    'SYS_CHROOT'],
+        'CapAdd': [], 'SecurityOpt': ['no-new-privileges'],
+        'Memory': 1073741824, 'NanoCpus': 2000000000, 'PidsLimit': 64,
+        'NetworkMode': 'bridge',
+        'Tmpfs': {'/tmp': 'rw,noexec,nosuid,nodev,size=16777216,rprivate,tmpcopyup'}}}
+    policy = dict(POLICY, memory_mb=1024, cpus=2, pids_limit=64)
+    with pytest.raises(ComposeError) as failure:
+        verify_isolation(isolation_fragment(policy), record, network='owned_default')
+    for control in ('Runtime', 'CapDrop', 'SecurityOpt', 'NetworkMode', 'Tmpfs'):
+        assert control in str(failure.value)

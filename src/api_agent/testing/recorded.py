@@ -209,8 +209,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     A quota-fetch failure is unavailable data; publication failure is reported
     separately from functional outcomes. Raw pytest evidence sinks must apply their own approved
     evidence/secret policy, as documented by the integration runner.
-    Raw inference attachments require LOG_CONTENT=True; failure diagnostics and
-    accounting remain independent. Register credentials before emitting evidence.
+    Raw inference attachments and failure diagnostics require LOG_CONTENT=True;
+    accounting remains independent. Register credentials before emitting evidence.
     """
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
     if config.get('TUI_MODE') == 'e2e' and (config.get('DEBUG') is True or config.get('E2E_DEBUG') is True):
@@ -261,7 +261,8 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             evidence_boundary = EmissionBoundary(ContentPolicy(True))
         for value in secret_values:
             evidence_boundary.register_secret(value)
-        recorder = RunRecorder(directory, identity, evidence_boundary=evidence_boundary)
+        recorder = RunRecorder(directory, identity, evidence_boundary=evidence_boundary,
+                               content_policy=ContentPolicy(config.get('LOG_CONTENT') is True))
         storage = storage if storage is not None else RunStorage(
             config['ALLURE_S3_BUCKET'], prefix=config.get('ALLURE_S3_PREFIX', 'allure'),
             secondary_directory=config.get('ALLURE_SECONDARY_DIR') or None,
@@ -292,6 +293,7 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         call_scope_owners = {}
         incomplete_inference_evidence = {}
         scoped_inference_loss = {}
+        trace_warnings = set()
         native_boundaries = {}
 
         def queue_attachment(test_id, owner, frozen):
@@ -577,6 +579,11 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             shared = [
                 ('Suite usage', 'usage-summary.json', 'application/json'),
                 ('Immutable accounting', 'accounting.json', 'application/json')]
+            if trace_warnings:
+                from .trace_warning import message
+                warnings = [{'code': code, 'message': message(code)} for code in sorted(trace_warnings)]
+                recorder.record_artifact('trace-warnings.json', json.dumps(warnings).encode())
+                shared.append(('Suite tracing warnings', 'trace-warnings.json', 'application/json'))
             prerequisite_events = tuple(result.prerequisite_events)
             if prerequisite_events:
                 from .suite_prerequisite_provider import validate_prerequisite_event
@@ -628,6 +635,10 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
         def event(row):
             if row.identity is not None:
                 admit(row.identity)
+            if row.kind == 'trace_warning':
+                from .trace_warning import message
+                if message(row.text) is not None:
+                    trace_warnings.add(row.text)
             if row.kind == 'inference_evidence_incomplete':
                 if row.identity is None or row.text not in {'truncated', 'unavailable'}:
                     raise ValueError('Invalid incomplete inference evidence event')
@@ -781,19 +792,33 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             if on_event is not None:
                 on_event(row)
 
-        execution = runner(context, tests, accepted=True, no_std_in=False,
-                           config=dict(config, _ALLURE_REPORTING_ACTIVE=True),
-                           parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
-                           before_run=before, on_result=record, after_run=after,
-                           on_event=event, output=output, cancel_event=cancel_event,
-                           unattended_index_source=unattended_index_source,
-                           **({'explicit_debug_test_ids': explicit_debug_test_ids} if runner is run_integration_tests else {}),
-                           **({'quota_observer': observe_quota} if runner is run_integration_tests and quota_fetcher is None else {}),
-                           **({'evidence_boundary': evidence_boundary} if runner is run_integration_tests else {}),
-                           **({'interaction': interaction} if interaction is not None else {}),
-                           **({'tool_plan': tool_plan} if tool_plan is not None else {}),
-                           **({'config_fields': config_fields} if config_fields is not None else {}),
-                           **({'resolved_test_profiles': profiles} if runner is run_integration_tests else {}))
+        try:
+            execution = runner(context, tests, accepted=True, no_std_in=False,
+                               config=dict(config, _ALLURE_REPORTING_ACTIVE=True),
+                               parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
+                               before_run=before, on_result=record, after_run=after,
+                               on_event=event, output=output, cancel_event=cancel_event,
+                               unattended_index_source=unattended_index_source,
+                               **({'explicit_debug_test_ids': explicit_debug_test_ids} if runner is run_integration_tests else {}),
+                               **({'quota_observer': observe_quota} if runner is run_integration_tests and quota_fetcher is None else {}),
+                               **({'evidence_boundary': evidence_boundary} if runner is run_integration_tests else {}),
+                               **({'interaction': interaction} if interaction is not None else {}),
+                               **({'tool_plan': tool_plan} if tool_plan is not None else {}),
+                               **({'config_fields': config_fields} if config_fields is not None else {}),
+                               **({'resolved_test_profiles': profiles} if runner is run_integration_tests else {}))
+        except BaseException as error:
+            execution = getattr(error, 'execution', None)
+            if execution is not None and manifest is not None:
+                presentation_usage = usage_summary if usage_summary is not None else usage.report()
+                if identity.mode == 'e2e':
+                    from .confirmations import logical_usage
+                    presentation_usage = logical_usage(presentation_usage, logical_owners,
+                        predictions=estimator.predictions,
+                        advance_predictions=getattr(estimator, 'advance_predictions', estimator.predictions))
+                error.recorded_result = RecordedIntegrationResult(execution, identity,
+                    directory if local_directory else None, presentation_usage, manifest, persisted,
+                    monotonic() - started_at)
+            raise
         presentation_usage = usage_summary if usage_summary is not None else usage.report()
         if identity.mode == 'e2e':
             from .confirmations import logical_usage

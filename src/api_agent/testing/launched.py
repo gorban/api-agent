@@ -91,16 +91,23 @@ def run_launched_integration(context, tests, config, *, accepted=False,
         started = monotonic()
         # No report installer, storage lease, recorder, attachment, manifest or
         # publication exists on this explicitly unrecorded path.
-        execution = run_integration_tests(context, tests, accepted=accepted,
-            no_std_in=False, config=config, evidence_boundary=boundary,
-            explicit_debug_test_ids=explicit_debug_test_ids,
-            parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
-            on_event=observe, output=options.get('output'),
-            cancel_event=options.get('cancel_event'),
-            unattended_index_source=options.get('unattended_index_source'),
-            interaction=options.get('interaction'),
-            **({'tool_plan': tool_plan} if tool_plan is not None else {}),
-            **({'config_fields': config_fields} if config_fields is not None else {}))
+        failure = None
+        try:
+            execution = run_integration_tests(context, tests, accepted=accepted,
+                no_std_in=False, config=config, evidence_boundary=boundary,
+                explicit_debug_test_ids=explicit_debug_test_ids,
+                parallel_jobs=config.get('TEST_PARALLEL_JOBS', 8),
+                on_event=observe, output=options.get('output'),
+                cancel_event=options.get('cancel_event'),
+                unattended_index_source=options.get('unattended_index_source'),
+                interaction=options.get('interaction'),
+                **({'tool_plan': tool_plan} if tool_plan is not None else {}),
+                **({'config_fields': config_fields} if config_fields is not None else {}))
+        except BaseException as error:
+            execution = getattr(error, 'execution', None)
+            if execution is None:
+                raise
+            failure = error
         result = RecordedIntegrationResult(execution, identity,
             None, {}, None, False, monotonic() - started, reporting_skipped=True)
         try:
@@ -108,10 +115,17 @@ def run_launched_integration(context, tests, config, *, accepted=False,
             if options.get('usage_output') is not None:
                 options['usage_output'](final_usage_text(result.usage))
         except BaseException as error:
-            error.recorded_result = result
-            error.execution = execution
-            error.inspections = getattr(execution, 'inspections', ())
+            retained = failure if failure is not None else error
+            retained.recorded_result = result
+            retained.execution = execution
+            retained.inspections = getattr(execution, 'inspections', ())
+            if failure is not None:
+                failure.diagnostic_errors = (*getattr(failure, 'diagnostic_errors', ()), error)
+                raise failure from None
             raise
+        if failure is not None:
+            failure.recorded_result = result
+            raise failure
         return result
     tests = validate_recorded_integration(tests, config, accepted=accepted, no_std_in=no_std_in)
     plan = plan_integration_requirements(tests)
@@ -152,7 +166,8 @@ def run_launched_integration(context, tests, config, *, accepted=False,
             prerequisites.finish()
         except BaseException as error:
             retained = primary if primary is not None else error
-            retained.recorded_result = execution
+            if execution is not None or not hasattr(retained, 'recorded_result'):
+                retained.recorded_result = execution
             retained.recording_prerequisites = prerequisites
             from .suite_lock import _cleanup_receipts
             receipts = tuple(_cleanup_receipts(retained))

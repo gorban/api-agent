@@ -4,7 +4,8 @@ import json
 from api_agent.providers.scrubbed_response import ResponseValidationError, scrub_response
 
 
-def write_successful_diagnostics(tests, write, *, scrubber, level='warning'):
+def write_successful_diagnostics(tests, write, *, scrubber, level='warning', allow_content=False,
+                                 snapshot=None):
     """Write nonempty captures once, in selection order, after runner finalization.
 
     Runners own free-text protection and typed projection. Reapplying the legacy
@@ -26,20 +27,34 @@ def write_successful_diagnostics(tests, write, *, scrubber, level='warning'):
         if not parts:
             continue
         header = 'Test diagnostics: ' + json.dumps(test.identity.id, ensure_ascii=True) + ' — passed'
-        with scrubber.boundary._authority.lock:
-            _, snapshot = scrubber.boundary.snapshot_content()
+        if allow_content is not True:
+            from .diagnostics import CONTENT_WITHHELD
+            write(header + '\n' + CONTENT_WITHHELD)
+            continue
+        text = header + '\n' + '\n\n'.join(parts)
+        if snapshot is not None:
             try:
-                text, _ = scrub_response(header + '\n' + '\n\n'.join(parts),
-                    schema={'type': 'string', 'minLength': 1}, secrets=tuple(snapshot._secrets),
+                boundary = snapshot()
+            except Exception:
+                from .diagnostics import REDACTION_UNAVAILABLE
+                write(REDACTION_UNAVAILABLE)
+                continue
+        else:
+            boundary = scrubber.boundary
+        with boundary._authority.lock:
+            _, current = boundary.snapshot_content()
+            try:
+                text, _ = scrub_response(text,
+                    schema={'type': 'string', 'minLength': 1}, secrets=tuple(current._secrets),
                     operation='terminal_test_diagnostic')
             except ResponseValidationError:
                 text = 'Test diagnostics withheld: credential protection.'
             write(text)
 
 
-def write_unit_failure_diagnostics(tests, write, *, scrubber):
+def write_unit_failure_diagnostics(tests, write, *, scrubber, allow_content=False):
     """Disclose captured failures even when pytest aborts before its summary."""
     from .diagnostics import result_diagnostics
     captured = (test for test in tests if getattr(test, 'local_diagnostic', ''))
-    for detail in result_diagnostics(captured):
+    for detail in result_diagnostics(captured, allow_content=allow_content):
         write(scrubber(detail))

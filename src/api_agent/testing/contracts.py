@@ -18,6 +18,9 @@ class TestResult:
     attempt: int = 1
     logical_id: str = ''
     first_status: str = ''
+    # Fixed pytest lifecycle phase; never derived from exception text.
+    failure_phase: str = ''
+    diagnostic_code: str = ''
 
 
 @dataclass(frozen=True)

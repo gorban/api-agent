@@ -166,14 +166,35 @@ def quota_window(quota):
     return before.get('window_id'), before.get('reset_at')
 
 
+def initialized_window(quota):
+    """Return only an explicitly initialized, verified allocation's later window."""
+    before, after = quota.get('before') or {}, quota.get('after') or {}
+    if (before.get('initial_window') is not True or type(before.get('pct_used')) not in (int, float)
+            or before['pct_used'] != 0 or before.get('window_id') is not None
+            or before.get('reset_at') is not None or quota_allocation(quota) is None
+            or type(after.get('window_id')) is not str or not after['window_id']
+            or not after['window_id'].isprintable()):
+        return None
+    try:
+        reset = datetime.fromisoformat(after['reset_at'].replace('Z', '+00:00'))
+        if reset.tzinfo is None:
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    return after['window_id'], after['reset_at']
+
+
 def quota_interval(quota):
     """Parse overlap evidence without applying sample eligibility filters."""
     if quota_reset_observed(quota):
         return None
     try:
         allocation = quota_allocation(quota)
-        window = quota_window(quota)
         before, after = quota['before'], quota['after']
+        initialized = initialized_window(quota)
+        if before.get('initial_window') is True and initialized is None:
+            return None
+        window = initialized or quota_window(quota)
         start = datetime.fromisoformat(before['captured_at'].replace('Z', '+00:00'))
         end = datetime.fromisoformat(after['captured_at'].replace('Z', '+00:00'))
         if allocation is None or any(value is None for value in window) or window != (after.get('window_id'), after.get('reset_at')) or start.tzinfo is None or end.tzinfo is None or end < start:
@@ -203,8 +224,9 @@ def clean_quota(quota):
         valid_observations = all(snapshot.get('observation_id') is None or canonical_observation(snapshot.get('observation_id'))
                                  for snapshot in (before, after))
         return (valid_pct and valid_observations and not quota_reset_observed(quota) and not quota.get('quota_unavailable_reason') and not quota.get('contaminated')
-                and before['window_id'] is not None and before['window_id'] == after['window_id']
-                and before['reset_at'] == after['reset_at'] and start.tzinfo is not None
+                and ((before.get('initial_window') is not True and before['window_id'] is not None and before['window_id'] == after['window_id']
+                      and before['reset_at'] == after['reset_at'])
+                     or initialized_window(quota) is not None) and start.tzinfo is not None
                 and end.tzinfo is not None and reset.tzinfo is not None and start <= end < reset)
     except (KeyError, ValueError, TypeError, AttributeError):
         return False

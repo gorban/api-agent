@@ -39,7 +39,8 @@ def test_skipped_results_are_orange_and_enter_opens_selected_reason(tmp_path):
             await pilot.press('enter')
             await pilot.pause(.2)
             assert app.screen.heading == 'Integration test skipped'
-            assert 'Second unavailable prerequisite' in app.screen.body
+            assert 'Second unavailable prerequisite' not in app.screen.body
+            assert '[withheld: LOG_CONTENT is disabled]' in app.screen.body
             assert 'First unavailable prerequisite' not in app.screen.body
             assert app.operation_status == 0
     asyncio.run(scenario())
@@ -99,7 +100,8 @@ def test_unattended_failure_guidance_uses_launch_index_source(tmp_path, monkeypa
             with pytest.raises(UnattendedCredentialError) as caught:
                 worker.loop.run_until_complete(worker._credentials(0)(0, 'username'))
             from api_agent.testing.provider_setup import pytest_runtest_makereport
-            report = SimpleNamespace(longrepr=''.join(format_exception(caught.value)), when='call', passed=False)
+            report = SimpleNamespace(longrepr=''.join(format_exception(caught.value)), when='call', passed=False,
+                                     user_properties=[])
             hook = pytest_runtest_makereport(SimpleNamespace(), SimpleNamespace(excinfo=SimpleNamespace(value=caught.value)))
             next(hook)
             with pytest.raises(StopIteration) as finished:
@@ -108,7 +110,8 @@ def test_unattended_failure_guidance_uses_launch_index_source(tmp_path, monkeypa
             trace = report.longrepr
         finally:
             worker.close()
-        execution = IntegrationRunResult(1, (TestResult(test, 'failed', .1, trace),), '')
+        code = dict(report.user_properties)['api_agent_diagnostic_code']
+        execution = IntegrationRunResult(1, (TestResult(test, 'failed', .1, trace, diagnostic_code=code),), '')
         return SimpleNamespace(execution=execution, persisted=True, exit_code=1)
 
     async def scenario():
@@ -137,9 +140,9 @@ def test_unattended_failure_guidance_uses_launch_index_source(tmp_path, monkeypa
             assert '\n\nFailed to get credentials for unattended access.' in body
             assert 'Failed to get credentials for unattended access.' in body
             assert ('Clear .env configuration' in body) is (source == 'dotenv')
-            assert ('stop passing the override' in body) is (source != 'dotenv')
+            assert ('Stop passing' in body) is (source != 'dotenv')
             assert 'private CLI output' not in body
-            assert 'Password-manager username retrieval is unavailable.' in body
+            assert 'Password-manager username retrieval is unavailable.' not in body
     asyncio.run(scenario())
 
 
@@ -154,8 +157,8 @@ def test_integration_runner_failure_has_local_diagnostics(tmp_path):
             await pilot.pause(.3)
             assert app.screen.kind == 'error' and app.operation_status == 3
             body = str(app.screen.query_one('#body', Static).render())
-            assert 'RuntimeError: synthetic runner failure' in body
-            assert 'Traceback (most recent call last):' in body
+            assert 'synthetic runner failure' not in body
+            assert '[withheld: LOG_CONTENT is disabled]' in body
             assert not app.test_run_active()
     asyncio.run(scenario())
 

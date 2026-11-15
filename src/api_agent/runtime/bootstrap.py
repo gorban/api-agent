@@ -495,30 +495,53 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                            all_unit=result.values.get('ALL_UNIT', False)))
             print()
             from api_agent.testing.terminal_diagnostics import write_successful_diagnostics, write_unit_failure_diagnostics
-            write_unit_failure_diagnostics(execution.tests, lambda text: print(text, flush=True), scrubber=unit_scrubber)
+            write_unit_failure_diagnostics(execution.tests, lambda text: print(text, flush=True), scrubber=unit_scrubber, allow_content=True)
             write_successful_diagnostics(execution.tests, lambda text: print(text, flush=True),
-                scrubber=unit_scrubber,
+                scrubber=unit_scrubber, allow_content=True,
                 level=result.values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL', 'warning'))
             print(format_unit_summary(execution))
             return execution.exit_code
         if result.values.get('NO_STD_IN') and mode in {'integration', 'e2e'} and automatically_started(result):
-            from api_agent.testing.diagnostics import CredentialScrubber, format_exception, terminal_exception
+            from api_agent.testing.diagnostics import CredentialScrubber, terminal_exception, CONTENT_WITHHELD, REDACTION_UNAVAILABLE, safe_exception, RequiredConfigurationError
+            from api_agent.telemetry.privacy import ContentPolicy
             from api_agent.auth.terminal_output import TerminalOutput
             scrubber = CredentialScrubber(result.values)
+            try:
+                redaction_history = scrubber.boundary.retain_redaction_history()
+            except Exception:
+                redaction_history = None
             presentation = TerminalOutput()
+            allow_content = ContentPolicy.from_config(result).allow_content
+            output_withheld = False
+
+            def terminal_snapshot():
+                if redaction_history is None:
+                    raise ValueError('Terminal redaction history unavailable')
+                return redaction_history.snapshot()
+
+            def terminal_scrub(text):
+                try:
+                    return CredentialScrubber(boundary=terminal_snapshot())(text)
+                except Exception:
+                    return REDACTION_UNAVAILABLE
 
             def diagnostic_output(text):
-                presentation.write(scrubber(text), error=True)
+                presentation.write(terminal_scrub(text), error=True)
 
             pending_output = ''
 
             def runner_output(chunk):
-                nonlocal pending_output
+                nonlocal pending_output, output_withheld
+                if not allow_content:
+                    if chunk and not output_withheld:
+                        presentation.write(CONTENT_WITHHELD)
+                        output_withheld = True
+                    return
                 pending_output += chunk
                 lines = pending_output.split('\n')
                 pending_output = lines.pop()
                 for line in lines:
-                    presentation.write(scrubber(line))
+                    presentation.write(terminal_scrub(line))
 
             try:
                 from api_agent.runtime.dependencies import ensure_environment
@@ -544,7 +567,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                     result = retain_runtime_directory(bind_operation_tools(selected_tools, result, argv=argv), context)
                     result.raise_for_errors()
                     if result.missing:
-                        raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
+                        raise RequiredConfigurationError(result.missing)
                 from api_agent.testing.debug_confirmation import debug_warning, confirm_terminal_debug
                 warning = debug_warning(mode, result.values.get('DEBUG'), tests,
                                         e2e_debug=result.values.get('E2E_DEBUG'))
@@ -561,7 +584,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         result = bind_operation_tools(selected_tools, result, argv=argv)
                     result = retain_runtime_directory(result, context).raise_for_errors()
                     if result.missing:
-                        raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
+                        raise RequiredConfigurationError(result.missing)
+                allow_content = ContentPolicy.from_config(result).allow_content
                 print('Integration debug: shared authentication; provider login may require browser interaction.'
                       if result.values.get('DEBUG') else 'Integration tests: provider login may require browser interaction.', flush=True)
                 from api_agent.auth.terminal_interaction import TerminalInteraction
@@ -573,39 +597,66 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                         evidence_boundary=scrubber.boundary,
                         **({'tool_plan': result.tool_plan} if result.tool_plan is not None else {}),
                         interaction=TerminalInteraction(presentation=presentation),
-                        usage_output=lambda line: presentation.write(scrubber(line)) if '\n' not in line else None,
+                        usage_output=lambda line: presentation.write(terminal_scrub(line)) if '\n' not in line else None,
                         unattended_index_source=getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None),
-                        on_event=TerminalTestProgress(tests, presentation.write, scrub=scrubber),
+                        on_event=TerminalTestProgress(tests, presentation.write, scrub=terminal_scrub, allow_content=allow_content),
                         output=runner_output)
                     if getattr(execution, 'reporting_skipped', False):
                         print('Allure reporting: SKIPPED by configuration', flush=True)
                 finally:
                     if pending_output:
-                        presentation.write(scrubber(pending_output), end='')
+                        presentation.write(terminal_scrub(pending_output), end='')
                     presentation.close()
                 from api_agent.testing.inspection_controls import finish_terminal_inspection
                 from api_agent.testing.terminal_diagnostics import write_successful_diagnostics
-                if not finish_terminal_inspection(execution, lambda line: print(scrubber(line), flush=True),
-                        diagnostic_output=diagnostic_output,
+                if not finish_terminal_inspection(execution, lambda line: print(terminal_scrub(line), flush=True),
+                        diagnostic_output=diagnostic_output, allow_content=allow_content,
                         successful_output=lambda tests: write_successful_diagnostics(tests,
-                            presentation.write, scrubber=scrubber,
+                            lambda text: presentation.write(text if allow_content else terminal_scrub(text)),
+                            scrubber=scrubber, allow_content=allow_content, snapshot=terminal_snapshot,
                             level=result.values.get('SUCCESSFUL_TEST_DIAGNOSTICS_LEVEL', 'warning'))):
                     return 3
                 return execution.exit_code
             except BaseException as error:
-                diagnostic_output(format_exception(error, boundary='Noninteractive integration execution'))
+                retained_result = getattr(error, 'recorded_result', None)
+                if retained_result is not None:
+                    from api_agent.testing.inspection_controls import finish_terminal_inspection
+                    try:
+                        finish_terminal_inspection(retained_result, lambda line: print(terminal_scrub(line), flush=True),
+                            diagnostic_output=diagnostic_output, allow_content=allow_content)
+                    except BaseException as secondary:
+                        error.diagnostic_errors = (*getattr(error, 'diagnostic_errors', ()), secondary)
+                        from api_agent.testing.suite_lock import _cleanup_receipts
+                        existing = tuple(_cleanup_receipts(error))
+                        additional = list(_cleanup_receipts(secondary))
+                        group = getattr(secondary, 'inspection_group', None)
+                        if group is not None and group.active and not additional:
+                            additional.append(group.cleanup_receipt())
+                        for receipt in additional:
+                            if any(receipt is item for item in existing):
+                                continue
+                            target = existing[-1] if existing else error
+                            target.cleanup_pending = receipt
+                            existing = (*existing, receipt)
+                source = getattr(result.fields.get('UNATTENDED_USER_INDEX'), 'source', None)
+                diagnostic_output(safe_exception(error, terminal_scrub, allow_content=allow_content,
+                    boundary='Noninteractive integration execution', unattended_index_source=source))
                 if _retains_cleanup(error):
-                    raise terminal_exception(error, scrubber,
+                    raise terminal_exception(error, lambda text: safe_exception(error, terminal_scrub, allow_content=False, unattended_index_source=source) if not allow_content else terminal_scrub(text),
                         boundary='Noninteractive integration cleanup remains pending') from None
                 if isinstance(error, KeyboardInterrupt):
                     return 130
                 if isinstance(error, (ValueError, OSError, WorktreeGateError, subprocess.CalledProcessError)):
                     return 2
                 if isinstance(error, (SystemExit, GeneratorExit)):
-                    raise terminal_exception(error, scrubber) from None
+                    raise terminal_exception(error, lambda text: safe_exception(error, terminal_scrub, allow_content=False, unattended_index_source=source) if not allow_content else terminal_scrub(text)) from None
                 return 1
             finally:
-                presentation.close()
+                try:
+                    presentation.close()
+                finally:
+                    if redaction_history is not None:
+                        redaction_history.close()
         if result.values.get('NO_STD_IN') and mode == 'allure':
             from api_agent.runtime.dependencies import ensure_environment
             status = ensure_environment(context, argv, collect=True, groups=('dev', 'browser'), **handoff_options)

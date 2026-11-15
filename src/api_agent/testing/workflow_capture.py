@@ -61,6 +61,8 @@ class _WorkerCapture:
         self.config, self.scope = config, scope
         self.policy = ContentPolicy.from_config(config)
         self.boundary = content_boundary(config.values)
+        if self.policy.allow_content:
+            scope.retain_diagnostic_history()
         scope.join('workflow', self.boundary)
 
     def services(self, provider=None):
@@ -97,6 +99,29 @@ def _union_boundary(values):
             or len(values) > 64 or sum(len(value.encode('utf-8')) for value in values) > 16384):
         raise ContractError('Workflow credential authority exceeds limits')
     return EmissionBoundary(ContentPolicy(True), secrets=values, preserve_json_text=True)
+
+
+WORKER_DETAILS_UNAVAILABLE = '[worker exception evidence withheld: credential authority unavailable]'
+
+
+def worker_exception_details(error, *, allow_unavailable=False):
+    """Admit extra exception evidence only under the worker's complete authority."""
+    owner = _CURRENT.get()
+    if owner is None:
+        return WORKER_DETAILS_UNAVAILABLE if allow_unavailable else ''
+    if not owner.policy.allow_content:
+        return ''
+    from .diagnostics import CredentialScrubber, format_exception
+    try:
+        lease = owner.scope.freeze(credential_only=True)
+        try:
+            boundary = _union_boundary(owner.scope.diagnostic_secrets())
+            return CredentialScrubber(owner.config, boundary=boundary)(
+                format_exception(error, details_only=True))
+        finally:
+            lease.release()
+    except Exception:
+        return WORKER_DETAILS_UNAVAILABLE
 
 
 @contextmanager

@@ -13,8 +13,10 @@ from api_agent.telemetry.tracing_providers import admit_binding
 from api_agent.workflows.observations import WorkflowObservationFactory
 
 
-def _warning(message):
+def _warning(message, code='setup'):
     print('WARNING: ' + message, file=sys.stderr, flush=True)
+    from .trace_warning import emit_worker
+    emit_worker(code)
 
 
 def _collector_diagnostic(error, factory, config, binding):
@@ -58,12 +60,12 @@ class _TraceResources:
                 await self.runtime.aclose()
             except TraceDeliveryError:
                 self.runtime_closed = True
-                _warning(TRACE_DELIVERY_WARNING)
+                _warning(TRACE_DELIVERY_WARNING, 'delivery')
             except asyncio.CancelledError:
-                _warning('Tracing cleanup failed; resources remain owned for retry.')
+                _warning('Tracing cleanup failed; resources remain owned for retry.', 'cleanup')
                 return False
             except Exception:
-                _warning('Tracing cleanup failed; resources remain owned for retry.')
+                _warning('Tracing cleanup failed; resources remain owned for retry.', 'cleanup')
                 return False
             else:
                 self.runtime_closed = True
@@ -71,10 +73,10 @@ class _TraceResources:
             try:
                 await offload(self.manager.release, retain=False)
             except asyncio.CancelledError:
-                _warning('Tracing collector release failed; resources remain owned for retry.')
+                _warning('Tracing collector release failed; resources remain owned for retry.', 'cleanup')
                 return False
             except Exception:
-                _warning('Tracing collector release failed; resources remain owned for retry.')
+                _warning('Tracing collector release failed; resources remain owned for retry.', 'cleanup')
                 return False
         self.closed = True
         return True
@@ -111,7 +113,7 @@ async def owned_workflow_trace(factory, config, *, owner_root, environ=None, exp
                                collector_snapshot=None):
     """Bind selected tracing to an existing capture factory for one owned run."""
     if not _active.acquire(blocking=False):
-        _warning('Tracing is already active in this worker; continuing without tracing.')
+        _warning('Tracing is already active in this worker; continuing without tracing.', 'busy')
         yield factory
         return
     held = True
@@ -132,7 +134,7 @@ async def owned_workflow_trace(factory, config, *, owner_root, environ=None, exp
 async def _owned_workflow_trace_locked(factory, config, *, owner_root, environ,
                                        explicit_fields, collector_snapshot):
     if not await drain_pending_workflow_trace():
-        _warning('Tracing cleanup remains pending; continuing without tracing.')
+        _warning('Tracing cleanup remains pending; continuing without tracing.', 'cleanup')
         yield factory
         return
     binding = owner = None

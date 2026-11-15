@@ -78,6 +78,7 @@ class ManagedService:
     health: str | None
     profile: str
     initialization_changes: tuple[str, ...] = ()
+    acquisition_nonce: str | None = None
 
 
 def process_identity(pid):
@@ -395,8 +396,19 @@ def _read_journal(directory, scope, identity):
                     or not _ID.fullmatch(record['conditional_engine_id'])))
                 or not isinstance(record.get('owned_ids', []), list)
                 or any(item not in record['ids'] for item in record.get('owned_ids', []))
+                or not isinstance(record.get('disposable_ids', []), list)
+                or any(not isinstance(item, str) or item not in record['ids']
+                       for item in record.get('disposable_ids', []))
+                or not isinstance(record.get('disposal_nonces', {}), dict)
+                or set(record.get('disposal_nonces', {})) != set(record.get('disposable_ids', []))
+                or any(type(nonce) is not str or not re.fullmatch('[0-9a-f]{32}', nonce)
+                       for nonce in record.get('disposal_nonces', {}).values())
+                or (record.get('disposal_network_id') is not None and
+                    (not isinstance(record['disposal_network_id'], str) or not _ID.fullmatch(record['disposal_network_id'])))
+                or type(record.get('dispose_on_release', False)) is not bool
                 or type(record.get('cleanup_only', False)) is not bool
-                or (record.get('cleanup_only', False) and not record.get('conditional_cleanup_ids'))
+                or (record.get('cleanup_only', False) and not record.get('conditional_cleanup_ids')
+                    and not record.get('disposal_network_id'))
                 or not isinstance(record.get('conditional_cleanup_ids', []), list)
                 or any(item not in record['ids'] for item in record.get('conditional_cleanup_ids', []))):
             raise PrerequisiteError('Invalid ownership lease record.')
@@ -406,23 +418,41 @@ def _read_journal(directory, scope, identity):
                                                        set(record['owned_ids']))
         if not record.get('cleanup_only', False) and identity(record['pid']) == record['identity']:
             active[key] = dict(record)
-        elif record.get('conditional_cleanup_ids'):
+        elif record.get('conditional_cleanup_ids') or record.get('disposal_network_id'):
             stale_duties.append((key, record))
     for key, record in stale_duties:
-        remaining = set(record['conditional_cleanup_ids'])
+        remaining = set(record.get('conditional_cleanup_ids', []))
+        network_id = record.get('disposal_network_id')
         for successor_key in sorted(active):
             successor = active[successor_key]
             if (successor.get('cleanup_only', False) or not record.get('conditional_engine_id')
-                    or successor.get('conditional_engine_id') != record['conditional_engine_id']):
+                    or successor.get('conditional_engine_id') != record['conditional_engine_id']
+                    or successor.get('dispose_on_release', False) != record.get('dispose_on_release', False)):
                 continue
             transferred = remaining.intersection(successor['ids'])
             if transferred:
                 successor['conditional_cleanup_ids'] = sorted(
                     set(successor.get('conditional_cleanup_ids', [])) | transferred)
+                successor['disposable_ids'] = sorted(set(successor.get('disposable_ids', [])) |
+                    (set(record.get('disposable_ids', [])) & transferred))
+                successor['disposal_nonces'] = {**successor.get('disposal_nonces', {}),
+                    **{item: nonce for item, nonce in record.get('disposal_nonces', {}).items() if item in transferred}}
                 remaining -= transferred
-        if remaining:
-            active[key] = {**record, 'cleanup_only': True, 'ids': sorted(remaining),
-                           'conditional_cleanup_ids': sorted(remaining), 'owned_ids': []}
+        if record.get('disposal_network_id'):
+            for successor_key in sorted(active):
+                successor = active[successor_key]
+                if (not successor.get('cleanup_only', False)
+                        and successor.get('conditional_engine_id') == record.get('conditional_engine_id')
+                        and successor.get('dispose_on_release', False)):
+                    successor['disposal_network_id'] = network_id
+                    network_id = None
+                    break
+        if remaining or network_id:
+            active[key] = {**record, 'disposal_network_id': network_id, 'cleanup_only': True, 'ids': sorted(remaining),
+                           'conditional_cleanup_ids': sorted(remaining), 'owned_ids': [],
+                           'disposable_ids': sorted(set(record.get('disposable_ids', [])) & remaining),
+                           'disposal_nonces': {item: nonce for item, nonce in record.get('disposal_nonces', {}).items()
+                                               if item in remaining}}
     return active
 
 
@@ -613,12 +643,149 @@ def _http_identity(readiness, timeout, *, cancelled=lambda: False):
         return False
 
 
-class PrerequisiteManager:
+class _NetworkCleanup:
+    def _prune_networks(self, deadline, *, aged=False, only_id=None, required_labels=None):
+        if not self.plan.enabled:
+            return ()
+        # Stopped definitions still need their networks for restart, even when
+        # the engine considers a network with no live endpoints pruneable.
+        # Hold the creation lock over inspection and deletion, and remove only
+        # pinned, explicitly opted-in networks with NO container references.
+        executable, marker = self.plan.command[0], 'api-agent.network-cleanup-v1'
+        cleanup = not aged
+        with self._network_guard(deadline, cleanup=cleanup):
+            removable = []
+            selected = marker if aged else marker + '=' + self.scope.id
+            names = self._command((executable, 'network', 'ls', '--filter',
+                'label=' + selected, '--format', '{{.Name}}'), deadline, cleanup=cleanup).split()
+            names = sorted({name for name in names if re.fullmatch(r'sa-[0-9a-f]{16}_default', name)})
+            if not names:
+                return self._absent_network(only_id, deadline, cleanup=cleanup)
+            # This snapshot is protected against managed creation by the guard;
+            # processes outside that lock are not serialized by it.
+            references = self._container_network_references(deadline, cleanup=cleanup,
+                preserve=names if not aged and self.lease is not None else ())
+            candidates = [name for name in names if name not in references]
+            for record in self._network_records(candidates, deadline, cleanup=cleanup):
+                name = record.get('Name', record.get('name'))
+                try:
+                    labels = record.get('Labels', record.get('labels'))
+                    scope = labels.get(marker) if isinstance(labels, dict) else None
+                    if (not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{16}', scope)
+                            or name != 'sa-' + scope + '_default'
+                            or record.get('Name', record.get('name')) != name
+                            or labels.get('api-agent.managed') != 'true'
+                            or labels.get('api-agent.scope') != scope
+                            or labels.get('com.docker.compose.project') != 'sa-' + scope
+                            or labels.get('com.docker.compose.network') != 'default'
+                            or (not aged and scope != self.scope.id)
+                            or (required_labels and any(labels.get(key) != value
+                                for key, value in required_labels.items()))):
+                        continue
+                    identifier = record.get('Id', record.get('id'))
+                    if not isinstance(identifier, str) or not _ID.fullmatch(identifier):
+                        raise ValueError()
+                    if aged:
+                        created = datetime.fromisoformat(record.get('Created', record.get('created')))
+                        if created.tzinfo is None or (datetime.now(timezone.utc) - created).total_seconds() < 86400:
+                            continue
+                except (ValueError, TypeError, AttributeError) as error:
+                    raise PrerequisiteError('Network cleanup inventory could not be verified; remaining networks were preserved.') from error
+                if (only_id is not None and identifier != only_id) or name in references or identifier in references:
+                    continue
+                removable.append(identifier)
+            for offset in range(0, len(removable), 32):
+                self._command((executable, 'network', 'rm', *removable[offset:offset + 32]),
+                    deadline, cleanup=cleanup)
+            if only_id is not None and only_id not in removable:
+                return self._absent_network(only_id, deadline, cleanup=cleanup)
+            return tuple(removable)
+
+    def _absent_network(self, identifier, deadline, *, cleanup):
+        if identifier is None:
+            return ()
+        identifiers = self._command((self.plan.command[0], 'network', 'ls', '--no-trunc',
+            '--format', '{{.ID}}'), deadline, cleanup=cleanup).split()
+        if len(set(identifiers)) != len(identifiers) or any(not _ID.fullmatch(item) for item in identifiers):
+            raise PrerequisiteError('Network absence cannot be verified; cleanup remains owned.')
+        return () if identifier in identifiers else (identifier,)
+
+    def _network_records(self, names, deadline, *, cleanup):
+        """Amortize supervised CLI startup across bounded inspection batches."""
+        for offset in range(0, len(names), 32):
+            batch = names[offset:offset + 32]
+            try:
+                records = json.loads(self._command(
+                    (self.plan.command[0], 'network', 'inspect', *batch), deadline, cleanup=cleanup))
+                if (not isinstance(records, list) or len(records) != len(batch)
+                        or any(not isinstance(record, dict) for record in records)
+                        or {record.get('Name', record.get('name')) for record in records} != set(batch)):
+                    raise ValueError()
+            except (ValueError, TypeError) as error:
+                raise PrerequisiteError('Network cleanup inventory could not be verified; remaining networks were preserved.') from error
+            yield from records
+
+    def _container_network_references(self, deadline, *, cleanup, preserve=()):
+        """Inspect saved definitions; network filters may only see live endpoints."""
+        executable = self.plan.command[0]
+        identifiers = self._command((executable, 'ps', '-a', '--no-trunc', '--format', '{{.ID}}'),
+            deadline, cleanup=cleanup).split()
+        references = set()
+        try:
+            if any(not _ID.fullmatch(identifier) for identifier in identifiers):
+                raise ValueError()
+            # Prioritize lease definitions still present in the fresh inventory.
+            # Positive references only preserve networks. Absence still requires
+            # inspecting every saved definition before deletion is considered.
+            priority = set(self.lease.container_ids) if self.lease is not None else set()
+            identifiers.sort(key=lambda identifier: identifier not in priority)
+            protected = frozenset(preserve)
+            template = '{"networks":{{json .NetworkSettings.Networks}},"mode":{{json .HostConfig.NetworkMode}}}'
+            for offset in range(0, len(identifiers), 32):
+                batch = identifiers[offset:offset + 32]
+                rows = self._command((executable, 'inspect', '--format', template, *batch),
+                    deadline, cleanup=cleanup).splitlines()
+                if len(rows) != len(batch):
+                    raise ValueError()
+                for row in rows:
+                    entry = json.loads(row)
+                    networks, mode = entry['networks'], entry['mode']
+                    if ((networks is not None and not isinstance(networks, dict))
+                            or (mode is not None and not isinstance(mode, str))):
+                        raise ValueError()
+                    if mode:
+                        references.add(mode)
+                    for name, network in (networks or {}).items():
+                        references.add(name)
+                        if network is not None:
+                            identifier = network.get('NetworkID', '')
+                            if not isinstance(identifier, str):
+                                raise ValueError()
+                            references.add(identifier)
+                if protected and protected <= references:
+                    return references
+        except (ValueError, TypeError, AttributeError, KeyError) as error:
+            raise PrerequisiteError('Container network references could not be verified; remaining networks were preserved.') from error
+        return references
+
+
+
+class PrerequisiteManager(_NetworkCleanup):
     def __init__(self, plan, scope, ownership_directory, *, engine_environment=None,
                  command_runner=run_command, cancelled=lambda: False,
                  readiness_probe=_readiness, deadline_seconds=120,
                  now=time.monotonic, sleep=time.sleep, identity=process_identity,
-                 cleanup_timeout_seconds=15, engine_target=None, engine_registry=None):
+                 cleanup_timeout_seconds=15, engine_target=None, engine_registry=None,
+                 dispose_on_release=False, acquisition_nonce=None):
+        if type(dispose_on_release) is not bool:
+            raise PrerequisiteError('Disposal policy must be a boolean.')
+        if acquisition_nonce is not None and (type(acquisition_nonce) is not str
+                or not re.fullmatch(r'[0-9a-f]{32}', acquisition_nonce)):
+            raise PrerequisiteError('Acquisition nonce must be a 32-character hexadecimal value.')
+        self._automatic_nonce = acquisition_nonce is None and dispose_on_release
+        self.acquisition_nonce = acquisition_nonce or (uuid4().hex if dispose_on_release else None)
+        self.dispose_on_release = dispose_on_release
+        self._created_network_id = None
         self.plan, self.scope = plan, scope
         self.conditional = {item.compose_name: item for item in getattr(plan, 'conditional', ())}
         self._rollback = None
@@ -738,122 +905,19 @@ class PrerequisiteManager:
             except (ValueError, TypeError, AttributeError) as error:
                 raise PrerequisiteError('Existing prerequisite network ownership could not be verified; no network was changed.') from error
             return
-        self._command((self.plan.command[0], 'network', 'create',
+        created = self._command((self.plan.command[0], 'network', 'create',
             '--label', 'api-agent.network-cleanup-v1=' + self.scope.id,
             '--label', 'api-agent.managed=true',
             '--label', 'api-agent.scope=' + self.scope.id,
             '--label', 'com.docker.compose.project=' + self.scope.project,
-            '--label', 'com.docker.compose.network=default', name), deadline)
-
-    def _prune_networks(self, deadline, *, aged=False):
-        if not self.plan.enabled:
-            return
-        # Stopped definitions still need their networks for restart, even when
-        # the engine considers a network with no live endpoints pruneable.
-        # Hold the creation lock over inspection and deletion, and remove only
-        # pinned, explicitly opted-in networks with NO container references.
-        executable, marker = self.plan.command[0], 'api-agent.network-cleanup-v1'
-        cleanup = not aged
-        with self._network_guard(deadline, cleanup=cleanup):
-            removable = []
-            selected = marker if aged else marker + '=' + self.scope.id
-            names = self._command((executable, 'network', 'ls', '--filter',
-                'label=' + selected, '--format', '{{.Name}}'), deadline, cleanup=cleanup).split()
-            names = sorted({name for name in names if re.fullmatch(r'sa-[0-9a-f]{16}_default', name)})
-            if not names:
-                return
-            # This snapshot is protected against managed creation by the guard;
-            # processes outside that lock are not serialized by it.
-            references = self._container_network_references(deadline, cleanup=cleanup,
-                preserve=names if not aged and self.lease is not None else ())
-            candidates = [name for name in names if name not in references]
-            for record in self._network_records(candidates, deadline, cleanup=cleanup):
-                name = record.get('Name', record.get('name'))
-                try:
-                    labels = record.get('Labels', record.get('labels'))
-                    scope = labels.get(marker) if isinstance(labels, dict) else None
-                    if (not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{16}', scope)
-                            or name != 'sa-' + scope + '_default'
-                            or record.get('Name', record.get('name')) != name
-                            or labels.get('api-agent.managed') != 'true'
-                            or labels.get('api-agent.scope') != scope
-                            or labels.get('com.docker.compose.project') != 'sa-' + scope
-                            or labels.get('com.docker.compose.network') != 'default'
-                            or (not aged and scope != self.scope.id)):
-                        continue
-                    identifier = record.get('Id', record.get('id'))
-                    if not isinstance(identifier, str) or not _ID.fullmatch(identifier):
-                        raise ValueError()
-                    if aged:
-                        created = datetime.fromisoformat(record.get('Created', record.get('created')))
-                        if created.tzinfo is None or (datetime.now(timezone.utc) - created).total_seconds() < 86400:
-                            continue
-                except (ValueError, TypeError, AttributeError) as error:
-                    raise PrerequisiteError('Network cleanup inventory could not be verified; remaining networks were preserved.') from error
-                if name in references or identifier in references:
-                    continue
-                removable.append(identifier)
-            for offset in range(0, len(removable), 32):
-                self._command((executable, 'network', 'rm', *removable[offset:offset + 32]),
-                    deadline, cleanup=cleanup)
-
-    def _network_records(self, names, deadline, *, cleanup):
-        """Amortize supervised CLI startup across bounded inspection batches."""
-        for offset in range(0, len(names), 32):
-            batch = names[offset:offset + 32]
-            try:
-                records = json.loads(self._command(
-                    (self.plan.command[0], 'network', 'inspect', *batch), deadline, cleanup=cleanup))
-                if (not isinstance(records, list) or len(records) != len(batch)
-                        or any(not isinstance(record, dict) for record in records)
-                        or {record.get('Name', record.get('name')) for record in records} != set(batch)):
-                    raise ValueError()
-            except (ValueError, TypeError) as error:
-                raise PrerequisiteError('Network cleanup inventory could not be verified; remaining networks were preserved.') from error
-            yield from records
-
-    def _container_network_references(self, deadline, *, cleanup, preserve=()):
-        """Inspect saved definitions; network filters may only see live endpoints."""
-        executable = self.plan.command[0]
-        identifiers = self._command((executable, 'ps', '-a', '--no-trunc', '--format', '{{.ID}}'),
-            deadline, cleanup=cleanup).split()
-        references = set()
-        try:
-            if any(not _ID.fullmatch(identifier) for identifier in identifiers):
-                raise ValueError()
-            # Prioritize lease definitions still present in the fresh inventory.
-            # Positive references only preserve networks. Absence still requires
-            # inspecting every saved definition before deletion is considered.
-            priority = set(self.lease.container_ids) if self.lease is not None else set()
-            identifiers.sort(key=lambda identifier: identifier not in priority)
-            protected = frozenset(preserve)
-            template = '{"networks":{{json .NetworkSettings.Networks}},"mode":{{json .HostConfig.NetworkMode}}}'
-            for offset in range(0, len(identifiers), 32):
-                batch = identifiers[offset:offset + 32]
-                rows = self._command((executable, 'inspect', '--format', template, *batch),
-                    deadline, cleanup=cleanup).splitlines()
-                if len(rows) != len(batch):
-                    raise ValueError()
-                for row in rows:
-                    entry = json.loads(row)
-                    networks, mode = entry['networks'], entry['mode']
-                    if ((networks is not None and not isinstance(networks, dict))
-                            or (mode is not None and not isinstance(mode, str))):
-                        raise ValueError()
-                    if mode:
-                        references.add(mode)
-                    for name, network in (networks or {}).items():
-                        references.add(name)
-                        if network is not None:
-                            identifier = network.get('NetworkID', '')
-                            if not isinstance(identifier, str):
-                                raise ValueError()
-                            references.add(identifier)
-                if protected and protected <= references:
-                    return references
-        except (ValueError, TypeError, AttributeError, KeyError) as error:
-            raise PrerequisiteError('Container network references could not be verified; remaining networks were preserved.') from error
-        return references
+            '--label', 'com.docker.compose.network=default',
+            *(( '--label', 'api-agent.acquisition=' + self.acquisition_nonce)
+              if self.acquisition_nonce is not None else ()), name), deadline)
+        if self.dispose_on_release:
+            identifier = created.strip()
+            if not _ID.fullmatch(identifier):
+                raise PrerequisiteError('Created network identifier could not be verified.')
+            self._created_network_id = identifier
 
     def _inventory(self, deadline, *, cleanup=False):
         executable = self.plan.command[0]
@@ -904,7 +968,8 @@ class PrerequisiteManager:
                 changes = initialization_changes(service, config.get('Env'), expected_environment)
                 result[identifier] = ManagedService(identifier, service,
                     config['Image'], record.get('Image'), labels.get(CONFIG_LABEL, ''), bool(state.get('Running')),
-                    state.get('Health', {}).get('Status'), labels['api-agent.profile'], changes)
+                    state.get('Health', {}).get('Status'), labels['api-agent.profile'], changes,
+                    labels.get('api-agent.acquisition'))
             return result
         except (KeyError, TypeError, ValueError) as error:
             raise PrerequisiteError('Invalid prerequisite inspection response.') from error
@@ -916,10 +981,25 @@ class PrerequisiteManager:
                     or record.get('conditional_engine_id') != self.engine_id):
                 continue
             remaining = sorted(set(record['conditional_cleanup_ids']).intersection(inventory))
-            if remaining:
-                journal[key] = {**record, 'ids': remaining, 'conditional_cleanup_ids': remaining, 'owned_ids': []}
+            if remaining or record.get('disposal_network_id'):
+                journal[key] = {**record, 'ids': remaining, 'conditional_cleanup_ids': remaining, 'owned_ids': [],
+                                'disposable_ids': sorted(set(record.get('disposable_ids', [])) & set(remaining)),
+                                'disposal_nonces': {item: nonce for item, nonce in record.get('disposal_nonces', {}).items()
+                                                    if item in remaining}}
             else:
                 journal.pop(key)
+
+    def _cleanup_pending_networks(self, journal, deadline):
+        for key, record in tuple(journal.items()):
+            network_id = record.get('disposal_network_id')
+            if (not record.get('cleanup_only', False) or not network_id
+                    or record.get('conditional_engine_id') != self.engine_id):
+                continue
+            if network_id in self._prune_networks(deadline, only_id=network_id):
+                if record.get('conditional_cleanup_ids'):
+                    journal[key] = {**record, 'disposal_network_id': None}
+                else:
+                    journal.pop(key)
 
     def status(self, *, _deadline=None):
         """Return bounded ownership-verified inventory without changing services."""
@@ -1318,12 +1398,19 @@ class PrerequisiteManager:
             desired[item.service] = item
         return desired
 
-    def _stop_new(self, identifiers, journal, deadline):
+    def _stop_new(self, identifiers, journal, deadline, *, nonces=None):
         protected = _leased_ids(journal)
         eligible = set(identifiers) - protected
         if not eligible:
             return ()
         current = self._inventory(deadline, cleanup=True)
+        if self.dispose_on_release:
+            selected = {item: current[item] for item in eligible if item in current}
+            self._compatible(selected, deadline, allow_stopped=True, cleanup=True)
+            if any(current[item].acquisition_nonce != nonce for item, nonce in (nonces or {}).items() if item in current):
+                raise PrerequisiteError('Temporary prerequisite creation evidence changed; cleanup remains owned.')
+            if any(item.service not in self.specs for item in selected.values()):
+                raise PrerequisiteError('Temporary prerequisite ownership changed; cleanup remains owned.')
         owned = tuple(sorted(item for item in eligible if item in current and current[item].running))
         # Stop consumers before their stores, independently of engine scheduling
         # or immutable container-ID order. Prepare all tiers before mutating any
@@ -1342,14 +1429,43 @@ class PrerequisiteManager:
             self._command((self.plan.command[0], 'stop', '--time', '5', *tier), deadline, cleanup=True)
         return owned
 
+    def _dispose_new(self, identifiers, journal, deadline, *, nonces):
+        eligible = set(identifiers) - _leased_ids(journal)
+        if not eligible:
+            return
+        current = self._inventory(deadline, cleanup=True)
+        present = {identifier: current[identifier] for identifier in eligible if identifier in current}
+        all_ids = self._command((self.plan.command[0], 'ps', '-a', '--no-trunc',
+            '--format', '{{.ID}}'), deadline, cleanup=True).split()
+        if any(not _ID.fullmatch(identifier) for identifier in all_ids):
+            raise PrerequisiteError('Temporary prerequisite inventory cannot be verified; cleanup remains owned.')
+        if (eligible - set(present)).intersection(all_ids):
+            raise PrerequisiteError('Temporary prerequisite ownership changed; cleanup remains owned.')
+        self._compatible(present, deadline, allow_stopped=True, cleanup=True)
+        if any(item.acquisition_nonce != nonces.get(identifier) for identifier, item in present.items()):
+            raise PrerequisiteError('Temporary prerequisite creation evidence changed; cleanup remains owned.')
+        if any(item.service not in self.specs or item.running for item in present.values()):
+            raise PrerequisiteError('Temporary prerequisite ownership changed; cleanup remains owned.')
+        if present:
+            self._command((self.plan.command[0], 'rm', *sorted(present)), deadline, cleanup=True)
+
     def _rollback_acquisition(self, journal, deadline):
-        newly, snapshot, invocation = self._rollback
+        newly, snapshot, invocation, disposable = self._rollback
         if newly is None:
             raise PrerequisiteError('Initial rollback ownership could not be verified; review the failed acquisition before cleanup.')
         journal = dict(journal)
         journal.pop(invocation, None)
-        stopped = self._stop_new(newly, journal, deadline)
-        self._prune_networks(deadline)
+        nonces = {item: self.acquisition_nonce for item in disposable}
+        stopped = self._stop_new(newly, journal, deadline, nonces=nonces)
+        if self.dispose_on_release:
+            self._dispose_new(disposable, journal, deadline, nonces=nonces)
+        if not self.dispose_on_release or self._created_network_id:
+            removed = self._prune_networks(deadline, only_id=self._created_network_id if self.dispose_on_release else None)
+            if self.dispose_on_release and self._created_network_id not in removed:
+                journal[invocation] = {'pid': os.getpid(), 'identity': self.identity(os.getpid()),
+                    'ids': [], 'owned_ids': [], 'conditional_cleanup_ids': [], 'cleanup_only': True,
+                    'conditional_engine_id': self.engine_id, 'dispose_on_release': True,
+                    'disposal_network_id': self._created_network_id}
         _write_journal(self.directory, self.scope, journal)
         if snapshot is not None and not newly:
             shutil.rmtree(snapshot)
@@ -1362,6 +1478,9 @@ class PrerequisiteManager:
             raise PrerequisiteError('Prerequisite rollback remains pending; release before acquiring again.')
         if self.lease is not None:
             return self.lease
+        self._created_network_id = None
+        if self._automatic_nonce:
+            self.acquisition_nonce = uuid4().hex
         deadline = self.now() + self.timeout
         if _deadline is not None:
             deadline = min(deadline, _deadline)
@@ -1397,10 +1516,16 @@ class PrerequisiteManager:
                 return self.lease
             initial = self._inventory(deadline)
             self._retire_disposed_duties(journal, initial)
+            self._cleanup_pending_networks(journal, deadline)
             if expected_ids is not None and (set(initial) != set(expected_ids)
                     or (reporting_directory is None and any(not item.running for item in initial.values()))):
                 raise PrerequisiteError('Registered reporting container changed or stopped; no restart was attempted.')
             compatible = self._compatible(initial, deadline, allow_stopped=True)
+            selected_ids = {item.id for item in compatible.values()}
+            if any(selected_ids.intersection(record['ids']) and
+                   record.get('dispose_on_release', False) != self.dispose_on_release
+                   for record in journal.values()):
+                raise PrerequisiteError('Active prerequisite disposal policy differs; no changes were made.')
             restarted = {item.id for item in compatible.values() if not item.running}
             protected = _leased_ids(journal)
             if restarted & protected:
@@ -1445,7 +1570,8 @@ class PrerequisiteManager:
                     if override.is_symlink():
                         raise PrerequisiteError('Compose ownership override may not be a symlink.')
                     override.write_text(json.dumps({'services': {name: {'labels': {
-                        CONFIG_LABEL: fingerprint}} for name, fingerprint in self.fingerprints.items()}}))
+                        CONFIG_LABEL: fingerprint, **({'api-agent.acquisition': self.acquisition_nonce}
+                            if self.dispose_on_release else {})}} for name, fingerprint in self.fingerprints.items()}}))
                     # Private snapshot paths remain available for retained bind
                     # mounts. No mutable source asset reaches Compose execution.
                     snapshot = Path(tempfile.mkdtemp(prefix=f'{self.scope.id}-assets-', dir=self.directory))
@@ -1467,6 +1593,9 @@ class PrerequisiteManager:
                     inventory = self._inventory(deadline)
                     newly = tuple(item for item in inventory if (item not in initial or item in restarted)
                         and inventory[item].service in missing)
+                    if self.dispose_on_release and any(inventory[item].acquisition_nonce != self.acquisition_nonce
+                            for item in newly if item not in initial):
+                        raise PrerequisiteError('Temporary prerequisite creation evidence differs.')
                     current = self._compatible(inventory, deadline)
                     if recovered_id is not None and ('jaeger' not in current or current['jaeger'].id != recovered_id):
                         raise PrerequisiteError('Recovered prerequisite changed during acquisition.')
@@ -1497,6 +1626,12 @@ class PrerequisiteManager:
                 pending_journal = dict(journal)
                 pending_journal[invocation] = {'pid': pid, 'identity': identity, 'ids': list(lease.container_ids),
                     'owned_ids': list(newly), 'reused_ids': list(reused), 'fingerprints': self.fingerprints,
+                    'dispose_on_release': self.dispose_on_release,
+                    'disposal_network_id': self._created_network_id,
+                    'disposable_ids': [identifier for identifier in newly
+                        if self.dispose_on_release and identifier not in initial],
+                    'disposal_nonces': {identifier: self.acquisition_nonce for identifier in newly
+                        if self.dispose_on_release and identifier not in initial},
                     'conditional_engine_id': self.engine_id,
                     'conditional_cleanup_ids': [identifier for identifier in newly
                         if inventory[identifier].service in self.conditional]}
@@ -1506,18 +1641,20 @@ class PrerequisiteManager:
             except BaseException as primary:
                 # Preserve the acquisition boundary before any fallible cleanup.
                 # A failed up can create containers before returning an error.
-                self._rollback = (None, snapshot, invocation)
+                self._rollback = (None, snapshot, invocation, ())
                 try:
                     rollback_deadline = self.now() + 15
                     inventory = self._inventory(rollback_deadline, cleanup=True)
                     newly = tuple(item for item in inventory if (item not in initial or item in restarted)
                         and inventory[item].service in missing
                         and (inventory[item].service != 'jaeger' or recovered_id is None or item == recovered_id)
+                        and (not self.dispose_on_release or item in initial
+                             or inventory[item].acquisition_nonce == self.acquisition_nonce)
                         and (inventory[item].service not in verified
                             or item == verified[inventory[item].service].id))
                     # Pin IDs while the acquisition lock still excludes other
                     # invocations; a retry cannot adopt later replacements.
-                    self._rollback = (newly, snapshot, invocation)
+                    self._rollback = (newly, snapshot, invocation, tuple(item for item in newly if item not in initial))
                     self._rollback_acquisition(journal, rollback_deadline)
                 except BaseException:
                     from api_agent.providers.control import CleanupPendingError
@@ -1545,7 +1682,14 @@ class PrerequisiteManager:
             if self.conditional and any(record.get('cleanup_only', False) for record in journal.values()):
                 self._retire_disposed_duties(journal, self._inventory(deadline, cleanup=True))
             record = journal.pop(self.lease.invocation_id, {})
+            if self.dispose_on_release and (not record.get('dispose_on_release')
+                    or record.get('conditional_engine_id') != self.engine_id
+                    or set(record.get('ids', [])) != set(self.lease.container_ids)):
+                raise PrerequisiteError('Temporary prerequisite lease cannot be verified; cleanup remains owned.')
             cleanup_ids = set(record.get('conditional_cleanup_ids', []))
+            disposable_ids = set(record.get('disposable_ids', []))
+            nonces = dict(record.get('disposal_nonces', {}))
+            network_id = record.get('disposal_network_id')
             if record.get('conditional_engine_id') == self.engine_id:
                 cleanup_ids.update(record.get('owned_ids', []))
             if not retain:
@@ -1558,8 +1702,27 @@ class PrerequisiteManager:
                     if transferred:
                         successor['conditional_cleanup_ids'] = sorted(
                             set(successor.get('conditional_cleanup_ids', [])) | transferred)
+                        successor['disposable_ids'] = sorted(set(successor.get('disposable_ids', [])) |
+                            (disposable_ids & transferred))
+                        successor['disposal_nonces'] = {**successor.get('disposal_nonces', {}),
+                            **{item: nonce for item, nonce in nonces.items() if item in transferred}}
+                        disposable_ids -= transferred
+                        nonces = {item: nonce for item, nonce in nonces.items() if item not in transferred}
+                        if network_id:
+                            successor['disposal_network_id'] = network_id
+                            network_id = None
                         journal[key] = successor
                         cleanup_ids -= transferred
+            if network_id and not retain:
+                for key in sorted(journal):
+                    successor = dict(journal[key])
+                    if (not successor.get('cleanup_only', False)
+                            and successor.get('conditional_engine_id') == self.engine_id
+                            and successor.get('dispose_on_release', False)):
+                        successor['disposal_network_id'] = network_id
+                        journal[key] = successor
+                        network_id = None
+                        break
             if reporting_ids is not None and not retain:
                 # The final consumer may have reused every object. Ownership is
                 # the verified registry chain, not which invocation created it.
@@ -1578,13 +1741,19 @@ class PrerequisiteManager:
                     self._command((self.plan.command[0], 'stop', '--time', '5', *eligible), deadline, cleanup=True)
                 stopped = eligible
             else:
-                stopped = () if retain else self._stop_new(tuple(sorted(set(self.lease.owned_ids) | cleanup_ids)), journal, deadline)
+                stopped = () if retain else self._stop_new(tuple(sorted(set(self.lease.owned_ids) | cleanup_ids)), journal, deadline, nonces=nonces)
             if not retain:
-                self._prune_networks(deadline)
+                if self.dispose_on_release:
+                    self._dispose_new(disposable_ids, journal, deadline, nonces=nonces)
+                if not self.dispose_on_release or network_id:
+                    removed = self._prune_networks(deadline, only_id=network_id if self.dispose_on_release else None)
+                    if network_id and network_id not in removed:
+                        journal[self.lease.invocation_id] = {**record, 'cleanup_only': True,
+                            'ids': [], 'owned_ids': [], 'conditional_cleanup_ids': [],
+                            'disposable_ids': [], 'disposal_nonces': {}, 'disposal_network_id': network_id}
+                self._cleanup_pending_networks(journal, deadline)
             _write_journal(self.directory, self.scope, journal)
-            # Both running and stopped container definitions keep their original
-            # bind source. Removal/asset garbage collection requires an explicit
-            # inventory of those definitions, beyond this stop-only lifecycle.
+            # Retained definitions keep their captured bind sources.
             # Forget local cleanup ownership after the lease is relinquished.
             self.snapshot_directory = None
             self.lease = None

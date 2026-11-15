@@ -128,3 +128,21 @@ requirements where they are used.
 
 See [setup and configuration](workbench.md#getting-started),
 [tracing](tracing.md) and [development](development.md) for operation-specific setup.
+
+Callers that create temporary prerequisite definitions may opt in with
+`PrerequisiteManager(..., dispose_on_release=True)`. The default remains
+stop-only. Temporary ownership follows compatible borrowers until their final
+release; conflicting policies for the same definition are rejected. Cleanup
+verifies immutable container IDs, creator nonces and configuration before removing definitions,
+and removes a network created by that lifecycle only when no saved container
+references it. The creator nonce follows each cleanup duty across borrowers;
+a compatible definition appearing during startup without that evidence is not
+adopted for disposal. Definitions predating the temporary lifecycle, volumes,
+images and build caches remain.
+
+When native acquisition is supervised, its private recovery intent carries the
+same policy and an acquisition nonce. A confirmed-dead worker's temporary
+containers are checked against that nonce, their recorded configuration and the
+active lease journal before removal. Newly created networks carry the nonce too;
+recovery removes only a matching managed network after checking all saved
+container references. Older intents retain stop-only behavior.

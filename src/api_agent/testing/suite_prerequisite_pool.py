@@ -162,7 +162,7 @@ class SuitePrerequisitePool:
                     del self._entries[key]
             self._condition.notify_all()
 
-    def _dispose(self, key, entry, deadline):
+    def _start_dispose(self, key, entry):
         with self._condition:
             if self._entries.get(key) is not entry:
                 return
@@ -179,6 +179,10 @@ class SuitePrerequisitePool:
                     entry.cleanup_error = error
                     entry.disposing = False
                     self._condition.notify_all()
+
+    def _dispose(self, key, entry, deadline):
+        self._start_dispose(key, entry)
+        with self._condition:
             while entry.disposing:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -220,9 +224,20 @@ class SuitePrerequisitePool:
                 if remaining <= 0:
                     raise PoolPending('Suite prerequisite drain remains pending')
                 self._condition.wait(remaining)
-        while True:
+        with self._condition:
+            entries = tuple(self._entries.items())
+        for key, entry in entries:
+            self._start_dispose(key, entry)
+        first = None
+        for key, entry in entries:
             with self._condition:
-                if not self._entries:
-                    return
-                key, entry = next(iter(self._entries.items()))
-            self._dispose(key, entry, deadline)
+                while entry.disposing:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        first = first or PoolPending('Prerequisite cleanup remains pending')
+                        break
+                    self._condition.wait(remaining)
+                if entry.cleanup_error is not None:
+                    first = first or entry.cleanup_error
+        if first is not None:
+            raise first

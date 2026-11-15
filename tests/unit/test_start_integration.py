@@ -37,7 +37,8 @@ def test_terminal_start_or_debug_dispatches_recorded_integration(activation, val
     assert collect.call_args.args[1:3] == ('integration', ('selected.py',))
     run.assert_called_once()
     assert not stderr.getvalue()
-    assert 'synthetic runner output' in stdout.getvalue()
+    assert 'synthetic runner output' not in stdout.getvalue()
+    assert '[withheld: LOG_CONTENT is disabled]' in stdout.getvalue()
     assert ('Integration debug:' in stdout.getvalue()) is (activation == 'DEBUG')
 
 

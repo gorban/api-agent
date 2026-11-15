@@ -45,9 +45,11 @@ def test_safe_cause_reaches_each_result_and_recording(selection, monkeypatch, tm
         assert 'api_agent/testing/integration.py:' in row.traceback
         assert secret not in row.traceback and str(tmp_path) not in row.traceback
         assert secret in row.local_diagnostic
-        details = render_details(row, {}, {}).plain
+        details = render_details(row, {}, {}, allow_content=True).plain
         assert row.local_diagnostic in details
         assert details.index(stage) < details.index('Execution time:')
+        withheld = render_details(row, {}, {}, allow_content=False).plain
+        assert secret not in withheld and '[withheld: LOG_CONTENT is disabled]' in withheld
         recorder.record_test(row)
     assert [event.traceback for event in events if event.kind == 'test_finished'] == [row.traceback for row in result.tests]
     for file in (tmp_path / 'report').glob('*-result.json'):
@@ -102,7 +104,7 @@ def test_two_synthetic_pytest_failures_keep_real_causes(selection):
     assert 'synthetic first cause' in result.tests[0].traceback
     assert 'synthetic second cause' in result.tests[1].traceback
     for row in result.tests:
-        details = render_details(row, {}, {}).plain
+        details = render_details(row, {}, {}, allow_content=True).plain
         assert details.index(row.traceback) < details.index('Execution time:')
 
 
@@ -140,7 +142,7 @@ def test_local_unknown_failure_preserves_chain_without_exporting_it(selection, m
         assert frame_local not in row.local_diagnostic
         assert row.local_diagnostic not in repr(row)
         assert row == replace(row, local_diagnostic='')
-        display = render_details(row, {}, {}).plain
+        display = render_details(row, {}, {}, allow_content=True).plain
         assert display.index(local_message) < display.index('Execution time:')
     assert local_message not in run.output and command_evidence not in run.output
     assert all(local_message not in event.traceback and local_message not in event.text for event in events)
@@ -184,7 +186,7 @@ def test_swallowed_callbacks_retain_local_cause_without_changing_test_status(sel
     assert all(row.status == 'passed' for row in run.tests)
     assert all(message in row.local_diagnostic for row in run.tests)
     for row in run.tests:
-        details = render_details(row, {}, {}).plain
+        details = render_details(row, {}, {}, allow_content=True).plain
         assert details.index(message) < details.index('Execution time:')
     assert message not in run.output
     assert all(not row.traceback for row in run.tests)
@@ -221,7 +223,7 @@ def test_failed_pytest_keeps_original_trace_with_supplemental_local_callback(sel
     run = run_integration_tests(ctx, collect_tests(ctx, 'integration'), accepted=True, on_result=fail)
     row = run.tests[0]
     assert row.status == 'failed'
-    details = render_details(row, {}, {}).plain
+    details = render_details(row, {}, {}, allow_content=True).plain
     assert 'synthetic original pytest cause' in details
     assert 'RuntimeError: synthetic supplemental callback cause' in details
     assert row.traceback in row.local_diagnostic

@@ -14,7 +14,8 @@ class TerminalTestProgress:
     Scrub the complete formatted line before bounding its terminal display.
     """
 
-    def __init__(self, tests, write, *, scrub=None):
+    def __init__(self, tests, write, *, scrub=None, allow_content=True):
+        self._allow_content = allow_content
         self._selected = {test.id for test in tests}
         self._completed = set()
         self._write = write
@@ -22,6 +23,13 @@ class TerminalTestProgress:
         self._lock = threading.Lock()
 
     def __call__(self, event):
+        if event.kind == 'trace_warning':
+            from .trace_warning import message
+            notice = message(event.text)
+            if notice is not None:
+                with self._lock:
+                    self._write(notice)
+            return
         if event.kind != 'test_finished' or event.identity is None:
             return
         with self._lock:
@@ -31,7 +39,7 @@ class TerminalTestProgress:
             self._completed.add(identity)
             status = event.status if event.status in {'passed', 'failed', 'skipped', 'error', 'cancelled', 'not_applicable'} else 'error'
             detail = (f' — {json.dumps(event.traceback, ensure_ascii=True)}'
-                      if status == 'not_applicable' and event.traceback else '')
+                      if self._allow_content and status == 'not_applicable' and event.traceback else '')
             line = self._scrub(f'Test progress: {len(self._completed)}/{len(self._selected)} completed '
                                f'— {status} {json.dumps(identity, ensure_ascii=True)}{detail}')
             if len(line) > _MAX_LINE_LENGTH:

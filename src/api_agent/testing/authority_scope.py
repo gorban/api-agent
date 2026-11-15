@@ -33,6 +33,7 @@ class TestAuthorityScope:
     def __init__(self, manifest):
         self._manifest = validate_manifest(manifest)
         self._owners = {}
+        self._histories = None
         self._closed = False
         self._closing = False
         self._invalid = False
@@ -57,8 +58,26 @@ class TestAuthorityScope:
             if identity not in owners:
                 if self._leases:
                     raise ContractError('Test credential owner requires asynchronous admission')
+                if self._histories is not None and identity not in self._histories:
+                    self._histories[identity] = boundary.retain_redaction_history()
                 owners[identity] = boundary
                 self._generation += 1
+
+    def retain_diagnostic_history(self):
+        """Retain credentials observed after admission for failure evidence."""
+        with self._lock:
+            if self._histories is None:
+                self._histories = {id(boundary._authority): boundary.retain_redaction_history()
+                                   for owners in self._owners.values() for boundary in owners.values()}
+
+    def diagnostic_secrets(self):
+        """Snapshot history while the caller holds an admission lease."""
+        with self._lock:
+            self.authorities()
+            if not self._leases or self._histories is None:
+                raise ContractError('Test credential history is unavailable')
+            return tuple(secret for history in self._histories.values()
+                         for secret in history.snapshot()._secrets)
 
     async def ajoin(self, name, boundary, *, timeout=30):
         if name not in _PRODUCERS or type(boundary) is not EmissionBoundary:
@@ -179,8 +198,11 @@ class TestAuthorityScope:
             self._closed = True
             self._generation += 1
             self._owners.clear()
+            histories, self._histories = self._histories or {}, None
             waiters = tuple(self._waiters)
             self._waiters.clear()
+        for history in histories.values():
+            history.close()
         for loop, future in waiters:
             def wake(target=future):
                 if not target.done():
@@ -235,6 +257,7 @@ class _ScopeLease:
                         if new:
                             authority.secrets.update(new)
                             authority.generation += 1
+                        authority.record_redaction_admission(values)
                         self.secrets = tuple(combined)
                         return
                     future = loop.create_future()

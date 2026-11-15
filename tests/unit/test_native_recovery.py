@@ -757,3 +757,239 @@ def test_single_wave_executor_disposes_worker_without_parent_recovery_registry(t
     assert processes.disposal_complete(owned[0])
     assert owned[0].stdout.closed
     assert not hasattr(integration._RUNNER_OPERATION, 'recovery')
+
+
+def test_cleanup_failure_retains_completed_execution(monkeypatch):
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing.integration import _admit_operation
+    from api_agent.testing import native_recovery
+    original = native_recovery.NativeRecoveryOwner.recover
+    calls = []
+    def recover(owner):
+        calls.append(owner)
+        if len(calls) == 1:
+            raise OSError('temporary cleanup failure')
+        original(owner)
+    monkeypatch.setattr(native_recovery.NativeRecoveryOwner, 'recover', recover)
+    result = object()
+    @_admit_operation
+    def execute(*, suite_directory):
+        return result
+    with pytest.raises(CleanupPendingError) as caught:
+        execute()
+    assert caught.value.execution is result
+    asyncio.run(caught.value.retry())
+
+
+def test_temporary_recovery_removes_stopped_created_definition(pending_intent):
+    path = pending_intent.state / 'recovery.json'
+    record = json.loads(path.read_text())
+    record['dispose_on_release'] = True
+    path.write_text(json.dumps(record))
+    pending_intent.runtime.candidates[0].running = False
+    removed = []
+    pending_intent.runtime.dispose = lambda identifiers, **kwargs: removed.append((identifiers, kwargs))
+
+    pending_intent.owner.recover()
+
+    assert removed and removed[0][0] == ['1'*64]
+    assert removed[0][1]['nonce'] == 'a'*32
+    assert removed[0][1]['fingerprints'] == {'service': 'f'*64}
+
+
+@pytest.mark.parametrize('referenced', [False, True])
+@pytest.mark.parametrize('running', [False, True])
+def test_guarded_temporary_disposal_checks_all_saved_network_references(pending_intent, tmp_path, monkeypatch, referenced, running):
+    from api_agent.runtime.containers import ContainerRuntime
+    owner, state = pending_intent.owner, pending_intent.state
+    scope = StackScope.from_roots(owner.directory, state)
+    path = state / 'recovery.json'
+    record = json.loads(path.read_text())
+    record.update(dispose_on_release=True, nonce='b'*32, fingerprints={'jaeger': 'f'*64})
+    path.write_text(json.dumps(record))
+    target, neighbor = '1'*64, '2'*64
+    name, network_id, nonce = scope.project + '_default', 'a'*64, 'b'*32
+    labels = {**scope.labels('otel'), 'com.docker.compose.project': scope.project,
+        'com.docker.compose.service': 'jaeger', 'api-agent.acquisition': nonce,
+        'api-agent.config': 'f'*64}
+    rows = {target: {'Id': target, 'Name': '/target', 'Config': {'Labels': labels},
+                     'State': {'Running': running}}}
+    if referenced:
+        rows[neighbor] = {'Id': neighbor, 'Name': '/foreign', 'Config': {'Labels': {}},
+                          'State': {'Running': False}}
+    networks = {name}
+    actions = []
+    runtime = ContainerRuntime('docker', scope, ownership_directory=tmp_path / 'ownership')
+
+    def run(args, **options):
+        actions.append(tuple(args))
+        if args[0] == 'ps':
+            return '\n'.join(rows)
+        if args[:2] == ['inspect', '--format']:
+            return '\n'.join(json.dumps({'networks': {name: {'NetworkID': network_id}}, 'mode': 'bridge'})
+                             for _ in args[3:])
+        if args[0] == 'inspect':
+            return json.dumps([rows[item] for item in args[1:]])
+        if args[0] == 'stop':
+            rows[target]['State']['Running'] = False
+            return ''
+        if args[0] == 'rm':
+            for item in args[1:]:
+                del rows[item]
+            return ''
+        if args[:2] == ['network', 'ls']:
+            return name if networks else ''
+        if args[:2] == ['network', 'inspect']:
+            return json.dumps([{'Name': name, 'Id': network_id, 'Labels': {
+                'api-agent.network-cleanup-v1': scope.id, 'api-agent.managed': 'true',
+                'api-agent.scope': scope.id, 'com.docker.compose.project': scope.project,
+                'com.docker.compose.network': 'default', 'api-agent.acquisition': nonce}}])
+        if args[:2] == ['network', 'rm']:
+            networks.clear()
+            return ''
+        raise AssertionError(args)
+
+    monkeypatch.setattr(runtime, '_run', run)
+    monkeypatch.setattr(owner, '_runtimes', lambda state, record: (runtime,))
+    owner.recover()
+
+    assert target not in rows
+    assert bool(networks) is referenced
+    assert ('rm', target) in actions
+    assert (('stop', '--time', '10', target) in actions) is running
+    assert (('network', 'rm', network_id) in actions) is not referenced
+    assert not any(action[0] == 'volume' for action in actions)
+
+
+@pytest.mark.parametrize('field,value', [('api-agent.acquisition', 'c'*32), ('api-agent.config', 'e'*64)])
+def test_guarded_disposal_refuses_changed_creation_evidence(tmp_path, monkeypatch, field, value):
+    from api_agent.runtime.containers import ContainerError, ContainerRuntime
+    scope = StackScope.from_roots(tmp_path / 'one', tmp_path / 'two')
+    identifier = '1'*64
+    labels = {**scope.labels('otel'), 'com.docker.compose.project': scope.project,
+        'com.docker.compose.service': 'jaeger', 'api-agent.acquisition': 'a'*32,
+        'api-agent.config': 'f'*64, field: value}
+    row = {'Id': identifier, 'Name': '/target', 'Config': {'Labels': labels},
+           'State': {'Running': False}}
+    actions = []
+    runtime = ContainerRuntime('docker', scope, ownership_directory=tmp_path / 'ownership')
+    def run(args, **options):
+        actions.append(args)
+        if args[0] == 'ps':
+            return identifier
+        if args[0] == 'inspect':
+            return json.dumps([row])
+        raise AssertionError('unexpected mutation')
+    monkeypatch.setattr(runtime, '_run', run)
+
+    with pytest.raises(ContainerError, match='creation evidence changed'):
+        runtime.dispose([identifier], nonce='a'*32, fingerprints={'jaeger': 'f'*64})
+
+    assert [args[0] for args in actions] == ['ps', 'inspect']
+
+
+def test_record_intent_rejects_nonboolean_disposal_policy(tmp_path):
+    from api_agent.testing.native_recovery import record_intent
+    with pytest.raises(ValueError, match='policy must be a boolean'):
+        record_intent(tmp_path, None, None, None, None, dispose_on_release='true')
+
+
+@pytest.mark.parametrize('ids,nonce,fingerprints', [
+    (['bad'], 'a'*32, {'service': 'f'*64}),
+    (['1'*64, '1'*64], 'a'*32, {'service': 'f'*64}),
+    ([], 'bad', {'service': 'f'*64}),
+    ([], 'a'*32, {'service': 'bad'}),
+])
+def test_disposal_rejects_invalid_authority_before_engine_access(tmp_path, monkeypatch, ids, nonce, fingerprints):
+    from api_agent.runtime.containers import ContainerError, ContainerRuntime
+    runtime = ContainerRuntime('docker', StackScope.from_roots(tmp_path / 'one', tmp_path / 'two'),
+        ownership_directory=tmp_path / 'ownership')
+    monkeypatch.setattr(runtime, '_run', lambda *a, **k: pytest.fail('engine access'))
+    with pytest.raises(ContainerError, match='cleanup authority'):
+        runtime.dispose(ids, nonce=nonce, fingerprints=fingerprints)
+
+
+def test_disposal_refuses_active_lease(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from api_agent.runtime import prerequisites
+    from api_agent.runtime.containers import ContainerError, ContainerRuntime
+    identifier = '1'*64
+    runtime = ContainerRuntime('docker', StackScope.from_roots(tmp_path / 'one', tmp_path / 'two'),
+        ownership_directory=tmp_path / 'ownership')
+    @contextmanager
+    def active(*args, **kwargs):
+        yield {identifier}
+    monkeypatch.setattr(prerequisites, 'guarded_cleanup', active)
+    monkeypatch.setattr(runtime, '_run', lambda *a, **k: pytest.fail('engine access'))
+    with pytest.raises(ContainerError, match='active invocation'):
+        runtime.dispose([identifier], nonce='a'*32, fingerprints={'service': 'f'*64})
+
+
+def test_disposal_refuses_unverifiable_global_ids(tmp_path, monkeypatch):
+    from api_agent.runtime.containers import ContainerError, ContainerRuntime
+    runtime = ContainerRuntime('docker', StackScope.from_roots(tmp_path / 'one', tmp_path / 'two'),
+        ownership_directory=tmp_path / 'ownership')
+    monkeypatch.setattr(runtime, '_run', lambda *a, **k: 'not-an-id')
+    with pytest.raises(ContainerError, match='inventory cannot be verified'):
+        runtime.dispose(['1'*64], nonce='a'*32, fingerprints={'service': 'f'*64})
+
+
+def test_disposal_rejects_changed_scope_before_stopping(tmp_path, monkeypatch):
+    from api_agent.runtime.containers import ContainerError, ContainerRuntime
+    scope = StackScope.from_roots(tmp_path / 'one', tmp_path / 'two')
+    runtime = ContainerRuntime('docker', scope, ownership_directory=tmp_path / 'ownership')
+    identifier = '1'*64
+    actions = []
+    def run(args, **kwargs):
+        actions.append(args[0])
+        if args[0] == 'ps':
+            return identifier
+        return json.dumps([{'Id': identifier, 'Name': '/other', 'Config': {'Labels': {}},
+                            'State': {'Running': True}}])
+    monkeypatch.setattr(runtime, '_run', run)
+    with pytest.raises(ContainerError, match='ownership changed'):
+        runtime.dispose([identifier], nonce='a'*32, fingerprints={'service': 'f'*64})
+    assert actions == ['ps', 'inspect']
+
+
+def test_disposal_translates_lease_journal_failure(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from api_agent.runtime import prerequisites
+    from api_agent.runtime.containers import ContainerError, ContainerRuntime
+    runtime = ContainerRuntime('docker', StackScope.from_roots(tmp_path / 'one', tmp_path / 'two'),
+        ownership_directory=tmp_path / 'ownership')
+    @contextmanager
+    def unavailable(*args, **kwargs):
+        raise prerequisites.PrerequisiteError('unreadable')
+        yield
+    monkeypatch.setattr(prerequisites, 'guarded_cleanup', unavailable)
+    with pytest.raises(ContainerError, match='cleanup remains pending'):
+        runtime.dispose(['1'*64], nonce='a'*32, fingerprints={'service': 'f'*64})
+
+
+def test_native_temporary_recovery_checks_network_even_without_containers(pending_intent):
+    path = pending_intent.state / 'recovery.json'
+    record = json.loads(path.read_text())
+    record['dispose_on_release'] = True
+    path.write_text(json.dumps(record))
+    pending_intent.runtime.candidates = []
+    calls = []
+    pending_intent.runtime.dispose = lambda identifiers, **kwargs: calls.append((identifiers, kwargs))
+    pending_intent.owner.recover()
+    assert calls == [([], {'nonce': 'a'*32, 'fingerprints': {'service': 'f'*64}})]
+
+
+def test_network_disposal_deadline_refuses_engine_command(tmp_path, monkeypatch):
+    from api_agent.runtime import prerequisites
+    from api_agent.runtime.containers import ContainerError, ContainerRuntime
+    runtime = ContainerRuntime('docker', StackScope.from_roots(tmp_path / 'one', tmp_path / 'two'),
+        ownership_directory=tmp_path / 'ownership')
+    actions = []
+    monkeypatch.setattr(runtime, '_run', lambda args, **kwargs: actions.append(args) or '')
+    def expire(network, deadline, **kwargs):
+        network._command(('docker', 'network', 'ls'), 0, cleanup=True)
+    monkeypatch.setattr(prerequisites._NetworkCleanup, '_prune_networks', expire)
+    with pytest.raises(ContainerError, match='deadline expired'):
+        runtime.dispose([], nonce='a'*32, fingerprints={'service': 'f'*64})
+    assert actions == [['ps', '--all', '--quiet', '--no-trunc']]

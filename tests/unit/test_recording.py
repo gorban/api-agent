@@ -273,3 +273,29 @@ def test_cost_attachment_failure_cannot_publish_partial_run(tmp_path,monkeypatch
     assert (tmp_path/filename).read_bytes()==original
     assert not list(tmp_path.glob('.*.tmp'))
     with pytest.raises(RuntimeError,match='incomplete'):run.finalize()
+
+@pytest.mark.parametrize('sink', ['record_test', 'update_test_evidence', 'update_workflow_steps'])
+@pytest.mark.parametrize('allow_content', [False, True])
+def test_step_failure_content_obeys_recording_permission(tmp_path, sink, allow_content):
+    boundary = EmissionBoundary(ContentPolicy(True), secrets=('credential-sentinel',))
+    recorder = RunRecorder(tmp_path, identity(), evidence_boundary=boundary,
+                           content_policy=ContentPolicy(allow_content))
+    steps = [{'name': 'graph sample', 'status': 'failed', 'start': 10, 'stop': 20,
+              'parameters': [{'name': 'scope_id', 'value': 'bb5aaf23-b4b9-454c-a195-55edb92fdd12'},
+                             {'name': 'input_tokens', 'value': '7'}],
+              'statusDetails': {'message': 'narrative-sentinel credential-sentinel',
+                                'trace': 'nested-narrative-sentinel credential-sentinel'},
+              'steps': [{'name': 'node sample', 'status': 'broken', 'parameters': [],
+                         'statusDetails': {'trace': 'nested-narrative-sentinel'}, 'steps': []}]}]
+    filename = recorder.record_test(result('failed'), steps=steps if sink == 'record_test' else None)
+    if sink == 'update_test_evidence':
+        recorder.update_test_evidence(filename, attachments=(), steps=steps)
+    elif sink == 'update_workflow_steps':
+        recorder.update_workflow_steps({filename: steps})
+    text = (tmp_path / filename).read_text()
+    assert ('narrative-sentinel' in text) is allow_content
+    assert 'credential-sentinel' not in text
+    step = json.loads(text)['steps'][0]
+    assert step['status'] == 'failed' and step['start'] == 10 and step['stop'] == 20
+    assert step['parameters'] == steps[0]['parameters']
+    assert step['steps'][0]['status'] == 'broken'

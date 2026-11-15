@@ -61,6 +61,8 @@ class Engine:
             'com.docker.compose.project': owner.scope.project,
             'com.docker.compose.service': name,
             p.CONFIG_LABEL: fingerprint or owner.fingerprints[name]}
+        if owner.dispose_on_release:
+            labels['api-agent.acquisition'] = owner.acquisition_nonce
         if foreign: labels['api-agent.scope'] = 'f' * 16
         record = {'Id': identifier, 'Config': {'Image': image or owner.specs[name]['image'], 'Labels': labels},
                   'Image': image_id or 'sha256:' + '1' * 64,
@@ -85,6 +87,8 @@ class Engine:
         self.commands.append((command, kwargs))
         if command[1:3] == ('network', 'prune'): return ''
         if command[1:3] == ('network', 'ls'):
+            if '--no-trunc' in command:
+                return 'a' * 64 if self.networks else ''
             name = self.owner.scope.project + '_default'
             return name if name in self.networks else ''
         if command[1:3] == ('network', 'create'):

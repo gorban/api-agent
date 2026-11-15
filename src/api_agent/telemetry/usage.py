@@ -46,6 +46,8 @@ def _snapshot_json(snapshot: QuotaSnapshot | None) -> dict | None:
         row['pct_step'] = snapshot.pct_step
     row['allocation_id'] = snapshot.allocation_id
     row['observation_id'] = snapshot.observation_id
+    if snapshot.initial_window:
+        row['initial_window'] = True
     return row
 
 
@@ -64,8 +66,12 @@ class QuotaSnapshot:
     pct_step: float | None = None
     allocation_id: str | None = None
     observation_id: str | None = None
+    initial_window: bool = False
 
     def __post_init__(self):
+        if type(self.initial_window) is not bool or (self.initial_window and
+                (self.pct_used != 0 or self.window_id is not None or self.reset_at is not None or self.allocation_id is None)):
+            raise ValueError('invalid initial quota window')
         if self.pct_step is not None and (not _valid_pct(self.pct_step) or self.pct_step == 0):
             raise ValueError('percentage step must be positive and at most 100')
         object.__setattr__(self, 'captured_at', _utc(self.captured_at))
@@ -309,16 +315,18 @@ class SuiteUsage:
             reason = 'missing_snapshot'
         elif not all(_valid_pct(x.pct_used) for x in (before, after)):
             reason = 'invalid_percentage'
-        elif before.window_id is None or after.window_id is None or before.reset_at is None or after.reset_at is None:
-            reason = 'missing_window_identifier'
         elif (before.allocation_id is not None and after.allocation_id is not None
               and before.allocation_id != after.allocation_id):
             reason = 'changed_allocation'
-        elif before.window_id != after.window_id or before.reset_at != after.reset_at:
+        elif (after.window_id is None or after.reset_at is None or
+              ((before.window_id is None or before.reset_at is None) and not
+               (before.initial_window and before.allocation_id == after.allocation_id))):
+            reason = 'missing_window_identifier'
+        elif not before.initial_window and (before.window_id != after.window_id or before.reset_at != after.reset_at):
             reason = 'changed_window'
         elif after.captured_at < before.captured_at:
             reason = 'reversed_capture_time'
-        elif before.captured_at >= before.reset_at or after.captured_at >= after.reset_at:
+        elif (before.reset_at is not None and before.captured_at >= before.reset_at) or after.captured_at >= after.reset_at or before.captured_at >= after.reset_at:
             reason = 'reset_boundary_crossed'
         elif after.pct_used < before.pct_used:
             reason = 'negative_delta'

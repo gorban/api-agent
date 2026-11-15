@@ -68,8 +68,8 @@ def test_malformed_events_fail_closed(data):
         capture(SimpleNamespace(text=json.dumps(data)),lambda *a:None)
 
 
-@pytest.mark.parametrize('snapshot', [None,QuotaSnapshot(101,'w',NOW,NOW),QuotaSnapshot(1,None,NOW,NOW),
-    QuotaSnapshot(1,'w'*101,NOW,NOW),QuotaSnapshot(1,'\n',NOW,NOW),QuotaSnapshot(1,'w',None,NOW)])
+@pytest.mark.parametrize('snapshot', [None,QuotaSnapshot(101,'w',NOW,NOW),
+    QuotaSnapshot(1,'w'*101,NOW,NOW),QuotaSnapshot(1,'\n',NOW,NOW)])
 def test_invalid_snapshot(snapshot):
     with pytest.raises(ValueError):validate_snapshot(snapshot)
 
@@ -101,3 +101,26 @@ def test_quota_error_message_and_wire_round_trip(tmp_path,monkeypatch,code):
 def test_bad_quota_error_events_cannot_publish_messages(error):
     with pytest.raises(ValueError):
         capture(SimpleNamespace(text=json.dumps({'phase':'before','error':error})),lambda *a:None)
+
+
+def test_missing_window_round_trips_without_claiming_initialization(tmp_path, monkeypatch):
+    path = tmp_path / 'events'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'test.py::test (call)')
+    sample = QuotaSnapshot(0, None, None, NOW, allocation_id='a' * 64)
+    publish('before', validate_snapshot(sample))
+    usage = SuiteUsage('run')
+    event = json.loads(path.read_text())
+    capture(SimpleNamespace(text=json.dumps(event['data'])), usage.observe_snapshot)
+    usage.observe_snapshot('after', QuotaSnapshot(8, 'w', NOW + timedelta(days=1), NOW, allocation_id='a' * 64))
+    assert usage.report()['pct_used_before'] == 0
+    assert usage.report()['quota_unavailable_reason'] == 'missing_window_identifier'
+
+
+@pytest.mark.parametrize('percentage,window,reset,allocation', [
+    (1, None, None, 'a' * 64), (0, 'w', None, 'a' * 64),
+    (0, None, NOW, 'a' * 64), (0, None, None, None),
+])
+def test_initial_window_rejects_unverified_or_inconsistent_samples(percentage, window, reset, allocation):
+    with pytest.raises(ValueError, match='initial quota window'):
+        QuotaSnapshot(percentage, window, reset, NOW, allocation_id=allocation, initial_window=True)

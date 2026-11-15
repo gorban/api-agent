@@ -336,7 +336,9 @@ def test_noninteractive_debug_integration_dispatch_and_prepare_failure(monkeypat
     monkeypatch.setattr(os, 'environ', {})
     args = ['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', '--unattended-user-index=0']
     assert main(args, base_root=ROOT) == 1
-    assert calls == ['run'] and 'raw evidence' in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert calls == ['run'] and 'raw evidence' not in output
+    assert '[withheld: LOG_CONTENT is disabled]' in output
     monkeypatch.setattr('api_agent.runtime.dependencies.ensure_environment', lambda *a, **k: 3)
     assert main(args, base_root=ROOT) == 3
     assert calls == ['run']

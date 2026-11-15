@@ -228,3 +228,20 @@ def test_raw_usage_is_rejected_before_scrubbing_can_repair_it(tmp_path, monkeypa
             on_event=forward, usage_output=console)
     assert _worker_events(forward) == []
     console.assert_not_called()
+
+
+def test_unrecorded_completed_execution_survives_runner_cleanup_failure(tmp_path, monkeypatch):
+    from api_agent.testing import integration
+    from api_agent.testing.collection import TestIdentity
+    from api_agent.providers.control import CleanupPendingError
+    test = TestIdentity('owner::test.py::test_one', 'owner', 'test.py', 'test.py::test_one')
+    context = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path)
+    execution = SimpleNamespace(exit_code=0, tests=(), cancelled=False, inspections=())
+    failure = CleanupPendingError((), None)
+    failure.execution = execution
+    monkeypatch.setattr(integration, 'run_integration_tests', Mock(side_effect=failure))
+    with pytest.raises(CleanupPendingError) as caught:
+        run_launched_integration(context, (test,),
+            {'SKIP_ALLURE_REPORTING': True, 'TUI_MODE': 'integration'}, accepted=True)
+    assert caught.value.recorded_result.execution is execution
+    assert caught.value.recorded_result.reporting_skipped

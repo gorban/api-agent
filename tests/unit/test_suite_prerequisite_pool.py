@@ -120,7 +120,7 @@ def test_distinct_digests_and_failed_cleanup_are_isolated():
     first.release = fail_once
     with pytest.raises(RuntimeError, match='cleanup pending'):
         pool.close(timeout=2)
-    assert first.stops == second.stops == 0
+    assert first.stops == 0 and second.stops == 1
     pool.close(timeout=2)
     assert first.stops == second.stops == 1
 
@@ -459,3 +459,50 @@ def test_stop_admission_retains_existing_lease_and_rejects_new_owner():
     borrower.release()
     pool.close(timeout=5)
     assert owner.stops == 1
+
+
+def test_close_starts_all_owner_cleanup_before_waiting_and_retains_pending():
+    pool = SuitePrerequisitePool(owner_budget=5)
+    release_gate = threading.Event()
+    started = [threading.Event(), threading.Event()]
+
+    class BlockingOwner(Owner):
+        def __init__(self, index):
+            super().__init__()
+            self.index = index
+
+        def release(self):
+            started[self.index].set()
+            assert release_gate.wait(2)
+            super().release()
+
+    owners = [BlockingOwner(0), BlockingOwner(1)]
+    for key, owner in zip(('a' * 64, 'b' * 64), owners):
+        pool.borrow(key, lambda owner=owner: owner).release()
+    try:
+        with pytest.raises(PoolPending):
+            pool.close(timeout=.1)
+        assert all(event.is_set() for event in started)
+        assert len(pool._entries) == 2
+    finally:
+        release_gate.set()
+        pool.close(timeout=2)
+    assert [owner.stops for owner in owners] == [1, 1]
+
+
+def test_close_attempts_other_owners_when_one_fails():
+    pool = SuitePrerequisitePool(owner_budget=5)
+    class FailingOwner(Owner):
+        def release(self):
+            self.stops += 1
+            if self.stops == 1:
+                raise ValueError('cleanup failed')
+    failing, other = FailingOwner(), Owner()
+    for key, owner in zip(('a' * 64, 'b' * 64), (failing, other)):
+        pool.borrow(key, lambda owner=owner: owner).release()
+    with pytest.raises(ValueError, match='cleanup failed'):
+        pool.close(timeout=2)
+    assert other.stops == 1
+    assert len(pool._entries) == 1
+    pool.close(timeout=2)
+    assert failing.stops == 2

@@ -196,6 +196,62 @@ class ContainerRuntime:
             raise ContainerError("Cannot verify active prerequisite leases; cleanup refused.") from None
 
 
+    def dispose(self, identifiers, *, nonce, fingerprints):
+        """Dispose only nonce-created definitions on the selected, leased engine."""
+        from types import SimpleNamespace
+        from .prerequisites import (guarded_cleanup, PrerequisiteError, _NetworkCleanup,
+                                    PrerequisiteManager)
+        if (self.scope is None or self.ownership_directory is None
+                or not isinstance(nonce, str) or not re.fullmatch('[0-9a-f]{32}', nonce)
+                or type(fingerprints) is not dict or not fingerprints
+                or any(type(name) is not str or type(value) is not str
+                       or not re.fullmatch('[0-9a-f]{64}', value) for name, value in fingerprints.items())
+                or any(type(item) is not str or not re.fullmatch('[0-9a-f]{64}', item)
+                       for item in identifiers) or len(set(identifiers)) != len(identifiers)):
+            raise ContainerError('Invalid temporary container cleanup authority.')
+        runtime = self
+        class NetworkCleanup(_NetworkCleanup):
+            scope = runtime.scope
+            plan = SimpleNamespace(enabled=True, command=(runtime.executable,))
+            lease = None
+            now = staticmethod(time.monotonic)
+            _network_guard = PrerequisiteManager._network_guard
+            def _command(self, args, deadline, *, cleanup=False):
+                remaining = deadline - self.now()
+                if remaining <= 0:
+                    raise ContainerError('Temporary network cleanup deadline expired.')
+                return runtime._run(list(args[1:]), timeout=min(remaining, 120))
+        protected = session_container_identity()
+        try:
+            with guarded_cleanup(self.ownership_directory, self.scope) as leased:
+                if leased.intersection(identifiers):
+                    raise ContainerError('Selected containers are in use by an active invocation.')
+                all_ids = self._run(['ps', '--all', '--quiet', '--no-trunc']).split()
+                if (len(set(all_ids)) != len(all_ids)
+                        or any(not re.fullmatch('[0-9a-f]{64}', item) for item in all_ids)):
+                    raise ContainerError('Temporary container inventory cannot be verified.')
+                present = [item for item in identifiers if item in all_ids]
+                records = self._inspect(present) if present else []
+                if (len(records) != len(present) or {row['Id'] for row in records} != set(present)
+                        or not all(self._eligible(row, protected) for row in records)):
+                    raise ContainerError('Temporary container ownership changed.')
+                for row in records:
+                    labels = row['Config']['Labels']
+                    service = labels.get('com.docker.compose.service')
+                    if (labels.get('api-agent.acquisition') != nonce or service not in fingerprints
+                            or labels.get('api-agent.config') != fingerprints[service]):
+                        raise ContainerError('Temporary container creation evidence changed.')
+                running = [row['Id'] for row in records if row['State']['Running']]
+                if running:
+                    self._run(['stop', '--time', '10', *running], timeout=min(120, 5 + 12 * len(running)))
+                if present:
+                    self._run(['rm', *present], timeout=min(120, 5 + 12 * len(present)))
+                NetworkCleanup()._prune_networks(time.monotonic() + 15,
+                    required_labels={'api-agent.acquisition': nonce})
+        except PrerequisiteError:
+            raise ContainerError('Cannot verify temporary prerequisite cleanup; cleanup remains pending.') from None
+
+
     def logs(self, identifier, *, cancelled=lambda: False, scrubber=None):
         """Read one freshly verified object's finite tail; never follow output."""
         from api_agent.providers.progress import report_timeout_sync

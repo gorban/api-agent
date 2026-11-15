@@ -1080,6 +1080,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self._inspection_shutdown = False
         self.pending_inspection_cleanup = None
         self.integration_exit_status = None
+        self.integration_operation_failed = False
+        self.integration_redaction_history = None
         self.recording_cleanup = None
         self.unit_result = None
         self.finished_test_results = {}
@@ -1708,6 +1710,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             return
         self.stop_picker_history()
         self.discard_finished_inspection()
+        self.discard_integration_redaction_history()
         self.auto_start_pending = False
         self.review_destination = None
         self._review_return_to_tests = False
@@ -1905,6 +1908,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if origin is not None and not await self.screen_delivery_allowed(origin):
             return
         self.clear_allure_snapshots()
+        self.discard_integration_redaction_history()
         cancel_event = threading.Event()
         selection = self.selection
         self.collection_cancel = cancel_event
@@ -2015,9 +2019,14 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.discard_finished_inspection()
         generation = self._inspection_generation
         self.integration_persisted = None
+        self.integration_content_allowed = False
         self.integration_reporting_skipped = False
         self.integration_exit_status = None
+        self.integration_operation_failed = False
+        self.discard_integration_redaction_history()
         outcome = {}
+        resolved = None
+        run_scrubber = None
         try:
             if self.inspection_cleanup_active():
                 raise ValueError('End retained inspection before starting another operation.')
@@ -2042,10 +2051,18 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             resolved = self.session.result(operation_intents=('ui_session',) if plan.requires_ui_session else ())
             resolved.raise_for_errors()
             if resolved.missing:
-                raise ValueError('Missing required configuration: ' + ', '.join(resolved.missing))
+                from api_agent.testing.diagnostics import RequiredConfigurationError
+                raise RequiredConfigurationError(resolved.missing)
             active = dict(resolved.values)
+            from api_agent.testing.diagnostics import CredentialScrubber
+            run_scrubber = CredentialScrubber(active)
+            try:
+                self.integration_redaction_history = run_scrubber.boundary.retain_redaction_history()
+            except Exception:
+                self.integration_redaction_history = None
             from api_agent.telemetry.privacy import ContentPolicy
             content_policy = ContentPolicy.from_config(resolved)
+            self.integration_content_allowed = content_policy.allow_content
             if plan.requires_pack_api and not self.check_operation_start():
                 return
             if not self.integration_unattended:
@@ -2058,7 +2075,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                         active, accepted=True, interaction=interaction, config_fields=resolved.fields,
                         **({'explicit_debug_test_ids': self.active_test_selectors} if runner is run_launched_integration else {}),
                         **({'tool_plan': resolved.tool_plan} if resolved.tool_plan is not None else {}),
-                        content_policy=content_policy,
+                        content_policy=content_policy, evidence_boundary=run_scrubber.boundary,
                         **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.reporting_runner_options(runner)),
                         **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.historical_runner_options(runner)),
                         **({} if active.get('SKIP_ALLURE_REPORTING') is True else self.allure_runner_options(runner, generation)),
@@ -2090,10 +2107,23 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         except asyncio.CancelledError as interruption:
             self.collection_cancel.set()
             error = outcome.get('error')
-            self.recording_cleanup = getattr(error, 'recording_prerequisites', self.recording_cleanup)
+            self.recording_cleanup = (getattr(error, 'recording_prerequisites', None)
+                                      or getattr(interruption, 'recording_prerequisites', None)
+                                      or self.recording_cleanup)
             recorded = outcome.get('recorded', getattr(error, 'recorded_result', None))
-            from api_agent.testing.inspection_controls import InspectionGroup
-            handles = list(getattr(error, 'inspections', ()))
+            from api_agent.testing.inspection_controls import InspectionGroup, preserve_cleanup_receipts
+            from api_agent.testing.suite_lock import _cleanup_receipts
+            owned = tuple(_cleanup_receipts(getattr(self.recording_cleanup, 'pending_cleanup', None)))
+            handles = []
+            for source in (error, interruption):
+                if source is None:
+                    continue
+                preserve_cleanup_receipts(source, exclude=owned, delegate_recording=self.recording_cleanup is not None)
+                handles.extend(getattr(source, 'inspections', ()))
+                group = getattr(source, 'inspection_group', None)
+                if group is not None:
+                    handles.extend(group.handles)
+                owned += tuple(_cleanup_receipts(source))
             if recorded is not None:
                 handles.extend(getattr(recorded.execution, 'inspections', ()))
                 self.unit_result = recorded.execution
@@ -2117,9 +2147,14 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 interruption.cleanup_pending = self.inspection_cleanup_receipt()
             raise
         except Exception as error:
+            from api_agent.providers.control import CleanupPendingError
+            self.integration_operation_failed = not isinstance(error, CleanupPendingError)
             self.operation_status = 3
             self.recording_cleanup = getattr(error, 'recording_prerequisites', self.recording_cleanup)
-            from api_agent.testing.inspection_controls import InspectionGroup
+            from api_agent.testing.inspection_controls import InspectionGroup, preserve_cleanup_receipts
+            from api_agent.testing.suite_lock import _cleanup_receipts
+            owned = tuple(_cleanup_receipts(getattr(self.recording_cleanup, 'pending_cleanup', None)))
+            preserve_cleanup_receipts(error, exclude=owned, delegate_recording=self.recording_cleanup is not None)
             handles = list(self.inspections.handles)
             for handle in getattr(error, 'inspections', ()):
                 if not any(handle is existing for existing in handles):
@@ -2138,15 +2173,31 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.test_costs = self.suite_usage.get('test_costs', {})
                 self.integration_exit_status = recorded.exit_code
                 self.integration_persisted = recorded.persisted
+                self.integration_reporting_skipped = getattr(recorded, 'reporting_skipped', False)
+                for test in self.unit_result.tests:
+                    self.unit_rows[test.identity.id] = (test.status.upper(), test.identity.id, f'{test.duration:.3f}s')
                 self.inspection_failed = True
                 if not self.collection_cancel.is_set():
                     self.show_unit_results()
             elif not self.collection_cancel.is_set():
-                from traceback import format_exception
+                from api_agent.testing.diagnostics import CredentialScrubber, safe_exception
+                from api_agent.telemetry.privacy import ContentPolicy
+                history = self.integration_redaction_history
+                fallback = CredentialScrubber(getattr(resolved, 'values', {}))
+                def scrub(text):
+                    if history is None:
+                        return fallback(text)
+                    try:
+                        return CredentialScrubber(boundary=history.snapshot())(text)
+                    except Exception:
+                        return '[withheld: credential protection unavailable]'
+                source = getattr(getattr(resolved, 'fields', {}).get('UNATTENDED_USER_INDEX'), 'source', None)
+                detail = safe_exception(error, scrub,
+                    allow_content=history is not None and ContentPolicy.from_config(resolved).allow_content,
+                    unattended_index_source=source)
                 self.show("error", "Integration execution failed",
                           "Integration setup or recording failed. Check configuration and the selected provider.\n\n"
-                          + ''.join(format_exception(error)),
-                          (("menu", "Main menu"),))
+                          + detail, (("menu", "Main menu"),))
         finally:
             self.suite_components.clear()
             self.finish_test_run()
@@ -2210,6 +2261,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return (self.inspections.active or self.recording_cleanup is not None
                 or self.allure_viewer is not None or self.allure_cleanup_active())
 
+    def discard_integration_redaction_history(self):
+        history = self.integration_redaction_history
+        self.integration_redaction_history = None
+        if history is not None:
+            history.close()
+
     def discard_finished_inspection(self):
         if not self.inspection_cleanup_active():
             from api_agent.testing.inspection_controls import InspectionGroup
@@ -2230,7 +2287,6 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         recording = self.recording_cleanup
         viewer = self.allure_viewer
         allure_cleanup = (self.begin_allure_cleanup() if self.allure_cleanup_active() else None)
-        pending = recording.pending_cleanup if recording is not None else None
         generation = self._inspection_generation
         async def retry():
             cleaned = True
@@ -2244,10 +2300,13 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 else:
                     if self.allure_viewer is viewer:
                         self.allure_viewer = None
+            pending = recording.pending_cleanup if recording is not None else None
             if pending is not None:
                 try:
                     await retry_owned_cleanup(recording, pending)
                 except Exception:
+                    cleaned = False
+                if recording.pending_cleanup is not None:
                     cleaned = False
             closed = await offload(group.close, force=True)
             if not closed or not cleaned:
@@ -2261,7 +2320,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 if self.inspection_lost:
                     self.operation_status = 3
                 elif self.integration_exit_status is not None:
-                    self.operation_status = self.integration_exit_status
+                    self.operation_status = 3 if self.integration_operation_failed else self.integration_exit_status
         owners = (group,) + ((viewer,) if viewer is not None else ())
         if allure_cleanup is not None:
             owners += (allure_cleanup,)
@@ -2290,7 +2349,10 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             except Exception:
                 cleaned = False
             else:
-                self.recording_cleanup = None
+                if self.recording_cleanup.pending_cleanup is None:
+                    self.recording_cleanup = None
+                else:
+                    cleaned = False
         from api_agent.runtime.tasks import offload
         closed = await offload(self.inspections.close, force=force)
         self.inspection_lost |= self.inspections.lost
@@ -2302,7 +2364,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             if self.inspection_lost:
                 self.operation_status = 3
             elif self.integration_exit_status is not None:
-                self.operation_status = self.integration_exit_status
+                self.operation_status = 3 if self.integration_operation_failed else self.integration_exit_status
         if not self._inspection_shutdown and self.screen_stack and self.unit_result is not None and isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'test-results':
             self.show_unit_results()
             self.screen.refresh_bindings()
@@ -2325,6 +2387,12 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return result
 
     def unit_event(self, event):
+        if event.kind == 'trace_warning':
+            from api_agent.testing.trace_warning import message
+            notice = message(event.text)
+            if notice is not None:
+                self.notify(notice, severity='warning', timeout=10)
+            return
         if event.kind == 'suite_progress':
             if event.component is None or self.collection_cancel.is_set():
                 return
@@ -2348,7 +2416,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             if event.kind == 'inspection_closed' and not self.inspection_cleanup_active() and not self.inspection_lost:
                 self.inspection_failed = False
                 if self.integration_exit_status is not None:
-                    self.operation_status = self.integration_exit_status
+                    self.operation_status = 3 if self.integration_operation_failed else self.integration_exit_status
             if self.screen_stack and self.unit_result is not None and isinstance(self.screen, WorkbenchScreen) and self.screen.kind == 'test-results':
                 self.show_unit_results()
                 self.screen.refresh_bindings()
@@ -2402,7 +2470,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                     summary += '\nAllure publication: FAIL — could not save the run to all configured history destinations. Check reporting dependencies and storage availability.'
                 elif self.integration_persisted is True:
                     summary += '\nAllure publication: PASS'
-                runner_status = self.integration_exit_status if self.integration_exit_status is not None else self.operation_status
+                runner_status = (3 if self.integration_operation_failed else self.integration_exit_status
+                                 if self.integration_exit_status is not None else self.operation_status)
                 if self.integration_persisted is not False and runner_status and not self.unit_result.cancelled and all(test.status in {'passed', 'skipped'} for test in self.unit_result.tests):
                     summary += f'\nTest operation: FAIL — runner or reporting failed outside individual test outcomes (exit status {runner_status}).'
             else:
@@ -2714,9 +2783,24 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 from .test_results import test_details
                 table = self.screen.query_one(DataTable)
                 return_scroll_y = table.scroll_y
+                history = self.integration_redaction_history
+                allow_content = (self.mode not in {'integration', 'e2e'} or
+                                 getattr(self, 'integration_content_allowed', False) and history is not None)
                 details = test_details(result, self.suite_usage,
                     self.test_costs.get(key, {}), historical_tokens=historical,
-                    accounting_pending=self.unit_result is None)
+                    accounting_pending=self.unit_result is None, allow_content=allow_content)
+                if self.mode in {'integration', 'e2e'} and history is not None:
+                    from api_agent.testing.diagnostics import CredentialScrubber
+                    try:
+                        protected = CredentialScrubber(boundary=history.snapshot())(details.plain)
+                    except Exception:
+                        details = test_details(result, self.suite_usage, self.test_costs.get(key, {}),
+                            historical_tokens=historical, accounting_pending=self.unit_result is None,
+                            allow_content=False)
+                    else:
+                        if protected != details.plain:
+                            from rich.text import Text
+                            details = Text(protected)
                 for endpoint in self.inspections.endpoints:
                     details.append('\nBrowser CDP (retained suite browser): ' + endpoint)
                 self.show("test-failure", title, details)
@@ -2987,6 +3071,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         if not await self.close_reporting_sessions():
             self.notify("Reporting cleanup incomplete; retry Quit to finish releasing the session.", severity="error", timeout=10)
             return
+        self.discard_integration_redaction_history()
         self.exit(self.operation_status)
 
     async def on_unmount(self):
@@ -3004,6 +3089,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.collection_cancel.set()
         if self.test_run_active():
             await self.test_run.stop_and_wait()
+        self.discard_integration_redaction_history()
         try:
             await self.end_inspection(force=True)
         finally:

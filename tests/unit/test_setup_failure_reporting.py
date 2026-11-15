@@ -166,7 +166,7 @@ async def fail_setup():
     (suite / 'test_setup.py').write_text('import asyncio\nfrom diagnostic_fixture import fail_setup\ndef test_setup():\n    asyncio.run(fail_setup())\n')
     context = SimpleNamespace(base_root=root, owner_root=root, suite_paths=lambda mode: (suite,))
     config = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'synthetic',
-              'ALLURE_RESULTS_DIR': tmp_path / 'results', 'TEST_PARALLEL_JOBS': 0}
+              'ALLURE_RESULTS_DIR': tmp_path / 'results', 'TEST_PARALLEL_JOBS': 0, 'LOG_CONTENT': True}
     storage = Storage()
     result = run_recorded_integration(context, collect_tests(context, 'integration'), config,
                                       accepted=True, storage=storage)

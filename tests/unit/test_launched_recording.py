@@ -236,3 +236,61 @@ def test_unrecorded_launch_prepares_declared_workspaces_before_workers(tmp_path,
     launched.run_launched_integration(context, (test,), {'SKIP_ALLURE_REPORTING': True, 'TUI_MODE': 'integration'},
         accepted=True, cancel_event=cancelled)
     assert order == [('workspaces', frozenset({'ui'}), cancelled), ('browser', cancelled), 'workers']
+
+
+def test_completed_recording_survives_runner_cleanup_failure(tmp_path):
+    context, test, config = fixture(tmp_path)
+    failure = CleanupPendingError((), None)
+    def runner(*args, **hooks):
+        result = fake_runner()(*args, **hooks)
+        failure.execution = result
+        raise failure
+    with pytest.raises(CleanupPendingError) as caught:
+        launched.run_launched_integration(context, [test], config, accepted=True,
+            prerequisites=owner([]), storage=Storage(), runner=runner)
+    assert caught.value is failure
+    assert failure.recorded_result.execution is failure.execution
+    assert failure.recorded_result.persisted
+
+
+@pytest.mark.parametrize('mode', ['integration', 'e2e'])
+def test_real_runner_retains_result_when_publication_cleanup_is_pending(tmp_path, mode):
+    import asyncio
+    from test_integration_runner import fixture_repo, context
+    from api_agent.testing.collection import collect_tests
+    from api_agent.testing.inspection_controls import finish_terminal_inspection
+
+    source = ('import pytest\n@pytest.mark.requires_owned_ui_session\ndef test_ok():\n    assert True\n'
+              if mode == 'e2e' else 'def test_ok():\n    assert True\n')
+    base = fixture_repo(tmp_path / 'base', source)
+    ctx = context(base)
+    ctx.suite_paths = lambda selected_mode: (base / 'tests/integration',)
+    selected = collect_tests(ctx, mode)
+    config = {'TUI_MODE': mode, 'ALLURE_S3_BUCKET': 'synthetic',
+              'ALLURE_RESULTS_DIR': tmp_path / 'artifacts', 'TEST_PARALLEL_JOBS': 0,
+              'E2E_RERUNS': 0}
+    released = []
+    async def retry():
+        released.append(True)
+    receipt = CleanupPendingError((), retry)
+    class PendingStorage(Storage):
+        def persist(self, directory, manifest):
+            self.calls.append((directory, manifest))
+            raise receipt
+    storage = PendingStorage()
+    with pytest.raises(CleanupPendingError) as caught:
+        recorded.run_recorded_integration(ctx, selected, config, accepted=True, storage=storage,
+            prepare=lambda usage: usage.record_prompt(turn_id='turn', prompt_id='initial', kind='initial'))
+    assert caught.value is receipt
+    assert receipt.execution.tests[0].status == 'passed'
+    result = receipt.recorded_result
+    assert result.execution is receipt.execution and not result.persisted
+    assert result.usage['prompt_count'] == 1
+    lines = []
+    assert finish_terminal_inspection(result, lines.append)
+    assert sum('results:' in line for line in lines) == 1
+    assert any('1/1 passed' in line for line in lines)
+    assert any('Allure publication: FAIL' in line for line in lines)
+    assert len(storage.calls) == 1
+    asyncio.run(receipt.retry())
+    assert released == [True]
