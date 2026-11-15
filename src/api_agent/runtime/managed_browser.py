@@ -4,6 +4,7 @@ from functools import partial
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -13,6 +14,29 @@ from api_agent.runtime.browser import ensure_chromium_ready
 from api_agent.runtime.tasks import offload
 
 _CHROMIUM_SINGLETON_SUFFIX = "/org.chromium.Chromium.XXXXXX/SingletonSocket"
+_DEVTOOLS_PORT_TIMEOUT = 10.0
+_DEVTOOLS_PORT_POLL = 0.05
+
+
+async def _published_inspection_port(browser, port_file):
+    """Chromium publishes its port file from a separate thread, so wait for it within a bound.
+
+    Only a missing or still-empty file is transient; a complete first line is parsed once and a
+    malformed value raises immediately.
+    """
+    deadline = time.monotonic() + _DEVTOOLS_PORT_TIMEOUT
+    while True:
+        try:
+            lines = port_file.read_text().splitlines()
+        except FileNotFoundError:
+            lines = []
+        if lines and lines[0]:
+            return int(lines[0])
+        if not browser.is_connected():
+            raise RuntimeError('Browser exited before publishing its inspection port')
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Timed out waiting for the browser inspection port')
+        await asyncio.sleep(_DEVTOOLS_PORT_POLL)
 
 
 async def prepare_managed_browser(*, headless):
@@ -57,7 +81,7 @@ class ChromiumDriver:
             try:
                 arguments = (await session.send('Browser.getBrowserCommandLine'))['arguments']
                 directory = next(arg.split('=', 1)[1] for arg in arguments if arg.startswith('--user-data-dir='))
-                port = int((Path(directory) / 'DevToolsActivePort').read_text().splitlines()[0])
+                port = await _published_inspection_port(browser, Path(directory) / 'DevToolsActivePort')
                 if not 0 < port < 65536:
                     raise ValueError('Invalid inspection port')
                 self.inspection_endpoint = f'http://127.0.0.1:{port}'

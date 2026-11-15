@@ -262,6 +262,99 @@ def test_debug_endpoint_is_loopback_and_cdp_session_is_disposed(chromium, tmp_pa
     asyncio.run(scenario())
 
 
+def _inspectable_chromium(chromium, tmp_path, connected):
+    """Wire a fake inspectable browser whose liveness probe is the poll hook; returns the poll log."""
+    polls = []
+
+    def is_connected():
+        polls.append(len(polls) + 1)
+        return connected(len(polls))
+
+    chromium.browser.is_connected = is_connected
+    cdp = SimpleNamespace(
+        send=AsyncMock(return_value={'arguments': ['chromium', '--user-data-dir=' + str(tmp_path)]}),
+        detach=AsyncMock())
+    chromium.browser.new_browser_cdp_session = AsyncMock(return_value=cdp)
+    return polls, cdp
+
+
+@pytest.mark.parametrize('contents', [
+    [None, '32123\n/browser/path\n'],
+    [None, None, '', '\n', '32123\n/browser/path\n'],
+])
+def test_inspection_port_is_awaited_until_the_browser_publishes_it(chromium, tmp_path, monkeypatch, contents):
+    monkeypatch.setattr(module, '_DEVTOOLS_PORT_POLL', 0.001)
+    port_file = tmp_path / 'DevToolsActivePort'
+
+    def publish(poll):
+        # Poll N is a miss; the browser writes the next state before the following read.
+        if contents[poll - 1] is not None:
+            port_file.write_text(contents[poll - 1])
+        return True
+
+    polls, cdp = _inspectable_chromium(chromium, tmp_path, publish)
+
+    async def scenario():
+        driver = module.ChromiumDriver(inspectable=True)
+        assert await driver.launch(headless=False) is chromium.browser
+        assert driver.inspection_endpoint == 'http://127.0.0.1:32123'
+        assert len(polls) == len(contents) and driver.handed_browser
+        cdp.detach.assert_awaited_once()
+        await driver.stop()
+        chromium.browser.close.assert_not_awaited()
+    asyncio.run(scenario())
+
+
+def test_inspection_port_wait_stops_when_the_browser_exits(chromium, tmp_path, monkeypatch):
+    monkeypatch.setattr(module, '_DEVTOOLS_PORT_POLL', 0.001)
+    polls, cdp = _inspectable_chromium(chromium, tmp_path, lambda poll: poll < 2)
+
+    async def scenario():
+        driver = module.ChromiumDriver(inspectable=True)
+        with pytest.raises(RuntimeError, match='Browser exited before publishing its inspection port'):
+            await driver.launch(headless=False)
+        assert len(polls) == 2
+        assert driver.inspection_endpoint is None and not driver.handed_browser
+        cdp.detach.assert_awaited_once()
+        await driver.stop()
+        chromium.browser.close.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_inspection_port_wait_is_bounded(chromium, tmp_path, monkeypatch, partial):
+    monkeypatch.setattr(module, '_DEVTOOLS_PORT_TIMEOUT', 0.01)
+    monkeypatch.setattr(module, '_DEVTOOLS_PORT_POLL', 0.001)
+    if partial:
+        (tmp_path / 'DevToolsActivePort').write_text('')
+    polls, cdp = _inspectable_chromium(chromium, tmp_path, lambda poll: True)
+
+    async def scenario():
+        driver = module.ChromiumDriver(inspectable=True)
+        with pytest.raises(TimeoutError, match='Timed out waiting for the browser inspection port'):
+            await driver.launch(headless=False)
+        assert polls and driver.inspection_endpoint is None and not driver.handed_browser
+        cdp.detach.assert_awaited_once()
+        await driver.stop()
+        chromium.browser.close.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+def test_complete_non_integer_inspection_port_fails_without_waiting(chromium, tmp_path):
+    (tmp_path / 'DevToolsActivePort').write_text('not-a-port\n/browser/path\n')
+    polls, cdp = _inspectable_chromium(chromium, tmp_path, lambda poll: True)
+
+    async def scenario():
+        driver = module.ChromiumDriver(inspectable=True)
+        with pytest.raises(ValueError):
+            await driver.launch(headless=False)
+        assert not polls and not driver.handed_browser
+        cdp.detach.assert_awaited_once()
+        await driver.stop()
+        chromium.browser.close.assert_awaited_once()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(('report', 'pid'), [
     ({'processInfo': [{'type': 'browser', 'id': 321}, {'type': 'gpu', 'id': 322}]}, 321),
     ({'processInfo': []}, None),
