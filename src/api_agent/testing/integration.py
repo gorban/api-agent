@@ -123,7 +123,10 @@ def _admit_operation(function):
                                 disposed = bool(recovery.workers) and all(disposal_complete(worker) for worker in recovery.workers)
                                 with recovery.bind():
                                     contribution.close(workers_disposed=disposed)
-                            recovery.recover()
+                            if contribution is None:
+                                recovery.recover()
+                            else:
+                                recovery.recover(cleanup_timeout_seconds=min(contribution.cleanup_timeout, 300))
                             recovered = True
                         temporary.cleanup()
                         recovery.closed = True

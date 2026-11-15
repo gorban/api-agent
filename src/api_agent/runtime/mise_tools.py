@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import tomllib
 
 from api_agent.providers.progress import report_timeout_sync
@@ -24,6 +25,7 @@ TOOLS = {
 FILE_TOOLS = frozenset({'plantuml'})
 # Background JVMs must not open a desktop app window or take focus (macOS Dock).
 HEADLESS_JAVA_OPTION = '-Djava.awt.headless=true'
+_PATH_LOCK = threading.Lock()
 # The isolated tool state ./launch.sh exports, relative to <root>/.api-agent/bootstrap.
 LAUNCHER_STATE = {
     'MISE_CONFIG_DIR': 'mise/config', 'MISE_GLOBAL_CONFIG_FILE': 'mise/config/config.toml',
@@ -136,6 +138,7 @@ def ensure_tools(*names, timeout=300, cancellation=None):
         # transitive packages. An explicit tool@version can lose that source.
         run(['install', *(TOOLS[name] for name in names)], budget)
         paths = []
+        executables = {}
         files = {}
         java_home = None
         for name in names:
@@ -143,6 +146,7 @@ def ensure_tools(*names, timeout=300, cancellation=None):
                 files[name] = resolved(['where', versions[name]], budget, assets[name])
                 continue
             executable = resolved(['which', '--tool', versions[name], name], budget)
+            executables[name] = str(executable)
             paths.append(str(executable.parent))
             if name == 'java':
                 java_home = str(executable.parent.parent)
@@ -150,7 +154,14 @@ def ensure_tools(*names, timeout=300, cancellation=None):
             raise InterruptedError('Managed executable preparation cancelled')
         # Later requested tools take precedence when installations bundle the
         # same executable, such as the npm shipped with Node.
-        os.environ['PATH'] = os.pathsep.join((*dict.fromkeys(reversed(paths)), os.environ.get('PATH', '')))
-        if java_home is not None:
-            os.environ['JAVA_HOME'] = java_home
+        with _PATH_LOCK:
+            existing = tuple(dict.fromkeys(os.environ.get('PATH', '').split(os.pathsep)))
+            current = os.pathsep.join(existing)
+            if all(shutil.which(name, path=current) == executable
+                   for name, executable in executables.items()):
+                os.environ['PATH'] = current
+            else:
+                os.environ['PATH'] = os.pathsep.join(dict.fromkeys((*reversed(paths), *existing)))
+            if java_home is not None:
+                os.environ['JAVA_HOME'] = java_home
     return files

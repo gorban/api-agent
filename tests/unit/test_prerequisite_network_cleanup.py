@@ -225,6 +225,8 @@ def test_unverifiable_saved_container_networks_block_cleanup(setup, response):
     original = engine.run
     def invalid_inspection(command, **options):
         if command[1:3] == ('inspect', '--format'):
+            if response.startswith('{"networks"'):
+                return response.replace('{"networks"', '{"id":"' + command[4] + '","networks"', 1)
             return response
         return original(command, **options)
     manager.runner = invalid_inspection
@@ -238,14 +240,14 @@ def test_unverifiable_saved_container_networks_block_cleanup(setup, response):
 def test_container_network_inspections_are_batched(setup):
     create, engine, clock, scope, _ = setup
     manager = create()
-    for _ in range(35):
+    for _ in range(259):
         engine.add(next(iter(manager.specs)), running=False)
 
     references = manager._container_network_references(clock.now() + 120, cleanup=True)
 
     assert scope.project + '_default' in references
     inspections = [command for command, _ in engine.commands if command[1:3] == ('inspect', '--format')]
-    assert [len(command[4:]) for command in inspections] == [32, 3]
+    assert [len(command[4:]) for command in inspections] == [256, 3]
 
 
 def test_release_preserves_referenced_network_without_scanning_unrelated_definitions(setup):
@@ -306,6 +308,8 @@ def test_unverifiable_reference_batch_preserves_network(setup, response):
     original = engine.run
     def inspect(command, **options):
         if command[1:3] == ('inspect', '--format'):
+            if response.startswith('{"networks"'):
+                return response.replace('{"networks"', '{"id":"' + command[4] + '","networks"', 1)
             return response
         return original(command, **options)
     manager.runner = inspect
@@ -509,7 +513,7 @@ def test_referenced_names_are_filtered_before_network_inspection(setup, aged):
             networks = {name: {'NetworkID': identifiers[name]} for name in referenced_names}
             if id_only:
                 networks['alias'] = {'NetworkID': identifiers[id_only]}
-            return json.dumps({'networks': networks, 'mode': ''})
+            return json.dumps({'id': 'f' * 64, 'networks': networks, 'mode': ''})
         if command[1:3] == ('network', 'inspect'):
             return json.dumps([{'Name': name, 'Id': identifiers[name],
                 'Created': '2000-01-01T00:00:00Z', 'Labels': {

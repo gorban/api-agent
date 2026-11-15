@@ -56,6 +56,7 @@ class Engine:
         if command[1] == 'inspect':
             if command[2] == '--format':
                 return '\n'.join(json.dumps({
+                    'id': key,
                     'networks': self.records[key]['NetworkSettings']['Networks'],
                     'mode': self.records[key]['HostConfig']['NetworkMode'],
                 }) for key in command[4:])

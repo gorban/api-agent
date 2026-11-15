@@ -4,6 +4,7 @@ This local control data is never exported as test evidence. No executable hook,
 ambient engine selection or filesystem-wide discovery is accepted.
 """
 import json
+import math
 from contextvars import ContextVar
 import fcntl
 import os
@@ -197,7 +198,10 @@ class NativeRecoveryOwner(CleanupLeaseOwner):
             recovery.select_target(key)
             yield recovery._selected()
 
-    def recover(self):
+    def recover(self, *, cleanup_timeout_seconds=15):
+        if (type(cleanup_timeout_seconds) not in (int, float)
+                or not math.isfinite(cleanup_timeout_seconds) or not 0 < cleanup_timeout_seconds <= 300):
+            raise ValueError('Cleanup deadline must be between zero and 300 seconds')
         _private(self.directory, directory=True)
         from api_agent.runtime.processes import disposal_complete
         states = sorted(self.directory.iterdir())
@@ -251,6 +255,7 @@ class NativeRecoveryOwner(CleanupLeaseOwner):
                     elif selected or temporary:
                         _write(receipt, selected)
                     if temporary:
-                        runtime.dispose(selected, nonce=record['nonce'], fingerprints=record['fingerprints'])
+                        runtime.dispose(selected, nonce=record['nonce'], fingerprints=record['fingerprints'],
+                            cleanup_timeout_seconds=cleanup_timeout_seconds)
                     elif selected:
                         runtime.stop(selected)

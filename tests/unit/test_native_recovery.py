@@ -827,8 +827,8 @@ def test_guarded_temporary_disposal_checks_all_saved_network_references(pending_
         if args[0] == 'ps':
             return '\n'.join(rows)
         if args[:2] == ['inspect', '--format']:
-            return '\n'.join(json.dumps({'networks': {name: {'NetworkID': network_id}}, 'mode': 'bridge'})
-                             for _ in args[3:])
+            return '\n'.join(json.dumps({'id': item, 'networks': {name: {'NetworkID': network_id}}, 'mode': 'bridge'})
+                             for item in args[3:])
         if args[0] == 'inspect':
             return json.dumps([rows[item] for item in args[1:]])
         if args[0] == 'stop':
@@ -977,7 +977,7 @@ def test_native_temporary_recovery_checks_network_even_without_containers(pendin
     calls = []
     pending_intent.runtime.dispose = lambda identifiers, **kwargs: calls.append((identifiers, kwargs))
     pending_intent.owner.recover()
-    assert calls == [([], {'nonce': 'a'*32, 'fingerprints': {'service': 'f'*64}})]
+    assert calls == [([], {'nonce': 'a'*32, 'fingerprints': {'service': 'f'*64}, 'cleanup_timeout_seconds': 15})]
 
 
 def test_network_disposal_deadline_refuses_engine_command(tmp_path, monkeypatch):
