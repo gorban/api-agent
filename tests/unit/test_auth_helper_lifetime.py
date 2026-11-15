@@ -56,16 +56,18 @@ def test_worker_disposal_kills_detached_auth_group(tmp_path, mode, force, worker
         'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
         "child=subprocess.Popen([sys.executable,'-c',"
         "'import signal,time;signal.signal(signal.SIGHUP,signal.SIG_IGN);signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'])\n"
-        f'open({str(marker)!r},"w").write(str(os.getpid())+" "+str(child.pid))\n'
+        f'open({str(marker)!r}+".tmp","w").write(str(os.getpid())+" "+str(child.pid))\n'
+        f'os.replace({str(marker)!r}+".tmp",{str(marker)!r})\n'
         'time.sleep(60)'
     )
     worker = (
-        'import signal,sys\n'
+        'import os,signal,sys\n'
         'from api_agent.auth.owned_process import OwnedProcess\n'
         'original_init=OwnedProcess.__init__\n'
         'def init(self,*args,**kwargs):\n'
         ' original_init(self,*args,**kwargs)\n'
-        f' open({str(guardian_marker)!r},"w").write(str(self.pid))\n'
+        f' open({str(guardian_marker)!r}+".tmp","w").write(str(self.pid))\n'
+        f' os.replace({str(guardian_marker)!r}+".tmp",{str(guardian_marker)!r})\n'
         'OwnedProcess.__init__=init\n'
         + ('signal.signal(signal.SIGTERM,signal.SIG_IGN)\n' if force else '')
         + ('from api_agent.auth.credentials import _run\n'
@@ -84,7 +86,7 @@ def test_worker_disposal_kills_detached_auth_group(tmp_path, mode, force, worker
     pids = []
     try:
         deadline = time.monotonic() + 5
-        while not marker.exists():
+        while not (marker.exists() and guardian_marker.exists()):
             assert process.poll() is None
             assert time.monotonic() < deadline
             time.sleep(.01)
