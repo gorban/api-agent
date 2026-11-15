@@ -30,11 +30,12 @@ async def resolve_hittable(pilot, app, container, index, within=''):
     a previously captured handle can be detached and a click on it can silently
     miss its target. Always re-resolve from a container that survives recompose.
     """
-    while True:
-        await pilot.pause()
-        keys = list(container.query(f'{within} _ShortcutKey'.strip()))
-        if index < len(keys) and hittable_at(app, keys[index]):
-            return keys[index]
+    async with asyncio.timeout(10):
+        while True:
+            await pilot.pause()
+            keys = list(container.query(f'{within} _ShortcutKey'.strip()))
+            if index < len(keys) and hittable_at(app, keys[index]):
+                return keys[index]
 
 
 async def click_and_wait(pilot, app, container, index, expected_actions, within=''):
@@ -326,8 +327,9 @@ def test_shortcut_handle_is_stale_after_footer_recompose():
             stale = await resolve_hittable(pilot, app, footer, 0, '.user-cycle')
             assert hittable_at(app, stale)
             footer.refresh(recompose=True)
-            while stale.is_attached:
-                await pilot.pause()
+            async with asyncio.timeout(10):
+                while stale.is_attached:
+                    await pilot.pause()
             assert not stale.is_attached
             assert not hittable_at(app, stale)
             fresh = await resolve_hittable(pilot, app, footer, 0, '.user-cycle')
