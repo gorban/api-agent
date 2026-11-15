@@ -227,3 +227,24 @@ def test_live_cost_column_hidden_and_final_cost_summary_visible(tmp_path):
             app.receive_usage('Starting quota used: 14%',app._inspection_generation)
             assert 'This suite cost: $0.010' in app.screen.query_one('#body',Static).content.plain
     asyncio.run(scenario())
+
+
+def test_suite_timer_tolerates_absent_elapsed_widget(tmp_path):
+    """The first timer paint can run before the elapsed widget is queryable; it must be a no-op."""
+    async def scenario():
+        identity = TestIdentity('base::t.py::test_pending', 'base', 't.py', 't.py::test_pending')
+        app = fixture(tmp_path, 'integration')
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.pause()
+            app.test_run = TestRunLifecycle()
+            try:
+                app.unit_rows = {identity.id: ('PENDING', identity.id, '')}
+                app.show_unit_results(app.unit_progress())
+                await pilot.pause()
+                screen = app.screen
+                await screen.query_one('#suite-elapsed', Static).remove()
+                assert not screen.query('#suite-elapsed')
+                assert screen.refresh_suite_timer() is None
+            finally:
+                app.finish_test_run()
+    asyncio.run(scenario())
