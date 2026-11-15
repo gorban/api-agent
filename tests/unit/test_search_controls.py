@@ -4,6 +4,7 @@ import asyncio
 import pytest
 from textual.app import App
 from textual.binding import Binding
+from textual.errors import NoWidget
 from textual.events import Paste
 from textual.widgets import Static
 from textual.widgets._footer import FooterKey
@@ -11,15 +12,36 @@ from textual.widgets._footer import FooterKey
 from api_agent.tui import search
 
 
-async def click_and_wait(pilot, app, widget, expected_actions):
-    """A click only posts the simulated key; its action runs when the app
-    processes that key, which a slow host may defer past the click."""
-    await pilot.click(widget)
-    for _ in range(100):
-        if app.actions == expected_actions:
-            break
+def hittable_at(app, widget):
+    """Whether a click at the widget's own origin would reach that widget."""
+    if not widget.is_attached or not widget.region.area:
+        return False
+    try:
+        hit, _ = app.get_widget_at(*widget.region.offset)
+    except NoWidget:
+        return False
+    return hit is widget
+
+
+async def resolve_hittable(pilot, app, container, index, within=''):
+    """Resolve a shortcut key fresh, waiting until it is laid out and clickable.
+
+    The footer recomposes asynchronously on focus, binding and theme changes, so
+    a previously captured handle can be detached and a click on it can silently
+    miss its target. Always re-resolve from a container that survives recompose.
+    """
+    while True:
         await pilot.pause()
-        await asyncio.sleep(.05)
+        keys = list(container.query(f'{within} _ShortcutKey'.strip()))
+        if index < len(keys) and hittable_at(app, keys[index]):
+            return keys[index]
+
+
+async def click_and_wait(pilot, app, container, index, expected_actions, within=''):
+    """Click a freshly resolved shortcut key and check the recorded actions."""
+    widget = await resolve_hittable(pilot, app, container, index, within)
+    assert await pilot.click(widget)
+    await pilot.pause()
     assert app.actions == expected_actions
 
 
@@ -187,8 +209,8 @@ def test_grouped_brackets_color_and_clicks_preserve_other_footer():
             assert ''.join(widget.render().plain for widget in group.query(Static)) == '[ / ] Loop through users'
             assert any(getattr(widget, 'action', None) == 'other' for widget in footer.children)
             assert footer.styles.grid_size_columns == 2
-            await click_and_wait(pilot, app, brackets[0], ['previous'])
-            await click_and_wait(pilot, app, brackets[1], ['previous', 'next'])
+            await click_and_wait(pilot, app, footer, 0, ['previous'], '.user-cycle')
+            await click_and_wait(pilot, app, footer, 1, ['previous', 'next'], '.user-cycle')
             await pilot.press('f2')
             assert app.actions[-1] == 'other'
     asyncio.run(scenario())
@@ -226,8 +248,8 @@ def test_disabled_bracket_does_not_dispatch():
             assert brackets[0].enabled is False and brackets[1].enabled is True
             assert brackets[0].rich_style.bold and brackets[0].rich_style.dim
             assert not brackets[1].rich_style.dim
-            await pilot.click(brackets[0])
-            await click_and_wait(pilot, app, brackets[1], ['next'])
+            await click_and_wait(pilot, app, app.screen, 0, [])
+            await click_and_wait(pilot, app, app.screen, 1, ['next'])
     asyncio.run(scenario())
 
 
@@ -290,6 +312,25 @@ def test_search_shortcuts_share_label_and_preserve_both_actions(reverse_order):
                            and key.rich_style.bold for key in footer.query(search._ShortcutKey))
             assert len(set(colors)) > 1
             assert footer.styles.grid_size_columns == 3  # User pair, search pair, Other.
-            await click_and_wait(pilot, app, keys[0], ['forward'])
-            await click_and_wait(pilot, app, keys[1], ['forward', 'backward'])
+            await click_and_wait(pilot, app, footer, 0, ['forward'], '.test-search-shortcuts')
+            await click_and_wait(pilot, app, footer, 1, ['forward', 'backward'], '.test-search-shortcuts')
+    asyncio.run(scenario())
+
+
+def test_shortcut_handle_is_stale_after_footer_recompose():
+    async def scenario():
+        app = Harness()
+        async with app.run_test() as pilot:
+            app.screen.set_focus(None)
+            footer = app.query_one(search.GroupedUserFooter)
+            stale = await resolve_hittable(pilot, app, footer, 0, '.user-cycle')
+            assert hittable_at(app, stale)
+            footer.refresh(recompose=True)
+            while stale.is_attached:
+                await pilot.pause()
+            assert not stale.is_attached
+            assert not hittable_at(app, stale)
+            fresh = await resolve_hittable(pilot, app, footer, 0, '.user-cycle')
+            assert fresh is not stale and hittable_at(app, fresh)
+            await click_and_wait(pilot, app, footer, 0, ['previous'], '.user-cycle')
     asyncio.run(scenario())

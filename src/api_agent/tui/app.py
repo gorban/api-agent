@@ -583,6 +583,8 @@ class WorkbenchScreen(FocusNavigation, SelectedTextCopy, Screen):
 
     def refresh_suite_timer(self):
         run = self.app.test_run
+        if not self.query('#suite-elapsed'):
+            return
         timer = self.query_one('#suite-elapsed', Static)
         live = run is not None and run.active and self.app.unit_result is None
         timer.display = live
