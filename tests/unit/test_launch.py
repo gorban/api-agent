@@ -54,6 +54,27 @@ class LaunchTests(unittest.TestCase):
                                   options['services_timeout']), expected)
                 self.assertEqual(collect.call_args.kwargs['timeout'], expected[2])
 
+    def test_terminal_unit_tag_selector_releases_its_declared_marker(self):
+        from api_agent.testing.collection import TestIdentity
+        from api_agent.testing.runner import UnitRunResult
+        plain = TestIdentity('base::tests/unit/test_a.py::test_plain', 'base', 'tests/unit/test_a.py',
+                             'tests/unit/test_a.py::test_plain')
+        marked = TestIdentity('base::tests/unit/test_a.py::test_service', 'base', 'tests/unit/test_a.py',
+                              'tests/unit/test_a.py::test_service', {'needs_service'})
+
+        def collect(context, mode, selectors=(), *args, **kwargs):
+            # A declared marker stays out of collection unless a selector names its tag.
+            return [plain, marked] if 'tag:needs_service' in selectors else [plain]
+
+        with patch.dict(os.environ, {}, clear=True), patch('sys.stdout', StringIO()), \
+                patch('api_agent.config.read_dotenv', return_value={}), \
+                patch('api_agent.runtime.worktrees.verify_worktrees'), \
+                patch('api_agent.runtime.dependencies.ensure_environment', return_value=None), \
+                patch('api_agent.testing.collection.collect_tests', side_effect=collect), \
+                patch('api_agent.testing.runner.run_unit_tests', return_value=UnitRunResult(0, (), (), '')) as run:
+            self.assertEqual(main(['--no-std-in', '--tui-mode=unit', 'tag:needs_service'], base_root=ROOT), 0)
+        self.assertEqual([test.id for test in run.call_args.args[1]], [marked.id])
+
     def test_terminal_unit_full_coverage_option_reaches_runner(self):
         from api_agent.testing.runner import UnitRunResult
         with patch.dict(os.environ, {}, clear=True), patch('sys.stdout', StringIO()), \
@@ -349,7 +370,8 @@ def test_terminal_owner_defaults_and_explicit_all_or_dependency_selection(tmp_pa
             assert main(['--no-std-in', '--tui-mode=unit', *options], base_root=ROOT, resource_pack_dir=pack) == 0
             assert tuple(run.call_args.args[1]) == expected
             assert run.call_args.kwargs.get('coverage_owner_only', False) is owner_only
-            assert tuple(collect.call_args.args[2]) == ()
+            assert tuple(collect.call_args.args[2]) == tuple(option for option in options if not option.startswith('--'))
+            assert collect.call_args.kwargs['select'] is False
 
 
 def test_terminal_empty_owner_guides_all_unit_without_running_dependencies(tmp_path):

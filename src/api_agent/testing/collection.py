@@ -293,13 +293,15 @@ def provider_integration_suites(context, config):
     return suites
 
 
-def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None, timeout=None, include_marked=False):
+def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None, timeout=None, include_marked=False,
+                  select=True):
     """Collect each owner's suites using its working directory and pytest config.
 
     Each suite root's deadline is timeout, else the configured
     TEST_COLLECTION_TIMEOUT_SECONDS, else the declared default. A marker a pack
     declares under `tests.prerequisites` stays out of unit collection until a
-    `tag:marker` selector (or include_marked) names it.
+    `tag:marker` selector (or include_marked) names it. With select false the
+    selectors only release those markers and the whole catalog is returned.
     """
     if timeout is None:
         timeout = (config or {}).get('TEST_COLLECTION_TIMEOUT_SECONDS', _COLLECTION_TIMEOUT)
@@ -387,6 +389,8 @@ def collect_tests(context, mode, selectors=(), cancel_event=None, *, config=None
                 raise CollectionError(f"Pytest returned invalid collection data for {repo}: {exc}") from exc
     if not collected:
         raise CollectionError(f"No tests collected for {mode}")
+    if not select:
+        return list(collected.values())
     defaults = None
     if mode == 'unit' and selectors and all(selector.startswith('-') for selector in selectors):
         from .unit_scope import unit_default_tests

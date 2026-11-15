@@ -76,6 +76,16 @@ def test_declared_marker_is_excluded_until_a_tag_selector_or_the_runner_names_it
         'tests/unit/test_tiny.py::test_plain']
 
 
+def test_an_unselected_catalog_still_releases_markers_its_selectors_name(pair):
+    base, owner = pair
+    ctx = context(base, owner)
+    catalog = collect_tests(ctx, 'unit', ['pack::tag:needs_service'], select=False)
+    assert sorted(test.node_id for test in catalog if test.repo != 'base') == [
+        'tests/unit/test_tiny.py::test_plain', 'tests/unit/test_tiny.py::test_with_service']
+    unreleased = collect_tests(ctx, 'unit', ['tests/unit/test_tiny.py'], select=False)
+    assert sorted(test.node_id for test in unreleased if test.repo != 'base') == ['tests/unit/test_tiny.py::test_plain']
+
+
 def test_plain_exclusions_are_not_released_by_their_tag(pair):
     base, owner = pair
     ctx = context(base, owner, test_prerequisites=())

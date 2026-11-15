@@ -456,8 +456,8 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 return status
             from api_agent.testing.collection import collect_tests, select_tests
             from api_agent.testing.runner import run_unit_tests, format_unit_summary, unit_parallel_jobs, unit_test_environment
-            catalog = collect_tests(context, 'unit', (), config=result.values,
-                                    timeout=result.values['TEST_COLLECTION_TIMEOUT_SECONDS'])
+            catalog = collect_tests(context, 'unit', result.positionals, config=result.values,
+                                    timeout=result.values['TEST_COLLECTION_TIMEOUT_SECONDS'], select=False)
             from api_agent.testing.unit_scope import unit_default_tests, owner_unit_only, unit_coverage_complete, EMPTY_OWNER_UNITS
             defaults = unit_default_tests(context, catalog, all_unit=result.values.get('ALL_UNIT', False))
             if not result.positionals and not defaults and owner_unit_only(context, result.values):
