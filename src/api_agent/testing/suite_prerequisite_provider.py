@@ -18,12 +18,13 @@ from .diagnostics import CredentialScrubber, format_exception
 def validate_prerequisite_event(event):
     """Admit only content-free phase timings and integer counters."""
     if (type(event) is not dict or not {'phase', 'seconds'} <= event.keys()
-            or not event.keys() <= {'phase', 'seconds', 'reuse', 'miss', 'count', 'pending'}
+            or not event.keys() <= {'phase', 'seconds', 'reuse', 'miss', 'count', 'pending', 'completed'}
             or type(event['phase']) is not str
             or event['phase'] not in {'prepare', 'readiness', 'cleanup', 'error'}):
         raise ValueError('Invalid prerequisite diagnostic')
     seconds = event['seconds']
     if (type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0
+            or ('completed' in event and (type(event['completed']) is not int or event['completed'] not in (0, 1)))
             or any(type(value) is not int or value < 0
                    for key, value in event.items() if key not in {'phase', 'seconds'})):
         raise ValueError('Invalid prerequisite diagnostic')

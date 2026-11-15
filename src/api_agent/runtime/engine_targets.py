@@ -19,6 +19,49 @@ from types import MappingProxyType
 from .compose import controlled_engine_environment
 
 
+_MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
+
+
+def _executable_digest(path, *, cancelled):
+    """Hash a bounded regular executable without changing its invocation path."""
+    from api_agent.providers.progress import report_timeout_sync
+
+    def metadata(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    with report_timeout_sync('Container engine executable identity', 30) as budget:
+        def check():
+            if cancelled() or budget.remaining <= 0:
+                raise TimeoutError('Engine executable verification interrupted.')
+
+        check()
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_CLOEXEC', 0))
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_EXECUTABLE_BYTES:
+                raise ValueError('Invalid engine executable.')
+            digest = sha256()
+            size = 0
+            while True:
+                check()
+                chunk = os.read(descriptor, 1024 * 1024)
+                check()
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_EXECUTABLE_BYTES:
+                    raise ValueError('Invalid engine executable.')
+                digest.update(chunk)
+            if (size != before.st_size or metadata(os.fstat(descriptor)) != metadata(before)
+                    or metadata(os.stat(path)) != metadata(before)):
+                raise ValueError('Engine executable changed during verification.')
+            check()
+            return digest.hexdigest()
+        finally:
+            os.close(descriptor)
+
+
 class EngineTargetError(RuntimeError):
     """A selected target cannot safely receive an operation."""
 
@@ -65,7 +108,7 @@ class EngineTarget:
             # Preserve argv[0] for symlinked/multicall engine shims. Pin and
             # revalidate the bytes reached through this invocation path below.
             selected = str(Path(selected).absolute())
-            digest = sha256(Path(selected).read_bytes()).hexdigest()
+            digest = _executable_digest(selected, cancelled=cancelled)
             identity, transport = verifier(environment, executable=selected, cancelled=cancelled)
         except Exception as error:
             raise EngineTargetError('Selected engine verification failed.') from error
@@ -92,7 +135,7 @@ class EngineTarget:
     def verify(self, *, verifier=_verify, cancelled=lambda: False):
         """Refuse stale generations and replaced CLIs; never adopt a new default."""
         try:
-            if sha256(Path(self.executable).read_bytes()).hexdigest() != self.executable_digest:
+            if _executable_digest(self.executable, cancelled=cancelled) != self.executable_digest:
                 raise ValueError()
             identity, transport = verifier(dict(self.environment), executable=self.executable, cancelled=cancelled)
             if identity != self.identity or transport != self.environment['DOCKER_HOST']:

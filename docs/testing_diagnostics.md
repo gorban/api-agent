@@ -42,6 +42,13 @@ the configured additional confirmations must all pass. Unit tests never retry.
 Workflow `attempt`/`max_passes` values describe that workflow scope; they are not
 the outer test attempt number or `E2E_RERUNS` confirmation allowance.
 
+In prerequisite cleanup events, `pending` counts borrower leases; zero does not
+prove that resource owners were disposed. The broker emits `completed: 1` only
+after its owner pool and control storage close successfully, and `completed: 0`
+when that close fails. Older events without the flag do not establish completion.
+Other suite cleanup duties can still remain after the broker closes; retain the
+launcher's final cleanup outcome as the overall authority.
+
 ## 2. Select the exact attempt, then expand scoped evidence
 
 For finalized recorded E2E runs, logical outcomes live in

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from contextlib import nullcontext
 import json
+import math
 import os
 import re
 import time
@@ -101,8 +102,20 @@ class ContainerRuntime:
     def _environment(self):
         return self.engine_target.environment if self.engine_target is not None else _engine_environment()
 
-    def _run(self, arguments, *, timeout=5):
-        self._verify_engine()
+    def _run(self, arguments, *, timeout=5, deadline=None):
+        if deadline is None:
+            self._verify_engine()
+        else:
+            from api_agent.providers.progress import report_timeout_sync
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ContainerError('Temporary network cleanup deadline expired.')
+            with report_timeout_sync('Container engine verification', remaining):
+                self._verify_engine()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ContainerError('Temporary network cleanup deadline expired.')
+            timeout = min(timeout, remaining)
         executable = self.executable or shutil.which("docker") or shutil.which("podman")
         if not executable:
             raise ContainerError("Container inventory unavailable: docker and podman are absent from PATH.")
@@ -196,11 +209,14 @@ class ContainerRuntime:
             raise ContainerError("Cannot verify active prerequisite leases; cleanup refused.") from None
 
 
-    def dispose(self, identifiers, *, nonce, fingerprints):
+    def dispose(self, identifiers, *, nonce, fingerprints, cleanup_timeout_seconds=15):
         """Dispose only nonce-created definitions on the selected, leased engine."""
         from types import SimpleNamespace
         from .prerequisites import (guarded_cleanup, PrerequisiteError, _NetworkCleanup,
                                     PrerequisiteManager)
+        if (type(cleanup_timeout_seconds) not in (int, float)
+                or not math.isfinite(cleanup_timeout_seconds) or not 0 < cleanup_timeout_seconds <= 300):
+            raise ContainerError('Cleanup deadline must be between zero and 300 seconds.')
         if (self.scope is None or self.ownership_directory is None
                 or not isinstance(nonce, str) or not re.fullmatch('[0-9a-f]{32}', nonce)
                 or type(fingerprints) is not dict or not fingerprints
@@ -220,7 +236,7 @@ class ContainerRuntime:
                 remaining = deadline - self.now()
                 if remaining <= 0:
                     raise ContainerError('Temporary network cleanup deadline expired.')
-                return runtime._run(list(args[1:]), timeout=min(remaining, 120))
+                return runtime._run(list(args[1:]), timeout=min(remaining, 120), deadline=deadline)
         protected = session_container_identity()
         try:
             with guarded_cleanup(self.ownership_directory, self.scope) as leased:
@@ -246,7 +262,7 @@ class ContainerRuntime:
                     self._run(['stop', '--time', '10', *running], timeout=min(120, 5 + 12 * len(running)))
                 if present:
                     self._run(['rm', *present], timeout=min(120, 5 + 12 * len(present)))
-                NetworkCleanup()._prune_networks(time.monotonic() + 15,
+                NetworkCleanup()._prune_networks(time.monotonic() + cleanup_timeout_seconds,
                     required_labels={'api-agent.acquisition': nonce})
         except PrerequisiteError:
             raise ContainerError('Cannot verify temporary prerequisite cleanup; cleanup remains pending.') from None

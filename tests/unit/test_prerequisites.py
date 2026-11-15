@@ -108,7 +108,7 @@ class Engine:
         if command[1] == 'ps': return '\n'.join(self.records)
         if command[1] == 'inspect':
             if command[2] == '--format':
-                return '\n'.join(json.dumps({'networks': self.records[item].get('NetworkSettings', {}).get('Networks',
+                return '\n'.join(json.dumps({'id': item, 'networks': self.records[item].get('NetworkSettings', {}).get('Networks',
                     {self.owner.scope.project + '_default': {'NetworkID': 'a' * 64}}),
                     'mode': self.records[item].get('HostConfig', {}).get('NetworkMode', 'bridge')})
                     for item in command[4:])

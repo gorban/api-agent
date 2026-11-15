@@ -341,9 +341,10 @@ class SuitePrerequisiteBroker:
         _duration(timeout, allow_zero=True)
         deadline = started + timeout
         self._stopping.set()
-        if self._server is not None:
-            self._server.close()
+        completed = 0
         try:
+            if self._server is not None:
+                self._server.close()
             self._pool.close(timeout=max(0, deadline - time.monotonic()))
             with self._condition:
                 while self._preparing:
@@ -351,14 +352,15 @@ class SuitePrerequisiteBroker:
                     if remaining <= 0:
                         raise PoolPending('Prerequisite resolution remains pending')
                     self._condition.wait(remaining)
+            if self._directory is not None:
+                self._directory.cleanup()
+                (self._context_directory / _DESCRIPTOR).unlink(missing_ok=True)
+                self._directory = None
+            completed = 1
         finally:
             with self._lock:
                 pending = len(self._leases)
-            self._emit('cleanup', started, pending=pending)
-        if self._directory is not None:
-            self._directory.cleanup()
-            self._directory = None
-            (self._context_directory / _DESCRIPTOR).unlink(missing_ok=True)
+            self._emit('cleanup', started, pending=pending, completed=completed)
 
 
 def read_descriptor(context_directory):

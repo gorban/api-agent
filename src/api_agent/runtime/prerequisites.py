@@ -732,7 +732,8 @@ class _NetworkCleanup:
             deadline, cleanup=cleanup).split()
         references = set()
         try:
-            if any(not _ID.fullmatch(identifier) for identifier in identifiers):
+            if (len(set(identifiers)) != len(identifiers)
+                    or any(not _ID.fullmatch(identifier) for identifier in identifiers)):
                 raise ValueError()
             # Prioritize lease definitions still present in the fresh inventory.
             # Positive references only preserve networks. Absence still requires
@@ -740,15 +741,18 @@ class _NetworkCleanup:
             priority = set(self.lease.container_ids) if self.lease is not None else set()
             identifiers.sort(key=lambda identifier: identifier not in priority)
             protected = frozenset(preserve)
-            template = '{"networks":{{json .NetworkSettings.Networks}},"mode":{{json .HostConfig.NetworkMode}}}'
-            for offset in range(0, len(identifiers), 32):
-                batch = identifiers[offset:offset + 32]
+            template = '{"id":"{{.Id}}","networks":{{json .NetworkSettings.Networks}},"mode":{{json .HostConfig.NetworkMode}}}'
+            for offset in range(0, len(identifiers), 256):
+                batch = identifiers[offset:offset + 256]
                 rows = self._command((executable, 'inspect', '--format', template, *batch),
                     deadline, cleanup=cleanup).splitlines()
                 if len(rows) != len(batch):
                     raise ValueError()
-                for row in rows:
-                    entry = json.loads(row)
+                entries = [json.loads(row) for row in rows]
+                if (any(not isinstance(entry, dict) or not isinstance(entry.get('id'), str) for entry in entries)
+                        or {entry['id'] for entry in entries} != set(batch)):
+                    raise ValueError()
+                for entry in entries:
                     networks, mode = entry['networks'], entry['mode']
                     if ((networks is not None and not isinstance(networks, dict))
                             or (mode is not None and not isinstance(mode, str))):
