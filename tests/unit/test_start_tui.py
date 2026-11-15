@@ -345,7 +345,8 @@ def test_noninteractive_e2e_hands_selected_tests_to_launched_owner():
             patch('api_agent.testing.launched.run_launched_integration', side_effect=ValueError('synthetic operation requirement')) as execute:
         status = main(['--no-std-in', '--tui-mode=e2e', '--start=E2E', '--e2e-reruns=0',
                        '--ui-source-dir=/tmp/synthetic-ui', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'], base_root=root)
-    assert status == 2 and 'synthetic operation requirement' in stderr.getvalue()
+    assert status == 2 and 'synthetic operation requirement' not in stderr.getvalue()
+    assert '[withheld: LOG_CONTENT is disabled]' in stderr.getvalue()
     assert execute.call_args.kwargs['accepted'] is True
     assert execute.call_args.args[2]['TUI_MODE'] == 'e2e'
 

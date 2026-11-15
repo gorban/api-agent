@@ -29,6 +29,7 @@ class _SetupOwner:
         self._nontrace_settled = self._trace_cleanup_failed = False
         self._trace_cleanup_reported = False
         self._stderr_sink = getattr(backend, 'capture_stderr', None)
+        self._warning_sink = getattr(backend, 'warning_sink', None)
         self.trace_prerequisites = None
         from api_agent.runtime.tracing_services import tracing_requested
         if tracing_requested(backend.config, owner_root=backend.owner_root):
@@ -82,6 +83,11 @@ class _SetupOwner:
         if written != len(message) and not (written is None and self._stderr_sink is not None):
             raise OSError('Could not record tracing failure diagnostic.')
         sys.stderr.flush()
+        if self._warning_sink is not None:
+            try:
+                self._warning_sink('cleanup' if stage == 'resource cleanup' else 'setup')
+            except Exception:
+                pass
         self._trace_unavailable = True
 
     async def _close_tracing(self):
@@ -184,10 +190,12 @@ class SetupBackend(CleanupLeaseOwner):
 
     def __init__(self, config, owner_root, *, unattended_index_source=None,
                  password_manager_registry=None, interaction=None, quota_observer=None, authority=None,
-                 capture_sources=None, trace_prerequisites_factory=None, trace_context=None):
+                 capture_sources=None, trace_prerequisites_factory=None, trace_context=None,
+                 warning_sink=None):
         from api_agent.providers.setup_transport import _timeout
         self.timeout = _timeout(config.get('LLM_SETUP_REQUEST_TIMEOUT_SECONDS', self.timeout))
         self.trace_prerequisites_factory = trace_prerequisites_factory
+        self.warning_sink = warning_sink
         self.quota_observer = quota_observer
         self.interaction = interaction
         from api_agent.telemetry.privacy import EmissionBoundary

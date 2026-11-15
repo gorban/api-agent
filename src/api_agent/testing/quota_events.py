@@ -10,8 +10,8 @@ def validate_snapshot(snapshot):
     if isinstance(snapshot, QuotaReadError):
         return snapshot
     if (not isinstance(snapshot, QuotaSnapshot) or not _valid_pct(snapshot.pct_used)
-            or snapshot.window_id is None or len(snapshot.window_id) > 100
-            or not snapshot.window_id.isprintable() or snapshot.reset_at is None):
+            or (snapshot.window_id is not None and
+                (len(snapshot.window_id) > 100 or not snapshot.window_id.isprintable()))):
         raise ValueError('Invalid quota snapshot')
     return snapshot
 
@@ -41,8 +41,8 @@ def capture(event, observe):
         return
     row=data['snapshot']
     required = {'pct_used','window_id','reset_at','captured_at'}
-    allowed = required | {'pct_step','allocation_id','observation_id'}
+    allowed = required | {'pct_step','allocation_id','observation_id','initial_window'}
     if type(row) is not dict or not required <= set(row) or set(row) - allowed:
         raise ValueError('Invalid quota event')
-    snapshot=QuotaSnapshot(row['pct_used'],row['window_id'],datetime.fromisoformat(row['reset_at']),datetime.fromisoformat(row['captured_at']),row.get('pct_step'),row.get('allocation_id'),row.get('observation_id'))
+    snapshot=QuotaSnapshot(row['pct_used'],row['window_id'],datetime.fromisoformat(row['reset_at']) if row['reset_at'] is not None else None,datetime.fromisoformat(row['captured_at']),row.get('pct_step'),row.get('allocation_id'),row.get('observation_id'),row.get('initial_window', False))
     observe(data['phase'], validate_snapshot(snapshot))

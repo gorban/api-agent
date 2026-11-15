@@ -15,6 +15,7 @@ import math
 from pathlib import PurePosixPath
 import re
 import threading
+import weakref
 from uuid import UUID
 
 from api_agent.config.resolve import ConfigResult
@@ -152,6 +153,12 @@ class _Authority:
         self.call_owner = None
         self.claims = {}
         self.unclaimed = set()
+        self.redaction_histories = weakref.WeakSet()
+
+    def record_redaction_admission(self, values):
+        """Record successfully admitted credentials while holding the authority lock."""
+        for history in tuple(self.redaction_histories):
+            history._secrets.update(values)
 
     def claim(self, secret):
         self.claims[secret] = self.claims.get(secret, 0) + 1
@@ -317,6 +324,7 @@ class EmissionBoundary:
             self._secrets.add(secret)
             authority.generation += 1
         record(secret)
+        authority.record_redaction_admission((secret,))
         return True
 
     def register_secret(self, secret):
@@ -355,6 +363,10 @@ class EmissionBoundary:
     def credential_owner(self):
         """Return an owner whose registrations end with it instead of living as long as this authority."""
         return CredentialOwner(self)
+
+    def retain_redaction_history(self):
+        """Capture run-local redaction values without changing credential ownership."""
+        return RedactionHistory(self._authority)
 
     def call_credentials(self):
         """Return the owner shared by every operation of this authority for the credential it authenticates with."""
@@ -841,6 +853,31 @@ class EmissionBoundary:
         else:
             kind = 'error'
         return {'status': 'error', 'error_kind': kind}
+
+
+class RedactionHistory:
+    """Short-lived, scrub-only history; snapshots never share the source authority."""
+
+    def __init__(self, authority):
+        self._authority = authority
+        with authority.lock:
+            self._secrets = set(authority.secrets)
+            self._closed = False
+            authority.redaction_histories.add(self)
+
+    def snapshot(self):
+        """Freeze observed values for one independent disclosure projection."""
+        with self._authority.lock:
+            if self._closed:
+                raise ValueError('Redaction history is closed')
+            secrets = tuple(self._secrets)
+        return EmissionBoundary(ContentPolicy(True), secrets=secrets, preserve_json_text=True)
+
+    def close(self):
+        with self._authority.lock:
+            self._authority.redaction_histories.discard(self)
+            self._secrets.clear()
+            self._closed = True
 
 
 class CredentialOwner:

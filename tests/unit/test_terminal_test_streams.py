@@ -24,7 +24,7 @@ def test_verbosity_selection_order_empty_and_duplicate_records(level, stdout):
     lines = []
 
     write_successful_diagnostics([first, first, failed, outcome('empty'), second], lines.append,
-                                scrubber=CredentialScrubber(), level=level)
+                                scrubber=CredentialScrubber(), allow_content=True, level=level)
 
     assert len(lines) == (2 if stdout else 1)
     assert lines[0].startswith('Test diagnostics: "base::first" — passed\nstderr:\nfirst warning')
@@ -37,15 +37,15 @@ def test_verbosity_selection_order_empty_and_duplicate_records(level, stdout):
 def test_missing_legacy_stream_attributes_and_empty_selection_are_quiet():
     lines = []
     legacy = SimpleNamespace(identity=SimpleNamespace(id='legacy'), status='passed')
-    write_successful_diagnostics([legacy], lines.append, scrubber=CredentialScrubber())
-    write_successful_diagnostics([], lines.append, scrubber=CredentialScrubber(), level='info')
+    write_successful_diagnostics([legacy], lines.append, scrubber=CredentialScrubber(), allow_content=True)
+    write_successful_diagnostics([], lines.append, scrubber=CredentialScrubber(), allow_content=True, level='info')
     assert lines == []
 
 
 def test_invalid_verbosity_is_rejected_before_output():
     with pytest.raises(ValueError, match='warning or info'):
         write_successful_diagnostics([], lambda text: pytest.fail('unexpected output'),
-                                     scrubber=CredentialScrubber(), level='debug')
+                                     scrubber=CredentialScrubber(), allow_content=True, level='debug')
 
 
 def test_projected_profile_json_survives_escaped_stdout_without_legacy_remasking():
@@ -53,7 +53,7 @@ def test_projected_profile_json_survives_escaped_stdout_without_legacy_remasking
     assert '[REDACTED]' in CredentialScrubber()(payload)
     lines = []
     write_successful_diagnostics([outcome(local_stdout=payload)], lines.append,
-                                 scrubber=CredentialScrubber(), level='info')
+                                 scrubber=CredentialScrubber(), allow_content=True, level='info')
     assert payload in lines[0] and '[REDACTED]' not in lines[0]
 
 
@@ -62,7 +62,7 @@ def test_final_registered_credential_check_includes_header_and_both_streams():
     scrubber.boundary.register_secret('tail\n\nstdout:\nhead')
     lines = []
     write_successful_diagnostics([outcome(local_stderr='tail', local_stdout='head')],
-                                 lines.append, scrubber=scrubber, level='info')
+                                 lines.append, scrubber=scrubber, allow_content=True, level='info')
     assert lines == ['Test diagnostics withheld: credential protection.']
 
 
@@ -71,7 +71,7 @@ def test_output_failure_propagates():
         raise OSError('terminal unavailable')
     with pytest.raises(OSError, match='terminal unavailable'):
         write_successful_diagnostics([outcome(local_stderr='warning')], broken,
-                                     scrubber=CredentialScrubber())
+                                     scrubber=CredentialScrubber(), allow_content=True)
 
 
 @pytest.mark.parametrize('cancelled,persisted', [(False, True), (True, False)])
@@ -83,7 +83,7 @@ def test_integration_completion_uses_final_records_before_summary_publication_an
         inspections=()), persisted=persisted, usage={'final': True})
     ordered = ['all test progress finished']
     callback = lambda tests: write_successful_diagnostics(tests, ordered.append,
-        scrubber=CredentialScrubber(), level='info')
+        scrubber=CredentialScrubber(), allow_content=True, level='info')
 
     assert finish_terminal_inspection(recorded, ordered.append, successful_output=callback)
 
@@ -129,6 +129,39 @@ def test_unit_captured_failures_survive_abort_without_unfinished_test_spam():
         local_diagnostic='', traceback='Unit pytest report incomplete')
     output = []
 
-    write_unit_failure_diagnostics([failure, unfinished, failure], output.append, scrubber=CredentialScrubber())
+    write_unit_failure_diagnostics([failure, unfinished, failure], output.append, scrubber=CredentialScrubber(), allow_content=True)
 
     assert output == ['Failure details: owned::test_failed\nAssertionError: expected value; API_KEY=[REDACTED]']
+
+
+def test_successful_stream_snapshot_follows_capture_serialization():
+    from api_agent.telemetry.privacy import ContentPolicy, EmissionBoundary
+    boundary = EmissionBoundary(ContentPolicy(True))
+    history = boundary.retain_redaction_history()
+    owner = boundary.credential_owner()
+    secret = 'late-stream-credential-sentinel'
+
+    class CapturedText(str):
+        def rstrip(self, *args):
+            owner.register(secret, slot='selected')
+            owner.close()
+            return super().rstrip(*args)
+
+    result = outcome(local_stderr=CapturedText('safe narrative ' + secret))
+    output = []
+    write_successful_diagnostics([result], output.append, scrubber=CredentialScrubber(boundary=boundary),
+                                 allow_content=True, snapshot=history.snapshot)
+    assert secret not in '\n'.join(output)
+    assert output == ['Test diagnostics withheld: credential protection.']
+    history.close()
+
+
+def test_successful_stream_closed_history_fails_closed():
+    from api_agent.telemetry.privacy import EmissionBoundary
+    boundary = EmissionBoundary()
+    history = boundary.retain_redaction_history()
+    history.close()
+    output = []
+    write_successful_diagnostics([outcome(local_stderr='private-stream-sentinel')], output.append,
+        scrubber=CredentialScrubber(boundary=boundary), allow_content=True, snapshot=history.snapshot)
+    assert output == ['[withheld: redaction history unavailable]']

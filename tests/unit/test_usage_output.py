@@ -10,10 +10,13 @@ def test_successful_test_details_include_stderr_and_preserve_pass_status(stdout)
     identity = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
     result = TestResult(identity, 'passed', local_stderr='Response scrubbed: operation=model_discovery fields=1\n',
                         local_stdout=stdout)
-    details = test_details(result, {}, {}).plain
+    details = test_details(result, {}, {}, allow_content=True).plain
     assert 'stderr:\nResponse scrubbed:' in details
     assert details.endswith('PASSED')
     assert ('stdout:\nstdout diagnostic' in details) == bool(stdout)
+    withheld = test_details(result, {}, {}, allow_content=False).plain
+    assert 'Response scrubbed:' not in withheld and 'stdout diagnostic' not in withheld
+    assert '[withheld: LOG_CONTENT is disabled]' in withheld
     assert result.status == 'passed'
 
 

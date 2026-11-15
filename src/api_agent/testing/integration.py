@@ -147,6 +147,7 @@ def _admit_operation(function):
                     pending = CleanupPendingError((recovery, temporary), retry)
                     temporary._finalizer.detach()
                     if primary is None:
+                        pending.execution = result
                         raise pending from error
                     pending.cleanup_pending = getattr(primary, 'cleanup_pending', None)
                     primary.cleanup_pending = pending
@@ -203,8 +204,11 @@ def run(stdout_boundary):
         def pytest_runtest_logstart(self, nodeid, location):
             self.send(kind='test_started', node=nodeid)
         def pytest_runtest_logreport(self, report):
+            codes = [value for name, value in report.user_properties
+                     if name == 'api_agent_diagnostic_code' and value in ('unattended_dotenv', 'unattended_override')]
             self.send(kind='report', node=report.nodeid, phase=report.when,
                       status=report.outcome, duration=report.duration,
+                      diagnostic_code=codes[0] if report.failed and len(codes) == 1 else '',
                       stderr=bounded_stderr(''.join(text for title, text in report.sections
                                      if title == 'Captured stderr ' + report.when)),
                       stdout=(bounded_stdout(''.join(text for title, text in report.sections
@@ -279,6 +283,7 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     interruption = None
     publication_error = None
     callback_failed = cancelled = failed = infrastructure_failed = False
+    published_execution = None
     disabled = set()
     diagnostics = {}
     local_diagnostics = {}
@@ -358,6 +363,14 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
     def emit(event):
         call('on_event', on_event, event)
 
+    def emit_trace_warning(code, repo=''):
+        # Optional warning delivery cannot change the test's functional result.
+        if on_event is not None:
+            try:
+                on_event(RunnerEvent('trace_warning', repo, text=code))
+            except Exception:
+                pass
+
     def raw(repo, chunk):
         chunks.append(chunk)
         call('output', output, chunk)
@@ -399,8 +412,14 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
             traceback = '\n\n'.join(diagnostics.get(identity.id, ())) or (
                 'Integration pytest report incomplete: no complete setup/call/teardown report was received. '
                 'No failure diagnostic was captured for this test.')
+        failure_phase = next((phase for phase in ('setup', 'call', 'teardown')
+                              if phases.get(phase, {}).get('status') == 'failed'), '')
         result = TestResult(identity, status, sum(float(row['duration']) for row in rows), traceback,
-                            '\n\n'.join(local_diagnostics.get(identity.id, ())))
+                            '\n\n'.join(local_diagnostics.get(identity.id, ())),
+                            failure_phase=failure_phase,
+                            diagnostic_code=next((row.get('diagnostic_code') for row in rows
+                                if row.get('status') == 'failed' and type(row.get('diagnostic_code')) is str
+                                and row['diagnostic_code'] in {'unattended_dotenv', 'unattended_override'}), ''))
         from api_agent.providers.diagnostic_output import bounded_stderr
         stderr = bounded_stderr(''.join(row.get('stderr', '')
                          if type(row.get('stderr', '')) is str else 'stderr unavailable: invalid capture.\n'
@@ -507,6 +526,7 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                         unattended_index_source=unattended_index_source,
                         password_manager_registry=manager_registry, interaction=interaction, quota_observer=quota_observer,
                         authority=evidence_boundary,
+                        warning_sink=emit_trace_warning,
                         trace_prerequisites_factory=lambda values: local_trace_prerequisites(
                             context, values, cancel_event=cancel_event, tool_plan=tool_plan),
                         **({'config_fields': config_fields} if config_fields is not None else {}))
@@ -716,6 +736,11 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                 offset = stream.tell()
                                 try:
                                     row = json.loads(line)
+                                    if row.get('kind') == 'trace_warning':
+                                        from .trace_warning import message
+                                        if set(row) == {'kind', 'node', 'code'} and message(row['code']) is not None:
+                                            emit_trace_warning(row['code'], repo)
+                                        continue
                                     if row['kind'] == 'run_complete':
                                         if type(row.get('exit_code')) is not int:
                                             raise ValueError
@@ -1009,7 +1034,13 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                 raise publication_error
             # Publication is inside the ownership guard: an interrupt must not
             # lose a worker whose handle has not yet returned to the caller.
-            call('after_run', after_run, result)
+            try:
+                call('after_run', after_run, result)
+                if after_run is not None and not callback_failed:
+                    published_execution = result
+            except BaseException as error:
+                error.execution = result
+                raise
             if backend is not None and config is not None and config.get('DEBUG'):
                 try:
                     for endpoint in backend.finish_run():
@@ -1033,6 +1064,8 @@ def _run_integration_tests(context, tests, *, accepted=False, no_std_in=False,
                                           infrastructure_failed=infrastructure_failed or callback_failed or any(reader_diagnostics.values()))
         except BaseException as error:
             primary = interruption or error
+            if published_execution is not None and not hasattr(primary, 'execution'):
+                primary.execution = published_execution
             interruption = primary
             primary.inspections = tuple(inspections)
             abort_inspections()
@@ -1094,6 +1127,7 @@ def run_integration_tests(context, tests, **options):
                                  is not None else ()))
         return execution
     publication_attempted = False
+    published_execution = None
     try:
         if callbacks['on_event'] is not None:
             callbacks['on_event'](RunnerEvent('started'))
@@ -1162,7 +1196,12 @@ def run_integration_tests(context, tests, **options):
             execution = replace(execution, exit_code=130, cancelled=True)
         if callbacks['after_run'] is not None:
             publication_attempted = True
-            callbacks['after_run'](execution)
+            try:
+                callbacks['after_run'](execution)
+                published_execution = execution
+            except BaseException as error:
+                error.execution = execution
+                raise
         if options.get('cancel_event') is not None and options['cancel_event'].is_set():
             cancelled = True
             execution = replace(execution, exit_code=130, cancelled=True)
@@ -1180,6 +1219,8 @@ def run_integration_tests(context, tests, **options):
                 inspection.abort()
         return execution
     except BaseException as error:
+        if published_execution is not None and not hasattr(error, 'execution'):
+            error.execution = published_execution
         retained = tuple(dict.fromkeys([*inspections, *getattr(error, 'inspections', ())]))
         error.inspections = retained
         cleanup_errors = []

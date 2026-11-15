@@ -448,7 +448,7 @@ def test_terminal_accounting_requires_explicit_test_owner_and_sink(tmp_path, mon
     assert not path.exists()
 
 
-@pytest.mark.parametrize('reason', ['no-node', 'no-path', 'interrupted', 'unavailable', 'unknown-pct', 'unknown-reset', 'unknown-time'])
+@pytest.mark.parametrize('reason', ['no-node', 'no-path', 'interrupted', 'unavailable', 'unknown-pct', 'unknown-time'])
 def test_quota_projection_never_promotes_incomplete_or_unknown_boundary(tmp_path, monkeypatch, reason):
     from api_agent.testing.local_accounting import publish_quota_boundary
     from test_native_usage_boundary import boundary
@@ -607,3 +607,57 @@ def test_complete_journal_inventory_keeps_known_ids_without_inventing_model_iden
         usage = SuiteUsage('run')
         usage.record_external_invocation(session_id='owned-test', **inventory)
         assert usage.report()['unobserved_calls'] == {'owned-test': 1}
+
+
+def test_quota_projection_retains_initialized_zero_before_first_inference(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from api_agent.telemetry.usage import SuiteUsage
+    from api_agent.testing.local_accounting import publish_quota_boundary
+    from api_agent.testing.quota_events import capture
+    from test_native_usage_boundary import boundary
+
+    path = tmp_path / 'events'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'owned.py::test_turn (call)')
+    value = boundary()
+    value['before'].update(pct_used=0, reset_at=None, captured_at=1794692748.943)
+    value['after'].update(pct_used=8, reset_at='2026-11-15T00:00:00Z', captured_at=1794693000.0)
+
+    assert publish_quota_boundary(value, allocation_id='a' * 64, initial_zero_without_reset=True)
+    usage = SuiteUsage('owned-test-run')
+    for row in map(json.loads, path.read_text().splitlines()):
+        capture(SimpleNamespace(text=json.dumps(row['data'])), usage.observe_snapshot)
+    report = usage.report()
+    assert report['before']['pct_used'] == 0
+    assert report['before']['reset_at'] is None
+    assert report['before']['window_id'] is None
+    assert report['before']['captured_at'] == '2026-11-14T21:45:48.943000+00:00'
+    assert report['pct_point_delta'] == 8
+    from api_agent.telemetry.accounting import build_accounting, validate_accounting
+    artifact = build_accounting(SimpleNamespace(run_id='00000000-0000-4000-8000-000000000001'), [], {}, usage, [])
+    assert validate_accounting(artifact)['quota']['before'] == report['before']
+
+
+def test_quota_projection_retains_nonzero_without_reset_as_unpriceable(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from api_agent.telemetry.usage import SuiteUsage
+    from api_agent.testing.local_accounting import publish_quota_boundary
+    from api_agent.testing.quota_events import capture
+    from test_native_usage_boundary import boundary
+
+    path = tmp_path / 'events'
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS', str(path))
+    monkeypatch.setenv('PYTEST_CURRENT_TEST', 'owned.py::test_turn (call)')
+    value = boundary()
+    value['before'].update(pct_used=1, reset_at=None)
+
+    assert publish_quota_boundary(value, allocation_id='a' * 64, initial_zero_without_reset=True)
+    usage = SuiteUsage('owned-test-run')
+    for row in map(json.loads, path.read_text().splitlines()):
+        capture(SimpleNamespace(text=json.dumps(row['data'])), usage.observe_snapshot)
+    report = usage.report()
+    assert report['pct_used_before'] == 1
+    assert report['pct_point_delta'] is None
+    assert report['quota_unavailable_reason'] == 'missing_window_identifier'

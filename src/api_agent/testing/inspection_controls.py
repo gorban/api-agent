@@ -8,10 +8,12 @@ class ReceiptInspection:
     lost = False
     retains_browser = False
 
-    def __init__(self, error):
+    def __init__(self, error, *, exclude=(), delegate_recording=False):
         from .suite_lock import _cleanup_receipts
         self.error = error
         self._receipts = tuple(_cleanup_receipts(error))
+        self._excluded = {id(receipt) for receipt in exclude}
+        self._delegate_recording = delegate_recording
         self.closed = False
         self._guard = Lock()
 
@@ -32,10 +34,13 @@ class ReceiptInspection:
             receipts = (*self._receipts, *_cleanup_receipts(self.error),
                 *_cleanup_receipts(getattr(recording, 'pending_cleanup', None)))
             for pending in receipts:
+                delegated = ({id(receipt) for receipt in
+                              _cleanup_receipts(getattr(recording, 'pending_cleanup', None))}
+                             if self._delegate_recording else set())
                 group = getattr(pending, 'inspection_group', None)
                 # Cancellation can attach this consumer's own group retry.
                 # Retrying it from here would recursively revisit ourselves.
-                if (id(pending) in seen or group is not None and
+                if (id(pending) in self._excluded or id(pending) in delegated or id(pending) in seen or group is not None and
                         any(handle is self for handle in group.handles)):
                     continue
                 seen.add(id(pending))
@@ -63,13 +68,17 @@ class ReceiptInspection:
             raise self.error
 
 
-def preserve_cleanup_receipts(error):
+def preserve_cleanup_receipts(error, *, exclude=(), delegate_recording=False):
     from .suite_lock import _cleanup_receipts
-    if not any(_cleanup_receipts(error)):
-        return
+    excluded = {id(receipt) for receipt in exclude}
     handles = tuple(getattr(error, 'inspections', ()))
-    if not any(isinstance(handle, ReceiptInspection) and handle.error is error for handle in handles):
-        error.inspections = (*handles, ReceiptInspection(error))
+    existing = next((handle for handle in handles
+                     if isinstance(handle, ReceiptInspection) and handle.error is error), None)
+    if existing is not None:
+        existing._excluded.update(excluded)
+        existing._delegate_recording |= delegate_recording
+    elif any(id(receipt) not in excluded for receipt in _cleanup_receipts(error)):
+        error.inspections = (*handles, ReceiptInspection(error, exclude=exclude, delegate_recording=delegate_recording))
 
 
 def cleanup_active(handle):
@@ -155,7 +164,7 @@ class InspectionGroup:
         return not self.active
 
 
-def finish_terminal_inspection(recorded, output, *, diagnostic_output=None, successful_output=None):
+def finish_terminal_inspection(recorded, output, *, diagnostic_output=None, successful_output=None, allow_content=False):
     """Print completed results before waiting for the debug windows to close."""
     execution = getattr(recorded, 'execution', None)
     if execution is None:
@@ -168,11 +177,11 @@ def finish_terminal_inspection(recorded, output, *, diagnostic_output=None, succ
         try:
             if diagnostic_output is not None:
                 from .diagnostics import result_diagnostics
-                for details in result_diagnostics(execution.tests):
+                for details in result_diagnostics(execution.tests, allow_content=allow_content):
                     diagnostic_output(details)
             if successful_output is not None:
                 successful_output(execution.tests)
-            output(format_test_summary('integration', execution.tests,
+            output(format_test_summary(getattr(getattr(recorded, 'identity', None), 'mode', 'integration'), execution.tests,
                 state='CANCELLED' if execution.cancelled else None, elapsed=getattr(recorded, 'elapsed', None)))
             publication = ('SKIPPED' if getattr(recorded, 'reporting_skipped', False)
                            else 'PASS' if recorded.persisted else 'FAIL')

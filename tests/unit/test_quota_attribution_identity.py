@@ -173,3 +173,13 @@ def test_worker_event_rejects_malformed_identity(field, value):
         capture(SimpleNamespace(text=json.dumps({'phase': 'before', 'snapshot': row})), usage.observe_snapshot)
 
     assert usage.before is None
+
+
+def test_accounting_rejects_tampered_initialized_zero_evidence():
+    artifact = artifact_with(QuotaSnapshot(0, None, None, NOW, 1, ALLOCATION,
+                                           OBSERVATION, initial_window=True))
+    serialized = json.loads(json.dumps(artifact))
+    serialized['quota']['before']['pct_used'] = 1
+
+    with pytest.raises(ContractError, match='initial quota window'):
+        validate_accounting(serialized)

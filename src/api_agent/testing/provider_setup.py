@@ -1250,8 +1250,25 @@ def pytest_runtest_makereport(item, call):
     if report.when == 'call':
         item._api_agent_ui_outcome = 'success' if report.passed else 'failure'
     if call.excinfo is not None and isinstance(call.excinfo.value, UnattendedCredentialError):
-        guidance = str(call.excinfo.value).partition('\n\n')[0]
+        error = call.excinfo.value
+        source = error.index_source
+        code = ('unattended_dotenv' if source == 'dotenv' or
+                isinstance(source, str) and source.endswith('/.env') else 'unattended_override')
+        report.user_properties.append(('api_agent_diagnostic_code', code))
+        guidance = str(error).partition('\n\n')[0]
         report.longrepr = guidance + '\n\n' + str(report.longrepr)
+    if call.excinfo is not None and getattr(report, 'failed', False):
+        from .workflow_capture import capture_config, worker_exception_details
+        from api_agent.telemetry.privacy import ContentPolicy
+        try:
+            snapshot = _test_snapshot(item)
+            allow = ContentPolicy.from_config(capture_config(
+                snapshot['config'], snapshot.get('capture_sources', {}))).allow_content
+        except Exception:
+            allow = False
+        details = worker_exception_details(call.excinfo.value, allow_unavailable=allow)
+        if details:
+            report.longrepr = str(report.longrepr) + '\n' + details
     return report
 
 

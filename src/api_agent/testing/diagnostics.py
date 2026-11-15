@@ -1,8 +1,7 @@
-"""Explicit terminal diagnostics: preserve failure evidence, scrub credentials only.
+"""Terminal credential scrubbing and explicit content disclosure controls.
 
-Captured exception/TUI evidence may be sent to the explicitly selected CI terminal
-channel through this credential-only scrubber, independent of LOG_CONTENT. Runner
-events and persisted reports keep their existing safe fields.
+Credential scrubbing and content permission are separate checks. Untrusted
+diagnostic text must pass both before reaching a terminal destination.
 """
 from bisect import bisect_left, bisect_right
 import re
@@ -273,9 +272,9 @@ def scrub_command(command, config=None):
     return tuple(result)
 
 
-def format_exception(error, boundary=''):
+def format_exception(error, boundary='', *, details_only=False):
     """Full reachable exception chains and command evidence, without frame locals."""
-    text = (boundary + '\n' if boundary else '') + ''.join(
+    text = '' if details_only else (boundary + '\n' if boundary else '') + ''.join(
         traceback.TracebackException.from_exception(error, capture_locals=False,
             max_group_width=sys.maxsize, max_group_depth=sys.maxsize).format(chain=True))
     pending, seen = [error], set()
@@ -284,7 +283,7 @@ def format_exception(error, boundary=''):
         if id(item) in seen:
             continue
         seen.add(id(item))
-        if item.__suppress_context__ and item.__context__ is not None and item.__context__ is not item.__cause__:
+        if not details_only and item.__suppress_context__ and item.__context__ is not None and item.__context__ is not item.__cause__:
             text += '\nSuppressed exception context (retained locally):\n' + ''.join(
                 traceback.TracebackException.from_exception(item.__context__, capture_locals=False,
                     max_group_width=sys.maxsize, max_group_depth=sys.maxsize).format(chain=True))
@@ -294,9 +293,10 @@ def format_exception(error, boundary=''):
         if type(details) is str and details:
             text += '\nLocal command evidence:\n' + details
         for secondary in getattr(item, 'diagnostic_errors', ()):
-            text += '\nSecondary cleanup failure:\n' + ''.join(
-                traceback.TracebackException.from_exception(secondary, capture_locals=False,
-                    max_group_width=sys.maxsize, max_group_depth=sys.maxsize).format(chain=True))
+            if not details_only:
+                text += '\nSecondary cleanup failure:\n' + ''.join(
+                    traceback.TracebackException.from_exception(secondary, capture_locals=False,
+                        max_group_width=sys.maxsize, max_group_depth=sys.maxsize).format(chain=True))
             pending.append(secondary)
         pending.extend(value for value in (item.__cause__, item.__context__) if value is not None)
     return text
@@ -319,7 +319,68 @@ def write_exception_diagnostic(error, write, *, authority=None, secret_values=()
     write(label + ': diagnostic withheld because credential registration changed.\n')
 
 
-def result_diagnostics(tests):
+CONTENT_WITHHELD = '[withheld: LOG_CONTENT is disabled]'
+REDACTION_UNAVAILABLE = '[withheld: redaction history unavailable]'
+
+
+class RequiredConfigurationError(ValueError):
+    """Missing declared configuration fields, without retaining their values."""
+
+    def __init__(self, fields):
+        names = tuple(fields)
+        if (not names or any(type(name) is not str or not name.isascii() or
+                not name.replace('_', '').isalnum() or not name.isupper() or len(name) > 128
+                for name in names)):
+            raise ValueError('Invalid missing configuration field names')
+        self.fields = names
+        super().__init__('Missing required configuration: ' + ', '.join(names))
+
+
+def safe_diagnostic_code(code):
+    """Project a validated worker classification to fixed recovery guidance."""
+    guidance = {
+        'unattended_dotenv': ('Failed to get credentials for unattended access. Fix credential access or '
+                              'switch to attended login. Clear .env configuration or remove the '
+                              'UNATTENDED_USER_INDEX assignment.'),
+        'unattended_override': ('Failed to get credentials for unattended access. Fix credential access or '
+                                'switch to attended login. Stop passing the UNATTENDED_USER_INDEX override.'),
+    }
+    return guidance.get(code) if type(code) is str else None
+
+
+def safe_exception(error, scrubber, *, allow_content=False, boundary='', unattended_index_source=None):
+    """Render typed actionable guidance without admitting arbitrary error prose."""
+    if allow_content is True:
+        return scrubber(format_exception(error, boundary))
+    from .collection import CollectionError
+    from api_agent.providers.contracts import UnattendedCredentialError
+    if type(error) is RequiredConfigurationError:
+        detail = 'Missing required configuration: ' + ', '.join(error.fields)
+    elif type(error) is CollectionError:
+        detail = {'unknown_selector': 'Unknown or empty test selector. Check the selected test IDs.',
+                  'empty_selection': 'No tests remain after applying selectors and exclusions.',
+                  'ambiguous_selector': 'Ambiguous test selector. Qualify it with its repository or namespace.'}.get(
+                      error.diagnostic_code, CONTENT_WITHHELD)
+    elif type(error) is UnattendedCredentialError:
+        source = error.index_source if error.index_source is not None else unattended_index_source
+        code = ('unattended_dotenv' if source == 'dotenv' or
+                isinstance(source, str) and source.endswith('/.env') else 'unattended_override')
+        detail = safe_diagnostic_code(code)
+    elif isinstance(error, KeyboardInterrupt):
+        detail = 'Execution interrupted.'
+    else:
+        detail = EmissionBoundary.exception(error)['error_kind'] + '\n' + CONTENT_WITHHELD
+    return scrubber((boundary + '\n' if boundary else '') + detail)
+
+
+def disclose_text(text, scrubber, *, allow_content=False):
+    """Project untrusted terminal text under the log destination's permission."""
+    if allow_content is not True:
+        return CONTENT_WITHHELD
+    return scrubber(text)
+
+
+def result_diagnostics(tests, *, allow_content=False):
     """Identify each available failure cause once, using explicit terminal fields."""
     seen = set()
     for result in tests:
@@ -329,8 +390,14 @@ def result_diagnostics(tests):
         local = getattr(result, 'local_diagnostic', '')
         if local or result.status in {'failed', 'error', 'broken'}:
             seen.add(identifier)
-            details = local or result.traceback or 'No failure diagnostic was captured for this test.'
-            yield f'Failure details: {identifier}\n{details}'
+            details = ((local or result.traceback or 'No failure diagnostic was captured for this test.')
+                       if allow_content is True else CONTENT_WITHHELD)
+            guidance = safe_diagnostic_code(getattr(result, 'diagnostic_code', ''))
+            if allow_content is not True and guidance is not None:
+                details = guidance + '\n' + details
+            phase = getattr(result, 'failure_phase', '')
+            phase_label = f' (phase: {phase})' if phase in {'setup', 'call', 'teardown'} else ''
+            yield f'Failure details: {identifier}{phase_label}\n{details}'
 
 
 class TerminalDiagnosticError(RuntimeError):

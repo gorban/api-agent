@@ -19,6 +19,10 @@ from .applicability import validate_platforms
 class CollectionError(ValueError):
     """Discovery or a requested selector cannot produce a valid selection."""
 
+    def __init__(self, message, *, diagnostic_code=None):
+        super().__init__(message)
+        self.diagnostic_code = diagnostic_code
+
 
 @dataclass(frozen=True)
 class TestIdentity:
@@ -143,11 +147,11 @@ def select_tests(tests, selectors=(), *, defaults=None, allow_missing=False, all
     has_includes = False
     for original in selectors:
         if not isinstance(original, str) or not original.strip():
-            raise CollectionError("Test selectors must be nonempty strings")
+            raise CollectionError("Test selectors must be nonempty strings", diagnostic_code='unknown_selector')
         negative = original.startswith('-')
         selector = original[1:] if negative else original
         if not selector or selector.startswith('-'):
-            raise CollectionError(f"Unknown or empty test selector: {original}")
+            raise CollectionError(f"Unknown or empty test selector: {original}", diagnostic_code='unknown_selector')
         repo = None
         value = selector
         namespace = None
@@ -166,7 +170,7 @@ def select_tests(tests, selectors=(), *, defaults=None, allow_missing=False, all
         elif namespace == 'file':
             matches = [test for test in candidates if test.file == value]
             if repo is None and len({test.repo for test in matches}) > 1:
-                raise CollectionError(f"Ambiguous test selector {original!r}; qualify it with file:<repository>::<path>")
+                raise CollectionError(f"Ambiguous test selector {original!r}; qualify it with file:<repository>::<path>", diagnostic_code='ambiguous_selector')
         elif value.startswith('tag:'):
             matches = [test for test in candidates if value[4:] in test.tags]
         else:
@@ -175,14 +179,14 @@ def select_tests(tests, selectors=(), *, defaults=None, allow_missing=False, all
             repository = [test for test in candidates if test.repo == value] if repo is None else []
             kinds = sum(bool(group) for group in (paths, tags, repository))
             if kinds > 1:
-                raise CollectionError(f"Ambiguous test selector {original!r}; qualify with tag:, repo:, file:<repository>::, or a repository-qualified test path")
+                raise CollectionError(f"Ambiguous test selector {original!r}; qualify with tag:, repo:, file:<repository>::, or a repository-qualified test path", diagnostic_code='ambiguous_selector')
             matches = paths or tags or repository
             if paths and repo is None and len({test.repo for test in paths}) > 1:
-                raise CollectionError(f"Ambiguous test selector {original!r}; qualify it with a repository name followed by ::")
+                raise CollectionError(f"Ambiguous test selector {original!r}; qualify it with a repository name followed by ::", diagnostic_code='ambiguous_selector')
         if not matches:
             if allow_missing:
                 continue
-            raise CollectionError(f"Unknown or empty test selector: {original}")
+            raise CollectionError(f"Unknown or empty test selector: {original}", diagnostic_code='unknown_selector')
         if negative:
             excludes.update(test.id for test in matches)
         else:
@@ -192,7 +196,7 @@ def select_tests(tests, selectors=(), *, defaults=None, allow_missing=False, all
         includes = {test.id for test in (tests if defaults is None else defaults)}
     selected = includes - excludes
     if not selected and not allow_empty:
-        raise CollectionError("No tests remain after applying selectors and exclusions")
+        raise CollectionError("No tests remain after applying selectors and exclusions", diagnostic_code='empty_selection')
     return [test for test in tests if test.id in selected]
 
 

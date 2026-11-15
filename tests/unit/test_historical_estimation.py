@@ -338,3 +338,59 @@ def test_completed_average_preserves_frozen_calibration():
     assert average['basis'] == 'historical_quota'
     assert stabilized['t']['estimated_cost_usd'] == pytest.approx(priced(row(3000), card) * scale)
     assert snapshot.records == history
+
+
+def initialized_quota(quota):
+    quota = deepcopy(quota)
+    quota['before'].update(pct_used=0, window_id=None, reset_at=None, initial_window=True)
+    return quota
+
+
+@pytest.mark.parametrize('initialized_target', [False, True])
+def test_initialized_window_detects_overlap_in_either_direction(initialized_target):
+    from api_agent.telemetry.estimation import overlapping_quota
+    manifest, ordinary = records()[0]
+    initialized = deepcopy(ordinary)
+    initialized['run_id'] = 'other'
+    initialized['quota'] = initialized_quota(initialized['quota'])
+    target, inventory = (initialized, ordinary) if initialized_target else (ordinary, initialized)
+
+    assert overlapping_quota(target, [(manifest, inventory)])
+    assert initialized['quota']['before']['window_id'] is None
+    assert initialized['quota']['before']['reset_at'] is None
+
+
+def test_interrupted_initialized_inventory_blocks_overlapping_calibration():
+    history = records()
+    manifest, other = deepcopy(history[0])
+    manifest['status'] = 'interrupted'
+    other['run_id'] = 'interrupted-run'
+    other['quota'] = initialized_quota(other['quota'])
+
+    assert calibration(history, bundled_rate_card())
+    assert calibration(history, bundled_rate_card(), overlap_records=[*history, (manifest, other)]) == {}
+
+
+@pytest.mark.parametrize('change', ['nonzero', 'allocation', 'known_before_window', 'known_complete_window', 'missing_after_window', 'invalid_reset', 'missing_marker'])
+def test_invalid_initialization_cannot_supply_a_comparison_window(change):
+    from api_agent.telemetry.estimation import quota_interval
+    quota = initialized_quota(records()[0][1]['quota'])
+    if change == 'nonzero': quota['before']['pct_used'] = 1
+    elif change == 'allocation': quota['after']['allocation_id'] = 'b' * 64
+    elif change == 'known_before_window': quota['before']['window_id'] = 'window'
+    elif change == 'known_complete_window':
+        quota['before']['window_id'] = quota['after']['window_id']
+        quota['before']['reset_at'] = quota['after']['reset_at']
+    elif change == 'missing_after_window': quota['after']['window_id'] = None
+    elif change == 'invalid_reset': quota['after']['reset_at'] = 'invalid'
+    else: del quota['before']['initial_window']
+    assert quota_interval(quota) is None
+
+
+def test_initialized_window_rejects_naive_later_reset():
+    from api_agent.telemetry.estimation import initialized_window, quota_interval
+    quota = initialized_quota(records()[0][1]['quota'])
+    quota['after']['reset_at'] = '2026-11-01T00:00:00'
+
+    assert initialized_window(quota) is None
+    assert quota_interval(quota) is None

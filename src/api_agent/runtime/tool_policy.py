@@ -72,20 +72,33 @@ def verify_isolation(spec, record, *, network):
     """Check engine inspect data, never a service's self-reported health string."""
     if 'runtime' not in spec:
         return
-    try:
-        host = record['HostConfig']
-        valid = (host['Runtime'] == spec['runtime'] and host['Privileged'] is False
-                 and host['ReadonlyRootfs'] is True and host['CapDrop'] == ['ALL']
-                 and host['CapAdd'] in (None, [])
-                 and host['SecurityOpt'] == ['no-new-privileges:true']
-                 and host['Memory'] == spec['mem_limit']
-                 and host['NanoCpus'] == int(spec['cpus'] * 1_000_000_000)
-                 and host['PidsLimit'] == spec['pids_limit']
-                 and type(network) is str and bool(network)
-                 and host['NetworkMode'] == network
-                 and host['Tmpfs'] == {'/tmp': 'rw,noexec,nosuid,nodev,size=16777216'}
-                 and record['Config']['User'] == spec['user'])
-    except (KeyError, TypeError):
-        valid = False
-    if not valid:
-        raise ComposeError('Engine isolation controls differ from the admitted policy.')
+    # Report fixed control names only: engine metadata can contain arbitrary
+    # values and must not be copied into errors or logs. Evaluate every control
+    # independently so one mismatch does not hide another.
+    checks = (
+        ('Runtime', lambda: record['HostConfig']['Runtime'] == spec['runtime']),
+        ('Privileged', lambda: record['HostConfig']['Privileged'] is False),
+        ('ReadonlyRootfs', lambda: record['HostConfig']['ReadonlyRootfs'] is True),
+        ('CapDrop', lambda: record['HostConfig']['CapDrop'] == ['ALL']),
+        ('CapAdd', lambda: record['HostConfig']['CapAdd'] in (None, [])),
+        ('SecurityOpt', lambda: record['HostConfig']['SecurityOpt'] == ['no-new-privileges:true']),
+        ('Memory', lambda: record['HostConfig']['Memory'] == spec['mem_limit']),
+        ('NanoCpus', lambda: record['HostConfig']['NanoCpus'] == int(spec['cpus'] * 1_000_000_000)),
+        ('PidsLimit', lambda: record['HostConfig']['PidsLimit'] == spec['pids_limit']),
+        ('NetworkMode', lambda: type(network) is str and bool(network)
+         and record['HostConfig']['NetworkMode'] == network),
+        ('Tmpfs', lambda: record['HostConfig']['Tmpfs'] ==
+         {'/tmp': 'rw,noexec,nosuid,nodev,size=16777216'}),
+        ('User', lambda: record['Config']['User'] == spec['user']),
+    )
+    mismatched = []
+    for name, check in checks:
+        try:
+            valid = check()
+        except (KeyError, TypeError):
+            valid = False
+        if not valid:
+            mismatched.append(name)
+    if mismatched:
+        raise ComposeError('Engine isolation controls differ from the admitted policy: '
+                           + ', '.join(mismatched) + '.')

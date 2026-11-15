@@ -35,7 +35,8 @@ def test_harness_failure_displays_exception_stack_and_path_without_locals(tmp_pa
         app = fixture(tmp_path, 'integration', collector=lambda *args: [test], fields={
             'ALLURE_S3_BUCKET': {'type': 'str', 'default': 'synthetic'},
             'ALLURE_RESULTS_DIR': {'type': 'path', 'anchor': 'base_root', 'default': str(target)},
-        })
+            'LOG_CONTENT': {'type': 'bool', 'default': False},
+        }, argv=['--log-content=True'])
         app.context.owner_root = tmp_path
         app.integration_runner = runner
         async with app.run_test(size=(110, 35)) as pilot:
@@ -309,8 +310,8 @@ def test_generic_runner_error_keeps_owned_inspections(tmp_path):
             await pilot.pause(.3)
             assert app.screen.kind == 'error'
             assert app.inspections.handles == (item,) and app.inspections.active
-            assert 'RuntimeError: synthetic runner diagnostic' in app.screen.body
-            assert 'Traceback (most recent call last):' in app.screen.body
+            assert '[withheld: LOG_CONTENT is disabled]' in app.screen.body
+            assert 'synthetic runner diagnostic' not in app.screen.body
             assert await app.end_inspection(force=True)
             assert item.closed
     asyncio.run(run())

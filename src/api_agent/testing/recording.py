@@ -51,7 +51,8 @@ class RunIdentity:
 
 
 class RunRecorder:
-    def __init__(self, directory, identity: RunIdentity, *, clock=None, evidence_boundary=None):
+    def __init__(self, directory, identity: RunIdentity, *, clock=None, evidence_boundary=None,
+                 content_policy=None):
         if not isinstance(identity, RunIdentity):
             raise TypeError('A valid RunIdentity is required')
         self.identity = identity
@@ -66,7 +67,9 @@ class RunRecorder:
         self._finalized = False
         self._write_failed = False
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._include_trace = evidence_boundary is not None
+        self._include_trace = (evidence_boundary is not None and
+                               (content_policy is None or content_policy.allow_content))
+        self._allow_diagnostics = content_policy is None or content_policy.allow_content
         self._evidence = evidence_boundary or EmissionBoundary(ContentPolicy(True))
 
     def _safe_text(self, value):
@@ -164,6 +167,16 @@ class RunRecorder:
     def _safe_steps(self, steps):
         safe = self._evidence.content_export({'steps': steps}).get('steps', [])
         self._validate_step_sources(safe)
+        if not self._allow_diagnostics:
+            pending = [safe]
+            while pending:
+                item = pending.pop()
+                if isinstance(item, dict):
+                    if 'statusDetails' in item:
+                        item['statusDetails'] = {'message': '[withheld: LOG_CONTENT is disabled]'}
+                    pending.extend(item.values())
+                elif isinstance(item, list):
+                    pending.extend(item)
         return safe
 
     def update_test_evidence(self, filename, *, attachments, steps):
@@ -236,8 +249,13 @@ class RunRecorder:
             row['statusDetails'] = {'message': 'Test interrupted'}
         elif status in {'failed', 'broken'}:
             row['statusDetails'] = {'message': 'Test failed' if status == 'failed' else 'Test setup or execution failed'}
+            from .diagnostics import safe_diagnostic_code
+            guidance = safe_diagnostic_code(getattr(result, 'diagnostic_code', ''))
+            if guidance is not None:
+                row['statusDetails']['message'] = self._safe_text(guidance)
         elif status == 'skipped':
-            row['statusDetails'] = {'message': self._safe_text(result.traceback) if result.traceback else 'Test skipped'}
+            row['statusDetails'] = {'message': self._safe_text(result.traceback)
+                                    if result.traceback and self._allow_diagnostics else 'Test skipped'}
         if result.traceback and self._include_trace:
             row.setdefault('statusDetails', {})['trace'] = self._safe_text(result.traceback)
         filename = self._write(f'{row["uuid"]}-result.json', json.dumps(row, sort_keys=True).encode())

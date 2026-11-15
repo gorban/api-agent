@@ -88,7 +88,10 @@ def test_delegated_calls_export_exact_hierarchy_and_separate_boundary(tmp_path, 
         workflow_admissions={retained['projection']['definition_id']: retained['projection']})
     assert result.persisted and result.exit_code == 1
     row = json.loads(next(result.directory.glob('*-result.json')).read_text())
-    assert row['statusDetails']['trace'] == '[REDACTED] safe failure'
+    if log_content:
+        assert row['statusDetails']['trace'] == '[REDACTED] safe failure'
+    else:
+        assert 'trace' not in row['statusDetails']
     chat_step = next(step for step in row['steps'] if step['name'].startswith('Conversation '))
     assert params(chat_step)['conversation_id'] == chat
     turn_step = chat_step['steps'][0]

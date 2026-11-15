@@ -15,7 +15,7 @@ from api_agent.testing.integration import IntegrationRunResult
 
 ROOT = Path(__file__).resolve().parents[2]
 ARGS = ['--no-std-in', '--tui-mode=integration', '--start=True',
-        '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', '--log-content=False',
+        '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', '--log-content=True',
         '--synthetic-api-key=synthetic-credential-value', 'selected.py']
 
 
@@ -40,7 +40,7 @@ def terminal_failure_launch(tmp_path, monkeypatch):
     return identities, stdin
 
 
-def test_terminal_test_failures_emit_identified_details_when_content_logging_disabled(
+def test_terminal_test_failures_emit_identified_details_when_content_logging_enabled(
         terminal_failure_launch, monkeypatch, capsys):
     identities, stdin = terminal_failure_launch
     tests = tuple(TestResult(identity, 'error', traceback='safe failure', local_diagnostic=(
@@ -52,7 +52,7 @@ def test_terminal_test_failures_emit_identified_details_when_content_logging_dis
                                exit_code=1, elapsed=1, usage={})
 
     def run(context, selected, config, **options):
-        assert config['LOG_CONTENT'] is False and options['accepted'] is True
+        assert config['LOG_CONTENT'] is True and options['accepted'] is True
         options['output']('raw path /synthetic/source.py api_key=synthetic-')
         options['output']('credential-value\nlast fragment')
         return recorded
@@ -306,7 +306,8 @@ def test_terminal_raw_output_scrubs_known_multiline_credentials_across_chunks(
         terminal_failure_launch, monkeypatch, capsys):
     from api_agent.testing.diagnostics import CredentialScrubber
     scrubber = CredentialScrubber(secret_values=('credential-line-one\ncredential-line-two',))
-    monkeypatch.setattr('api_agent.testing.diagnostics.CredentialScrubber', lambda config: scrubber)
+    monkeypatch.setattr('api_agent.testing.diagnostics.CredentialScrubber',
+                        lambda config=None, **kwargs: CredentialScrubber(**kwargs) if kwargs else scrubber)
 
     def run(*args, **options):
         options['output']('useful context\ncredential-line-')
@@ -580,3 +581,185 @@ def test_terminal_success_uses_authority_registered_during_shared_setup(
     output = capsys.readouterr().out
     assert 'tail' not in output and 'head' not in output
     assert output.index('all tests finished') < output.index('Test diagnostics withheld: credential protection.') < output.index('Integration results:')
+
+
+def test_terminal_content_disabled_withholds_runner_and_failure_text(terminal_failure_launch, monkeypatch, capsys):
+    identities, _ = terminal_failure_launch
+    tests = (TestResult(identities[0], 'failed', traceback='private-failure-sentinel'),)
+    recorded = SimpleNamespace(execution=IntegrationRunResult(1, tests, ''), persisted=True,
+                               exit_code=1, elapsed=1, usage={})
+    def run(*args, **options):
+        options['output']('private-output-sentinel\n')
+        return recorded
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
+    assert main([arg.replace('--log-content=True', '--log-content=False') for arg in ARGS], base_root=ROOT) == 1
+    output = capsys.readouterr()
+    assert 'private-output-sentinel' not in output.out + output.err
+    assert 'private-failure-sentinel' not in output.out + output.err
+    assert identities[0].id in output.err
+    assert '[withheld: LOG_CONTENT is disabled]' in output.out + output.err
+
+
+def test_terminal_content_disabled_preserves_error_classification_without_message(
+        terminal_failure_launch, monkeypatch, capsys):
+    def run(*args, **kwargs):
+        raise ValueError('private-exception-sentinel')
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
+    args = [arg.replace('--log-content=True', '--log-content=False') for arg in ARGS]
+    assert main(args, base_root=ROOT) == 2
+    output = capsys.readouterr()
+    assert 'private-exception-sentinel' not in output.out + output.err
+    assert 'invalid_value' in output.err
+
+
+def test_denied_failure_details_include_structured_phase_without_prose():
+    from api_agent.testing.diagnostics import result_diagnostics
+    identity = TestIdentity('base::test.py::test_a', 'base', 'test.py', 'test_a')
+    row = TestResult(identity, 'error', traceback='private sentinel', failure_phase='setup')
+    details = list(result_diagnostics([row]))
+    assert 'setup' in details[0]
+    assert 'private sentinel' not in details[0]
+
+
+def test_retained_summary_cleanup_failure_preserves_secondary_receipt(
+        terminal_failure_launch, monkeypatch):
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing.diagnostics import TerminalDiagnosticError
+    released = []
+    async def retry():
+        released.append(True)
+    receipt = CleanupPendingError((), retry)
+    original = OSError('primary failure')
+    original.recorded_result = SimpleNamespace()
+    def run(*args, **kwargs):
+        raise original
+    def finish(*args, **kwargs):
+        raise receipt
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
+    monkeypatch.setattr('api_agent.testing.inspection_controls.finish_terminal_inspection', finish)
+    with pytest.raises(TerminalDiagnosticError) as caught:
+        main(ARGS, base_root=ROOT)
+    assert caught.value.cleanup_pending is receipt
+    asyncio.run(caught.value.cleanup_pending.retry())
+    assert released == [True]
+
+
+def test_retained_summary_deduplicates_original_cleanup_receipt(terminal_failure_launch, monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    async def retry():
+        pass
+    receipt = CleanupPendingError((), retry)
+    receipt.recorded_result = SimpleNamespace()
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', Mock(side_effect=receipt))
+    monkeypatch.setattr('api_agent.testing.inspection_controls.finish_terminal_inspection', Mock(side_effect=receipt))
+    with pytest.raises(RuntimeError) as caught:
+        main(ARGS, base_root=ROOT)
+    assert caught.value.cleanup_pending is receipt
+    assert getattr(receipt, 'cleanup_pending', None) is None
+
+
+def test_retained_summary_turns_active_secondary_group_into_cleanup_receipt(terminal_failure_launch, monkeypatch):
+    from api_agent.providers.control import CleanupPendingError
+    async def retry():
+        pass
+    receipt = CleanupPendingError((), retry)
+    secondary = OSError('inspection failed')
+    group = SimpleNamespace(active=True, cleanup_receipt=Mock(return_value=receipt))
+    secondary.inspection_group = group
+    primary = OSError('earlier failure')
+    primary.recorded_result = SimpleNamespace()
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', Mock(side_effect=primary))
+    monkeypatch.setattr('api_agent.testing.inspection_controls.finish_terminal_inspection', Mock(side_effect=secondary))
+    with pytest.raises(RuntimeError) as caught:
+        main(ARGS, base_root=ROOT)
+    assert caught.value.cleanup_pending is receipt
+    group.cleanup_receipt.assert_called_once_with()
+
+
+def test_denied_runner_output_emits_single_omission_for_nonempty_chunks(
+        terminal_failure_launch, monkeypatch, capsys):
+    def run(*args, **options):
+        options['output']('')
+        options['output']('private first\n')
+        options['output']('private second\n')
+        return SimpleNamespace(exit_code=0)
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
+    monkeypatch.setattr('api_agent.testing.inspection_controls.finish_terminal_inspection', lambda *a, **k: True)
+    args = [arg.replace('--log-content=True', '--log-content=False') for arg in ARGS]
+    assert main(args, base_root=ROOT) == 0
+    output = capsys.readouterr()
+    assert output.out.count('[withheld: LOG_CONTENT is disabled]') == 1
+    assert 'private first' not in output.out and 'private second' not in output.out
+
+
+@pytest.mark.parametrize('outcome', ['passed', 'failed', 'raised'])
+def test_terminal_scrubs_retired_run_credentials(terminal_failure_launch, monkeypatch, capsys, outcome):
+    identities, _ = terminal_failure_launch
+    secret = 'retired-run-credential-sentinel'
+
+    def run(*args, **options):
+        owner = options['evidence_boundary'].credential_owner()
+        owner.register(secret, slot='selected')
+        owner.close()
+        options['output']('stream narrative ' + secret + '\n')
+        if outcome == 'raised':
+            raise RuntimeError('exception narrative ' + secret)
+        if outcome == 'passed':
+            passed = TestResult(identities[0], 'passed', local_stderr='captured narrative ' + secret)
+            return SimpleNamespace(execution=IntegrationRunResult(0, (passed,), ''),
+                                   persisted=True, exit_code=0, elapsed=1, usage={})
+        failure = TestResult(identities[0], 'failed', traceback='assertion narrative ' + secret,
+                             local_diagnostic='failure narrative ' + secret, failure_phase='call')
+        return SimpleNamespace(execution=IntegrationRunResult(1, (failure,), ''),
+                               persisted=True, exit_code=1, elapsed=1, usage={})
+
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
+    assert main(ARGS, base_root=ROOT) == (0 if outcome == 'passed' else 1)
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert secret not in output
+    assert 'stream narrative' in output
+    if outcome == 'failed':
+        assert 'failure narrative' in output and 'phase: call' in output
+    elif outcome == 'raised':
+        assert 'exception narrative' in output
+
+
+def test_terminal_history_unavailable_withholds_untrusted_output(terminal_failure_launch, monkeypatch, capsys):
+    from api_agent.telemetry.privacy import EmissionBoundary
+
+    def fail_history(self):
+        raise RuntimeError('history unavailable')
+
+    def run(*args, **options):
+        options['output']('untrusted-stream-sentinel\n')
+        raise RuntimeError('untrusted-exception-sentinel')
+
+    monkeypatch.setattr(EmissionBoundary, 'retain_redaction_history', fail_history)
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', run)
+    assert main(ARGS, base_root=ROOT) == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert 'untrusted-stream-sentinel' not in output
+    assert 'untrusted-exception-sentinel' not in output
+    assert '[withheld: redaction history unavailable]' in output
+
+
+def test_terminal_history_closes_after_reporting(terminal_failure_launch, monkeypatch):
+    from api_agent.telemetry.privacy import EmissionBoundary
+    created = []
+    original = EmissionBoundary.retain_redaction_history
+
+    def capture(boundary):
+        history = original(boundary)
+        created.append(history)
+        return history
+
+    monkeypatch.setattr(EmissionBoundary, 'retain_redaction_history', capture)
+    monkeypatch.setattr('api_agent.testing.launched.run_launched_integration',
+                        lambda *args, **kwargs: SimpleNamespace(exit_code=0))
+    assert main(ARGS, base_root=ROOT) == 0
+    assert len(created) == 1
+    with pytest.raises(ValueError, match='closed'):
+        created[0].snapshot()

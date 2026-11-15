@@ -323,10 +323,12 @@ def test_terminal_bootstrap_keeps_content_off_malformed_prefix_private(terminal_
 
     monkeypatch.setattr(prerequisites, 'finalize', finalize)
     monkeypatch.setattr('api_agent.testing.launched.run_launched_integration', fail_integration)
-    assert main(ARGS, base_root=ROOT) == 1
+    args = [arg if arg != '--log-content=True' else '--log-content=False' for arg in ARGS]
+    assert main(args, base_root=ROOT) == 1
     output = capsys.readouterr().err
     assert 'owned-' not in output
-    assert '[REDACTED]' in output
+    assert 'ordinary' not in output
+    assert '[withheld: LOG_CONTENT is disabled]' in output
     assert len(finalized) == 1
     assert finalized[0]._api_agent_disposal_complete
     assert finalized[0].stdout.closed and finalized[0].stderr.closed

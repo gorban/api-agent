@@ -45,7 +45,7 @@ def test_result_details_prefer_local_and_identify_each_failure_once():
     rows = [result('first', 'passed'), result('first', 'error', 'original pytest', 'local command cause'),
         result('first', 'error', 'duplicate'), result('second', 'failed', 'original second trace'),
         result('third', 'passed', local='cleanup cause'), result('fourth', 'error')]
-    details = list(result_diagnostics(rows))
+    details = list(result_diagnostics(rows, allow_content=True))
     assert len(details) == 4
     assert details[0] == 'Failure details: first\nlocal command cause'
     assert details[1] == 'Failure details: second\noriginal second trace'
@@ -58,7 +58,7 @@ def test_terminal_completion_emits_only_through_explicit_diagnostic_channel():
     recorded = SimpleNamespace(execution=SimpleNamespace(tests=rows, cancelled=False, inspections=()), persisted=True)
     summary, details = [], []
     scrubber = CredentialScrubber()
-    assert finish_terminal_inspection(recorded, summary.append, diagnostic_output=lambda text: details.append(scrubber(text)))
+    assert finish_terminal_inspection(recorded, summary.append, diagnostic_output=lambda text: details.append(scrubber(text)), allow_content=True)
     assert details == ['Failure details: test-one\ncommand /tmp/job exit 1 stdout reason stderr API_KEY=[REDACTED]']
     assert all('API_KEY' not in line for line in summary)
     details.clear()
@@ -172,7 +172,7 @@ def test_explicit_terminal_diagnostic_precedes_final_summary_and_publication():
     rows = [result('test-one', 'error', local='full command exit/stdout/stderr cause')]
     recorded = SimpleNamespace(execution=SimpleNamespace(tests=rows, cancelled=False, inspections=()), persisted=True)
     ordered = []
-    finish_terminal_inspection(recorded, ordered.append, diagnostic_output=ordered.append)
+    finish_terminal_inspection(recorded, ordered.append, diagnostic_output=ordered.append, allow_content=True)
     assert ordered[0] == 'Failure details: test-one\nfull command exit/stdout/stderr cause'
     assert ordered[1].startswith('Integration results: FAIL')
     assert ordered[2] == 'Allure publication: PASS'

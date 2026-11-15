@@ -79,7 +79,7 @@ def publish_final_inventory(packet):
         call_ids=calls, complete=complete)
 
 
-def publish_quota_boundary(boundary, *, allocation_id=None):
+def publish_quota_boundary(boundary, *, allocation_id=None, initial_zero_without_reset=False):
     """Forward the selected test's explicit numeric account samples as quota events."""
     from api_agent.workflows.run_context import test_evidence_allowed
     if not test_evidence_allowed():
@@ -100,15 +100,19 @@ def publish_quota_boundary(boundary, *, allocation_id=None):
         return False
     before, after = boundary['before'], boundary['after']
     if (not before['available'] or not after['available']
-            or any(row['pct_used'] is None or row['reset_at'] is None or row['captured_at'] is None
+            or any(row['pct_used'] is None or row['captured_at'] is None
                    for row in (before, after))):
         return False
     if before['captured_at'] > after['captured_at']:
         raise ValueError('Native quota samples are not chronological')
     for phase, row in (('before', before), ('after', after)):
-        reset = datetime.fromisoformat(row['reset_at']).astimezone(timezone.utc)
-        snapshot = QuotaSnapshot(row['pct_used'], reset.isoformat(), reset,
-            datetime.fromtimestamp(row['captured_at'], timezone.utc), allocation_id=allocation_id)
+        reset = (datetime.fromisoformat(row['reset_at']).astimezone(timezone.utc)
+                 if row['reset_at'] is not None else None)
+        initial = (initial_zero_without_reset is True and phase == 'before'
+                   and row['pct_used'] == 0 and reset is None)
+        snapshot = QuotaSnapshot(row['pct_used'], reset.isoformat() if reset else None, reset,
+            datetime.fromtimestamp(row['captured_at'], timezone.utc), allocation_id=allocation_id,
+            initial_window=initial)
         publish(phase, validate_snapshot(snapshot), node=node)
     return True
 

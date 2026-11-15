@@ -199,8 +199,12 @@ def validate_accounting(value):
             expected = {'pct_used', 'window_id', 'reset_at', 'captured_at'}
             if value['version'] == 2:
                 expected |= {'allocation_id', 'observation_id'}
-            if type(snapshot) is not dict or set(snapshot) not in (expected, expected | {'pct_step'}):
+            if type(snapshot) is not dict or set(snapshot) - {'pct_step', 'initial_window'} != expected:
                 raise ContractError('Invalid quota snapshot')
+            if 'initial_window' in snapshot and (snapshot['initial_window'] is not True
+                    or snapshot['pct_used'] != 0 or snapshot['window_id'] is not None
+                    or snapshot['reset_at'] is not None or snapshot.get('allocation_id') is None):
+                raise ContractError('Invalid initial quota window')
             if value['version'] == 2:
                 allocation = snapshot['allocation_id']
                 if allocation is not None and (type(allocation) is not str or len(allocation) != 64 or any(char not in '0123456789abcdef' for char in allocation)):

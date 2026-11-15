@@ -54,7 +54,7 @@ def test_unit_progress_and_details_show_neutral_applicability():
     assert not any(span.start <= start < span.end and span.style in {'green', 'red', 'dark_orange'} for span in text.spans)
     assert [key for key, _ in ordered_result_rows(rows, completed=True)] == ['fail', 'skip', 'na', 'pass']
     assert [key for key, _ in ordered_result_rows(rows, completed=False)] == list(rows)
-    body = details(result('not_applicable'), {}, {})
+    body = details(result('not_applicable'), {}, {}, allow_content=True)
     assert 'Requires a different host platform' in body.plain
     assert not any(span.style in {'green', 'red', 'dark_orange'} for span in body.spans)
     assert 'not applicable' not in progress_summary('integration', rows).plain

@@ -83,6 +83,25 @@ add a duplicate generic `record_call` for the same execution.
 defaults. Enabling either permits only scrubbed declared node I/O and typed tool
 payloads for that destination. It does not permit arbitrary internal state.
 
+Integration/E2E failure prose is content too: assertion representations, captured
+streams and exception messages follow `LOG_CONTENT` in terminal output, TUI
+details/copy and Allure. With content disabled, status, lifecycle phase, numeric
+accounting and fixed setup guidance remain visible. Missing-setting guidance
+lists field names, not values; arbitrary provider messages remain withheld.
+Credentials stay protected when content is enabled. Unit developer diagnostics
+use their separate explicitly permitted channel.
+Retained terminal/TUI diagnostics use temporary in-memory redaction history so
+rotated or retired credentials remain protected without extending their
+authentication lifetime. The history is discarded with the operation or its
+retained results, rather than persisted as report data.
+
+Optional tracing failures produce fixed warnings independently of both content
+flags and do not change the application outcome. Codes received before report
+finalization are retained in the shared **Suite tracing warnings** attachment;
+they do not attribute the warning to every attached test. Later inspection
+cleanup warnings remain in live output and its durable log. Missing traces do
+not establish that no model calls occurred.
+
 Allure node and tool steps include input/output capture states and fixed
 explanations. `withheld` means destination policy withheld content;
 `unavailable` means the payload or its capture authority was unavailable.

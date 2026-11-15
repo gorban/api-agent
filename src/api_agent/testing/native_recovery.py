@@ -71,14 +71,17 @@ def admitted_directory():
     return root
 
 
-def record_intent(directory, scope, catalog, fingerprints, nonce):
+def record_intent(directory, scope, catalog, fingerprints, nonce, *, dispose_on_release=False):
+    if type(dispose_on_release) is not bool:
+        raise ValueError('Native recovery disposal policy must be a boolean')
     root = admitted_directory()
     directory = Path(directory)
     if root is None or directory.parent != root:
         return
     _private(directory, directory=True)
     _write(directory / 'recovery.json', {'version': 1, 'scope': scope.id,
-        'catalog': catalog.to_wire(), 'fingerprints': dict(fingerprints), 'nonce': nonce})
+        'catalog': catalog.to_wire(), 'fingerprints': dict(fingerprints), 'nonce': nonce,
+        'dispose_on_release': dispose_on_release})
 
 
 def _request_digest(request):
@@ -209,7 +212,9 @@ class NativeRecoveryOwner(CleanupLeaseOwner):
                     continue
                 _private(path)
                 record = _read(path)
-                if (type(record) is not dict or set(record) != {'version', 'scope', 'catalog', 'fingerprints', 'nonce'}
+                if (type(record) is not dict or set(record) not in ({'version', 'scope', 'catalog', 'fingerprints', 'nonce'},
+                            {'version', 'scope', 'catalog', 'fingerprints', 'nonce', 'dispose_on_release'})
+                        or type(record.get('dispose_on_release', False)) is not bool
                         or type(record['version']) is not int or record['version'] != 1
                         or not re.fullmatch('[0-9a-f]{16}', record['scope'])
                         or not re.fullmatch('[0-9a-f]{32}', record['nonce'])
@@ -222,29 +227,30 @@ class NativeRecoveryOwner(CleanupLeaseOwner):
                 if record['scope'] != StackScope.from_roots(self.directory, state).id:
                     raise ValueError('Native recovery scope differs from parent-owned state')
                 for runtime in self._runtimes(state, record):
-                    candidates = tuple(item.id for item in runtime.inventory() if item.running)
-                    if not candidates:
+                    temporary = record.get('dispose_on_release', False)
+                    candidates = tuple(item.id for item in runtime.inventory() if temporary or item.running)
+                    if not candidates and not temporary:
                         continue
                     selected = []
-                    for row in runtime._inspect(candidates):
+                    for row in runtime._inspect(candidates) if candidates else ():
                         labels = row['Config']['Labels']
                         service = labels.get('com.docker.compose.service')
                         if (service in record['fingerprints'] and labels.get(LABEL) == record['nonce']
                                 and labels.get('api-agent.config') == record['fingerprints'][service]):
                             selected.append(row['Id'])
-                    if selected:
-                        # Pin IDs before stop; its canonical ownership/engine/active
-                        # lease checks reinspect these same immutable objects.
-                        receipt = state / 'selected-ids.json'
-                        if receipt.exists():
-                            _private(receipt)
-                            pinned = _read(receipt)
-                            if (type(pinned) is not list or not pinned or
-                                    any(type(value) is not str or not re.fullmatch('[0-9a-f]{64}', value)
-                                        for value in pinned)):
-                                raise ValueError('Invalid native recovery immutable identities')
-                            selected = [value for value in selected if value in pinned]
-                        else:
-                            _write(receipt, selected)
-                        if selected:
-                            runtime.stop(selected)
+                    # Persist immutable identities before either stop or removal.
+                    receipt = state / 'selected-ids.json'
+                    if receipt.exists():
+                        _private(receipt)
+                        pinned = _read(receipt)
+                        if (type(pinned) is not list or (not pinned and not temporary) or
+                                any(type(value) is not str or not re.fullmatch('[0-9a-f]{64}', value)
+                                    for value in pinned)):
+                            raise ValueError('Invalid native recovery immutable identities')
+                        selected = pinned if temporary else [value for value in selected if value in pinned]
+                    elif selected or temporary:
+                        _write(receipt, selected)
+                    if temporary:
+                        runtime.dispose(selected, nonce=record['nonce'], fingerprints=record['fingerprints'])
+                    elif selected:
+                        runtime.stop(selected)

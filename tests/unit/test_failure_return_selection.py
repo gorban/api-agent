@@ -30,7 +30,9 @@ def test_failure_return_preserves_selected_identity(tmp_path, mode):
             await pilot.press('down', 'enter')
             await pilot.pause()
             assert app.screen.kind == 'test-failure'
-            assert 'Failure 1' in app.screen.body.plain
+            assert ('Failure 1' in app.screen.body.plain) is (mode == 'unit')
+            if mode != 'unit':
+                assert '[withheld: LOG_CONTENT is disabled]' in app.screen.body.plain
             await pilot.press('c')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
@@ -41,7 +43,7 @@ def test_failure_return_preserves_selected_identity(tmp_path, mode):
             assert table.cursor_row == 1
             await pilot.press('up', 'enter')
             await pilot.pause()
-            assert 'Failure 0' in app.screen.body.plain
+            assert ('Failure 0' in app.screen.body.plain) is (mode == 'unit')
             await pilot.press('c')
             await pilot.pause()
             table = app.screen.query_one(DataTable)
@@ -136,7 +138,7 @@ def test_passed_local_diagnostic_opens_without_token_history(tmp_path, mode):
             await pilot.press('down', 'enter')
             await pilot.pause()
             assert app.screen.kind == 'test-failure'
-            assert 'RuntimeError: synthetic cleanup failure' in app.screen.body.plain
+            assert ('RuntimeError: synthetic cleanup failure' in app.screen.body.plain) is (mode == 'unit')
             await pilot.press('c')
             await pilot.pause()
             table = app.screen.query_one(DataTable)

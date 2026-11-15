@@ -25,7 +25,7 @@ def compact_cost(value):
     return f'{value:.6f}' if value < 100 else f'{value:.2f}'
 
 
-def test_details(result, usage, cost, *, historical_tokens=False, accounting_pending=False):
+def test_details(result, usage, cost, *, historical_tokens=False, accounting_pending=False, allow_content=False):
     from api_agent.telemetry.usage_output import tokens_text, displayed_cost, historical_average, QUOTA_RESET_NOTE
     from api_agent.telemetry.estimation import quota_reset_observed
     local_diagnostic = getattr(result, 'local_diagnostic', '')
@@ -34,7 +34,17 @@ def test_details(result, usage, cost, *, historical_tokens=False, accounting_pen
         if result.status == 'error' else 'NOT APPLICABLE'
         if result.status == 'not_applicable' else result.status.upper())
     failure = bool(local_diagnostic) or result.status in {'failed', 'error', 'broken'}
+    if not allow_content:
+        from api_agent.testing.diagnostics import CONTENT_WITHHELD, safe_diagnostic_code
+        if local_diagnostic or result.traceback:
+            details = CONTENT_WITHHELD
+        guidance = safe_diagnostic_code(getattr(result, 'diagnostic_code', ''))
+        if guidance and failure:
+            details = guidance + '\n' + details
     lines = [result.identity.id, '']
+    phase = getattr(result, 'failure_phase', '')
+    if phase in {'setup', 'call', 'teardown'}:
+        lines.extend((f'Failure phase: {phase}', ''))
     if failure:
         lines.extend((details, ''))
     lines.append(f'Execution time: {result.duration:.3f}s')
@@ -50,10 +60,12 @@ def test_details(result, usage, cost, *, historical_tokens=False, accounting_pen
         if cost.get('basis') and cost['basis'] != 'unavailable':
             lines.append(f"Cost basis: {cost['basis']}")
         lines.append(tokens_text(usage, result.identity.id))
-    if getattr(result, 'local_stderr', ''):
+    if allow_content and getattr(result, 'local_stderr', ''):
         lines.extend(('', 'stderr:', result.local_stderr))
-    if getattr(result, 'local_stdout', ''):
+    if allow_content and getattr(result, 'local_stdout', ''):
         lines.extend(('', 'stdout:', result.local_stdout))
+    if not allow_content and (getattr(result, 'local_stderr', '') or getattr(result, 'local_stdout', '')):
+        lines.extend(('', CONTENT_WITHHELD))
     if not failure:
         lines.extend(('', details))
     text = Text('\n'.join(lines))

@@ -113,3 +113,14 @@ def test_terminal_first_cleanup_interrupt_is_not_suppressed():
     backend.wait_closed.assert_called_once_with()
     backend.end_inspection.assert_called_once_with()
     backend.abort.assert_called_once_with()
+
+
+def test_terminal_summary_uses_recorded_e2e_mode_and_first_chance():
+    identity = TestIdentity('base::test.py::test_ok', 'base', 'test.py', 'test.py::test_ok')
+    execution = integration.IntegrationRunResult(0, (TestResult(identity, 'passed', first_status='failed'),), '')
+    recorded = SimpleNamespace(execution=execution, persisted=True,
+                               identity=SimpleNamespace(mode='e2e'))
+    lines = []
+    assert finish_terminal_inspection(recorded, lines.append)
+    assert lines[0].startswith('E2e results: PASS')
+    assert 'first chance 0/1' in lines[0] and 'final 1/1' in lines[0]

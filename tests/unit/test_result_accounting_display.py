@@ -49,7 +49,7 @@ def test_shared_details_prioritizes_failures_and_preserves_accounting(status, co
     assert rendered.plain.endswith(ending)
     assert rendered.spans[-1].style == color
     result.traceback = 'AssertionError: failed\n  source.py:42\noriginal traceback'
-    detailed = render_details(result, usage, {}, historical_tokens=True)
+    detailed = render_details(result, usage, {}, historical_tokens=True, allow_content=True)
     if status == 'failed':
         assert detailed.plain.startswith(result.identity.id + '\n\n' + result.traceback)
         assert detailed.plain.index(result.traceback) < detailed.plain.index('Execution time:')

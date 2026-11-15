@@ -288,3 +288,17 @@ def test_confirmation_projection_keeps_the_frozen_picker_forecast_distinct():
                            predictions={'t': current}, advance_predictions={'t': frozen})
     assert result['test_costs']['t']['historical_average'] == current
     assert result['test_costs']['t']['advance_prediction'] == frozen
+
+
+def test_initialized_zero_window_survives_accounting_and_history():
+    from api_agent.telemetry.quota_estimates import quota_predictions_for
+    test, settings, manifest, artifact = single_selection()
+    before, after = artifact['quota']['before'], artifact['quota']['after']
+    before.update(pct_used=0, reset_at=None, window_id=None,
+                  allocation_id='a' * 64, initial_window=True)
+    after['allocation_id'] = 'a' * 64
+    after['pct_used'] = 8
+    artifact['quota']['pct_point_delta'] = 8
+
+    prediction = quota_predictions_for([test], [(manifest, artifact)], {test.id: 'hash'}, settings)
+    assert prediction[test.id]['estimated_cost_usd'] == 8

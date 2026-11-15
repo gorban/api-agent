@@ -403,3 +403,38 @@ def test_backend_budgets_exporter_and_managed_collector_disposal(tmp_path, mode,
     backend = SetupBackend(config, tmp_path, trace_prerequisites_factory=Mock())
     assert backend.cleanup_timeout == expected
     assert backend.thread is None
+
+
+def test_collector_failure_produces_fixed_visible_warning_with_content_disabled(monkeypatch, tmp_path, capsys):
+    from api_agent.testing.contracts import RunnerEvent
+    from api_agent.testing.terminal_progress import TerminalTestProgress
+
+    output = []
+    progress = TerminalTestProgress([], output.append, allow_content=False)
+
+    async def run():
+        owner, manager, _ = await setup_owner(monkeypatch, tmp_path, [])
+        owner._warning_sink = lambda code: progress(RunnerEvent('trace_warning', text=code))
+        manager.acquire.side_effect = RuntimeError('narrative-sentinel')
+        await owner.ensure_ready()
+        assert await owner.complete('request') == 'Ok'
+        await owner.aclose()
+
+    asyncio.run(run())
+    capsys.readouterr()
+    assert any('Tracing' in line and 'continuing without tracing' in line.lower() for line in output)
+    assert 'narrative-sentinel' not in '\n'.join(output)
+
+
+def test_failed_warning_callback_does_not_interrupt_inference(monkeypatch, tmp_path):
+    async def run():
+        owner, manager, trace = await setup_owner(monkeypatch, tmp_path, [])
+        owner._warning_sink = Mock(side_effect=RuntimeError('unavailable warning destination'))
+        manager.acquire.side_effect = RuntimeError('collector unavailable')
+        await owner.ensure_ready()
+        assert await owner.complete('request') == 'Ok'
+        trace.astart.assert_not_awaited()
+        owner._warning_sink.assert_called_once_with('setup')
+        await owner.aclose()
+
+    asyncio.run(run())

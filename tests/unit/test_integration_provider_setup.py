@@ -221,7 +221,11 @@ def test_logged_out_cli_fails_real_worker_without_browser_and_records_guidance(t
     assert 'AssertionError: browser or transport must not start' not in trace
     rows = [json.loads(path.read_text()) for path in result.directory.glob('*-result.json')]
     assert len(rows) == 1 and rows[0]['status'] == 'failed'
-    assert rows[0]['statusDetails']['trace'] == trace
+    details = rows[0]['statusDetails']
+    assert 'trace' not in details
+    assert 'Failed to get credentials for unattended access.' in details['message']
+    assert ('Clear .env configuration' in details['message']) is source.endswith('/.env')
+    assert ('Stop passing' in details['message']) is not source.endswith('/.env')
 
 
 @pytest.mark.parametrize('index,no_std_in', [(None, False), (0, False), (None, True)])
@@ -366,7 +370,7 @@ def test_selected_invalid_combination_skips_shared_setup(tmp_path, jobs):
     assert not state.exists()
     rows = [json.loads(path.read_text()) for path in recorded.directory.glob('*-result.json')]
     assert [row['status'] for row in rows] == ['skipped']
-    assert next(row for row in rows if row['status'] == 'skipped')['statusDetails']['message'] == reason
+    assert next(row for row in rows if row['status'] == 'skipped')['statusDetails']['message'] == 'Test skipped'
 
 
 def test_fixture_does_not_setup_and_always_closes(tmp_path, monkeypatch):

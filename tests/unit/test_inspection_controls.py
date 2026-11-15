@@ -201,7 +201,7 @@ def test_bootstrap_keeps_terminal_pending_receipt_in_process(monkeypatch):
     assert caught.value.cleanup_pending is pending
     assert caught.value.inspections == (item,)
     assert caught.value.owners is pending.owners and caught.value.retry is pending.retry
-    assert 'CleanupPendingError: cleanup pending' in str(caught.value)
+    assert '[withheld: LOG_CONTENT is disabled]' in str(caught.value)
 
 
 @pytest.mark.parametrize('failure', [KeyboardInterrupt, BrokenPipeError])
@@ -226,7 +226,9 @@ def test_bootstrap_does_not_drop_active_primary_cleanup_receipt(failure):
     assert caught.value is not primary
     assert caught.value.inspection_group is primary.inspection_group
     assert caught.value.inspection_group.active
-    assert failure.__name__ in str(caught.value)
+    expected_detail = ('Execution interrupted.' if failure is KeyboardInterrupt
+                       else '[withheld: LOG_CONTENT is disabled]')
+    assert expected_detail in str(caught.value)
 
 
 @pytest.mark.parametrize('disposition', ['closed', 'pending', 'recording', 'recording_done'])
@@ -350,7 +352,7 @@ def test_active_noninteractive_execution_interrupt_keeps_cancellation_exit_statu
         status = main(['--tui-mode=integration', '--no-std-in', '--debug',
                        '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic'], base_root=Path(__file__).parents[2])
     assert status == 130
-    assert 'KeyboardInterrupt' in capsys.readouterr().err
+    assert 'Execution interrupted.' in capsys.readouterr().err
 
 
 def test_wait_interrupt_remains_primary_when_cleanup_is_interrupted():

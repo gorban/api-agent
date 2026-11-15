@@ -348,3 +348,24 @@ def test_same_direct_failure_report_has_only_one_event():
         captured = exporter.get_finished_spans()[0]
         assert captured.status.description == 'same failure'
         assert len(captured.events) == 1
+
+@pytest.mark.parametrize('log_content', [False, True])
+@pytest.mark.parametrize('trace_content', [False, True])
+@pytest.mark.parametrize('outcome', ['passed', 'failure'])
+def test_trace_content_is_independent_on_each_outcome(log_content, trace_content, outcome):
+    narrative = 'trace-narrative-sentinel'
+    credential = 'trace-credential-sentinel'
+    with trace_runtime(log=log_content, trace=trace_content) as (runtime, _, exporter):
+        runtime.boundary.register_secret(credential)
+        span = runtime.begin('synthetic operation', {'input.value': narrative})
+        span.attributes({'output.value': narrative, 'gen_ai.usage.input_tokens': 7})
+        span.event({'tool.output': narrative})
+        if outcome != 'passed':
+            span.failure(ProviderAccessError('unknown', narrative + ' ' + credential))
+        span.end()
+        rows = exporter.get_finished_spans()
+        wire = repr([(dict(row.attributes), row.status.description,
+                      [(event.name, dict(event.attributes)) for event in row.events]) for row in rows])
+        assert (narrative in wire) is trace_content
+        assert credential not in wire
+        assert '7' in wire
