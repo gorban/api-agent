@@ -1103,3 +1103,185 @@ def test_recovery_retains_original_error_receipt_and_uncertain_request(pending_i
     assert pending_intent.calls == [['1' * 64]]
     assert request.read_bytes() == before
     assert not (request.parent / 'complete.json').exists()
+
+
+@pytest.mark.parametrize(('failure', 'category', 'error_class'), [
+    (OSError, 'os', 'OSError'),
+    (TimeoutError, 'timeout', 'TimeoutError'),
+    (RuntimeError, 'runtime', 'RuntimeError'),
+])
+def test_owned_cleanup_failure_has_private_content_safe_diagnostic(monkeypatch, failure, category, error_class):
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing import native_recovery
+    from api_agent.testing.diagnostics import safe_exception
+    from api_agent.testing.integration import _admit_operation
+
+    original = native_recovery.NativeRecoveryOwner.recover
+    def fail(owner, **kwargs):
+        raise failure('secret-token --password secret-argv /secret/path')
+    monkeypatch.setattr(native_recovery.NativeRecoveryOwner, 'recover', fail)
+    @_admit_operation
+    def execute(*, suite_directory):
+        return SimpleNamespace(inspections=())
+    with pytest.raises(CleanupPendingError) as caught:
+        execute()
+    pending = caught.value
+    suite = Path(pending.owners[1].name)
+    text = safe_exception(pending, lambda text: text, allow_content=False)
+    records = list(suite.glob('cleanup-diagnostic-*.json'))
+    assert len(records) == 1 and records[0].stat().st_mode & 0o777 == 0o600
+    record = json.loads(records[0].read_text())
+    assert record['stage'] == 'native_recovery'
+    assert record['category'] == category
+    assert record['error_class'] == error_class
+    assert record['pending'] is True
+    assert len(record['correlation']) == 16
+    assert all(str(record[key]) in text for key in ('stage', 'category', 'error_class', 'correlation'))
+    for value in ('secret-token', 'secret-argv', '/secret/path'):
+        assert value not in text and value not in json.dumps(record)
+    monkeypatch.setattr(native_recovery.NativeRecoveryOwner, 'recover', original)
+    asyncio.run(pending.retry())
+    assert not suite.exists()
+
+
+def test_cleanup_diagnostic_is_safe_on_primary_and_adversarial_metadata(monkeypatch, tmp_path):
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing.diagnostics import cleanup_failure_diagnostic, safe_exception
+    async def retry():
+        pass
+    pending = CleanupPendingError((), retry)
+    pending.cleanup_diagnostic = cleanup_failure_diagnostic(tmp_path, 'native_recovery', PermissionError('private'))
+    primary = KeyboardInterrupt('secret')
+    primary.cleanup_pending = pending
+    text = safe_exception(primary, lambda text: text)
+    assert 'stage=native_recovery' in text and 'category=os' in text and 'error_class=OSError' in text
+    assert 'secret' not in text and 'private' not in text
+    class Impostor(str):
+        def __str__(self):
+            return 'secret-rendered'
+    pending.cleanup_diagnostic = (Impostor('native_recovery'), 'os', 'OSError', 'a' * 16, True, True)
+    assert 'secret-rendered' not in safe_exception(primary, lambda text: text)
+    assert 'stage=' not in safe_exception(primary, lambda text: text)
+    pending.cleanup_diagnostic = cleanup_failure_diagnostic(tmp_path, 'secret-stage', Exception('secret'))
+    text = safe_exception(primary, lambda text: text)
+    assert 'stage=unknown' in text and 'category=unknown' in text and 'secret-stage' not in text
+
+
+def test_cleanup_diagnostic_write_failure_preserves_retry(monkeypatch):
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing import native_recovery
+    from api_agent.testing.diagnostics import safe_exception
+    from api_agent.testing.integration import _admit_operation
+    original = native_recovery.NativeRecoveryOwner.recover
+    monkeypatch.setattr(native_recovery.NativeRecoveryOwner, 'recover', lambda self: (_ for _ in ()).throw(RuntimeError('secret')))
+    monkeypatch.setattr(native_recovery, '_write', lambda *args: (_ for _ in ()).throw(OSError('secret')))
+    @_admit_operation
+    def execute(*, suite_directory):
+        return SimpleNamespace(inspections=())
+    with pytest.raises(CleanupPendingError) as caught:
+        execute()
+    pending = caught.value
+    text = safe_exception(pending, lambda text: text)
+    assert 'record=unavailable' in text and 'secret' not in text
+    monkeypatch.setattr(native_recovery.NativeRecoveryOwner, 'recover', original)
+    asyncio.run(pending.retry())
+
+
+@pytest.mark.parametrize(('error', 'category', 'error_class'), [
+    ('cleanup', 'pending', 'CleanupPendingError'),
+    ('pool', 'pending', 'PoolPending'),
+    ('cancel', 'cancelled', 'PoolCancelled'),
+    ('setup', 'setup', 'SetupPrerequisiteError'),
+    ('value', 'invalid', 'ValueError'),
+])
+def test_cleanup_diagnostic_fixed_error_categories(tmp_path, error, category, error_class):
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.providers.contracts import SetupPrerequisiteError
+    from api_agent.testing.diagnostics import cleanup_failure_diagnostic, safe_exception
+    from api_agent.testing.suite_prerequisite_pool import PoolPending, PoolCancelled
+    async def retry():
+        pass
+    errors = {'cleanup': CleanupPendingError((), retry), 'pool': PoolPending('secret'),
+              'cancel': PoolCancelled('secret'), 'setup': SetupPrerequisiteError('secret'),
+              'value': ValueError('secret')}
+    pending = CleanupPendingError((), retry)
+    pending.cleanup_diagnostic = cleanup_failure_diagnostic(tmp_path, 'prerequisite_cleanup', errors[error])
+    text = safe_exception(pending, lambda text: text)
+    assert f'category={category}' in text and f'error_class={error_class}' in text
+    assert 'secret' not in text
+
+
+def test_cleanup_retry_records_changed_stage_and_preserves_real_retry(monkeypatch):
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.testing import integration, native_recovery
+    from api_agent.testing.diagnostics import safe_exception
+    original = native_recovery.NativeRecoveryOwner.recover
+    calls = []
+    def recover(owner, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise OSError('secret')
+        return original(owner, **kwargs)
+    monkeypatch.setattr(native_recovery.NativeRecoveryOwner, 'recover', recover)
+    original_cleanup = integration.tempfile.TemporaryDirectory.cleanup
+    attempts = []
+    def cleanup(owner):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise RuntimeError('secret')
+        return original_cleanup(owner)
+    monkeypatch.setattr(integration.tempfile.TemporaryDirectory, 'cleanup', cleanup)
+    @integration._admit_operation
+    def execute(*, suite_directory):
+        return SimpleNamespace(inspections=())
+    with pytest.raises(CleanupPendingError) as caught:
+        execute()
+    pending = caught.value
+    suite = Path(pending.owners[1].name)
+    first = pending.cleanup_diagnostic
+    with pytest.raises(RuntimeError):
+        asyncio.run(pending.retry())
+    second = pending.cleanup_diagnostic
+    assert first[0:3] == ('native_recovery', 'os', 'OSError')
+    assert second[0:3] == ('storage_cleanup', 'runtime', 'RuntimeError')
+    assert first[3] != second[3]
+    assert len(list(suite.glob('cleanup-diagnostic-*.json'))) == 2
+    assert second[3] in safe_exception(pending, lambda text: text)
+    asyncio.run(pending.retry())
+    assert not suite.exists()
+
+
+@pytest.mark.parametrize('stage', ['worker_disposal', 'prerequisite_cleanup'])
+def test_owned_cleanup_reports_actual_failed_stage(monkeypatch, stage):
+    import asyncio
+    from api_agent.providers.control import CleanupPendingError
+    from api_agent.runtime import processes
+    from api_agent.testing import integration
+    disposed = [False]
+    class Contribution:
+        cleanup_timeout = 1
+        def close(self, *, workers_disposed):
+            if stage == 'prerequisite_cleanup' and not disposed[0]:
+                raise OSError('secret')
+    monkeypatch.setattr(processes, 'disposal_complete', lambda worker: disposed[0])
+    def finalize(worker):
+        raise OSError('secret')
+    monkeypatch.setattr(integration, 'finalize', finalize)
+    @integration._admit_operation
+    def execute(*, suite_directory):
+        recovery = integration._RUNNER_OPERATION.recovery
+        if stage == 'worker_disposal':
+            (recovery.directory / 'unstarted').mkdir(mode=0o700)
+            recovery.workers.append(object())
+        else:
+            integration._RUNNER_OPERATION.prerequisites = Contribution()
+        return SimpleNamespace(inspections=())
+    with pytest.raises(CleanupPendingError) as caught:
+        execute()
+    pending = caught.value
+    assert pending.cleanup_diagnostic[:3] == (stage, 'os', 'OSError')
+    disposed[0] = True
+    asyncio.run(pending.retry())

@@ -18,6 +18,8 @@ from api_agent.providers.progress import report_timeout_sync
 # A complete CLI/socket handshake includes bounded inventory pagination and
 # compatibility checks. Keep that setup budget distinct from one socket read.
 ENGINE_IDENTITY_TIMEOUT_SECONDS = 30
+ENGINE_INVENTORY_MAX_SNAPSHOTS = 8
+ENGINE_INVENTORY_RETRY_DELAY_SECONDS = .1
 
 
 class DeadlineSocket(socket.socket):
@@ -185,6 +187,10 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
                 compatibility = version is not None and version == podman_version(cli_version)
             attempt = 0
             while True:
+                if cancelled():
+                    raise PrerequisiteCancelled('Reporting engine verification cancelled.')
+                if budget.remaining <= 0:
+                    raise PrerequisiteError('Cannot verify shared reporting engine identity; verification deadline expired.')
                 if (len(identifiers) > 4096
                         or any(not re.fullmatch('[0-9a-f]{64}', value) for value in identifiers + direct_ids)
                         or len(set(identifiers)) != len(identifiers) or len(set(direct_ids)) != len(direct_ids)):
@@ -192,9 +198,18 @@ def verified_engine_binding(environment=None, *, executable='docker', runner=run
                 if sorted(identifiers) == sorted(direct_ids):
                     break
                 attempt += 1
-                if attempt == 3:
+                if attempt == ENGINE_INVENTORY_MAX_SNAPSHOTS or budget.remaining <= 0:
                     raise PrerequisiteError('Cannot verify shared reporting engine identity; no service was adopted. '
-                        'CLI and socket container inventories did not agree after three bounded snapshots; '
+                        f'CLI and socket container inventories did not agree after {attempt} bounded snapshots; '
+                        'retry after container startup/cleanup settles and check the selected engine/context.')
+                if cancelled():
+                    raise PrerequisiteCancelled('Reporting engine verification cancelled.')
+                time.sleep(min(ENGINE_INVENTORY_RETRY_DELAY_SECONDS, budget.remaining))
+                if cancelled():
+                    raise PrerequisiteCancelled('Reporting engine verification cancelled.')
+                if budget.remaining <= 0:
+                    raise PrerequisiteError('Cannot verify shared reporting engine identity; no service was adopted. '
+                        f'CLI and socket container inventories did not agree after {attempt} bounded snapshots; '
                         'retry after container startup/cleanup settles and check the selected engine/context.')
                 direct_ids = inventory()
                 identifiers = command(('ps', '-a', '--no-trunc', '--format', '{{.ID}}')).split()
