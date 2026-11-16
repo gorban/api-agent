@@ -49,6 +49,21 @@ when that close fails. Older events without the flag do not establish completion
 Other suite cleanup duties can still remain after the broker closes; retain the
 launcher's final cleanup outcome as the overall authority.
 
+When suite-owner cleanup remains pending, the content-disabled terminal reports
+a fixed cleanup stage, category, and public base-family error class, plus a
+random per-failure correlation. The correlation identifies a private retained
+`cleanup-diagnostic-<correlation>.json` in the suite recovery directory. If
+the record could not be written, the terminal says `record=unavailable`.
+This metadata excludes exception messages and paths; it is diagnostic evidence,
+not proof of disposal or a substitute for the owner's cleanup retry.
+
+Container-engine verification compares complete CLI and socket inventories.
+Concurrent container changes can make sequential snapshots disagree, so the
+handshake samples up to eight CLI/socket pairs within its existing deadline, with a short
+cancellable delay. It still requires exact inventory equality and all engine
+identity and socket checks; persistent disagreement fails closed. A mismatch
+alone does not establish whether churn or a different engine caused it.
+
 New prerequisite `error` events retain a fixed `stage` and `category` without
 exception messages, class names, handler names or configuration. When preparation
 produces a resource key, `prepare`, `readiness` and `error` events also carry an

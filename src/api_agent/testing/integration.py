@@ -98,6 +98,7 @@ def _admit_operation(function):
             _RUNNER_OPERATION.credential_relay = None
             result = None
             recovered = False
+            cleanup_stage = 'worker_disposal'
             try:
                 result = function(*args, **dict(kwargs, suite_directory=temporary.name))
                 return result
@@ -108,26 +109,30 @@ def _admit_operation(function):
                     if callable(getattr(item, '_when_closed', None)) and not item.closed)
                 contribution = getattr(_RUNNER_OPERATION, 'prerequisites', None)
                 def close():
-                    nonlocal recovered
+                    nonlocal recovered, cleanup_stage
                     from api_agent.runtime.processes import disposal_complete
                     with recovery._lock:
                         if recovery.closed:
                             recovery._acknowledge_closed()
                             return
                         if not recovered:
+                            cleanup_stage = 'worker_disposal'
                             if any(recovery.directory.iterdir()) or contribution is not None:
                                 for worker in recovery.workers:
                                     if not disposal_complete(worker):
                                         finalize(worker)
                             if contribution is not None:
+                                cleanup_stage = 'prerequisite_cleanup'
                                 disposed = bool(recovery.workers) and all(disposal_complete(worker) for worker in recovery.workers)
                                 with recovery.bind():
                                     contribution.close(workers_disposed=disposed)
+                            cleanup_stage = 'native_recovery'
                             if contribution is None:
                                 recovery.recover()
                             else:
                                 recovery.recover(cleanup_timeout_seconds=min(contribution.cleanup_timeout, 300))
                             recovered = True
+                        cleanup_stage = 'storage_cleanup'
                         temporary.cleanup()
                         recovery.closed = True
                         recovery._acknowledge_closed()
@@ -146,9 +151,17 @@ def _admit_operation(function):
                     from api_agent.providers.control import CleanupPendingError
                     from api_agent.runtime.tasks import offload
                     async def retry():
-                        await offload(close)
+                        try:
+                            await offload(close)
+                        except BaseException as retry_error:
+                            pending.cleanup_diagnostic = cleanup_failure_diagnostic(
+                                temporary.name, cleanup_stage, retry_error)
+                            raise
                     pending = CleanupPendingError((recovery, temporary), retry)
                     temporary._finalizer.detach()
+                    from .diagnostics import cleanup_failure_diagnostic
+                    pending.cleanup_diagnostic = cleanup_failure_diagnostic(
+                        temporary.name, cleanup_stage, error)
                     if primary is None:
                         pending.execution = result
                         raise pending from error

@@ -482,7 +482,7 @@ def test_compatibility_evidence_cannot_bypass_identity_checks(compatibility_engi
     if kind == 'empty-inventory': engine.cli_ids = engine.direct_ids = []
     with pytest.raises(PrerequisiteError, match='Cannot verify'):
         identify(engine)
-    assert len(engine.closed) == (5 if kind == 'wrong-inventory' else 3)
+    assert len(engine.closed) == (10 if kind == 'wrong-inventory' else 3)
 
 
 def test_native_identity_never_queries_compatibility_version(engine):
@@ -593,7 +593,7 @@ def test_inventory_disagreement_remains_bounded_and_actionable(engine):
     with pytest.raises(PrerequisiteError, match='container inventories did not agree'):
         identify(engine)
 
-    assert len(snapshots) == 3
+    assert len(snapshots) == 8
 
 
 def test_paged_inventory_accepts_full_evidence_over_body_limit(engine):
@@ -700,7 +700,63 @@ def test_paged_inventory_refuses_oversized_cli_without_retry(paged_engine):
 
 def test_paged_inventory_retries_complete_snapshot_on_late_mismatch(paged_engine):
     paged_engine.cli_ids.pop()
-    with pytest.raises(PrerequisiteError, match='three bounded snapshots'):
+    with pytest.raises(PrerequisiteError, match='8 bounded snapshots'):
         identify(paged_engine)
-    assert len(paged_engine.pages) == 9
-    assert paged_engine.pages[::3] == [None, None, None]
+    assert len(paged_engine.pages) == 24
+    assert paged_engine.pages[::3] == [None] * 8
+
+
+def test_compatibility_handshake_survives_several_concurrent_container_starts(compatibility_engine):
+    engine = compatibility_engine
+    expected = identify(engine)
+    original = engine.runner
+    attempts = []
+    def changing(command, **kwargs):
+        if command[1] == 'ps':
+            attempts.append(True)
+            if len(attempts) <= 3:
+                new_id = f'{len(attempts):064x}'
+                engine.cli_ids.append(new_id)
+                engine.direct_ids.append({'Id': new_id})
+        return original(command, **kwargs)
+    engine.runner = changing
+    assert identify(engine) == expected
+    assert len(attempts) == 4
+
+
+def test_compatibility_permanent_inventory_overlap_does_not_adopt_wrong_engine(compatibility_engine, monkeypatch):
+    engine = compatibility_engine
+    engine.direct_ids = [{'Id': IDENTIFIER}, {'Id': 'b' * 64}]
+    engine.cli_ids = [IDENTIFIER, 'c' * 64]
+    monkeypatch.setattr(subject.time, 'sleep', lambda _: None)
+    with pytest.raises(PrerequisiteError, match='8 bounded snapshots'):
+        identify(engine)
+    assert len([command for command in engine.commands if command[1] == 'ps']) == 8
+
+
+@pytest.mark.parametrize('cancel_call', [1, 2, 3])
+def test_inventory_retry_checks_cancellation_between_snapshots(engine, monkeypatch, cancel_call):
+    engine.cli_ids = ['b' * 64]
+    calls = []
+    monkeypatch.setattr(subject.time, 'sleep', lambda _: None)
+    def cancelled():
+        calls.append(True)
+        return len(calls) == cancel_call
+    with pytest.raises(subject.PrerequisiteCancelled):
+        identify(engine, cancelled=cancelled)
+    assert len(calls) == cancel_call
+
+
+@pytest.mark.parametrize('expire_during_sleep', [False, True])
+def test_inventory_deadline_prevents_adoption(engine, monkeypatch, expire_during_sleep):
+    from contextlib import contextmanager
+    budget = SimpleNamespace(remaining=30 if expire_during_sleep else 0)
+    @contextmanager
+    def progress(*args):
+        yield budget
+    monkeypatch.setattr(subject, 'report_timeout_sync', progress)
+    if expire_during_sleep:
+        engine.cli_ids = ['b' * 64]
+        monkeypatch.setattr(subject.time, 'sleep', lambda _: setattr(budget, 'remaining', 0))
+    with pytest.raises(PrerequisiteError, match='deadline expired|bounded snapshots'):
+        identify(engine)

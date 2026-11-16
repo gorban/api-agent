@@ -323,6 +323,48 @@ CONTENT_WITHHELD = '[withheld: LOG_CONTENT is disabled]'
 REDACTION_UNAVAILABLE = '[withheld: redaction history unavailable]'
 
 
+def cleanup_failure_diagnostic(directory, stage, error):
+    """Persist only fixed cleanup metadata beside retained recovery state."""
+    from uuid import uuid4
+    from pathlib import Path
+    from .native_recovery import _write
+    from .suite_prerequisite_broker import _diagnostic_category
+    from api_agent.providers.control import CleanupPendingError
+    if type(stage) is not str or stage not in ('worker_disposal', 'prerequisite_cleanup',
+                                                'native_recovery', 'storage_cleanup'):
+        stage = 'unknown'
+    category = 'pending' if isinstance(error, CleanupPendingError) else _diagnostic_category(error)
+    classes = {'timeout': 'TimeoutError', 'os': 'OSError', 'runtime': 'RuntimeError',
+               'invalid': 'ValueError', 'cancelled': 'PoolCancelled', 'setup': 'SetupPrerequisiteError',
+               'pending': 'CleanupPendingError' if isinstance(error, CleanupPendingError) else 'PoolPending',
+               'unknown': 'OtherError'}
+    error_class = classes[category]
+    record = {'stage': stage, 'category': category, 'error_class': error_class,
+              'correlation': uuid4().hex[:16], 'pending': True}
+    try:
+        _write(Path(directory) / ('cleanup-diagnostic-' + record['correlation'] + '.json'), record)
+    except BaseException:
+        return (*record.values(), False)
+    return (*record.values(), True)
+
+
+def _cleanup_failure_text(error):
+    from .suite_lock import _cleanup_receipts
+    for receipt in _cleanup_receipts(error):
+        data = getattr(receipt, 'cleanup_diagnostic', None)
+        if (type(data) is tuple and len(data) == 6 and all(type(value) is str for value in data[:3])
+                and data[0] in ('worker_disposal', 'prerequisite_cleanup', 'native_recovery', 'storage_cleanup', 'unknown')
+                and (data[1], data[2]) in (('timeout', 'TimeoutError'), ('os', 'OSError'),
+                    ('runtime', 'RuntimeError'), ('invalid', 'ValueError'),
+                    ('pending', 'CleanupPendingError'), ('pending', 'PoolPending'),
+                    ('cancelled', 'PoolCancelled'), ('setup', 'SetupPrerequisiteError'), ('unknown', 'OtherError'))
+                and type(data[3]) is str and re.fullmatch('[0-9a-f]{16}', data[3])
+                and data[4] is True and type(data[5]) is bool):
+            return (f'Cleanup pending: stage={data[0]} category={data[1]} error_class={data[2]} '
+                    f'correlation={data[3]} record={"retained" if data[5] else "unavailable"}')
+    return None
+
+
 class RequiredConfigurationError(ValueError):
     """Missing declared configuration fields, without retaining their values."""
 
@@ -370,6 +412,8 @@ def safe_exception(error, scrubber, *, allow_content=False, boundary='', unatten
         detail = 'Execution interrupted.'
     else:
         detail = EmissionBoundary.exception(error)['error_kind'] + '\n' + CONTENT_WITHHELD
+    if cleanup := _cleanup_failure_text(error):
+        detail += '\n' + cleanup
     return scrubber((boundary + '\n' if boundary else '') + detail)
 
 
