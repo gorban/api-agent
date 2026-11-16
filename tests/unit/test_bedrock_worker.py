@@ -806,3 +806,37 @@ def test_stream_eof_failure_keeps_diagnostics(events):
     assert failure['diagnostics']['stream_event'] == 'eof'
     assert failure['diagnostics']['validation_location'].startswith('api_agent.llm_providers.bedrock.mantle:')
     assert not any(row.get('event', {}).get('kind') == 'completed' for row in seen)
+
+@pytest.mark.parametrize('frame', [
+    b'not-json\n', b'[]\n', b'{}\n',
+    b'{"key":"00","row":{},"proof":"x","controls":{}}\n',
+])
+def test_invalid_proposal_control_frames_fail_closed_and_release_channel(monkeypatch, frame):
+    import socket
+    parent, child = socket.socketpair()
+    parent.sendall(frame)
+    parent.shutdown(socket.SHUT_WR)
+    monkeypatch.setenv('API_AGENT_BEDROCK_PROPOSAL_FD', str(child.detach()))
+    monkeypatch.delenv('API_AGENT_BEDROCK_AUTHORITY_FD', raising=False)
+    monkeypatch.setattr(worker, 'execute', lambda *args, **kwargs: pytest.fail('invalid control executed'))
+    output = io.StringIO()
+    try:
+        worker.main(io.StringIO(json.dumps(request('completions')) + '\n'), output)
+        assert json.loads(output.getvalue()) == {'error': 'protocol'}
+        assert parent.recv(1) == b''
+    finally:
+        parent.close()
+
+
+@pytest.mark.parametrize('controls', [None, {'extra': 1}, {'LLM_REASONING_LOW_TOKENS': True},
+    {'LLM_REASONING_LOW_TOKENS': 1023}, {'reasoning_format': 'invalid'}])
+def test_proposal_body_rejects_unauthorized_controls(controls):
+    from api_agent.llm_providers.bedrock import mantle
+    from api_agent.providers.llm import LLMRequest, StructuredFunctionProfile
+    from test_structured_function_providers import request as proposal_request
+    canonical = LLMRequest('us.openai.gpt-6-luna', proposal_request(
+        profile=StructuredFunctionProfile(True, 'strict_all_properties')).payload)
+    body = mantle.encode(canonical, 'completions', endpoint='runtime')
+    with pytest.raises(ValueError):
+        worker.validate_proposal_body(canonical, body, native=False, response=False,
+                                      endpoint='runtime', controls=controls)

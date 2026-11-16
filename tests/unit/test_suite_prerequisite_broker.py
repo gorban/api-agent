@@ -910,3 +910,141 @@ def test_failure_reporting_is_optional_and_bounded(tmp_path):
         broker._report_failure(error)
     broker._report_failure(errors[0])
     assert failures == errors[:128]
+
+
+def test_failed_owner_diagnostics_correlate_without_content(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    ctx = multiprocessing.get_context('spawn')
+    starts, stops = ctx.Value('i', 0), ctx.Value('i', 0)
+    events = []
+    broker = SuitePrerequisiteBroker(tmp_path, {'service': FailingHandler(starts, stops)}, owner_budget=5, event=events.append)
+    descriptor = broker.start()
+
+    def acquire(_):
+        with pytest.raises(RuntimeError, match='^prerequisite acquisition failed: RuntimeError$'):
+            borrow_prerequisite(descriptor, 'service', {'account_scope': 'a' * 64}, timeout=5)
+
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(acquire, range(8)))
+        prepares = [event for event in events if event['phase'] == 'prepare']
+        errors = [event for event in events if event['phase'] == 'error']
+        assert starts.value == 1
+        assert sum(event['miss'] for event in prepares) == 1
+        assert sum(event['reuse'] for event in prepares) == 7
+        assert len(errors) == 8
+        assert {event['stage'] for event in errors} == {'pool_borrow'}
+        assert {event['category'] for event in errors} == {'runtime'}
+        assert len({event['correlation'] for event in prepares + errors}) == 1
+        assert 'private startup detail' not in str(events)
+        assert 'service' not in str(events)
+    finally:
+        broker.close(timeout=5)
+    assert stops.value == 1
+
+
+def test_failing_diagnostic_callback_does_not_mask_owner_failure(tmp_path):
+    ctx = multiprocessing.get_context('spawn')
+    starts, stops = ctx.Value('i', 0), ctx.Value('i', 0)
+
+    def broken_event(_event):
+        raise RuntimeError('private callback detail')
+
+    broker = SuitePrerequisiteBroker(tmp_path, {'service': FailingHandler(starts, stops)}, owner_budget=5, event=broken_event)
+    descriptor = broker.start()
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match='^prerequisite acquisition failed: RuntimeError$'):
+            borrow_prerequisite(descriptor, 'service', {'account_scope': 'a' * 64}, timeout=5)
+    assert starts.value == 1
+    broker.close(timeout=5)
+    assert stops.value == 1
+
+
+@pytest.mark.parametrize('error,expected', [
+    (TimeoutError(), 'timeout'),
+    (PoolPending(), 'pending'),
+    (ValueError(), 'invalid'),
+    (OSError(), 'os'),
+    (RuntimeError(), 'runtime'),
+    (OddlyNamed(), 'unknown'),
+])
+def test_prerequisite_diagnostic_categories(error, expected):
+    from api_agent.testing.suite_prerequisite_broker import _diagnostic_category
+    assert _diagnostic_category(error) == expected
+
+
+def test_prerequisite_special_diagnostic_categories():
+    from api_agent.providers.contracts import SetupPrerequisiteError
+    from api_agent.testing.suite_prerequisite_broker import _diagnostic_category
+    from api_agent.testing.suite_prerequisite_pool import PoolCancelled
+    assert _diagnostic_category(SetupPrerequisiteError('secret')) == 'setup'
+    assert _diagnostic_category(PoolCancelled('secret')) == 'cancelled'
+
+
+def test_prepare_error_has_stage_without_correlation(tmp_path):
+    ctx = multiprocessing.get_context('spawn')
+    events = []
+    broker = SuitePrerequisiteBroker(tmp_path, {'service': OddlyNamedHandler(ctx.Value('i', 0), ctx.Value('i', 0))}, owner_budget=5, event=events.append)
+    descriptor = broker.start()
+    try:
+        with pytest.raises(RuntimeError):
+            borrow_prerequisite(descriptor, 'service', {'account_scope': 'a' * 64}, timeout=5)
+        error = next(event for event in events if event['phase'] == 'error')
+        assert error['stage'] == 'handler_prepare'
+        assert error['category'] == 'unknown'
+        assert 'correlation' not in error
+        assert 'private detail' not in str(events)
+    finally:
+        broker.close(timeout=5)
+
+
+def test_diagnostic_correlation_is_broker_and_scope_specific(tmp_path):
+    ctx = multiprocessing.get_context('spawn')
+    events = [[], []]
+    for i in range(2):
+        (tmp_path / str(i)).mkdir(mode=0o700)
+    brokers = [SuitePrerequisiteBroker(tmp_path / str(i), {'service': Handler(ctx.Value('i', 0), ctx.Value('i', 0))}, owner_budget=5, event=events[i].append) for i in range(2)]
+    try:
+        descriptors = [broker.start() for broker in brokers]
+        for index, scope in [(0, 'a' * 64), (0, 'b' * 64), (1, 'a' * 64)]:
+            lease = borrow_prerequisite(descriptors[index], 'service', {'account_scope': scope}, timeout=5)
+            lease.release()
+        ids = [event['correlation'] for group in events for event in group if event['phase'] == 'prepare']
+        assert len(ids) == len(set(ids)) == 3
+        for group, broker in zip(events, brokers):
+            assert broker._token not in str(group)
+            for scope in ('a' * 64, 'b' * 64):
+                assert scope not in str(group)
+                assert hashlib.sha256(scope.encode()).hexdigest() not in str(group)
+    finally:
+        for broker in brokers:
+            broker.close(timeout=5)
+
+
+def test_capability_encoding_error_keeps_opaque_correlation(tmp_path):
+    ctx = multiprocessing.get_context('spawn')
+    events = []
+
+    class InvalidOwner(Owner):
+        def acquire(self, *, deadline):
+            super().acquire(deadline=deadline)
+            return 'private capability'
+
+    class InvalidHandler(Handler):
+        def prepare(self, request, *, deadline):
+            return hashlib.sha256(request['account_scope'].encode()).hexdigest(), lambda: InvalidOwner(self.starts, self.stops)
+
+    broker = SuitePrerequisiteBroker(tmp_path, {'service': InvalidHandler(ctx.Value('i', 0), ctx.Value('i', 0))}, owner_budget=5, event=events.append)
+    descriptor = broker.start()
+    try:
+        with pytest.raises(RuntimeError):
+            borrow_prerequisite(descriptor, 'service', {'account_scope': 'a' * 64}, timeout=5)
+        prepare = next(event for event in events if event['phase'] == 'prepare')
+        error = next(event for event in events if event['phase'] == 'error')
+        assert error['stage'] == 'capability_encode'
+        assert error['category'] == 'invalid'
+        assert error['correlation'] == prepare['correlation']
+        assert 'private capability' not in str(events)
+    finally:
+        broker.close(timeout=5)

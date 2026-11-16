@@ -143,9 +143,12 @@ def call_progress_bound():
 async def publish_call_progress(node, attempt, request_id, result):
     sink = _call_sink.get()
     if sink is not None:
+        # A schema-function proposal is neither executable tool work nor a
+        # parser-validated answer; the private parser publishes any answer.
+        proposal = result.structured_proposal is not None
         await sink(CallProgress(node, attempt, request_id,
-            ''.join(part.text for part in result.payload.content), result.reasoning_summary or '',
-            tuple((call.name, call.arguments) for call in result.payload.calls)))
+            '' if proposal else ''.join(part.text for part in result.payload.content), result.reasoning_summary or '',
+            () if proposal else tuple((call.name, call.arguments) for call in result.payload.calls)))
 
 
 async def publish_step_progress(node, attempt, phase):
@@ -231,6 +234,8 @@ async def complete_with_progress(provider, request, *, auth=None):
     payload = request.payload
     streaming = 'stream' in getattr(getattr(provider, 'capabilities', None), 'operations', ())
     answer, owner = payload.generation.answer_stream, _call_owner.get()
+    if payload.structured is not None and payload.structured.encoding == 'function_calling':
+        return await provider.acomplete(request, auth=auth)
     if answer is not None and owner is not None and _answer_sink.get() is not None and streaming:
         return await _complete_answer(provider, request, auth, answer, owner)
     if ((delivery is None and _progress_sink.get() is None) or payload.tools or payload.structured is not None

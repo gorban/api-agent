@@ -5,7 +5,7 @@ import re
 import httpx
 
 from api_agent.providers.contracts import ProviderAccessError
-from api_agent.providers.llm import AvailableSelection
+from api_agent.providers.llm import AvailableSelection, StructuredFunctionProfile
 from api_agent.providers.progress import component_timeout
 
 from .budgets import DEFAULT_DISCOVERY_TIMEOUT
@@ -120,10 +120,16 @@ def _catalog(data, subscription, token, *, base_url=None):
             and len(set(supported)) == len(supported)
             and 'tools' in supported and 'tool_choice' in supported)
         features = (('tools',) if tools_supported else ()) + (('reasoning_effort',) if efforts else ()) + (('max_output_tokens',) if limit_supported else ()) + cache_features
+        from .response_policy import _NATIVE_MODELS
+        proposal_supported = ((base_url == _OFFICIAL_BASE and identifier in _NATIVE_MODELS
+                               and (not subscription or identifier == 'gpt-6-luna')))
+        if proposal_supported:
+            features = tuple(dict.fromkeys((*features, 'tools', 'structured', 'structured_function')))
         selections.append(AvailableSelection(identifier, description, display_name=name,
                           version=version if version is not None else inferred_version,
                           max_output_tokens=maximum, context_length=context, family=family,
-                          features=features, reasoning_efforts=efforts))
+                          features=features, reasoning_efforts=efforts,
+                          structured_function_profile=StructuredFunctionProfile(None, 'converter') if proposal_supported else None))
     if len(selections) > 256:
         raise ModelDiscoveryError('unknown', 'GPT model discovery returned too many selections.')
     return tuple(selections)

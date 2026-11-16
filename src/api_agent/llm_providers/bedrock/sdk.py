@@ -32,6 +32,7 @@ def _close_authority_channels(channels, primary):
         primary.add_note('Bedrock authority channel cleanup failed.')
 
 
+
 class SDKTransport:
     def __init__(self, timeout=DEFAULT_INFERENCE_TIMEOUT):
         self.timeout = inference_timeout(timeout)
@@ -106,7 +107,7 @@ class SDKTransport:
         async with component_timeout('Bedrock SDK operation', remaining):
             return await work()
 
-    async def stream(self, operation, payload, *, auth, join=None, on_dispatch=None):
+    async def stream(self, operation, payload, *, auth, join=None, on_dispatch=None, proposal_request=None, proposal_controls=None):
         if os.name != 'posix':
             raise SetupPrerequisiteError('Bedrock SDK process isolation currently requires POSIX.')
         if self._closed:
@@ -152,6 +153,16 @@ class SDKTransport:
                 environment["API_AGENT_BEDROCK_AUTHORITY_FD"] = str(child_channel.fileno())
             else:
                 environment.pop("API_AGENT_BEDROCK_AUTHORITY_FD", None)
+            proposal_control = None
+            if proposal_request is not None:
+                from api_agent.providers.structured_proposals import issue_worker_control
+                proposal_control = issue_worker_control(payload, operation, provider_controls=proposal_controls or {})
+                proposal_parent, proposal_child = socket.socketpair()
+                channels.extend((proposal_parent, proposal_child))
+                proposal_parent.setblocking(False)
+                environment["API_AGENT_BEDROCK_PROPOSAL_FD"] = str(proposal_child.fileno())
+            else:
+                environment.pop("API_AGENT_BEDROCK_PROPOSAL_FD", None)
             async def launch():
                 if self._closed:
                     raise SessionClosedError('Bedrock transport is closed')
@@ -162,7 +173,9 @@ class SDKTransport:
                         sys.executable, str(Path(__file__).with_name('worker.py')),
                         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL, env=environment, limit=MAX_FRAME,
-                        start_new_session=True, pass_fds=(child_channel.fileno(),) if join is not None else ())
+                        start_new_session=True,
+                        pass_fds=((child_channel.fileno(),) if join is not None else ())
+                            + ((proposal_child.fileno(),) if proposal_control is not None else ()))
                 except BaseException as error:
                     for owner in getattr(error, 'retained_owners', ()):
                         if isinstance(owner, OwnedWorker):
@@ -189,6 +202,9 @@ class SDKTransport:
             if join is not None:
                 channels.remove(child_channel)
                 _close_authority_channels((child_channel,), None)
+            if proposal_control is not None:
+                channels.remove(proposal_child)
+                _close_authority_channels((proposal_child,), None)
             if self._closed:
                 raise SessionClosedError('Bedrock transport is closed')
             remaining = budget.remaining
@@ -202,6 +218,11 @@ class SDKTransport:
             process.stdin.write(request)
             await self._timed(process.stdin.drain, budget)
             process.stdin.close()
+            if proposal_control is not None:
+                await self._timed(lambda: proposal_control.send_private(proposal_parent), budget)
+                channels.remove(proposal_parent)
+                _close_authority_channels((proposal_parent,), None)
+                proposal_control = None
             if join is not None:
                 loop = asyncio.get_running_loop()
                 raw_join = bytearray()
@@ -388,8 +409,9 @@ class SDKTransport:
             if primary is None and budget.remaining == 0:
                 raise TimeoutError('Bedrock SDK operation deadline expired')
 
-    async def call(self, operation, payload, *, auth, join=None, on_dispatch=None):
-        results = [value async for value in self.stream(operation, payload, auth=auth, join=join, on_dispatch=on_dispatch)]
+    async def call(self, operation, payload, *, auth, join=None, on_dispatch=None, proposal_request=None, proposal_controls=None):
+        results = [value async for value in self.stream(operation, payload, auth=auth, join=join, on_dispatch=on_dispatch,
+                   **({'proposal_request': proposal_request, 'proposal_controls': proposal_controls} if proposal_request is not None else {}))]
         if len(results) != 1:
             raise ContractError('Invalid Bedrock worker result count')
         return results[0]

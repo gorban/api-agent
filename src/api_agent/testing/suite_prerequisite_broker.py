@@ -23,8 +23,9 @@ import tempfile
 import threading
 import time
 
+from api_agent.providers.contracts import SetupPrerequisiteError
 from api_agent.runtime.short_temp import trusted_short_root
-from api_agent.testing.suite_prerequisite_pool import PoolPending, SuitePrerequisitePool
+from api_agent.testing.suite_prerequisite_pool import PoolCancelled, PoolPending, SuitePrerequisitePool
 
 _LIMIT = 32768
 _DESCRIPTOR = 'suite-prerequisite-broker.json'
@@ -128,6 +129,25 @@ def _gone(sock):
         return True
 
 
+def _diagnostic_category(error):
+    """Classify with fixed vocabulary; never disclose class or message text."""
+    if isinstance(error, TimeoutError):
+        return 'timeout'
+    if isinstance(error, PoolCancelled):
+        return 'cancelled'
+    if isinstance(error, PoolPending):
+        return 'pending'
+    if isinstance(error, SetupPrerequisiteError):
+        return 'setup'
+    if isinstance(error, ValueError):
+        return 'invalid'
+    if isinstance(error, OSError):
+        return 'os'
+    if isinstance(error, RuntimeError):
+        return 'runtime'
+    return 'unknown'
+
+
 class SuitePrerequisiteBroker:
     """Own the pool and a private socket for one pytest controller."""
     def __init__(self, context_directory, handlers, *, owner_budget, event=None, on_failure=None):
@@ -228,6 +248,8 @@ class SuitePrerequisiteBroker:
     def _serve(self, sock):
         started = time.monotonic()
         acquiring = False
+        stage = 'request_validation'
+        correlation = None
         try:
             sock.settimeout(5)
             _peer(sock)
@@ -244,6 +266,7 @@ class SuitePrerequisiteBroker:
                 if self._stopping.is_set():
                     raise RuntimeError('broker is draining')
                 self._preparing += 1
+            stage = 'handler_prepare'
             prepare_deadline = time.monotonic() + self._owner_budget
             try:
                 digest, factory = self._handlers[request['handler']].prepare(
@@ -258,10 +281,13 @@ class SuitePrerequisiteBroker:
             with self._lock:
                 reused = digest in self._known
                 self._known.add(digest)
-            self._emit('prepare', started, reuse=int(reused), miss=int(not reused))
+            correlation = hmac.new(bytes.fromhex(self._token), digest.encode(), 'sha256').hexdigest()[:16]
+            self._emit('prepare', started, reuse=int(reused), miss=int(not reused), correlation=correlation)
             wait = time.monotonic()
+            stage = 'pool_borrow'
             borrower = self._pool.borrow(digest, factory, cancelled=lambda: _gone(sock))
             acquiring = False
+            stage = 'capability_encode'
             lease_id = secrets.token_hex(32)
             try:
                 if type(borrower.value) is not dict:
@@ -277,9 +303,11 @@ class SuitePrerequisiteBroker:
             if disposed:
                 borrower.release()
                 raise RuntimeError('workers already disposed')
-            self._emit('readiness', wait, count=1)
+            self._emit('readiness', wait, count=1, correlation=correlation)
+            stage = 'lease_delivery'
             # Once delivery starts, loss of the connection is not disposal evidence.
             sock.sendall(response)
+            stage = 'lease_release'
             sock.settimeout(None)
             select.select([sock], [], [])
             release = _read(sock, deadline=time.monotonic() + 5)
@@ -290,7 +318,10 @@ class SuitePrerequisiteBroker:
         except Exception as error:
             if acquiring:
                 self._report_failure(error)
-            self._emit('error', started, count=1)
+            detail = {'stage': stage, 'category': _diagnostic_category(error)}
+            if correlation is not None:
+                detail['correlation'] = correlation
+            self._emit('error', started, count=1, **detail)
             try:
                 # The class name names the failure without its content-bearing message.
                 sock.sendall(_encode({'status': 'error', 'error': type(error).__qualname__}))

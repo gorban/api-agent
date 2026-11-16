@@ -1131,6 +1131,7 @@ def run_integration_tests(context, tests, **options):
         return execution
     publication_attempted = False
     published_execution = None
+    cleanup_retry_failed = False
     try:
         if callbacks['on_event'] is not None:
             callbacks['on_event'](RunnerEvent('started'))
@@ -1187,7 +1188,29 @@ def run_integration_tests(context, tests, **options):
                 break
             pending = tuple(test for test in pending
                 if confirmation_outcome([row.status for row in histories[test.id]], allowance)[1])
-        _close_suite_prerequisites(inspections)
+        from api_agent.providers.control import CleanupPendingError
+        from .suite_lock import _cleanup_receipts
+        try:
+            _close_suite_prerequisites(inspections)
+        except CleanupPendingError as pending:
+            owner = getattr(_RUNNER_OPERATION, 'prerequisites', None)
+            # Only this provider's own receipt can be settled by its canonical
+            # close. Other receipts remain independent duties, even if they name
+            # the same owner.
+            if (owner is None or len(pending.owners) != 1 or pending.owners[0] is not owner
+                    or tuple(_cleanup_receipts(pending)) != (pending,)
+                    or any(getattr(pending, name, None) for name in
+                           ('cleanup_pending', 'confirmation_publication_error', 'confirmation_cleanup_errors'))):
+                raise
+            try:
+                _close_suite_prerequisites(inspections)
+            except BaseException as cleanup:
+                cleanup_retry_failed = True
+                pending.confirmation_cleanup_errors = (*getattr(pending, 'confirmation_cleanup_errors', ()), cleanup)
+                raise pending
+            # An open inspection makes the helper return without closing.
+            if not getattr(owner, 'closed', False):
+                raise
         execution = aggregate()
         outcomes = execution.tests
         if callbacks['on_event'] is not None:
@@ -1226,11 +1249,12 @@ def run_integration_tests(context, tests, **options):
             error.execution = published_execution
         retained = tuple(dict.fromkeys([*inspections, *getattr(error, 'inspections', ())]))
         error.inspections = retained
-        cleanup_errors = []
-        try:
-            _close_suite_prerequisites(retained)
-        except BaseException as cleanup:
-            cleanup_errors.append(cleanup)
+        cleanup_errors = list(getattr(error, 'confirmation_cleanup_errors', ()))
+        if not cleanup_retry_failed:
+            try:
+                _close_suite_prerequisites(retained)
+            except BaseException as cleanup:
+                cleanup_errors.append(cleanup)
         for inspection in retained:
             try:
                 inspection.abort()

@@ -691,6 +691,17 @@ def _capture_inference_failure(error, cause_id, *, auth=None, transport_attempt_
 def capture_inference(direction, wire, cause_id, *, auth=None, fallback=False, partial=False, decoded_visible_text_characters=None, unavailable=False, rejected=False):
     """Scrub before retention/IPC; optional evidence cannot affect inference."""
     from .capture import project_values, capture_reason
+    # Always remove sealed/owner state before even private raw retention; the
+    # ordinary content policy still decides whether genuine model I/O is shown.
+    from api_agent.providers.structured_proposals import is_structured_proposal, proposal_capture_projection
+    proposal_wire = (type(wire) is dict and wire.get('version') == 4 and
+                     ('structured_proposal' in wire or
+                      type(wire.get('structured')) is dict and wire['structured'].get('encoding') == 'function_calling'))
+    if is_structured_proposal() or proposal_wire:
+        try:
+            wire = proposal_capture_projection(wire)
+        except Exception:
+            wire, unavailable = {}, True
     collector = _COLLECTOR.get()
     if collector is not None and collector.get('authority_conflict'):
         return

@@ -161,10 +161,13 @@ class ContainerRuntime:
     def inventory(self):
         if self.scope is None:
             return ()
-        identifiers = self._run([
-            "ps", "--all", "--quiet", "--no-trunc",
-            "--filter", "label=api-agent.managed=true",
-        ]).split()
+        identifiers = []
+        for scope_id in dict.fromkeys((self.scope.id, *self.scope.legacy_ids)):
+            identifiers.extend(self._run([
+                "ps", "--all", "--quiet", "--no-trunc",
+                "--filter", "label=api-agent.managed=true",
+                "--filter", f"label=api-agent.scope={scope_id}",
+            ]).split())
         if not identifiers:
             return ()
         if len(set(identifiers)) != len(identifiers) or any(not re.fullmatch('[0-9a-f]{64}', identifier) for identifier in identifiers):
@@ -242,11 +245,14 @@ class ContainerRuntime:
             with guarded_cleanup(self.ownership_directory, self.scope) as leased:
                 if leased.intersection(identifiers):
                     raise ContainerError('Selected containers are in use by an active invocation.')
-                all_ids = self._run(['ps', '--all', '--quiet', '--no-trunc']).split()
-                if (len(set(all_ids)) != len(all_ids)
-                        or any(not re.fullmatch('[0-9a-f]{64}', item) for item in all_ids)):
-                    raise ContainerError('Temporary container inventory cannot be verified.')
-                present = [item for item in identifiers if item in all_ids]
+                present = []
+                for item in identifiers:
+                    matches = self._run(['ps', '--all', '--quiet', '--no-trunc',
+                                         '--filter', f'id={item}']).split()
+                    if matches not in ([], [item]):
+                        raise ContainerError('Temporary container inventory cannot be verified.')
+                    if matches:
+                        present.append(item)
                 records = self._inspect(present) if present else []
                 if (len(records) != len(present) or {row['Id'] for row in records} != set(present)
                         or not all(self._eligible(row, protected) for row in records)):

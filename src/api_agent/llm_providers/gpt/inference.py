@@ -372,6 +372,11 @@ def validate_text_request(*, base_url, access_token, subscription, api_mode, req
     base_url = _endpoint(base_url, access_token, subscription)
     from .response_policy import prepare_response
     prepared, evidence = prepare_response(request, base_url=base_url, api_mode=api_mode, subscription=subscription)
+    if request.payload.structured is not None and request.payload.structured.encoding == 'function_calling':
+        from .response_policy import _NATIVE_MODELS
+        if (base_url != 'https://api.openai.com/v1' or request.selected_llm not in _NATIVE_MODELS
+                or subscription and request.selected_llm != 'gpt-6-luna'):
+            raise ProviderAccessError('unsupported', 'GPT named function proposal is unsupported.')
     from api_agent.llm_providers.response_policy import format_payload
     body = format_payload(request, _payload(prepared, api_mode, subscription, _validate_instances=_validate_instances), evidence)
     if base_url == 'https://api.openai.com/v1' and api_mode == 'responses':
@@ -489,7 +494,15 @@ async def _guard_content(value, access_token, authority=None, *, commit=None, de
         raise _invalid('GPT inference contains protected authentication content.') from None
 
 
-async def _capture_safe_response(value, request_id, access_token, authority, *, partial=False, router_route=False, responses=True):
+def _proposal_capture(value):
+    try:
+        from api_agent.providers.structured_proposals import proposal_capture_projection
+        return proposal_capture_projection(value)
+    except Exception:
+        return None
+
+
+async def _capture_safe_response(value, request_id, access_token, authority, *, partial=False, router_route=False, responses=True, proposal=False):
     """Project and validate provider response before handing it to evidence."""
     from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
     from api_agent.workflows.inference_capture import capture_inference
@@ -505,7 +518,12 @@ async def _capture_safe_response(value, request_id, access_token, authority, *, 
                 EmissionBoundary(ContentPolicy(True)))
     snapshot.register_secret(access_token)
     from .router_reasoning import evidence_payload
-    clean = snapshot.content_export(evidence_payload(value) if router_route else value)
+    source = evidence_payload(value) if router_route else value
+    if proposal:
+        source = _proposal_capture(source)
+        if source is None:
+            return
+    clean = snapshot.content_export(source)
     await _guard_observed(clean, access_token, authority,
         usage=decoded.usage if decoded is not None else None, decoded=decoded,
         reported=value.get('usage'), responses=responses,
@@ -650,6 +668,11 @@ def _admission_rejection(status, data, subscription):
     return True
 
 
+def _proposal_mode(request):
+    definition = request.payload.structured
+    return definition is not None and definition.encoding == 'function_calling'
+
+
 async def _complete_attempt(*, client, base_url, headers, body, subscription, api_mode,
                             request, access_token, budget, dispatch, authority=None):
     """Own and close one HTTP response before the caller decides to retry."""
@@ -662,7 +685,11 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
     await _guard_content(body, access_token, authority)
     from .router_reasoning import evidence_payload
     router_route = base_url == 'https://openrouter.ai/api/v1'
-    capture_payload(request, evidence_payload(body, source='request') if router_route else body, evidence, auth=access_token)
+    capture_body = evidence_payload(body, source='request') if router_route else body
+    if _proposal_mode(request):
+        capture_body = _proposal_capture(capture_body)
+    if capture_body is not None:
+        capture_payload(request, capture_body, evidence, auth=access_token)
     if budget.remaining == 0:
         raise TimeoutError('GPT inference deadline expired before dispatch.')
     # Capture can register credentials; check again after it completes.
@@ -702,10 +729,14 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                 if limit_error is not None:
                     await _guard_error(limit_error, access_token, authority)
                     raise limit_error
-                if type(data) is dict:
+                if type(data) is dict and not _proposal_mode(request):
                     await _capture_safe_response(data, request.request_id, access_token, authority, router_route=router_route, responses=api_mode == 'responses')
                 error = _rejection(response.status_code, data, request_id, access_token,
                                    _authentication_type(response.headers.get('www-authenticate')), responses=api_mode == 'responses')
+                if _proposal_mode(request):
+                    error.message = 'GPT inference was rejected.'
+                    error.args = (error.message,)
+                    error.code = error.type = error.request_id = None
                 await _guard_error(error, access_token, authority)
                 if _admission_rejection(response.status_code, data, subscription):
                     error.execution = 'not_started'
@@ -732,7 +763,7 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
                 result = replace(_sse(raw, access_token, request_id, terminals.append), response=evidence)
             except ProviderAccessError as error:
                 for terminal in terminals:
-                    await _capture_safe_response(terminal, request.request_id, access_token, authority, partial=True)
+                    await _capture_safe_response(terminal, request.request_id, access_token, authority, partial=True, proposal=_proposal_mode(request))
                 await _guard_error(error, access_token, authority)
                 raise
             from api_agent.providers.generation_attempts import snapshot_transport_result
@@ -740,7 +771,7 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
             await _guard_observed(result_to_wire(result), access_token, authority, usage=result.usage, decoded=result,
                                   **normalized_guard)
             for terminal in terminals:
-                await _capture_safe_response(terminal, request.request_id, access_token, authority, partial=True)
+                await _capture_safe_response(terminal, request.request_id, access_token, authority, partial=True, proposal=_proposal_mode(request))
             snapshot_transport_result(result)
             return await async_validate_result(request, result, access_token)
         data = _json(raw)
@@ -761,9 +792,12 @@ async def _complete_attempt(*, client, base_url, headers, body, subscription, ap
         result = _result(data, api_mode == 'responses', access_token, openrouter=router_native)
         from api_agent.providers.inference import result_to_wire
         from api_agent.workflows.inference_capture import capture_inference
+        captured = evidence_payload(data) if router_route else data
+        if _proposal_mode(request):
+            captured = _proposal_capture(captured)
         await _guard_observed(data, access_token, authority, usage=result.usage, decoded=result,
             **({'router_native': True, 'native_normalized': False} if router_native else {}),
-            commit=lambda: capture_inference('output', evidence_payload(data) if router_route else data, request.request_id, auth=access_token))
+            commit=(lambda: capture_inference('output', captured, request.request_id, auth=access_token)) if captured is not None else None)
         if base_url == 'https://openrouter.ai/api/v1':
             usage = _usage(data.get('usage'), api_mode == 'responses', router=True)
             try:

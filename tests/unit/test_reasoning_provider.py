@@ -63,7 +63,7 @@ def test_catalog_exposes_verified_capability_only():
     selections = _catalog({'data':[{'id':model} for model in (*MODELS, 'gpt-unknown')]}, False, 'synthetic-token', base_url=BASE)
     assert selections[0].reasoning_efforts == ('off','low','medium','high')
     assert selections[2].reasoning_efforts == ('low','medium','high')
-    assert selections[0].features == ('reasoning_effort', 'cache_policy')
+    assert selections[0].features == ('reasoning_effort', 'cache_policy', 'tools', 'structured', 'structured_function')
     assert selections[-1].reasoning_efforts is None
 
 
@@ -174,7 +174,7 @@ def test_56_official_wire_and_catalog(model, effort, mode):
     selection, = _catalog({'data': [{'id': model}]}, False,
         'synthetic-token', base_url=BASE)
     assert selection.reasoning_efforts == ('off', 'low', 'medium', 'high')
-    assert selection.features == ('reasoning_effort', 'cache_policy')
+    assert selection.features == ('reasoning_effort', 'cache_policy', 'tools', 'structured', 'structured_function')
     _, body = validate_text_request(base_url=BASE, access_token='synthetic-token',
         subscription=False, api_mode=mode, request=request(selection.selected_llm, effort))
     assert body['model'] == model

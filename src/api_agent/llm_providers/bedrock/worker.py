@@ -11,6 +11,80 @@ DEFAULT_INFERENCE_TIMEOUT = 900
 MAX_INFERENCE_TIMEOUT = 3600
 
 
+def validated_proposal_terminal(result):
+    """Re-admit a real proposal using authenticated, worker-owned request state."""
+    from dataclasses import replace
+    from api_agent.providers.contracts import ContractError
+    from api_agent.providers.llm import StructuredProposal
+    from api_agent.providers.rich_inference import validate_result
+    from api_agent.providers.structured_proposals import current_structured_request
+    request = current_structured_request()
+    if request is None or request.payload.structured is None:
+        raise ContractError('Missing structured proposal authority')
+    calls = result.payload.calls
+    if result.outcome in ('refused', 'length') and not calls and result.structured_proposal is None:
+        return validate_result(request, result)
+    if result.outcome != 'tool_calls' or len(calls) != 1 or calls[0].name != request.payload.structured.name:
+        error = ContractError('Invalid structured proposal output')
+        error.usage = result.usage
+        raise error
+    marked = replace(result, structured_proposal=StructuredProposal(calls[0]))
+    return validate_result(request, marked)
+
+
+def validate_proposal_body(canonical, arguments, *, native, response, endpoint, controls=None):
+    """Re-encode and compare every provider-visible control and message."""
+    if canonical is None or type(controls) is not dict:
+        raise ValueError()
+    budget_keys = {'LLM_REASONING_LOW_TOKENS', 'LLM_REASONING_MEDIUM_TOKENS', 'LLM_REASONING_HIGH_TOKENS'}
+    if (set(controls) - (budget_keys | {'reasoning_format'})
+            or any(type(value) is not int or not 1024 <= value <= 1048576
+                   for key, value in controls.items() if key in budget_keys)
+            or 'reasoning_format' in controls and controls['reasoning_format'] not in ('auto', 'tagged', 'literal')):
+        raise ValueError()
+    budgets = {key: value for key, value in controls.items() if key in budget_keys}
+    if native:
+        from api_agent.llm_providers.bedrock.converse import encode
+        expected = encode(canonical, 'converse', endpoint=endpoint, config=budgets)
+    else:
+        from api_agent.llm_providers.bedrock.mantle import encode
+        mode = 'responses' if response else 'completions'
+        expected = encode(canonical, mode, endpoint=endpoint)
+    # Python container equality treats True, 1 and 1.0 as equal. Compare
+    # bounded, unambiguous JSON encodings instead so wire types stay distinct.
+    try:
+        actual_json = json.dumps(json_value(arguments), sort_keys=True, ensure_ascii=True,
+                                 separators=(',', ':'), allow_nan=False)
+        expected_json = json.dumps(json_value(expected), sort_keys=True, ensure_ascii=True,
+                                   separators=(',', ':'), allow_nan=False)
+    except (TypeError, ValueError, RecursionError, UnicodeError):
+        raise ValueError('Invalid structured proposal body') from None
+    if actual_json != expected_json:
+        raise ValueError('Structured proposal body differs from its request')
+
+
+def validate_proposal_transport(canonical, payload, operation, controls):
+    from api_agent.llm_providers.bedrock.catalog import completions_reasoning_format, route
+    if canonical is None or type(payload) is not dict or type(controls) is not dict:
+        raise ValueError()
+    native = operation in ('converse', 'converse_stream')
+    response = operation in ('responses', 'responses_stream')
+    mode = 'converse' if native else 'responses' if response else 'completions'
+    endpoint = payload.get('endpoint', 'mantle')
+    if payload.get('prefix') != route(canonical.selected_llm, mode, endpoint):
+        raise ValueError()
+    if mode != 'converse' and set(controls) - {'reasoning_format'}:
+        raise ValueError()
+    if mode == 'completions':
+        expected = completions_reasoning_format(controls.get('reasoning_format', 'auto'), endpoint, mode, canonical.selected_llm)
+        if payload.get('reasoning_format', 'auto') != expected:
+            raise ValueError()
+    elif 'reasoning_format' in controls or 'reasoning_format' in payload:
+        raise ValueError()
+    validate_proposal_body(canonical, payload.get('body'), native=native, response=response,
+                           endpoint=endpoint, controls=controls)
+
+
 def inference_timeout(value):
     if (type(value) not in (int, float)
             or not 0 < value <= MAX_INFERENCE_TIMEOUT):
@@ -123,7 +197,7 @@ def qualified_schema(value, model, prefix, *, endpoint='mantle', response=False)
         raise ValueError()
     schema(json.dumps(definition['schema'], allow_nan=False), True)
 
-def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_client, http_factory=sdk_http, join=None, runtime_client_factory=None, boto_client_factory=None):
+def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_client, http_factory=sdk_http, join=None, runtime_client_factory=None, boto_client_factory=None, proposal_controls=None):
     started = time.monotonic()
     client = body = http = None
     execution = 'not_started'
@@ -137,6 +211,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
     model_scrub = None
     inference_observed = False
     stream_decoder_active = False
+    proposal_mode = False
     try:
         json_value(request)
         if set(request) != {'operation', 'auth', 'payload', 'timeout'} or request['operation'] not in ALL_OPERATIONS:
@@ -144,6 +219,8 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
         timeout = inference_timeout(request['timeout'])
         deadline = started + timeout
         operation, payload = request['operation'], request['payload']
+        from api_agent.providers.structured_proposals import is_structured_proposal
+        proposal_mode = is_structured_proposal()
         reasoning_format = payload.get('reasoning_format', 'auto') if type(payload) is dict else 'auto'
         if reasoning_format not in ('auto', 'tagged', 'literal'):
             raise ValueError()
@@ -170,13 +247,59 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 raise ValueError()
             response = operation.startswith('responses')
             allowed = ({'modelId', 'messages', 'system', 'inferenceConfig', 'toolConfig', 'outputConfig', 'additionalModelRequestFields'}
-                       if native else {'model', 'input', 'tools', 'temperature', 'max_output_tokens', 'store', 'reasoning', 'text', 'include'}
-                       if response else {'model', 'messages', 'tools', 'temperature', 'max_tokens', 'reasoning_effort', 'response_format'})
+                       if native else {'model', 'input', 'tools', 'tool_choice', 'temperature', 'max_output_tokens', 'store', 'reasoning', 'text', 'include'}
+                       if response else {'model', 'messages', 'tools', 'tool_choice', 'temperature', 'max_tokens', 'reasoning_effort', 'response_format'})
             if (not set(arguments) <= allowed
                     or 'store' in arguments and arguments['store'] is not False):
                 raise ValueError()
             if 'include' in arguments and arguments['include'] != ['reasoning.encrypted_content']:
                 raise ValueError()
+            choice_present = ('tool_choice' in arguments if not native else
+                              type(arguments.get('toolConfig')) is dict and 'toolChoice' in arguments['toolConfig'])
+            if choice_present != proposal_mode:
+                raise ValueError()
+            if native and proposal_mode:
+                config = arguments['toolConfig']
+                if set(config) != {'tools', 'toolChoice'} or type(config['tools']) is not list or len(config['tools']) != 1:
+                    raise ValueError()
+                tool, = config['tools']
+                if type(tool) is not dict or set(tool) != {'toolSpec'} or type(tool['toolSpec']) is not dict:
+                    raise ValueError()
+                spec = tool['toolSpec']
+                if (not {'name', 'inputSchema'} <= set(spec) or set(spec) - {'name', 'inputSchema', 'description', 'strict'}
+                        or type(spec['name']) is not str or not spec['name']
+                        or type(spec['inputSchema']) is not dict or set(spec['inputSchema']) != {'json'}
+                        or type(spec['inputSchema']['json']) is not dict
+                        or 'description' in spec and type(spec['description']) is not str
+                        or 'strict' in spec and type(spec['strict']) is not bool
+                        or config['toolChoice'] != {'tool': {'name': spec['name']}}):
+                    raise ValueError()
+            # Additional shape check, not a substitute for the authenticated
+            # owner proof required for proposal/replay at the worker boundary.
+            if not native and 'tool_choice' in arguments:
+                tools = arguments.get('tools')
+                if type(tools) is not list or len(tools) != 1 or type(tools[0]) is not dict:
+                    raise ValueError()
+                item = tools[0]
+                if response:
+                    spec = {key: value for key, value in item.items() if key != 'type'}
+                else:
+                    if set(item) != {'type', 'function'} or type(item['function']) is not dict:
+                        raise ValueError()
+                    spec = item['function']
+                if (item.get('type') != 'function' or not {'name', 'parameters'} <= set(spec) or set(spec) - {'name', 'parameters', 'description', 'strict'}
+                        or type(spec.get('name')) is not str or not spec['name']
+                        or type(spec.get('parameters')) is not dict
+                        or 'description' in spec and type(spec['description']) is not str
+                        or 'strict' in spec and type(spec['strict']) is not bool):
+                    raise ValueError()
+                expected = ({'type': 'function', 'name': spec['name']} if response
+                            else {'type': 'function', 'function': {'name': spec['name']}})
+                if arguments['tool_choice'] != expected:
+                    raise ValueError()
+            if proposal_mode:
+                from api_agent.providers.structured_proposals import current_structured_request
+                validate_proposal_transport(current_structured_request(), payload, operation, proposal_controls)
             if endpoint == 'runtime':
                 from api_agent.llm_providers.bedrock.catalog import selection
                 selected = selection(arguments.get('modelId') if native else arguments.get('model'),
@@ -304,9 +427,15 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                         raise failure
                     raise ValueError()
                 for frame in decoder.feed(value):
-                    emit({'event': frame})
+                    if not proposal_mode:
+                        emit({'event': frame})
             for frame in decoder.finish():
-                emit({'event': frame})
+                if not proposal_mode:
+                    emit({'event': frame})
+                elif frame.get('kind') == 'completed':
+                    from api_agent.providers.inference import result_from_wire, result_to_wire
+                    result = validated_proposal_terminal(result_from_wire(frame['result']))
+                    emit({'event': {'kind': 'completed', 'result': result_to_wire(result)}})
         else:
             inference_observed = True
             if native:
@@ -386,6 +515,8 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     raise
                 try:
                     guard_result(decoded, secrets)
+                    if proposal_mode:
+                        decoded = validated_proposal_terminal(decoded)
                 except Exception:
                     decode_failure = 'response_safety_rejected'
                     failed_observation = {'version':1, 'response_validation':'rejected'}
@@ -418,9 +549,9 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
             if native and operation.endswith('_stream'):
                 from api_agent.providers.inference import result_to_wire
                 text = ''.join(part.text for part in decoded.payload.content)
-                if text:
+                if text and not proposal_mode:
                     emit({'event': {'kind': 'text', 'text': text}})
-                if decoded.reasoning_summary:
+                if decoded.reasoning_summary and not proposal_mode:
                     emit({'event': {'kind': 'reasoning_summary', 'text': decoded.reasoning_summary}})
                 emit({'event': {'kind': 'completed', 'result': result_to_wire(decoded)}})
             else:
@@ -497,7 +628,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 and type(error.response.get('Error')) is dict
                 and error.response['Error'].get('Code') == 'ModelStreamErrorException'):
             frame['model_stream_error'] = True
-        if native and joined and execution == 'possibly_executed' and decode_failure is None:
+        if not proposal_mode and native and joined and execution == 'possibly_executed' and decode_failure is None:
             aws_response = getattr(error, 'response', None)
             if type(aws_response) is dict and 'Error' in aws_response:
                 from api_agent.llm_providers.bedrock.runtime_worker import aws_error
@@ -505,7 +636,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                     frame['aws_error'] = aws_error(aws_response, secrets)
                 except Exception:
                     frame['aws_error_rejected'] = True
-        if not native and joined and execution == 'possibly_executed' and decode_failure is None:
+        if not proposal_mode and not native and joined and execution == 'possibly_executed' and decode_failure is None:
             sdk_body = getattr(error, 'body', None)
             if sdk_body is not None:
                 try:
@@ -526,7 +657,7 @@ def execute(request, emit, *, session_factory=sdk_session, client_factory=sdk_cl
                 frame['diagnostics'] = failed_observation
         # Only an observed JSON response, checked against the same frozen
         # credentials already joined by this call, can cross the process boundary.
-        if joined and execution == 'possibly_executed' and frame.get('aws_error_rejected') is not True:
+        if not proposal_mode and joined and execution == 'possibly_executed' and frame.get('aws_error_rejected') is not True:
             raw_response = getattr(error, 'provider_response', None)
             if raw_response is None:
                 raw_response = getattr(error, 'body', None)
@@ -604,10 +735,41 @@ def main(input_stream=None, output_stream=None):
                 if channel.recv(1) != b"1":
                     raise ValueError()
                 return union
-        if descriptor is None:
-            execute(json.loads(raw), emit)
+        decoded = json.loads(raw)
+        proposal_descriptor = os.environ.pop("API_AGENT_BEDROCK_PROPOSAL_FD", None)
+        if proposal_descriptor is None:
+            execute(decoded, emit, **({'join': join} if descriptor is not None else {}))
         else:
-            execute(json.loads(raw), emit, join=join)
+            from api_agent.providers.structured_proposals import StructuredWorkerAdmission
+            with socket.socket(fileno=int(proposal_descriptor)) as channel:
+                channel.settimeout(30)
+                incoming = bytearray()
+                while not incoming.endswith(b"\n"):
+                    chunk = channel.recv(min(65536, MAX_FRAME + 1 - len(incoming)))
+                    if not chunk:
+                        raise ValueError()
+                    incoming.extend(chunk)
+                    if len(incoming) > MAX_FRAME:
+                        raise ValueError()
+            control = json.loads(incoming)
+            if type(control) is not dict or set(control) != {'key', 'row', 'proof', 'controls'}:
+                raise ValueError()
+            key = bytes.fromhex(control['key'])
+            authority = StructuredWorkerAdmission(key)
+            try:
+                from api_agent.llm_providers.bedrock.catalog import selection
+                operation = decoded['operation']
+                if operation not in ('converse', 'converse_stream', 'responses', 'responses_stream', 'completions', 'completions_stream'):
+                    raise ValueError()
+                mode = ('converse' if operation.startswith('converse') else
+                        'responses' if operation.startswith('responses') else 'completions')
+                endpoint = decoded['payload'].get('endpoint', 'mantle')
+                model = control['row']['selected_llm']
+                selected = selection(model, mode, endpoint=endpoint)
+                with authority.admit(control['row'], decoded['payload'], operation, control['proof'], selection=selected, provider_controls=control['controls']):
+                    execute(decoded, emit, proposal_controls=control['controls'], **({'join': join} if descriptor is not None else {}))
+            finally:
+                authority.close()
     except Exception:
         emit({'error': 'protocol'})
 

@@ -14,6 +14,41 @@ from .sdk import SDKTransport
 from .worker import DEFAULT_INFERENCE_TIMEOUT, inference_timeout
 
 
+
+def _proposal(request, result):
+    definition = request.payload.structured
+    if (definition is not None and definition.encoding == 'function_calling'
+            and result.outcome == 'tool_calls' and len(result.payload.calls) == 1
+            and result.payload.calls[0].name == definition.name):
+        from api_agent.providers.llm import StructuredProposal
+        return replace(result, structured_proposal=StructuredProposal(result.payload.calls[0]))
+    return result
+
+
+def _proposal_mode(request):
+    return request.payload.structured is not None and request.payload.structured.encoding == 'function_calling'
+
+def _proposal_capture(value):
+    try:
+        from api_agent.providers.structured_proposals import proposal_capture_projection
+        return proposal_capture_projection(value)
+    except Exception:
+        return None
+
+
+def _proposal_controls(config, request, api_mode):
+    from .converse_controls import kind
+    effort = request.payload.generation.reasoning_effort
+    if api_mode == 'completions':
+        return {'reasoning_format': config.get('BEDROCK_COMPLETIONS_REASONING_FORMAT', 'auto')}
+    if api_mode != 'converse' or kind(request.selected_llm) not in ('budget', 'hybrid') or effort in (None, '', 'off'):
+        return {}
+    keys = ('LLM_REASONING_LOW_TOKENS', 'LLM_REASONING_MEDIUM_TOKENS', 'LLM_REASONING_HIGH_TOKENS')
+    return {key: config[key] for key in keys if key in config}
+
+
+
+
 class _HeldLease:
     """An evidence lease that also ends the credential hold taken with it."""
     def __init__(self, lease, hold):
@@ -232,7 +267,7 @@ class BedrockProvider:
         prepared = self._effective_request(prepared)
         from .response_policy import qualified_native_responses
         if (stream and self.endpoint == 'runtime' and self.api_mode != 'converse'
-                and prepared.payload.structured is not None
+                and prepared.payload.structured is not None and not _proposal_mode(prepared)
                 and not qualified_native_responses(prepared, self.api_mode, self.endpoint)):
             raise OperationalError('unsupported')
         catalog.selection(prepared.selected_llm, self.api_mode, self.endpoint).validate(prepared)
@@ -245,6 +280,9 @@ class BedrockProvider:
         self._join_active_authority()
         self._ensure_authority()
         request = self._effective_request(request)
+        if _proposal_mode(request):
+            from api_agent.providers.structured_proposals import admit_effective_structured_request
+            admit_effective_structured_request(request)
         self.validate_request(request)
         from .mantle import RESPONSE_CODES
         if self.api_mode == 'converse':
@@ -280,7 +318,11 @@ class BedrockProvider:
                     raise TimeoutError('Bedrock deadline expired before dispatch.')
                 def dispatch():
                     nonlocal dispatched
-                    capture_payload(request, payload['body'], evidence, auth=auth)
+                    capture_body = payload['body']
+                    if _proposal_mode(request):
+                        capture_body = _proposal_capture(capture_body)
+                    if capture_body is not None:
+                        capture_payload(request, capture_body, evidence, auth=auth)
                     if budget.remaining == 0:
                         raise TimeoutError('Bedrock deadline expired before dispatch.')
                     if evidence is not None:
@@ -289,21 +331,26 @@ class BedrockProvider:
                 try:
                     response = await self.transport.call(self.api_mode, payload,
                         auth=native_scope.wrap_auth(auth),
-                        join=self._join_credentials, on_dispatch=dispatch)
+                        join=self._join_credentials, on_dispatch=dispatch,
+                        **({'proposal_request': prepared, 'proposal_controls': _proposal_controls(self.config, prepared, self.api_mode)} if _proposal_mode(prepared) else {}))
                     from api_agent.workflows.inference_capture import capture_inference
                     codec_options = ({'reasoning_format': reasoning_format}
                                      if self.api_mode == 'completions' else {})
                     result = replace(decode(response, self.api_mode, selected_llm=request.selected_llm, endpoint=self.endpoint, **codec_options), response=evidence)
-                    result = native_scope.seal(result)
-                    capture_inference('output', {'provider_response': response}, request.request_id, auth=auth,
-                                      decoded_visible_text_characters=sum(len(part.text) for part in result.payload.content))
+                    result = _proposal(request, native_scope.seal(result))
+                    captured = {'provider_response': response}
+                    if _proposal_mode(request):
+                        captured = _proposal_capture(captured)
+                    if captured is not None:
+                        capture_inference('output', captured, request.request_id, auth=auth,
+                                          decoded_visible_text_characters=sum(len(part.text) for part in result.payload.content))
                     from api_agent.providers.generation_attempts import snapshot_transport_result
                     snapshot_transport_result(result)
                     return await async_validate_result(request, result)
                 except (OperationalError, TimeoutError, asyncio.CancelledError) as error:
                     failure_usage = error_usage(error)
                     raw_response = getattr(error, 'provider_response', None)
-                    if type(raw_response) is dict:
+                    if type(raw_response) is dict and not _proposal_mode(request):
                         from api_agent.workflows.inference_capture import capture_inference
                         capture_inference('output', {'provider_response': raw_response}, request.request_id, auth=auth,
                                           rejected=getattr(error, 'code', None) in RESPONSE_CODES)
@@ -325,6 +372,9 @@ class BedrockProvider:
         self._join_active_authority()
         self._ensure_authority()
         request = self._effective_request(request)
+        if _proposal_mode(request):
+            from api_agent.providers.structured_proposals import admit_effective_structured_request
+            admit_effective_structured_request(request)
         self.validate_request(request, stream=True)
         if self.api_mode == 'converse':
             from .converse import encode
@@ -348,7 +398,8 @@ class BedrockProvider:
         failure_usage = None
         dispatched = False
         try:
-            decoder = ParentStream(self.api_mode, selected_llm=request.selected_llm)
+            decoder = ParentStream(self.api_mode, selected_llm=request.selected_llm,
+                                   **({'proposal': True} if _proposal_mode(request) else {}))
             async with component_timeout('Bedrock streaming completion', self.inference_timeout) as budget:
                 payload = {'prefix': catalog.route(request.selected_llm, self.api_mode, self.endpoint),
                            'body': format_payload(request, encode(prepared, self.api_mode, endpoint=self.endpoint,
@@ -366,7 +417,11 @@ class BedrockProvider:
                             final_body['stream_options'] = {'include_usage': True}
                         else:
                             final_body['store'] = False
-                    capture_payload(request, final_body, evidence, auth=auth)
+                    capture_body = final_body
+                    if _proposal_mode(request):
+                        capture_body = _proposal_capture(capture_body)
+                    if capture_body is not None:
+                        capture_payload(request, capture_body, evidence, auth=auth)
                     if budget.remaining == 0:
                         raise TimeoutError('Bedrock stream deadline expired before dispatch.')
                     if evidence is not None:
@@ -374,7 +429,8 @@ class BedrockProvider:
                     dispatched = True
                 stream = self.transport.stream(self.api_mode + '_stream', payload,
                     auth=native_scope.wrap_auth(auth),
-                    join=self._join_credentials, on_dispatch=dispatch)
+                    join=self._join_credentials, on_dispatch=dispatch,
+                    **({'proposal_request': prepared, 'proposal_controls': _proposal_controls(self.config, prepared, self.api_mode)} if _proposal_mode(prepared) else {}))
             async with aclosing(stream):
                 while True:
                     if budget.remaining == 0:
@@ -389,24 +445,29 @@ class BedrockProvider:
                         except (OperationalError, TimeoutError, asyncio.CancelledError) as error:
                             failure_usage = error_usage(error)
                             raw_response = getattr(error, 'provider_response', None)
-                            if type(raw_response) is dict:
+                            if type(raw_response) is dict and not _proposal_mode(request):
                                 from api_agent.workflows.inference_capture import capture_inference
                                 capture_inference('output', {'provider_response': raw_response}, request.request_id, auth=auth)
                             record_response_failure(error)
                             raise
                         normalized_events = decoder.feed(event)
-                    for normalized in normalized_events:
-                        yield normalized
+                    if not _proposal_mode(request):
+                        for normalized in normalized_events:
+                            yield normalized
             if budget.remaining == 0:
                 raise TimeoutError('Bedrock stream deadline exceeded.')
             async with component_timeout('Bedrock stream result', budget.remaining):
                 result = await async_validate_result(request,
-                    native_scope.seal(replace(decoder.finish(), response=evidence)))
+                    _proposal(request, native_scope.seal(replace(decoder.finish(), response=evidence))))
             from api_agent.providers.inference import result_to_wire
             from api_agent.workflows.inference_capture import capture_inference
-            capture_inference('output', result_to_wire(result), request.request_id,
-                              auth=auth, fallback=True, partial=True)
-            for call in result.payload.calls:
+            captured = result_to_wire(result)
+            if _proposal_mode(request):
+                captured = _proposal_capture(captured)
+            if captured is not None:
+                capture_inference('output', captured, request.request_id,
+                                  auth=auth, fallback=True, partial=True)
+            for call in (() if _proposal_mode(request) else result.payload.calls):
                 yield StreamEvent(call, kind='tool_call')
             yield StreamEvent(result, kind='completed')
         except (OperationalError, TimeoutError, asyncio.CancelledError) as error:

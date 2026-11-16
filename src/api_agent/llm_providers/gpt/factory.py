@@ -97,6 +97,7 @@ class GPTProvider:
     def __init__(self, config, *, inspection=None, emissions=None):
         self.inspection = inspection
         self._reasoning_catalog = {}
+        self._proposal_catalog = set()
         self.emissions = emissions
         self._credential_setup_started = False
         from api_agent.telemetry.accounting import compatibility
@@ -108,7 +109,7 @@ class GPTProvider:
         # including calls made with newly allocated HTTP clients.
         self.cache_session_id = str(uuid4())
         self.capabilities = ProviderCapabilities(kind="llm", operations=("describe", "complete"),
-                                                 features=("cache_policy", "structured", "tools", "reasoning_effort", "display_reasoning") if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy", "structured", "tools", "reasoning_effort", "display_reasoning"))
+                                                 features=("cache_policy", "structured", "structured_function", "tools", "reasoning_effort", "display_reasoning") if self.auth_mode == "subscription" else ("max_output_tokens", "cache_policy", "structured", "structured_function", "tools", "reasoning_effort", "display_reasoning"))
         self.cache_policy = config.get('LLM_CACHE_POLICY')
         self.reasoning_effort = config.get('LLM_REASONING_EFFORT')
         self.api_mode = config.get("GPT_API_MODE", "responses" if self.auth_mode == "subscription" else "completions")
@@ -373,6 +374,7 @@ class GPTProvider:
                 selections = await discover_selections(client=client, base_url=base, access_token=auth,
                                                   subscription=self.auth_mode == "subscription", authority=self.emissions,
                                                   timeout=self.discovery_timeout)
+            self._proposal_catalog = {row.selected_llm for row in selections if 'structured_function' in row.features}
             if base == 'https://openrouter.ai/api/v1':
                 self._reasoning_catalog = {row.selected_llm: row.reasoning_efforts for row in selections}
             from dataclasses import replace

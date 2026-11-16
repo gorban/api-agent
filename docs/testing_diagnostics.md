@@ -49,6 +49,28 @@ when that close fails. Older events without the flag do not establish completion
 Other suite cleanup duties can still remain after the broker closes; retain the
 launcher's final cleanup outcome as the overall authority.
 
+New prerequisite `error` events retain a fixed `stage` and `category` without
+exception messages, class names, handler names or configuration. When preparation
+produces a resource key, `prepare`, `readiness` and `error` events also carry an
+opaque, broker-keyed `correlation`. It identifies that resource key within one
+broker, including across invalidation; it is not an attempt, request or owner
+generation ID and cannot join separate brokers. Earlier preparation failures
+have no resource correlation. These acquisition fields do not classify cleanup
+failures.
+
+A `prepare` event with `reuse: 1` means the key was seen before, not that its
+owner became ready. A failed owner remains failed until trusted invalidation
+confirms its disposal. Repeated errors for one correlation may therefore share
+one acquisition failure. Inspect its first failed stage before rerunning;
+clearing the error or pruning containers is not evidence of safe disposal.
+
+Native recovery attempts independently verified states even when another state
+remains pending. It reports the original remaining failure, or groups multiple
+failures, after those attempts. Worker-disposal and per-state command-quiescence
+checks still apply. Partial cleanup does not close the owner or authorize removal
+of retained recovery storage; an uncertain command never gains a completion
+acknowledgement through another state's successful cleanup.
+
 ## 2. Select the exact attempt, then expand scoped evidence
 
 For finalized recorded E2E runs, logical outcomes live in

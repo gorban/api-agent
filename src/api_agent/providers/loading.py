@@ -65,11 +65,12 @@ class _ReturnedAwaitable:
 
 async def _validate_model(implementation, request, auth):
     maximum = request.payload.generation.max_output_tokens
-    if maximum is None and not any(message.cache_boundary is not None for message in request.payload.messages):
+    proposal = request.payload.structured is not None and request.payload.structured.encoding == 'function_calling'
+    if maximum is None and not proposal and not any(message.cache_boundary is not None for message in request.payload.messages):
         return None
     describe = getattr(implementation, 'adescribe', None)
     if not callable(describe):
-        if maximum is None:
+        if maximum is None and not proposal:
             return None
         raise OperationalError('unsupported')
     from .rich_inference import resolve_catalog_selection
@@ -80,6 +81,7 @@ class _DeferredStream:
     def __init__(self, view, request, auth):
         self.view, self.request, self.auth = view, request, auth
         self.iterator = None
+        self.selection = None
         self.closed = False
         if view._owner is not None:
             view._owner._generation_streams.add(self)
@@ -103,14 +105,28 @@ class _DeferredStream:
         if self.closed:
             raise StopAsyncIteration
         if self.iterator is None:
+            from .structured_proposals import current_verified_replay
+            if self.request.proposal_replay is not None and not current_verified_replay():
+                raise ProviderError('structured_replay_unverified')
             from .inference import async_request_to_wire
             await async_request_to_wire(self.request)
             from .cache_policy import validate_provider_request
             validate_provider_request(self.view._implementation, self.request)
             selection = await _validate_model(self.view._implementation, self.request, self.auth)
-            self.iterator = self.view._open_stream(self.request, auth=self.auth, selection=selection)
+            from contextlib import nullcontext
+            self.selection = selection
+            proposal = self.request.payload.structured
+            if proposal is not None and proposal.encoding == 'function_calling' and self.view._owner is None:
+                raise ProviderError('structured_proposal_owner_missing')
+            scope = self.view._owner._structured_admission.bind(self.view._owner, self.request, selection) if proposal is not None and proposal.encoding == 'function_calling' else nullcontext()
+            with scope:
+                self.iterator = self.view._open_stream(self.request, auth=self.auth, selection=selection)
         try:
-            return await self.iterator.__anext__()
+            from contextlib import nullcontext
+            proposal = self.request.payload.structured
+            scope = self.view._owner._structured_admission.bind(self.view._owner, self.request, self.selection) if proposal is not None and proposal.encoding == 'function_calling' else nullcontext()
+            with scope:
+                return await self.iterator.__anext__()
         except StopAsyncIteration:
             await self.aclose()
             raise
@@ -121,6 +137,7 @@ class _DeferredStream:
             await self.iterator.aclose()
         self.iterator = None
         self.request = self.auth = None
+        self.selection = None
         if self.view._owner is not None:
             self.view._owner._generation_streams.discard(self)
 
@@ -136,6 +153,10 @@ class _ValidatedStream:
         from .llm import StreamEvent
         from .rich_inference import async_validate_result
         event = await self.iterator.__anext__()
+        proposal = self.request.payload.structured
+        if proposal is not None and proposal.encoding == 'function_calling':
+            if not isinstance(event, StreamEvent) or not event.final:
+                raise ProviderError('structured_proposal_stream_invalid')
         if isinstance(event, StreamEvent) and event.final:
             await async_validate_result(self.request, event.payload, selection=self.selection)
         return event
@@ -198,6 +219,9 @@ class _StreamView:
     def astream(self, request, *, auth=None):
         if self._owner is not None:
             self._owner._generation_check()
+        proposal = request.payload.structured
+        if proposal is not None and proposal.encoding == 'function_calling':
+            raise OperationalError('unsupported')
         from .inference import request_to_wire
         request_to_wire(request, _validate_instances=False)
         return _DeferredStream(self, request, auth)
@@ -226,13 +250,22 @@ class _StreamView:
             return await self._complete_admitted(request, auth=auth)
 
     async def _complete_admitted(self, request, *, auth=None):
+        from .structured_proposals import current_verified_replay
+        if request.proposal_replay is not None and not current_verified_replay():
+            raise ProviderError('structured_replay_unverified')
         from .inference import async_request_to_wire
         await async_request_to_wire(request)
         from .cache_policy import validate_provider_request
         validate_provider_request(self._implementation, request)
         selection = await _validate_model(self._implementation, request, auth)
         from .rich_inference import async_validate_result
-        result = await self._implementation.acomplete(request, auth=auth)
+        from contextlib import nullcontext
+        proposal = request.payload.structured
+        if proposal is not None and proposal.encoding == 'function_calling' and self._owner is None:
+            raise ProviderError('structured_proposal_owner_missing')
+        scope = self._owner._structured_admission.bind(self._owner, request, selection) if proposal is not None and proposal.encoding == 'function_calling' else nullcontext()
+        with scope:
+            result = await self._implementation.acomplete(request, auth=auth)
         from .generation_attempts import snapshot_transport_result
         snapshot_transport_result(result)
         return await async_validate_result(request, result, selection=selection)
@@ -252,6 +285,11 @@ class LoadedProvider:
     _generation_tasks: set = field(default_factory=set, init=False, repr=False)
     _generation_cancelled: set = field(default_factory=set, init=False, repr=False)
     _generation_streams: set = field(default_factory=set, init=False, repr=False)
+    _structured_admission: object = field(default=None, init=False, repr=False)
+
+    def __post_init__(self):
+        from .structured_proposals import _new_admission_authority
+        self._structured_admission = _new_admission_authority(self)
 
     def _context(self):
         if self._pid != os.getpid():

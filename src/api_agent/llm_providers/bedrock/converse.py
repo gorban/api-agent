@@ -26,9 +26,24 @@ def validate_request(request, *, endpoint='runtime', api_mode='converse', config
     selected = selection(request.selected_llm, api_mode, endpoint=endpoint)
     selected.validate(request)
     payload = request.payload
+    proposal = payload.structured is not None and payload.structured.encoding == 'function_calling'
+    if proposal:
+        from .converse_controls import fields, kind
+        family = kind(request.selected_llm)
+        controls = fields(request, config)
+        base = request.selected_llm.split('anthropic.', 1)[-1]
+        thinking = controls.get('thinking', {}).get('type') in ('enabled', 'adaptive')
+        unsupported_claude = any(x in base for x in ('claude-opus-5-5', 'claude-sonnet-5-5'))
+        thinking_conflict = (family in ('budget', 'hybrid', 'adaptive') and thinking
+                             and 'claude-opus-4-8' not in base)
+        if (payload.tools or family not in ('gpt', 'budget', 'hybrid', 'adaptive')
+                or unsupported_claude or thinking_conflict
+                or payload.structured.provider_tool_strict is not None and ('structured' not in selected.features
+                    or request.selected_llm == 'us.anthropic.claude-opus-4-1-20250805-v1:0')):
+            raise ProviderAccessError('unsupported', 'Bedrock Converse named function proposal is unsupported.')
     if any(tool.strict for tool in payload.tools) and 'structured' not in selected.features:
         raise ProviderAccessError('unsupported', 'This Bedrock Converse model does not support strict tools.')
-    if (payload.structured is not None and not payload.structured.strict
+    if (payload.structured is not None and not proposal and not payload.structured.strict
             or payload.generation.cache_policy is not None
             or any(message.cache_boundary is not None
                    for message in payload.messages)):
@@ -37,9 +52,11 @@ def validate_request(request, *, endpoint='runtime', api_mode='converse', config
         raise ProviderAccessError('invalid_request', 'Bedrock Converse temperature must be at most 1.')
     from .converse_controls import fields
     fields(request, config)
+    from api_agent.providers.structured_proposals import current_verified_replay
+    preserve = current_verified_replay()
     for message in payload.messages:
         if message.continuation is not None:
-            continuation_message(message, request.selected_llm)
+            continuation_message(message, request.selected_llm, preserve=preserve)
     try:
         request_to_wire(request)
     except ContractError:
@@ -55,7 +72,7 @@ def _append(messages, role, content):
         messages.append({'role': role, 'content': content})
 
 
-def continuation_message(message, selected_llm):
+def continuation_message(message, selected_llm, *, preserve=False):
     """Validate exact signed native blocks before sending them back to AWS."""
     try:
         envelope = continuation(message.continuation)
@@ -73,6 +90,8 @@ def continuation_message(message, selected_llm):
             or 'signature' in block['reasoningContent'].get('reasoningText', {}))
             for block in replay['content'])
         if not protected and selected_llm in _UNSIGNED_REASONING_OUTPUT_ONLY:
+            if preserve:
+                raise ProviderAccessError('unsupported', 'Converse cannot replay this proposal continuation unchanged.')
             # This profile's unsigned reasoning text is display output, not an admitted
             # Converse assistant input. Keep the original carrier privately;
             # A signed/encrypted carrier, including its surrounding content,
@@ -82,7 +101,11 @@ def continuation_message(message, selected_llm):
                 or 'reasoningText' not in block['reasoningContent']
                 or 'signature' in block['reasoningContent']['reasoningText']]
         return replay
-    except (ContractError, ProviderAccessError, ValueError, TypeError):
+    except ProviderAccessError as error:
+        if error.kind == 'unsupported':
+            raise
+        raise ProviderAccessError('invalid_request', 'Invalid Bedrock Converse continuation.') from None
+    except (ContractError, ValueError, TypeError):
         raise ProviderAccessError('invalid_request', 'Invalid Bedrock Converse continuation.') from None
 
 
@@ -91,10 +114,12 @@ def encode(request, api_mode='converse', *, endpoint='runtime', config=None):
     from .converse_controls import effective_request
     request = effective_request(request, config)
     payload = request.payload
+    from api_agent.providers.structured_proposals import current_verified_replay
+    preserve = current_verified_replay()
     system, messages = [], []
     for message in payload.messages:
         if message.continuation is not None:
-            messages.append(continuation_message(message, request.selected_llm))
+            messages.append(continuation_message(message, request.selected_llm, preserve=preserve))
             continue
         blocks = [{'text': part.text} for part in message.content if part.text]
         if message.role == 'system':
@@ -107,7 +132,7 @@ def encode(request, api_mode='converse', *, endpoint='runtime', config=None):
         _append(messages, 'user' if message.role == 'tool' else message.role, blocks)
     body = {'modelId': request.selected_llm, 'messages': messages,
             'inferenceConfig': {'maxTokens': payload.generation.max_output_tokens or 1024}}
-    if payload.structured is not None:
+    if payload.structured is not None and payload.structured.encoding == 'json_schema':
         definition = payload.structured
         schema(definition.schema, definition.strict)
         body['outputConfig'] = {'textFormat': {'type': 'json_schema', 'structure': {
@@ -122,9 +147,17 @@ def encode(request, api_mode='converse', *, endpoint='runtime', config=None):
             **({'strict': tool.strict} if 'structured' in selection(request.selected_llm, api_mode, endpoint=endpoint).features else {}),
             'inputSchema': {'json': schema(tool.input_schema, tool.strict)}}}
             for tool in payload.tools]}
+    if payload.structured is not None and payload.structured.encoding == 'function_calling':
+        definition = payload.structured
+        spec = {'name': definition.name, 'inputSchema': {'json': schema(definition.provider_tool_schema or definition.schema, definition.provider_tool_strict is True)}}
+        if definition.provider_tool_description is not None:
+            spec['description'] = definition.provider_tool_description
+        if definition.provider_tool_strict is not None:
+            spec['strict'] = definition.provider_tool_strict
+        body['toolConfig'] = {'tools': [{'toolSpec': spec}], 'toolChoice': {'tool': {'name': definition.name}}}
     from .converse_controls import fields, kind
     additional = fields(request, config)
-    if payload.structured is not None and kind(request.selected_llm) == 'gpt':
+    if payload.structured is not None and payload.structured.encoding == 'json_schema' and kind(request.selected_llm) == 'gpt':
         additional['text'] = {'format': {'strict': True}}
     if additional:
         body['additionalModelRequestFields'] = additional

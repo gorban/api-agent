@@ -168,7 +168,16 @@ def validate_request(request, *, endpoint="mantle", api_mode="completions"):
     if not isinstance(request, LLMRequest):
         raise ProviderAccessError('invalid_request', 'Invalid Bedrock request.')
     payload = request.payload
-    if (payload.structured is not None and
+    proposal = payload.structured is not None and payload.structured.encoding == 'function_calling'
+    if proposal:
+        from .catalog import _RUNTIME
+        meta = _RUNTIME.get(request.selected_llm)
+        # No OSS named-function strict profile is qualified. Preserve existing
+        # OSS standard tools and JSON behavior without weakening legacy strict.
+        supported = endpoint == 'runtime' and meta is not None and meta[1] == 'openai'
+        if payload.tools or not supported:
+            raise ProviderAccessError('unsupported', 'Bedrock named function proposal is unsupported.')
+    if (payload.structured is not None and not proposal and
             (endpoint != 'runtime' and request.selected_llm != 'zai.glm-5' or not payload.structured.strict)
             or payload.generation.cache_policy is not None
             or payload.generation.reasoning_effort not in (None, '') and
@@ -231,7 +240,17 @@ def encode(request, api_mode, *, endpoint="mantle"):
                         ('max_output_tokens' if response else 'max_tokens', payload.generation.max_output_tokens if payload.generation.max_output_tokens is not None else 1024)):
         if value is not None:
             body[name] = value
-    if payload.structured is not None:
+    if payload.structured is not None and payload.structured.encoding == 'function_calling':
+        definition = payload.structured
+        spec = {'name': definition.name, 'parameters': schema(definition.provider_tool_schema or definition.schema, definition.provider_tool_strict is True)}
+        if definition.provider_tool_description is not None:
+            spec['description'] = definition.provider_tool_description
+        if definition.provider_tool_strict is not None:
+            spec['strict'] = definition.provider_tool_strict
+        body['tools'] = [{'type': 'function', **spec} if response else {'type': 'function', 'function': spec}]
+        body['tool_choice'] = ({'type': 'function', 'name': definition.name} if response
+                               else {'type': 'function', 'function': {'name': definition.name}})
+    elif payload.structured is not None:
         definition = payload.structured
         format_spec = {'name': definition.name, 'schema': schema(definition.schema, True), 'strict': True}
         if response:

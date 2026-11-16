@@ -199,15 +199,26 @@ class InferenceHistory:
         if not isinstance(request, LLMRequest):
             value = callback(request, *args, **kwargs)
             return await value if inspect.isawaitable(value) else value
+        from api_agent.providers.structured_proposals import _bind_history_replay, _current_verified_replay
+        if request.proposal_replay is not None and _current_verified_replay() is None:
+            # History may inspect only the exact bound pair; target owner still
+            # has to consume its own receipt before any physical dispatch.
+            with _bind_history_replay(request) as normalized:
+                return await self.call(node, service, callback, normalized, *args, **kwargs)
         entry = self._entry(node, service, callback, request, args, kwargs)
         async with entry.own():
             if self._closed:
                 raise ContractError('Workflow inference history is closed')
-            if entry.blocked:
+            structured = request.payload.structured
+            proposal_mode = structured is not None and structured.encoding == 'function_calling'
+            if entry.blocked and not proposal_mode:
                 raise ContractError('Workflow inference history budget exceeded before dispatch')
             incoming = request.payload.messages
-            messages = self._extend(entry, incoming)
-            if entry.correction is not None:
+            # Schema-function output is a non-executable proposal, not an
+            # implicitly extendable assistant/tool conversation. Explicit
+            # owner-authorized repair pairs are already present in incoming.
+            messages = incoming if proposal_mode else self._extend(entry, incoming)
+            if entry.correction is not None and not proposal_mode:
                 messages = (*messages, entry.correction)
                 entry.correction = None
             if len(messages) > 64:
@@ -216,12 +227,18 @@ class InferenceHistory:
             # Admit the complete request, including old continuations and tool
             # result identities, before entering the existing provider boundary.
             request_to_wire(prepared, _validate_instances=False)
+            result = None
             try:
                 value = callback(prepared, *args, **kwargs)
                 result = await value if inspect.isawaitable(value) else value
                 if not isinstance(result, LLMResult):
                     raise ContractError('Workflow LLM service returned an invalid result')
-                if _OWN_CORRECTIONS.get():
+                if result.structured_proposal is not None and result.structured_proposal.receipt is not None:
+                    from api_agent.providers.rich_inference import async_validate_result
+                    receipt = result.structured_proposal.receipt
+                    unbound = receipt._issuer.inspect_origin(prepared, result, receipt)
+                    await async_validate_result(prepared, unbound)
+                elif _OWN_CORRECTIONS.get():
                     from api_agent.providers.rich_inference import async_validate_result
                     await async_validate_result(prepared, result)
                 previous_calls = {call.call_id for message in messages for call in message.calls}
@@ -250,6 +267,10 @@ class InferenceHistory:
                     raise inherit_failure(CandidateCorrection(confirmed.feedback), confirmed) from None
                 raise ContractError('Rejected candidate does not match its originating response contract') from None
             except BaseException as error:
+                if isinstance(result, LLMResult) and result.structured_proposal is not None:
+                    receipt = result.structured_proposal.receipt
+                    if receipt is not None:
+                        receipt.release()
                 category = ('cancelled' if isinstance(error, asyncio.CancelledError) else
                             'timeout' if isinstance(error, TimeoutError) else 'failed')
                 # Do not invent an assistant/tool response or relay raw provider
@@ -259,7 +280,12 @@ class InferenceHistory:
                     'execution': 'unknown'})),))
                 self._save(entry, prepared, incoming, failure, getattr(error, 'response', None))
                 raise
-            self._save(entry, prepared, incoming, result.payload, result.response)
+            try:
+                self._save(entry, prepared, incoming, result.payload, result.response)
+            except BaseException:
+                if result.structured_proposal is not None and result.structured_proposal.receipt is not None:
+                    result.structured_proposal.receipt.release()
+                raise
             return result
 
 

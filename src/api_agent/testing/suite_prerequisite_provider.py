@@ -3,6 +3,7 @@ import asyncio
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextvars import copy_context
 import math
+import re
 from pathlib import Path
 import threading
 import time
@@ -18,7 +19,7 @@ from .diagnostics import CredentialScrubber, format_exception
 def validate_prerequisite_event(event):
     """Admit only content-free phase timings and integer counters."""
     if (type(event) is not dict or not {'phase', 'seconds'} <= event.keys()
-            or not event.keys() <= {'phase', 'seconds', 'reuse', 'miss', 'count', 'pending', 'completed'}
+            or not event.keys() <= {'phase', 'seconds', 'reuse', 'miss', 'count', 'pending', 'completed', 'stage', 'category', 'correlation'}
             or type(event['phase']) is not str
             or event['phase'] not in {'prepare', 'readiness', 'cleanup', 'error'}):
         raise ValueError('Invalid prerequisite diagnostic')
@@ -26,7 +27,17 @@ def validate_prerequisite_event(event):
     if (type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0
             or ('completed' in event and (type(event['completed']) is not int or event['completed'] not in (0, 1)))
             or any(type(value) is not int or value < 0
-                   for key, value in event.items() if key not in {'phase', 'seconds'})):
+                   for key, value in event.items() if key not in {'phase', 'seconds', 'stage', 'category', 'correlation'})):
+        raise ValueError('Invalid prerequisite diagnostic')
+    if (('stage' in event) != ('category' in event)
+            or 'stage' in event and (event['phase'] != 'error' or type(event['stage']) is not str
+            or event['stage'] not in {'request_validation', 'handler_prepare', 'pool_borrow',
+                                      'capability_encode', 'lease_delivery', 'lease_release'})
+            or 'category' in event and (event['phase'] != 'error' or type(event['category']) is not str
+                                       or event['category'] not in {'timeout', 'cancelled', 'pending',
+                                                                    'invalid', 'setup', 'os', 'runtime', 'unknown'})
+            or 'correlation' in event and (type(event['correlation']) is not str
+                                            or re.fullmatch('[0-9a-f]{16}', event['correlation']) is None)):
         raise ValueError('Invalid prerequisite diagnostic')
     return dict(event)
 
