@@ -28,7 +28,7 @@ async def test_slow_account_estimates_keep_input_live_and_discard_stale_results(
         if len(indexes) == 2:
             assert threading.get_ident() != main_thread
             entered.set()
-            assert release.wait(5)
+            release.wait()
             if finish == 'failure':
                 raise OSError('synthetic history unavailable')
         snapshot = EstimateSnapshot({test.id: {'estimated_cost_usd': .42} for test in tests})
@@ -184,7 +184,7 @@ async def test_recovery_projection_cannot_revive_an_invalid_tool_union(conflicti
     def estimate(context, tests, values, **options):
         if snapshots:
             entered.set()
-            assert release.wait(5)
+            release.wait()
         snapshot = EstimateSnapshot({PRIMARY: {'estimated_cost_usd': .42},
                                      OTHER: {'estimated_cost_usd': .84}})
         snapshot.close = Mock()

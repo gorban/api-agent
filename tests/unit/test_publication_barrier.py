@@ -166,7 +166,7 @@ def test_username_helper_is_drained_and_revoked_before_recorded_publication(tmp_
         assert source.vault == 'fixture' and source.user == 'login'
         assert 0 < timeout <= helpers.DEFAULT_TIMEOUT
         entered.set()
-        assert release.wait(timeout=5)
+        release.wait()
         completed.set()
         return 'synthetic-user'
 

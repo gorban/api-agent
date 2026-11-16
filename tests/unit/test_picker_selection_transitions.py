@@ -19,7 +19,7 @@ def test_collection_completion_preserves_quit_until_answer(tmp_path, monkeypatch
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         def collect(*args):
             entered.set()
-            assert release.wait(5)
+            release.wait()
             finished.set()
             if fails:
                 raise ValueError('Synthetic collection failure')
@@ -27,48 +27,51 @@ def test_collection_completion_preserves_quit_until_answer(tmp_path, monkeypatch
 
         app = fixture(tmp_path, 'integration', collector=lambda *args: identities(2))
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            await app.workers.wait_for_complete()
-            app.collector = collect
-            if refresh:
-                app.run_worker(app.back_to_selection(), group='refresh')
-            else:
-                await app.collect_tests()
-            assert await asyncio.to_thread(entered.wait, 5)
-            await pilot.pause()
-            owner = app.screen
-            assert owner.kind == 'collecting'
-            # No inference or execution is allowed while Quit is pending.
-            choose = AsyncMock()
-            monkeypatch.setattr(app, 'choose', choose)
-            app.auto_start_pending = True
-            await pilot.press('q')
-            await pilot.pause()
-            dialog = app.screen
-            assert isinstance(dialog, QuitDialog)
-            answer = dialog.query_one(Input)
-            answer.value = 'y' if accept else 'n'
-            release.set()
-            assert await asyncio.to_thread(finished.wait, 5)
-            await pilot.pause(.1)
-            assert app.screen is dialog and app.focused is answer
-            assert answer.value == ('y' if accept else 'n')
-            assert owner in app.screen_stack
-            choose.assert_not_awaited()
-            await pilot.press('enter')
-            await pilot.pause()
-            if accept:
-                assert app.collection_cancel.is_set()
-                assert app.selection.selected_tests == identities(2)
-                choose.assert_not_awaited()
-            else:
+            try:
+                await pilot.pause()
                 await app.workers.wait_for_complete()
-                assert app.screen.kind == ('error' if fails else 'tests')
-                if not fails and not refresh:
-                    choose.assert_awaited_once_with('continue')
+                app.collector = collect
+                if refresh:
+                    app.run_worker(app.back_to_selection(), group='refresh')
                 else:
+                    await app.collect_tests()
+                assert await asyncio.to_thread(entered.wait, 5)
+                await pilot.pause()
+                owner = app.screen
+                assert owner.kind == 'collecting'
+                # No inference or execution is allowed while Quit is pending.
+                choose = AsyncMock()
+                monkeypatch.setattr(app, 'choose', choose)
+                app.auto_start_pending = True
+                await pilot.press('q')
+                await pilot.pause()
+                dialog = app.screen
+                assert isinstance(dialog, QuitDialog)
+                answer = dialog.query_one(Input)
+                answer.value = 'y' if accept else 'n'
+                release.set()
+                assert await asyncio.to_thread(finished.wait, 5)
+                await pilot.pause(.1)
+                assert app.screen is dialog and app.focused is answer
+                assert answer.value == ('y' if accept else 'n')
+                assert owner in app.screen_stack
+                choose.assert_not_awaited()
+                await pilot.press('enter')
+                await pilot.pause()
+                if accept:
+                    assert app.collection_cancel.is_set()
+                    assert app.selection.selected_tests == identities(2)
                     choose.assert_not_awaited()
-                assert dialog not in app.screen_stack
+                else:
+                    await app.workers.wait_for_complete()
+                    assert app.screen.kind == ('error' if fails else 'tests')
+                    if not fails and not refresh:
+                        choose.assert_awaited_once_with('continue')
+                    else:
+                        choose.assert_not_awaited()
+                    assert dialog not in app.screen_stack
+            finally:
+                release.set()
     asyncio.run(scenario())
 
 
@@ -77,20 +80,23 @@ def test_pending_collect_only_waits_for_quit_cancellation(tmp_path):
         entered, release = threading.Event(), threading.Event()
         def collect(*args):
             entered.set()
-            assert release.wait(5)
+            release.wait()
             return identities(2)
         app = fixture(tmp_path, 'integration', collector=collect,
                       fields={'COLLECT_ONLY': {'type': 'bool', 'default': True, 'acknowledge_default': False}})
         async with app.run_test(size=(120, 40)) as pilot:
-            assert await asyncio.to_thread(entered.wait, 5)
-            await pilot.press('q')
-            dialog = app.screen
-            release.set()
-            await pilot.pause(.1)
-            assert app.screen is dialog and getattr(app, 'collected_output', None) is None
-            await pilot.press('escape')
-            await pilot.pause()
-            assert app.collected_output == '\n'.join(item.id for item in identities(2))
+            try:
+                assert await asyncio.to_thread(entered.wait, 5)
+                await pilot.press('q')
+                dialog = app.screen
+                release.set()
+                await pilot.pause(.1)
+                assert app.screen is dialog and getattr(app, 'collected_output', None) is None
+                await pilot.press('escape')
+                await pilot.pause()
+                assert app.collected_output == '\n'.join(item.id for item in identities(2))
+            finally:
+                release.set()
     asyncio.run(scenario())
 
 
