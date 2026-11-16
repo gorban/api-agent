@@ -1,5 +1,6 @@
 """Public Responses/Chat Completions structured and function-call mappings."""
 import json
+from dataclasses import replace
 from api_agent.providers.llm import LLMResult, Message, TextContent, ToolCall
 from api_agent.providers.contracts import ProviderAccessError, ContractError
 from api_agent.providers.rich_inference import request_to_wire, result_to_wire, schema, object_json, continuation, valid_schema, _identifier, response_json
@@ -153,11 +154,22 @@ def payload(request, mode, subscription, *, _validate_instances=True):
         body['parallel_tool_calls'] = False
     structured = request.payload.structured
     if structured is not None:
-        definition = dict(name=structured.name, schema=schema(structured.schema, strict=structured.strict), strict=structured.strict)
-        if mode == 'responses':
-            body['text'] = dict(format=dict(type='json_schema', **definition))
+        if structured.encoding == 'function_calling':
+            definition = dict(name=structured.name, parameters=schema(structured.provider_tool_schema or structured.schema, strict=structured.provider_tool_strict is True))
+            if structured.provider_tool_description is not None:
+                definition['description'] = structured.provider_tool_description
+            if structured.provider_tool_strict is not None:
+                definition['strict'] = structured.provider_tool_strict
+            body['tools'] = [dict(type='function', **definition) if mode == 'responses' else dict(type='function', function=definition)]
+            body['tool_choice'] = (dict(type='function', name=structured.name) if mode == 'responses'
+                                   else dict(type='function', function=dict(name=structured.name)))
+            body['parallel_tool_calls'] = False
         else:
-            body['response_format'] = dict(type='json_schema', json_schema=definition)
+            definition = dict(name=structured.name, schema=schema(structured.schema, strict=structured.strict), strict=structured.strict)
+            if mode == 'responses':
+                body['text'] = dict(format=dict(type='json_schema', **definition))
+            else:
+                body['response_format'] = dict(type='json_schema', json_schema=definition)
     return body
 
 
@@ -232,9 +244,21 @@ def tool_result(data, responses, token, *, openrouter=False):
         raise _invalid('GPT inference returned invalid function calls.') from None
 
 
+def _mark_proposal(request, result):
+    """Mark only a real named provider call; core independently re-admits it."""
+    structured = request.payload.structured
+    if (structured is not None and structured.encoding == 'function_calling'
+            and result.outcome == 'tool_calls' and len(result.payload.calls) == 1
+            and result.payload.calls[0].name == structured.name):
+        from api_agent.providers.llm import StructuredProposal
+        return replace(result, structured_proposal=StructuredProposal(result.payload.calls[0]))
+    return result
+
+
 def validate_result(request, result, token=None):
     """Validate successful native output against this call's declared contracts."""
     from .inference import _invalid
+    result = _mark_proposal(request, result)
     try:
         if request.payload.response is not None:
             from api_agent.providers.rich_inference import validate_result as validate
@@ -265,6 +289,7 @@ def validate_result(request, result, token=None):
 async def async_validate_result(request, result, token=None):
     from api_agent.providers.rich_inference import async_validate_result as validate
     from .inference import _invalid
+    result = _mark_proposal(request, result)
     try:
         if (request.payload.structured is not None or
                 request.payload.response is not None and request.payload.response.schema is not None) and result.outcome == 'completed':

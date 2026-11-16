@@ -24,7 +24,33 @@ arguments, schemas, credentials and IPC framing do not opt in. See
 
 `LLMRequest` carries `selected_llm`, a `CompletionRequest` and an optional request ID. Requests contain ordered messages, optional tools, generation options and optional structured-output schema. Message roles are system/user/assistant/tool. Text, tool calls and tool results use separate immutable carriers. Tool arguments remain a transport-neutral string; adapters interpret them. Schema strings must parse as finite JSON objects.
 
-Available selections advertise `tools`, `structured`, `temperature`, `max_output_tokens` and `cache_policy` where supported. Call `AvailableSelection.validate(request)` before invoking the transport; unsupported selection/features raise a safe `OperationalError("unsupported")`. Concrete adapters must not silently discard requested features.
+Available selections advertise `tools`, `structured`, `structured_function`, `temperature`, `max_output_tokens` and `cache_policy` where supported. Call `AvailableSelection.validate(request)` before invoking the transport; unsupported selection/features raise a safe `OperationalError("unsupported")`. Concrete adapters must not silently discard requested features.
+
+`StructuredOutput` defaults to `json_schema`; existing JSON admission and
+`CandidateOutputError` behavior are unchanged. A selection can opt in to
+`function_calling` with a provider-owned `StructuredFunctionProfile`. Its
+converted name, description, schema and upstream strict omission/false/true are
+separate from the original local schema. Missing or mismatched capability and
+profile fail before dispatch.
+
+Function mode returns a genuine bounded `StructuredProposal` over the actual
+native call, with its ID, name and unmodified canonical JSON arguments. It is
+non-executable evidence, not a tool request. Admission requires exactly one
+correctly named call with an unambiguous, finite JSON object. Local JSON Schema
+validity is advisory: the caller's Python/Pydantic parser decides acceptance and
+coercion. Ordinary executable tools retain their declared-tool, schema and
+history validation.
+
+An owner-issued opaque receipt can authorize one exact historical proposal and
+bounded validation-feedback pair for explicit repair. It binds both the original
+caller request and its configured request, including selected owner, model,
+schema, profile, prefix, actual call ID and arguments. A preflight does not
+consume the receipt or authorize a provider call; the owning boundary verifies
+and consumes it before dispatch. Callers release unused receipts after parsing
+succeeds or when no repair will be made. Receipt and replay authority never
+appear in provider messages, logs or content capture; ordinary model content
+still follows the configured capture policy. Opaque continuation is preserved
+or the replay fails closed.
 
 `GenerationOptions.cache_policy` is None (provider defaults), off, medium
 (shortest supported retention), or high (longest supported retention). The shared
@@ -52,7 +78,7 @@ records transport admission, not proof of paid execution. Legacy requests keep
 their existing behavior. See [response modes](../../src/api_agent/llm_providers/gpt/RESPONSE_MODES.md)
 for format selection, fallback and content-control details.
 
-`StreamEvent` is text, tool_call or completed. The terminal completed event carries the result and terminal usage. Clean exhaustion requires exactly one terminal event; duplicate terminal events or output after it are invalid. Early explicit closure may have no terminal result and must not invent one. Text, tool arguments, schemas, result payloads and browser objects are excluded from carrier repr.
+Public `astream` with function-encoded proposals is unsupported and fails before dispatch; a provider may still use an internal physical stream to implement completion. `StreamEvent` is text, tool_call or completed. The terminal completed event carries the result and terminal usage. Clean exhaustion requires exactly one terminal event; duplicate terminal events or output after it are invalid. Early explicit closure may have no terminal result and must not invent one. Text, tool arguments, schemas, result payloads and browser objects are excluded from carrier repr.
 
 ## Selection and activation
 

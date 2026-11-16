@@ -207,55 +207,63 @@ class NativeRecoveryOwner(CleanupLeaseOwner):
         states = sorted(self.directory.iterdir())
         if states and any(not disposal_complete(worker) for worker in self.workers):
             raise ValueError('Native recovery requires confirmed worker disposal')
+        errors = []
         for state in states:
-            _private(state, directory=True)
-            with _quiescent(state):
-                path = state / 'recovery.json'
-                if not path.exists() and not path.is_symlink():
-                    # Allocation may be interrupted before intent or engine access.
-                    continue
-                _private(path)
-                record = _read(path)
-                if (type(record) is not dict or set(record) not in ({'version', 'scope', 'catalog', 'fingerprints', 'nonce'},
-                            {'version', 'scope', 'catalog', 'fingerprints', 'nonce', 'dispose_on_release'})
-                        or type(record.get('dispose_on_release', False)) is not bool
-                        or type(record['version']) is not int or record['version'] != 1
-                        or not re.fullmatch('[0-9a-f]{16}', record['scope'])
-                        or not re.fullmatch('[0-9a-f]{32}', record['nonce'])
-                        or type(record['fingerprints']) is not dict
-                        or not record['fingerprints']
-                        or any(type(name) is not str or type(value) is not str
-                            or not re.fullmatch('[0-9a-f]{64}', value)
-                            for name, value in record['fingerprints'].items())):
-                    raise ValueError('Invalid native recovery intent')
-                if record['scope'] != StackScope.from_roots(self.directory, state).id:
-                    raise ValueError('Native recovery scope differs from parent-owned state')
-                for runtime in self._runtimes(state, record):
-                    temporary = record.get('dispose_on_release', False)
-                    candidates = tuple(item.id for item in runtime.inventory() if temporary or item.running)
-                    if not candidates and not temporary:
+            try:
+                _private(state, directory=True)
+                with _quiescent(state):
+                    path = state / 'recovery.json'
+                    if not path.exists() and not path.is_symlink():
+                        # Allocation may be interrupted before intent or engine access.
                         continue
-                    selected = []
-                    for row in runtime._inspect(candidates) if candidates else ():
-                        labels = row['Config']['Labels']
-                        service = labels.get('com.docker.compose.service')
-                        if (service in record['fingerprints'] and labels.get(LABEL) == record['nonce']
-                                and labels.get('api-agent.config') == record['fingerprints'][service]):
-                            selected.append(row['Id'])
-                    # Persist immutable identities before either stop or removal.
-                    receipt = state / 'selected-ids.json'
-                    if receipt.exists():
-                        _private(receipt)
-                        pinned = _read(receipt)
-                        if (type(pinned) is not list or (not pinned and not temporary) or
-                                any(type(value) is not str or not re.fullmatch('[0-9a-f]{64}', value)
-                                    for value in pinned)):
-                            raise ValueError('Invalid native recovery immutable identities')
-                        selected = pinned if temporary else [value for value in selected if value in pinned]
-                    elif selected or temporary:
-                        _write(receipt, selected)
-                    if temporary:
-                        runtime.dispose(selected, nonce=record['nonce'], fingerprints=record['fingerprints'],
-                            cleanup_timeout_seconds=cleanup_timeout_seconds)
-                    elif selected:
-                        runtime.stop(selected)
+                    _private(path)
+                    record = _read(path)
+                    if (type(record) is not dict or set(record) not in ({'version', 'scope', 'catalog', 'fingerprints', 'nonce'},
+                                {'version', 'scope', 'catalog', 'fingerprints', 'nonce', 'dispose_on_release'})
+                            or type(record.get('dispose_on_release', False)) is not bool
+                            or type(record['version']) is not int or record['version'] != 1
+                            or not re.fullmatch('[0-9a-f]{16}', record['scope'])
+                            or not re.fullmatch('[0-9a-f]{32}', record['nonce'])
+                            or type(record['fingerprints']) is not dict
+                            or not record['fingerprints']
+                            or any(type(name) is not str or type(value) is not str
+                                or not re.fullmatch('[0-9a-f]{64}', value)
+                                for name, value in record['fingerprints'].items())):
+                        raise ValueError('Invalid native recovery intent')
+                    if record['scope'] != StackScope.from_roots(self.directory, state).id:
+                        raise ValueError('Native recovery scope differs from parent-owned state')
+                    for runtime in self._runtimes(state, record):
+                        temporary = record.get('dispose_on_release', False)
+                        candidates = tuple(item.id for item in runtime.inventory() if temporary or item.running)
+                        if not candidates and not temporary:
+                            continue
+                        selected = []
+                        for row in runtime._inspect(candidates) if candidates else ():
+                            labels = row['Config']['Labels']
+                            service = labels.get('com.docker.compose.service')
+                            if (service in record['fingerprints'] and labels.get(LABEL) == record['nonce']
+                                    and labels.get('api-agent.config') == record['fingerprints'][service]):
+                                selected.append(row['Id'])
+                        # Persist immutable identities before either stop or removal.
+                        receipt = state / 'selected-ids.json'
+                        if receipt.exists():
+                            _private(receipt)
+                            pinned = _read(receipt)
+                            if (type(pinned) is not list or (not pinned and not temporary) or
+                                    any(type(value) is not str or not re.fullmatch('[0-9a-f]{64}', value)
+                                        for value in pinned)):
+                                raise ValueError('Invalid native recovery immutable identities')
+                            selected = pinned if temporary else [value for value in selected if value in pinned]
+                        elif selected or temporary:
+                            _write(receipt, selected)
+                        if temporary:
+                            runtime.dispose(selected, nonce=record['nonce'], fingerprints=record['fingerprints'],
+                                cleanup_timeout_seconds=cleanup_timeout_seconds)
+                        elif selected:
+                            runtime.stop(selected)
+            except Exception as error:
+                errors.append(error)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup('Native recovery failed for multiple states', errors)

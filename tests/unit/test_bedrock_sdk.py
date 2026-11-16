@@ -1835,3 +1835,47 @@ def test_channel_cleanup_keeps_first_interrupt_while_attempting_later_channels()
     with pytest.raises(KeyboardInterrupt) as caught:
         sdk._close_authority_channels([SimpleNamespace(close=first), SimpleNamespace(close=second)], None)
     assert caught.value is interruption
+
+@pytest.mark.asyncio
+async def test_proposal_control_uses_private_channel_and_cleans_up(auth, fake_process, monkeypatch):
+    import os
+    import socket
+    from api_agent.providers.llm import AvailableSelection
+    from api_agent.providers.structured_proposals import _new_admission_authority, StructuredWorkerAdmission
+    from test_structured_proposal_contract import PROFILE, request
+
+    canonical = request()
+    selection = AvailableSelection('selected', features=('structured_function',), structured_function_profile=PROFILE)
+    payload = {'model': 'selected'}
+    controls = {'reasoning_format': 'literal'}
+    original_spawn = sdk.spawn_worker
+    peers = []
+    async def spawn(*args, **kwargs):
+        descriptor = int(kwargs['env']['API_AGENT_BEDROCK_PROPOSAL_FD'])
+        assert descriptor in kwargs['pass_fds']
+        peers.append(socket.socket(fileno=os.dup(descriptor)))
+        peers[-1].setblocking(False)
+        return await original_spawn(*args, **kwargs)
+    monkeypatch.setattr(sdk, 'spawn_worker', spawn)
+    transport = sdk.SDKTransport()
+    owner = object()
+    try:
+        with _new_admission_authority(owner).bind(owner, canonical, selection):
+            assert await transport.call('completions', payload, auth=auth,
+                proposal_request=canonical, proposal_controls=controls) == {'ok': True}
+        frame = json.loads(await asyncio.get_running_loop().sock_recv(peers[0], 65536))
+        authority = StructuredWorkerAdmission(bytes.fromhex(frame['key']))
+        try:
+            with authority.admit(frame['row'], payload, 'completions', frame['proof'],
+                                 selection=selection, provider_controls=frame['controls']) as admitted:
+                assert admitted == canonical
+                assert frame['controls'] == controls
+        finally:
+            authority.close()
+        assert await asyncio.get_running_loop().sock_recv(peers[0], 1) == b''
+        assert 'proof' not in fake_process[1][0].writes[0].decode()
+        assert not transport._processes
+    finally:
+        for peer in peers:
+            peer.close()
+        await transport.aclose()

@@ -824,8 +824,19 @@ def test_guarded_temporary_disposal_checks_all_saved_network_references(pending_
 
     def run(args, **options):
         actions.append(tuple(args))
-        if args[0] == 'ps':
+        if args == ['ps', '-a', '--no-trunc', '--format', '{{.ID}}']:
             return '\n'.join(rows)
+        if args[:4] == ['ps', '--all', '--quiet', '--no-trunc']:
+            if args[4:6] == ['--filter', 'label=api-agent.managed=true']:
+                assert len(args) == 8 and args[6] == '--filter'
+                scope_filter = args[7].removeprefix('label=api-agent.scope=')
+                assert args[7] == 'label=api-agent.scope=' + scope_filter
+                return '\n'.join(identifier for identifier, row in rows.items()
+                                 if row['Config']['Labels'].get('api-agent.managed') == 'true'
+                                 and row['Config']['Labels'].get('api-agent.scope') == scope_filter)
+            assert len(args) == 6 and args[4] == '--filter' and args[5].startswith('id=')
+            identifier = args[5][3:]
+            return identifier if identifier in rows else ''
         if args[:2] == ['inspect', '--format']:
             return '\n'.join(json.dumps({'id': item, 'networks': {name: {'NetworkID': network_id}}, 'mode': 'bridge'})
                              for item in args[3:])
@@ -992,4 +1003,103 @@ def test_network_disposal_deadline_refuses_engine_command(tmp_path, monkeypatch)
     monkeypatch.setattr(prerequisites._NetworkCleanup, '_prune_networks', expire)
     with pytest.raises(ContainerError, match='deadline expired'):
         runtime.dispose([], nonce='a'*32, fingerprints={'service': 'f'*64})
-    assert actions == [['ps', '--all', '--quiet', '--no-trunc']]
+    assert actions == []
+
+
+def _unconfirmed_recovery_state(owner, name):
+    state = owner.directory / name
+    intent = state / 'commands' / 'intent'
+    intent.mkdir(parents=True, mode=0o700)
+    state.chmod(0o700)
+    (state / 'commands').chmod(0o700)
+    request = intent / 'request.json'
+    request.write_text('{}')
+    request.chmod(0o600)
+    return state
+
+
+def test_recovery_continues_after_unconfirmed_independent_state(pending_intent):
+    uncertain = _unconfirmed_recovery_state(pending_intent.owner, '00-uncertain')
+    with pytest.raises(ValueError, match='disposal remains unconfirmed'):
+        pending_intent.owner.recover()
+    assert pending_intent.calls == [['1' * 64]]
+    assert not (uncertain / 'commands' / 'intent' / 'complete.json').exists()
+    assert not (uncertain / 'selected-ids.json').exists()
+
+
+def test_recovery_aggregates_independent_failures_after_valid_state(pending_intent):
+    _unconfirmed_recovery_state(pending_intent.owner, '00-uncertain')
+    _unconfirmed_recovery_state(pending_intent.owner, '01-uncertain')
+    with pytest.raises(ExceptionGroup) as caught:
+        pending_intent.owner.recover()
+    assert len(caught.value.exceptions) == 2
+    assert all(isinstance(error, ValueError) and 'disposal remains unconfirmed' in str(error)
+               for error in caught.value.exceptions)
+    assert pending_intent.calls == [['1' * 64]]
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_recovery_interrupt_stops_before_later_states(pending_intent, monkeypatch, signal_type):
+    from contextlib import contextmanager
+    from api_agent.testing import native_recovery
+    _unconfirmed_recovery_state(pending_intent.owner, '00-uncertain')
+    original = native_recovery._quiescent
+    @contextmanager
+    def interrupt(state):
+        if state.name == '00-uncertain':
+            raise signal_type()
+        with original(state):
+            yield
+    monkeypatch.setattr(native_recovery, '_quiescent', interrupt)
+    with pytest.raises(signal_type):
+        pending_intent.owner.recover()
+    assert pending_intent.calls == []
+
+
+def test_recovery_retry_keeps_pending_and_does_not_repeat_completed_stop(pending_intent):
+    uncertain = _unconfirmed_recovery_state(pending_intent.owner, '00-uncertain')
+    acknowledgements = []
+    pending_intent.owner._when_closed(lambda: acknowledgements.append('closed'))
+    def stop_once(selected):
+        pending_intent.calls.append(selected)
+        pending_intent.runtime.candidates = []
+    pending_intent.runtime.stop = stop_once
+    for _ in range(2):
+        with pytest.raises(ValueError, match='disposal remains unconfirmed'):
+            pending_intent.owner.recover()
+    assert pending_intent.calls == [['1' * 64]]
+    assert pending_intent.owner.closed is False
+    assert acknowledgements == []
+    assert not (uncertain / 'commands' / 'intent' / 'complete.json').exists()
+
+
+def test_recovery_retains_original_error_receipt_and_uncertain_request(pending_intent, monkeypatch):
+    from contextlib import contextmanager
+    from api_agent.testing import native_recovery
+
+    uncertain = _unconfirmed_recovery_state(pending_intent.owner, '00-uncertain')
+    request = uncertain / 'commands' / 'intent' / 'request.json'
+    before = request.read_bytes()
+    receipt = object()
+    cause = RuntimeError('underlying failure')
+    original_error = ValueError('state remains pending')
+    original_error.cleanup_pending = receipt
+    quiescent = native_recovery._quiescent
+
+    @contextmanager
+    def refuse_uncertain(state):
+        if state == uncertain:
+            raise original_error from cause
+        with quiescent(state):
+            yield
+
+    monkeypatch.setattr(native_recovery, '_quiescent', refuse_uncertain)
+    with pytest.raises(ValueError) as caught:
+        pending_intent.owner.recover()
+
+    assert caught.value is original_error
+    assert caught.value.cleanup_pending is receipt
+    assert caught.value.__cause__ is cause
+    assert pending_intent.calls == [['1' * 64]]
+    assert request.read_bytes() == before
+    assert not (request.parent / 'complete.json').exists()

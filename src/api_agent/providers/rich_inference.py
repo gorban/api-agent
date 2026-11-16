@@ -13,7 +13,7 @@ from referencing.jsonschema import DRAFT202012
 from referencing.exceptions import NoSuchResource, Unresolvable
 from .contracts import ContractError, ProviderAccessError, CandidateOutputError
 from .llm import (AnswerStream, CompletionRequest, GenerationOptions, LLMRequest, LLMResult,
-                  Message, TextContent, Tool, ToolCall, ToolResult, StructuredOutput, Usage, CacheBoundary, cache_boundary_indexes, ResponsePolicy, ResponseEvidence)
+                  Message, TextContent, Tool, ToolCall, ToolResult, StructuredOutput, StructuredFunctionProfile, StructuredProposal, Usage, CacheBoundary, cache_boundary_indexes, ResponsePolicy, ResponseEvidence)
 
 
 _BOUNDED_RESULT_OBSERVER = ContextVar('bounded_result_observer', default=None)
@@ -39,7 +39,8 @@ def _bounded_result_fingerprint(result, checked_text=None):
     """Private correlation only; opaque wire data is never exported."""
     from .inference import result_to_wire
     wire = result_to_wire(result)
-    visible = wire['text'] if 'text' in wire else ''.join(wire['message']['content'])
+    visible = (result.structured_proposal.call.arguments if result.structured_proposal is not None
+               else wire['text'] if 'text' in wire else ''.join(wire['message']['content']))
     if checked_text is not None and visible != checked_text:
         return None
     return sha256(json.dumps(wire, sort_keys=True, separators=(',', ':'),
@@ -458,13 +459,27 @@ def validate_response_evidence(request, result):
         raise ProviderAccessError('unknown', 'Response evidence does not match its request', usage=getattr(result, 'usage', None), response=evidence)
 
 
-def request_to_wire(request, *, _validate_instances=True):
+def _request_row(request):
+    """Build bounded candidate fields; callers must still validate the row."""
     payload = request.payload
     row = dict(version=2, selected_llm=request.selected_llm, request_id=request.request_id,
                messages=[message_to_wire(item) for item in payload.messages],
                tools=[dict(name=tool.name, description=tool.description, schema=tool.input_schema, **({} if tool.strict else {"strict": False})) for tool in payload.tools],
                structured=None if payload.structured is None else dict(name=payload.structured.name, schema=payload.structured.schema, **({} if payload.structured.strict else {"strict": False})),
                max_output_tokens=payload.generation.max_output_tokens, cache_policy=payload.generation.cache_policy)
+    if payload.structured is not None and payload.structured.encoding == 'function_calling':
+        row['version'] = 4
+        row['structured']['encoding'] = 'function_calling'
+        if payload.structured.provider_tool_strict is not None:
+            row['structured']['provider_tool_strict'] = payload.structured.provider_tool_strict
+        if payload.structured.provider_tool_description is not None:
+            row['structured']['provider_tool_description'] = payload.structured.provider_tool_description
+        if payload.structured.provider_tool_schema is not None:
+            row['structured']['provider_tool_schema'] = payload.structured.provider_tool_schema
+        if payload.structured.function_profile is not None:
+            row['structured']['function_profile'] = {
+                'default_strict': payload.structured.function_profile.default_strict,
+                'schema_policy': payload.structured.function_profile.schema_policy}
     if payload.response is not None:
         row.update(version=3, response=_response_to_wire(payload.response))
     if payload.generation.temperature is not None:
@@ -476,17 +491,32 @@ def request_to_wire(request, *, _validate_instances=True):
     if payload.generation.answer_stream is not None:
         row['answer_stream'] = dict(field=payload.generation.answer_stream.field,
                                     presentation=payload.generation.answer_stream.presentation)
+    return row
+
+
+def request_to_wire(request, *, _validate_instances=True):
+    from .structured_proposals import _current_verified_replay
+    row = _request_row(request)
+    permit = _current_verified_replay()
+    if getattr(request, 'proposal_replay', None) is not None and (permit is None or not permit.matches(row)):
+        raise ContractError('Structured replay requires owner authorization')
+    if permit is not None and not permit.matches(row):
+        raise ContractError('Structured replay request changed')
     request_from_wire(row, _validate_instances=_validate_instances)
     return row
 
 
 def request_from_wire(row, *, _validate_instances=True):
+    from .structured_proposals import _current_verified_replay
+    permit = _current_verified_replay()
+    if permit is not None and not permit.matches(row):
+        raise ContractError('Structured replay request changed')
     keys = ('version','selected_llm','request_id','messages','tools','structured','max_output_tokens','cache_policy')
     extras = tuple(key for key in ('reasoning_effort', 'display_summary', 'answer_stream', 'temperature', 'response') if type(row) is dict and key in row)
     _exact(row, (*keys, *extras))
     _bounded(row)
     try:
-        if (type(row['version']) is not int or row['version'] not in (2, 3)
+        if (type(row['version']) is not int or row['version'] not in (2, 3, 4)
                 or type(row['messages']) is not list or not 1 <= len(row['messages']) <= 64
                 or type(row['tools']) is not list or len(row['tools']) > 64):
             raise ValueError()
@@ -502,19 +532,45 @@ def request_from_wire(row, *, _validate_instances=True):
             tools.append(Tool(_identifier(item['name'], name=True), _text(item['description']), _text(item['schema']), item.get('strict', True)))
         structured = row['structured']
         if structured is not None:
-            _exact(structured, ('name','schema', *(() if 'strict' not in structured else ('strict',))))
+            opt_in = row['version'] == 4
+            _exact(structured, ('name','schema', *(() if 'strict' not in structured else ('strict',)),
+                *(('encoding',) if opt_in else ()), *(() if 'provider_tool_strict' not in structured else ('provider_tool_strict',)),
+                *(() if 'provider_tool_description' not in structured else ('provider_tool_description',)),
+                *(() if 'provider_tool_schema' not in structured else ('provider_tool_schema',)),
+                *(() if 'function_profile' not in structured else ('function_profile',))))
+            if opt_in and structured['encoding'] != 'function_calling':
+                raise ValueError()
+            if not opt_in and any(key in structured for key in ('provider_tool_strict', 'provider_tool_description', 'provider_tool_schema', 'function_profile')):
+                raise ValueError()
             schema(structured['schema'], structured.get('strict', True))
-            structured = StructuredOutput(_identifier(structured['name'], name=True), _text(structured['schema']), structured.get('strict', True))
+            if 'provider_tool_schema' in structured:
+                schema(structured['provider_tool_schema'], structured.get('provider_tool_strict') is True)
+            profile = structured.get('function_profile')
+            if profile is not None:
+                _exact(profile, ('default_strict', 'schema_policy'))
+                profile = StructuredFunctionProfile(**profile)
+            structured = StructuredOutput(_identifier(structured['name'], name=True), _text(structured['schema']), structured.get('strict', True),
+                encoding='function_calling' if opt_in else 'json_schema', provider_tool_strict=structured.get('provider_tool_strict'),
+                provider_tool_description=_text(structured['provider_tool_description'], 32768) if 'provider_tool_description' in structured else None,
+                provider_tool_schema=_text(structured['provider_tool_schema']) if 'provider_tool_schema' in structured else None, function_profile=profile)
+        elif row['version'] == 4:
+            raise ValueError()
         messages = tuple(message_from_wire(item) for item in row['messages'])
         declared = {tool.name: schema(tool.input_schema, tool.strict) for tool in tools}
-        pending, seen = {}, set()
-        for message in messages:
+        pending, seen, replay_seen = {}, set(), False
+        for index, message in enumerate(messages):
             if pending and message.role != 'tool':
                 raise ValueError()
             for call in message.calls:
-                if call.call_id in seen or call.name not in declared:
+                authorized = permit is not None and permit.allows(index, call)
+                if call.call_id in seen or (call.name not in declared and not authorized):
                     raise ValueError()
-                if _validate_instances and not valid_schema(declared[call.name], object_json(call.arguments)):
+                if authorized:
+                    if replay_seen or structured is None or structured.encoding != 'function_calling' or call.name != structured.name:
+                        raise ValueError()
+                    object_json(call.arguments)  # Only schema validation is exempt; JSON must remain unambiguous and bounded.
+                    replay_seen = True
+                elif _validate_instances and not valid_schema(declared[call.name], object_json(call.arguments)):
                     raise ValueError()
                 seen.add(call.call_id)
                 pending[call.call_id] = call.name
@@ -522,7 +578,7 @@ def request_from_wire(row, *, _validate_instances=True):
                 if result.call_id not in pending:
                     raise ValueError()
                 del pending[result.call_id]
-        if pending:
+        if pending or (permit is not None and not replay_seen):
             raise ValueError()
         answer_stream = None
         if 'answer_stream' in row:
@@ -543,6 +599,12 @@ def result_to_wire(result):
                service_tier=result.service_tier, serving_revision=result.serving_revision, billing=result.billing)
     if result.response is not None:
         row.update(version=3, response=response_evidence_to_wire(result.response))
+    if result.structured_proposal is not None:
+        if result.response is not None:
+            raise ContractError('Structured proposal response policy is unsupported')
+        if result.structured_proposal.receipt is not None:
+            raise ContractError('Owner receipt is not serializable')
+        row.update(version=4, structured_proposal={'call_id': result.structured_proposal.call.call_id})
     if result.applied_cache_boundaries:
         row['applied_cache_boundaries'] = list(result.applied_cache_boundaries)
     if result.reasoning_summary is not None:
@@ -552,14 +614,16 @@ def result_to_wire(result):
 
 
 def result_from_wire(row):
-    _exact(row, ('version','message','outcome','usage','actual_model','service_tier','serving_revision','billing', *(() if 'applied_cache_boundaries' not in row else ('applied_cache_boundaries',)), *(() if 'response' not in row else ('response',)), *(() if 'reasoning_summary' not in row else ('reasoning_summary',))))
+    _exact(row, ('version','message','outcome','usage','actual_model','service_tier','serving_revision','billing', *(() if 'applied_cache_boundaries' not in row else ('applied_cache_boundaries',)), *(() if 'response' not in row else ('response',)), *(() if 'reasoning_summary' not in row else ('reasoning_summary',)), *(() if 'structured_proposal' not in row else ('structured_proposal',))))
     _bounded(row)
     try:
-        if type(row['version']) is not int or row['version'] not in (2, 3):
+        if type(row['version']) is not int or row['version'] not in (2, 3, 4):
             raise ValueError()
-        if (row['version'] == 3) != ('response' in row):
+        if row['version'] != 4 and (row['version'] == 3) != ('response' in row):
             raise ValueError()
-        response = response_evidence_from_wire(row['response']) if row['version'] == 3 else None
+        if (row['version'] == 4) != ('structured_proposal' in row) or (row['version'] == 4 and 'response' in row):
+            raise ValueError()
+        response = response_evidence_from_wire(row['response']) if 'response' in row else None
         if row['outcome'] not in ('completed', 'length', 'refused', 'tool_calls'):
             raise ValueError()
         message = message_from_wire(row['message'])
@@ -570,7 +634,14 @@ def result_from_wire(row):
         from .inference import result_from_wire as text_result, _cache_boundaries
         checked = text_result(dict(text='', outcome='completed', usage=row['usage'], actual_model=row['actual_model'],
                                    service_tier=row['service_tier'], serving_revision=row['serving_revision'],billing=row['billing'], reasoning_summary=row.get('reasoning_summary')))
-        return LLMResult(message, checked.usage, row['outcome'], checked.actual_model, checked.service_tier,checked.serving_revision,checked.billing, _cache_boundaries(row), response, checked.reasoning_summary)
+        proposal = None
+        if row['version'] == 4:
+            marker = row['structured_proposal']
+            _exact(marker, ('call_id',))
+            if len(message.calls) != 1 or marker['call_id'] != message.calls[0].call_id:
+                raise ValueError()
+            proposal = StructuredProposal(message.calls[0])
+        return LLMResult(message, checked.usage, row['outcome'], checked.actual_model, checked.service_tier,checked.serving_revision,checked.billing, _cache_boundaries(row), response, checked.reasoning_summary, proposal)
     except (TypeError, ValueError):
         raise ContractError('Invalid rich inference result') from None
 
@@ -592,6 +663,32 @@ def _output_checks(request, result, selection=None):
     eligible = () if selection is None else cache_boundary_indexes(request, selection)
     if not set(result.applied_cache_boundaries).issubset(eligible):
         raise ProviderAccessError('unknown', 'Invalid applied cache boundary', usage=result.usage, response=result.response)
+    structured = request.payload.structured
+    proposal_mode = structured is not None and structured.encoding == 'function_calling'
+    if proposal_mode:
+        if request.payload.tools:
+            raise ProviderAccessError('unknown', 'Structured proposals cannot register executable tools',
+                code='structured_proposal_contract', origin='local_output_validation', usage=result.usage, response=result.response)
+        if result.outcome in ('refused', 'length') and not result.payload.calls and result.structured_proposal is None:
+            return
+        if (result.outcome != 'tool_calls' or len(result.payload.calls) != 1
+                or result.structured_proposal is None or result.structured_proposal.receipt is not None
+                or result.structured_proposal.call != result.payload.calls[0]
+                or result.payload.calls[0].name != structured.name):
+            raise ProviderAccessError('unknown', 'Invalid native structured proposal',
+                code='structured_proposal_contract', origin='local_output_validation', usage=result.usage, response=result.response)
+        try:
+            object_json(result.payload.calls[0].arguments)
+        except ContractError:
+            error = ProviderAccessError('unknown', 'Structured proposal requires a bounded, unambiguous JSON object',
+                code='tool_arguments_json', type='tool_call_validation', usage=result.usage,
+                response=result.response, origin='local_output_validation')
+            error.execution = 'completed'
+            raise error from None
+        return
+    if result.structured_proposal is not None:
+        raise ProviderAccessError('unknown', 'Unexpected structured proposal',
+            code='structured_proposal_contract', origin='local_output_validation', usage=result.usage, response=result.response)
     tools = {tool.name: (index, tool) for index, tool in enumerate(request.payload.tools, 1)}
     for call_index, call in enumerate(result.payload.calls, 1):
         declared = tools.get(call.name)
@@ -750,26 +847,34 @@ def validate_catalog_selection(values, request, *, clamp_output_limit=False):
 
 
 async def validate_request_instances(request):
+    from .structured_proposals import _current_verified_replay
+    permit = _current_verified_replay()
+    if permit is not None and not permit.matches(_request_row(request)):
+        raise ContractError('Structured replay request changed')
     definitions = {tool.name: schema(tool.input_schema, tool.strict) for tool in request.payload.tools}
-    for message in request.payload.messages:
+    for index, message in enumerate(request.payload.messages):
         for call in message.calls:
-            if not await async_valid_schema(definitions[call.name], object_json(call.arguments)):
+            if permit is not None and permit.allows(index, call):
+                object_json(call.arguments)
+                continue
+            if call.name not in definitions or not await async_valid_schema(definitions[call.name], object_json(call.arguments)):
                 raise ContractError('Invalid replayed tool arguments')
 
 
 async def resolve_catalog_selection(operation, request, *, clamp_output_limit=False):
     from .contracts import SetupPrerequisiteError
     from .control import OperationalError
-    optional_catalog = (request.payload.generation.max_output_tokens is None
+    proposal = request.payload.structured is not None and request.payload.structured.encoding == 'function_calling'
+    optional_catalog = (not proposal and request.payload.generation.max_output_tokens is None
                         and not any(message.cache_boundary is not None for message in request.payload.messages))
     try:
         values = await operation()
     except SetupPrerequisiteError:
-        if request.payload.generation.max_output_tokens is None:
+        if request.payload.generation.max_output_tokens is None and not proposal:
             return None
         raise
     except OperationalError as error:
-        if request.payload.generation.max_output_tokens is None and error.kind in ('unsupported', 'unavailable'):
+        if request.payload.generation.max_output_tokens is None and not proposal and error.kind in ('unsupported', 'unavailable'):
             return None
         if optional_catalog:
             if (clamp_output_limit and isinstance(error, ProviderAccessError)

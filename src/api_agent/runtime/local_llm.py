@@ -401,7 +401,17 @@ class LocalLLM(_Owner):
 
     async def complete(self, request, *, context=None):
         from api_agent.telemetry.outcomes import failure_call
-        with failure_call():
+        from api_agent.providers.structured_proposals import (
+            _bind_history_replay, _current_verified_replay, bind_structured_source_request,
+        )
+        from contextlib import nullcontext
+        definition = getattr(getattr(request, 'payload', None), 'structured', None)
+        source = (bind_structured_source_request(request) if definition is not None
+                  and definition.encoding == 'function_calling' else nullcontext())
+        with failure_call(), source:
+            if getattr(request, 'proposal_replay', None) is not None and _current_verified_replay() is None:
+                with _bind_history_replay(request) as normalized:
+                    return await self._complete_owned(normalized, context=context)
             return await self._complete_owned(request, context=context)
 
     async def _complete_owned(self, request, *, context=None):

@@ -146,6 +146,8 @@ class SharedSetupOwner(_Owner):
         self._withhold_inference_content = withhold_inference_content is True
         self._validate_request = validate_request
         self._calls = set()
+        from .structured_proposals import StructuredReplayAuthority
+        self._structured_replay_authority = StructuredReplayAuthority()
 
     @property
     def selected_identity(self):
@@ -213,6 +215,18 @@ class SharedSetupOwner(_Owner):
         return result
 
     async def complete(self, request, *, selected_identity=None):
+        from contextlib import nullcontext
+        from .structured_proposals import bind_verified_replay
+        if getattr(request, 'proposal_replay', None) is not None:
+            self._check()
+            permit = self._structured_replay_authority.consume(request)
+        else:
+            permit = None
+        scope = bind_verified_replay(permit) if permit is not None else nullcontext()
+        with scope:
+            return await self._complete_scoped(request, selected_identity=selected_identity)
+
+    async def _complete_scoped(self, request, *, selected_identity=None):
         from api_agent.workflows.inference_capture import bind_response_dispatch
         with bind_response_dispatch() as dispatch:
             try:
@@ -237,6 +251,7 @@ class SharedSetupOwner(_Owner):
 
     async def _complete_request(self, request, *, selected_identity=None):
         from .inference import async_request_to_wire, result_to_wire
+        origin_request = request
         request_wire = await async_request_to_wire(request)
         self._check()
         if self._validate_request is not None:
@@ -248,12 +263,14 @@ class SharedSetupOwner(_Owner):
         from .output_limits import with_output_limit, rejected_limit
         selection = None
         maximum = request.payload.generation.max_output_tokens
-        needs_catalog = maximum is not None or any(message.cache_boundary is not None for message in request.payload.messages)
+        needs_catalog = (maximum is not None or
+            request.payload.structured is not None and request.payload.structured.encoding == 'function_calling' or
+            any(message.cache_boundary is not None for message in request.payload.messages))
         if callable(self._describe) and (needs_catalog or self._supports_output_limit is not False):
             from .rich_inference import resolve_catalog_selection
             selection = await resolve_catalog_selection(self._describe_ready, request,
                                                         clamp_output_limit=True)
-        elif maximum is not None:
+        elif maximum is not None or request.payload.structured is not None and request.payload.structured.encoding == 'function_calling':
             raise OperationalError('unsupported')
         from .output_limits import clamp_request
         learned = self._output_limits.get(request.selected_llm)
@@ -263,6 +280,15 @@ class SharedSetupOwner(_Owner):
                                           if learned is not None else self._max_output_tokens)
         if self._validate_request is not None and effective != request:
             self._validate_request(effective)
+        if origin_request.proposal_replay is not None:
+            from .structured_proposals import admit_effective_replay
+            caps = [self._max_output_tokens]
+            if selection is not None and selection.max_output_tokens is not None:
+                caps.append(selection.max_output_tokens)
+            if learned is not None:
+                caps.append(learned)
+            self._structured_replay_authority.set_effective_ceiling(min(caps))
+            admit_effective_replay(effective)
         request = effective
         request_wire = await async_request_to_wire(request)
         async def authenticated(*, auth):
@@ -390,6 +416,9 @@ class SharedSetupOwner(_Owner):
                             if negotiate:
                                 negotiated = True
                                 request = with_output_limit(request, learned)
+                                if origin_request.proposal_replay is not None:
+                                    from .structured_proposals import admit_effective_replay
+                                    admit_effective_replay(request)
                                 request_wire = await async_request_to_wire(request)
                                 # Zero backoff still admits cancellation before redispatch.
                                 await asyncio.sleep(0)
@@ -429,7 +458,15 @@ class SharedSetupOwner(_Owner):
                 captured.release()
         from api_agent.workflows.inference_capture import withholding_inference_content
         with withholding_inference_content(self._withhold_inference_content):
-            return await self._owner.call(invoke)
+            result = await self._owner.call(invoke)
+            if result.structured_proposal is not None and origin_request.proposal_replay is None:
+                try:
+                    from .structured_proposals import current_structured_source_request
+                    return await self._structured_replay_authority.bind(origin_request, result, selection=selection,
+                        source_request=current_structured_source_request())
+                except Exception:
+                    pass  # Successful inference remains successful without optional replay authority.
+            return result
 
     async def aclose(self):
         self._context()
@@ -454,6 +491,7 @@ class SharedSetupOwner(_Owner):
             await self._credentials.aclose()
 
     async def _dispose(self):
+        self._structured_replay_authority.close()
         # Equivalent third-party session owners need only call/aclose. Their
         # aclose below owns any nested setup; prepublication uses our session.
         await self._stop_tasks()

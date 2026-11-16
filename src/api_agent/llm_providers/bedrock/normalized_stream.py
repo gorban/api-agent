@@ -188,7 +188,8 @@ class WorkerStream:
 
 
 class ParentStream:
-    def __init__(self, mode, *, selected_llm):
+    def __init__(self, mode, *, selected_llm, proposal=False):
+        self.proposal = proposal
         self.finished = False
         self.text = ''
         self.summary = None
@@ -210,9 +211,9 @@ class ParentStream:
             return (StreamEvent(TextContent(frame['text'])),)
         if set(frame) == {'kind', 'result'} and frame['kind'] == 'completed':
             result = result_from_wire(frame['result'])
-            if ''.join(part.text for part in result.payload.content) != self.text:
+            if not self.proposal and ''.join(part.text for part in result.payload.content) != self.text:
                 raise ContractError('Invalid normalized Bedrock stream')
-            if result.reasoning_summary != self.summary:
+            if not self.proposal and result.reasoning_summary != self.summary:
                 raise ContractError('Invalid normalized Bedrock summary')
             self.result = result
             self.finished = True

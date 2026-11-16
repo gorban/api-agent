@@ -15,11 +15,11 @@ K-token limits use conservative decimal units as published by AWS.
 import re
 
 from api_agent.providers.contracts import ContractError
-from api_agent.providers.llm import AvailableSelection
+from api_agent.providers.llm import AvailableSelection, StructuredFunctionProfile
 
 BASE_FEATURES = ('tools', 'temperature', 'max_output_tokens')
 # Provider-level union; individual selections remain the request authority.
-FEATURES = BASE_FEATURES + ('reasoning_effort', 'structured', 'display_reasoning')
+FEATURES = BASE_FEATURES + ('reasoning_effort', 'structured', 'structured_function', 'display_reasoning')
 _METADATA = {
     'zai.glm-5': ('GLM 5', 'glm', '5', 200000, 128000),
     'zai.glm-4.7': ('GLM 4.7', 'glm', '4.7', 203000, 128000),
@@ -130,6 +130,12 @@ def selection(identifier, api_mode='completions', endpoint='mantle'):
                                       features=features, reasoning_efforts=efforts, display_name=title,
                                       family=family, version=version)
         title, kind, context, output = metadata
+        # Runtime OpenAI-compatible named choice and Converse GPT/Claude named
+        # choice are separately request-validated, including thinking conflicts.
+        if ((kind == 'openai' and api_mode in ('responses', 'completions', 'converse'))
+                or (kind == 'anthropic' and api_mode == 'converse'
+                    and not any(x in identifier for x in ('claude-opus-5-5', 'claude-sonnet-5-5')))):
+            features += ('structured_function',)
         if ((kind == 'openai' and api_mode in ('responses', 'completions', 'converse')
                 or kind == 'anthropic' and api_mode == 'converse')
                 and identifier != 'us.anthropic.claude-opus-4-1-20250805-v1:0'):
@@ -142,9 +148,12 @@ def selection(identifier, api_mode='completions', endpoint='mantle'):
         scope = prefix if prefix in {'us', 'us-gov', 'eu', 'au', 'jp', 'in', 'global'} else 'direct'
         family += '-' + scope
         title += ' [' + scope.upper() + ']'
+        profile = (StructuredFunctionProfile(True, 'strict_all_properties') if kind in ('openai', 'oss') else
+                   StructuredFunctionProfile(None, 'converter')) if 'structured_function' in features else None
         return AvailableSelection(identifier, description='Runtime discovery does not establish API or feature availability.',
                                   features=features, reasoning_efforts=efforts, display_name=title,
-                                  family=family, version=version, context_length=context, max_output_tokens=output)
+                                  family=family, version=version, context_length=context, max_output_tokens=output,
+                                  structured_function_profile=profile)
     if (endpoint != 'mantle' or api_mode not in ('completions', 'responses') or type(identifier) is not str
             or identifier not in MODELS or api_mode == 'responses' and not identifier.startswith('openai.')):
         raise ContractError('Unsupported Bedrock model or inference route.')
@@ -160,7 +169,8 @@ def selection(identifier, api_mode='completions', endpoint='mantle'):
         description += ' Native categorical reasoning effort: low, medium, high; reasoning cannot be disabled.'
     return AvailableSelection(identifier, description=description, features=features, reasoning_efforts=efforts, display_name=title,
                               family=family, version=version, context_length=context,
-                              max_output_tokens=output)
+                              max_output_tokens=output, structured_function_profile=(
+                                  StructuredFunctionProfile(True, 'strict_all_properties') if 'structured_function' in features else None))
 
 
 def route(identifier, api_mode, endpoint='mantle'):

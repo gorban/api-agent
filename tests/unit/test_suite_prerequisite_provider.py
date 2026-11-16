@@ -524,3 +524,27 @@ def test_cleanup_budget_includes_worker_acknowledgement(context, monkeypatch):
                 time.sleep(0.1)
                 owner.close(workers_disposed=True)
     assert contribution.disposals == contribution.closed == 1
+
+
+def test_prerequisite_event_accepts_only_fixed_diagnostic_fields():
+    from api_agent.testing.suite_prerequisite_provider import validate_prerequisite_event
+
+    row = {'phase': 'error', 'seconds': 0.1, 'count': 1, 'stage': 'pool_borrow',
+           'category': 'runtime', 'correlation': '0123456789abcdef'}
+    assert validate_prerequisite_event(row) == row
+    assert validate_prerequisite_event({'phase': 'prepare', 'seconds': 0, 'correlation': '0123456789abcdef'})
+    for changed in (
+        {'stage': 'private secret'}, {'category': 'private exception'},
+        {'correlation': 'private handler'}, {'correlation': 42}, {'correlation': '0123456789ABCDEf'},
+        {'stage': 1}, {'category': []}, {'phase': 'prepare'},
+    ):
+        with pytest.raises(ValueError):
+            validate_prerequisite_event({**row, **changed})
+    with pytest.raises(ValueError):
+        validate_prerequisite_event({'phase': 'error', 'seconds': 0, 'stage': 'pool_borrow'})
+
+
+def test_prerequisite_diagnostic_pair_must_be_complete():
+    from api_agent.testing.suite_prerequisite_provider import validate_prerequisite_event
+    with pytest.raises(ValueError):
+        validate_prerequisite_event({'phase': 'error', 'seconds': 0, 'category': 'runtime'})

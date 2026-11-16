@@ -1,12 +1,12 @@
 """Small immutable text and tool vocabulary shared by inference adapters."""
 import math
 import json
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Literal
 from .control import OperationalError
 
 
-LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy", "reasoning_effort", "cache_boundaries", "display_reasoning"})
+LLM_FEATURES = frozenset({"tools", "structured", "temperature", "max_output_tokens", "cache_policy", "reasoning_effort", "cache_boundaries", "display_reasoning", "structured_function"})
 
 
 def _require(condition: bool) -> None:
@@ -50,6 +50,25 @@ class ToolCall:
 
     def __post_init__(self):
         _require(isinstance(self.call_id, str) and bool(self.call_id) and isinstance(self.name, str) and bool(self.name) and isinstance(self.arguments, str))
+
+
+@dataclass(frozen=True)
+class StructuredProposal:
+    """A real provider schema-function call; never an executable tool job."""
+    call: ToolCall = field(repr=False)
+    receipt: InitVar[object | None] = None
+
+    def __post_init__(self, receipt):
+        _require(type(self.call) is ToolCall)
+        if receipt is not None:
+            from .structured_proposals import StructuredProposalReceipt
+            _require(type(receipt) is StructuredProposalReceipt)
+        object.__setattr__(self, '_receipt', receipt)
+
+    def __getattribute__(self, name):
+        if name == 'receipt':
+            return object.__getattribute__(self, '_receipt')
+        return object.__getattribute__(self, name)
 
 
 @dataclass(frozen=True)
@@ -141,14 +160,38 @@ class GenerationOptions:
 
 
 @dataclass(frozen=True)
+class StructuredFunctionProfile:
+    """Provider-owned original named-function semantics for one selection."""
+    default_strict: bool | None
+    schema_policy: Literal['converter', 'strict_all_properties']
+
+    def __post_init__(self):
+        _require(self.default_strict is None or type(self.default_strict) is bool)
+        _require(type(self.schema_policy) is str and self.schema_policy in {'converter', 'strict_all_properties'})
+
+
+@dataclass(frozen=True)
 class StructuredOutput:
     name: str
     schema: str = field(repr=False)
     strict: bool = True
+    encoding: Literal["json_schema", "function_calling"] = "json_schema"
+    provider_tool_strict: bool | None = None
+    provider_tool_description: str | None = field(default=None, repr=False)
+    provider_tool_schema: str | None = field(default=None, repr=False)
+    function_profile: StructuredFunctionProfile | None = None
 
     def __post_init__(self):
         _require(isinstance(self.name, str) and bool(self.name) and isinstance(self.schema, str))
         _require(type(self.strict) is bool)
+        _require(type(self.encoding) is str and self.encoding in {"json_schema", "function_calling"})
+        _require(self.provider_tool_strict is None or type(self.provider_tool_strict) is bool)
+        _require(self.encoding == "function_calling" or (self.provider_tool_strict is None and self.provider_tool_description is None and self.provider_tool_schema is None and self.function_profile is None))
+        _require(self.function_profile is None or type(self.function_profile) is StructuredFunctionProfile)
+        _require(self.provider_tool_description is None or type(self.provider_tool_description) is str)
+        _require(self.provider_tool_schema is None or type(self.provider_tool_schema) is str)
+        if self.provider_tool_schema is not None:
+            _schema(self.provider_tool_schema)
         _schema(self.schema)
 
 
@@ -168,6 +211,7 @@ class ResponsePolicy:
         _require(type(self.mode) is str and self.mode in OUTPUT_MODES)
         _require(type(self.fallback) is str and self.fallback in {"allow", "reject"})
         _require(self.schema is None if self.mode == "text" else isinstance(self.schema, StructuredOutput))
+        _require(self.schema is None or self.schema.encoding == "json_schema")
 
 
 @dataclass(frozen=True)
@@ -210,6 +254,8 @@ class CompletionRequest:
         _require(_items(self.messages, Message) and bool(self.messages) and _items(self.tools, Tool) and isinstance(self.generation, GenerationOptions) and (self.structured is None or isinstance(self.structured, StructuredOutput)))
         _require(self.response is None or isinstance(self.response, ResponsePolicy))
         _require(self.structured is None or self.response is None)
+        if self.structured is not None and self.structured.encoding == "function_calling":
+            _require(not self.tools)
         _require(sum(message.cache_boundary is not None for message in self.messages) <= 4)
         _require(len({tool.name for tool in self.tools}) == len(self.tools))
 
@@ -227,8 +273,10 @@ class AvailableSelection:
     reasoning_efforts: tuple[str, ...] | None = None
 
     cache_boundary_lifetimes: tuple[int, ...] = ()
+    structured_function_profile: StructuredFunctionProfile | None = None
 
     def __post_init__(self):
+        _require(self.structured_function_profile is None or type(self.structured_function_profile) is StructuredFunctionProfile)
         _require(type(self.cache_boundary_lifetimes) is tuple and len(set(self.cache_boundary_lifetimes)) == len(self.cache_boundary_lifetimes) and all(type(value) is int and value in (300, 3600) for value in self.cache_boundary_lifetimes))
         _require(not self.cache_boundary_lifetimes or "cache_boundaries" in self.features)
         _require(isinstance(self.selected_llm, str) and bool(self.selected_llm) and isinstance(self.description, str) and isinstance(self.features, tuple) and all(type(feature) is str and feature in LLM_FEATURES for feature in self.features))
@@ -241,7 +289,12 @@ class AvailableSelection:
                      for value in (self.max_output_tokens, self.context_length)))
 
     def validate(self, request: "LLMRequest") -> None:
-        required = {name for name, enabled in (("tools", bool(request.payload.tools) or any(message.calls or message.results for message in request.payload.messages)), ("structured", request.payload.structured is not None), ("temperature", request.payload.generation.temperature is not None), ("max_output_tokens", request.payload.generation.max_output_tokens is not None), ("cache_policy", request.payload.generation.cache_policy is not None)) if enabled}
+        proposal = request.payload.structured
+        if proposal is not None and proposal.encoding == 'function_calling':
+            profile = self.structured_function_profile
+            if (profile is None or proposal.function_profile != profile or proposal.provider_tool_schema is None):
+                raise OperationalError('unsupported')
+        required = {name for name, enabled in (("structured_function", request.payload.structured is not None and request.payload.structured.encoding == "function_calling"), ("tools", bool(request.payload.tools) or any(message.calls or message.results for message in request.payload.messages)), ("structured", request.payload.structured is not None and request.payload.structured.encoding == "json_schema"), ("temperature", request.payload.generation.temperature is not None), ("max_output_tokens", request.payload.generation.max_output_tokens is not None), ("cache_policy", request.payload.generation.cache_policy is not None)) if enabled}
         maximum = request.payload.generation.max_output_tokens
         if maximum is not None and self.max_output_tokens is not None and maximum > self.max_output_tokens:
             raise OperationalError("unsupported")
@@ -257,9 +310,19 @@ class LLMRequest:
     selected_llm: str
     payload: CompletionRequest = field(repr=False)
     request_id: str = ""
+    proposal_replay: InitVar[object | None] = None
 
-    def __post_init__(self):
+    def __post_init__(self, proposal_replay):
         _require(isinstance(self.selected_llm, str) and bool(self.selected_llm) and isinstance(self.payload, CompletionRequest) and isinstance(self.request_id, str))
+        if proposal_replay is not None:
+            from .structured_proposals import StructuredProposalReceipt
+            _require(type(proposal_replay) is StructuredProposalReceipt)
+        object.__setattr__(self, '_proposal_replay', proposal_replay)
+
+    def __getattribute__(self, name):
+        if name == 'proposal_replay':
+            return object.__getattribute__(self, '_proposal_replay')
+        return object.__getattribute__(self, name)
 
 
 @dataclass(frozen=True)
@@ -306,8 +369,13 @@ class LLMResult:
     applied_cache_boundaries: tuple[int, ...] = ()
     response: ResponseEvidence | None = None
     reasoning_summary: str | None = field(default=None, repr=False)
+    structured_proposal: StructuredProposal | None = field(default=None, repr=False)
 
     def __post_init__(self):
+        _require(self.structured_proposal is None or type(self.structured_proposal) is StructuredProposal)
+        if self.structured_proposal is not None:
+            _require(isinstance(self.payload, Message) and self.outcome == "tool_calls"
+                     and self.payload.calls == (self.structured_proposal.call,))
         _require(self.reasoning_summary is None or (type(self.reasoning_summary) is str and len(self.reasoning_summary.encode('utf-8')) <= 65536))
         _require(self.response is None or isinstance(self.response, ResponseEvidence))
         _require(type(self.applied_cache_boundaries) is tuple and len(self.applied_cache_boundaries) <= 4 and len(set(self.applied_cache_boundaries)) == len(self.applied_cache_boundaries) and all(type(value) is int and 0 <= value < 64 for value in self.applied_cache_boundaries))

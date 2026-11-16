@@ -2,7 +2,7 @@
 from dataclasses import asdict
 import json
 from .contracts import ContractError
-from .llm import AvailableSelection
+from .llm import AvailableSelection, StructuredFunctionProfile
 
 _FIELDS = {'selected_llm', 'description', 'features', 'display_name', 'version',
            'max_output_tokens', 'context_length', 'family'}
@@ -20,6 +20,9 @@ def catalog_to_wire(values):
         lifetimes = row.pop('cache_boundary_lifetimes')
         if lifetimes:
             row['cache_boundary_lifetimes'] = list(lifetimes)
+        profile = row.pop('structured_function_profile')
+        if profile is not None:
+            row['structured_function_profile'] = profile
         efforts = row.pop('reasoning_efforts')
         if efforts is not None:
             row['reasoning_efforts'] = list(efforts)
@@ -37,7 +40,7 @@ def catalog_from_wire(rows):
         raise ContractError('Invalid provider catalog')
     values, seen = [], set()
     for row in rows:
-        if type(row) is not dict or set(row) - {'reasoning_efforts', 'cache_boundary_lifetimes'} != _FIELDS:
+        if type(row) is not dict or set(row) - {'reasoning_efforts', 'cache_boundary_lifetimes', 'structured_function_profile'} != _FIELDS:
             raise ContractError('Invalid provider catalog')
         for name, limit in (('selected_llm', 200), ('description', 512), ('display_name', 200), ('version', 100), ('family', 200)):
             text = row[name]
@@ -53,8 +56,16 @@ def catalog_from_wire(rows):
         efforts = row.get('reasoning_efforts')
         if efforts is not None and type(efforts) is not list:
             raise ContractError('Invalid provider catalog')
+        profile = row.get('structured_function_profile')
+        if profile is not None:
+            if type(profile) is not dict or set(profile) != {'default_strict', 'schema_policy'}:
+                raise ContractError('Invalid provider catalog')
+            try:
+                profile = StructuredFunctionProfile(**profile)
+            except (ValueError, TypeError):
+                raise ContractError('Invalid provider catalog') from None
         try:
-            value = AvailableSelection(**(row | {'features': tuple(row['features']), 'cache_boundary_lifetimes': tuple(lifetimes), 'reasoning_efforts': None if efforts is None else tuple(efforts)}))
+            value = AvailableSelection(**(row | {'structured_function_profile': profile, 'features': tuple(row['features']), 'cache_boundary_lifetimes': tuple(lifetimes), 'reasoning_efforts': None if efforts is None else tuple(efforts)}))
         except (ValueError, TypeError):
             raise ContractError('Invalid provider catalog') from None
         if value.selected_llm in seen:
