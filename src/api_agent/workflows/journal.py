@@ -235,7 +235,8 @@ def _own_expiry(end):
 
 def _expiry_route(end, source, event):
     """Whether a step's end and the edge taken from it are a declared-timeout expiry routed by its edges."""
-    return _own_expiry(end) and edge_expiry(event.get('condition', 'always'), source) is not None
+    return _own_expiry(end) and (edge_expiry(event.get('condition', 'always'), source) is not None
+                                 or edge_expiry(event.get('condition', 'always'), source, ('recoverable',)) is not None)
 
 
 def _routes_complete(projection_data, events):
@@ -252,7 +253,7 @@ def _routes_complete(projection_data, events):
     caps = {(row['owner'], row['source'], row['target'], row['condition']):
             (limits[row['bound']['key']] + row['bound']['inclusive'], row['bound'].get('counter', 'attempt'))
             for row in projection_data['edges'] if 'bound' in row}
-    starts, expirations = {}, {}
+    starts, expirations, recoveries = {}, {}, {}
     scopes, open_scopes, routes, pending, trail = {}, [], {}, {}, {}
     passes, node_outcomes, component_outcomes = {}, {}, {}
     graph_roots = 0
@@ -305,6 +306,9 @@ def _routes_complete(projection_data, events):
                 return False
             start['end'] = event
             open_scopes.pop()
+            if (_own_expiry(event) or event.get('outcome') == 'failed'
+                    and event.get('reason') == 'recoverable_node_failure'):
+                recoveries[start['owner']] = recoveries.get(start['owner'], 0) + 1
             if _own_expiry(event):
                 expirations[start['owner']] = expirations.get(start['owner'], 0) + 1
                 # The abandoned run's inner routes stop where the expiry cut them off.
@@ -324,7 +328,7 @@ def _routes_complete(projection_data, events):
             if conditions is None or event.get('condition', 'always') not in conditions:
                 return False
             cap, counter = caps.get((owner, source, target, event.get('condition')), (None, None))
-            if cap is not None and (expirations if counter == 'expirations' else starts).get(target, 0) >= cap:
+            if cap is not None and ({'expirations': expirations, 'recoveries': recoveries}.get(counter, starts)).get(target, 0) >= cap:
                 return False
             if key not in routes:
                 if source != 'START':
@@ -353,8 +357,12 @@ def _routes_complete(projection_data, events):
                                 or scope['kind'] == 'component'
                                     and component_outcomes.get(sid) == scope['end'].get('outcome')
                                     and routes.get((source, attempt)) == 'END'
-                                or _expiry_route(scope['end'], source, event)))
-                        or (scope['end'].get('outcome') == 'passed' and edge_expiry(event.get('condition', 'always'), source) == 'requires')
+                                or _expiry_route(scope['end'], source, event)
+                                or (scope['end'].get('outcome') == 'failed'
+                                    and scope['end'].get('reason') == 'recoverable_node_failure'
+                                    and edge_expiry(event.get('condition', 'always'), source, ('recoverable',)) == 'requires')))
+                        or (scope['end'].get('outcome') == 'passed' and (edge_expiry(event.get('condition', 'always'), source) == 'requires'
+                                 or edge_expiry(event.get('condition', 'always'), source, ('recoverable',)) == 'requires'))
                         or (sid in node_outcomes and node_outcomes[sid] != scope['end'].get('outcome'))
                         or (sid in component_outcomes and component_outcomes[sid] != scope['end'].get('outcome'))
                         or scope['owner'] != source
@@ -955,7 +963,7 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                     type(edge['bound']) is not dict or set(edge['bound']) - {'counter'} != {'key', 'inclusive'}
                     or edge['bound']['key'] not in {row['key'] for row in recorded_limits}
                     or type(edge['bound']['inclusive']) is not bool
-                    or edge['bound'].get('counter') not in (None, 'expirations'))):
+                    or edge['bound'].get('counter') not in (None, 'expirations', 'recoveries'))):
             raise ValueError('Invalid workflow projection edge')
     admitted_edges = {tuple(edge[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
                       for edge in projection_data['edges']}

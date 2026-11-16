@@ -11,7 +11,7 @@ from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
 from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID, timeout_owner_problem
 from .predicates import (PredicateError, backward_bound, edge_effected, edge_source, entry_problem, parse_predicate,
-                         predicate_fields, unbounded_edge_message)
+                         predicate_fields, recovery_problems, unbounded_edge_message)
 from . import session
 
 
@@ -131,7 +131,9 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
     for key, row in functions.items():
         for reserved, meaning in (('attempt', 'the engine start counter'), ('expired', 'the engine timeout expiry flag'),
                                   ('expirations', 'the engine timeout expiry counter'),
-                                  ('effected', 'the engine flag for a timeout expiry after an effect')):
+                                  ('effected', 'the engine flag for a failed run after an effect'),
+                                  ('recoverable', 'the engine recoverable failure flag'),
+                                  ('recoveries', 'the engine recovery counter')):
             if reserved in row['Output schema'].get('properties', {}):
                 layout.row_error(row, f'Output schema declares reserved field {reserved}; '
                                       f'<step>.{reserved} is {meaning}')
@@ -171,6 +173,8 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
         if (entering is None and target != 'END' and ordered.index(target) <= ordered.index(source)
                 and (predicate is None or backward_bound(predicate, source, target, limit_keys) is None)):
             layout.row_error(row, unbounded_edge_message(target))
+    for row, message in recovery_problems(layout):
+        layout.row_error(row, message)
     for rows in edge_groups.values():
         whens = {row['When'] for row in rows}
         if ('always' in whens and len(rows) > 1) or ('otherwise' in whens and 'always' in whens):

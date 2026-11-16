@@ -42,7 +42,7 @@ class Predicate:
     expiring: frozenset = frozenset()
 
     def evaluate(self, values, *, attempt=1, max_passes=1, constants=None, visits=None, expired=None,
-                 expirations=None, effected=None):
+                 expirations=None, effected=None, recoverable=None, recoveries=None):
         """``visits`` maps a step ID to its start count (an unstarted step reads 0), ``expired`` to
         whether its latest run ended at its own declared timeout (an unstarted step reads false),
         ``expirations`` to how many of its runs did and ``effected`` to whether the latest such
@@ -50,7 +50,9 @@ class Predicate:
         counters = {('attempt', step): (visits or {}).get(step, 0) for step in self.steps}
         counters.update({('expired', step): bool((expired or {}).get(step)) for step in self.expiring})
         counters.update({('expirations', step): (expirations or {}).get(step, 0) for step in self.expiring})
-        counters.update({('effected', step): bool((effected or {}).get(step)) for step in self.expiring})
+        counters.update({('effected', step): bool((effected or {}).get(step)) for step in self.steps})
+        counters.update({('recoverable', step): bool((recoverable or {}).get(step)) for step in self.steps})
+        counters.update({('recoveries', step): (recoveries or {}).get(step, 0) for step in self.steps})
         return _evaluate(self.tree.body, values, self.source_owners,
                          {'attempt': attempt, 'max_passes': max_passes}, constants or {}, counters)
 
@@ -118,12 +120,16 @@ def parse_predicate(text, fields):
 
     def contract(node):
         owner, path = _reference(node)
-        if (len(path) == 1 and path[0] in ('attempt', 'expired', 'expirations', 'effected') and owner in steps
+        if (len(path) == 1 and path[0] in ('attempt', 'expired', 'expirations', 'effected', 'recoverable', 'recoveries') and owner in steps
                 and path[0] in fields.get(owner, {})):
             raise PredicateError(f'{owner}.{path[0]} is ambiguous: {owner} also declares an output field '
                                  f'named {path[0]}; rename that field')
         if path == ('attempt',) and owner in steps:
             return {'type': 'integer'}
+        if path in (('recoverable',), ('recoveries',)) and owner in steps:
+            return {'type': 'integer' if path == ('recoveries',) else 'boolean'}
+        if path == ('effected',) and owner in steps and any(edge_expiry(row['When'], owner, ('recoverable',)) is not None for row in fields.get('__route_edges__', ()) if row['From'] == owner):
+            return {'type': 'boolean'}
         if path in (('expired',), ('expirations',), ('effected',)) and owner in steps:
             if owner not in expiring:
                 raise PredicateError(f'{owner}.{path[0]} requires {owner} to declare its own Timeouts row')
@@ -369,6 +375,7 @@ def predicate_fields(layout, source, entering=None):
     # A root Limits row is visible to every edge; a component's or node's own row only to edges
     # whose source is that step or inside it (scoped by the edge's source, not its document).
     fields[_VISITS] = {step.id: {'type': 'integer'} for step in layout.steps}
+    fields['__route_edges__'] = layout.tables.get('Edges', ())
     step_ids = {step.id for step in layout.steps}
     fields[_EXPIRING] = {row['Owner'] for row in layout.tables.get('Timeouts', ()) if row['Owner'] in step_ids}
     fields[_CONSTANTS].update({row['Key']: {'type': 'integer'} for row in layout.tables.get('Limits', ())
@@ -389,6 +396,8 @@ def backward_bound(predicate, source, target, limits):
     counters = ['attempt']
     if source == target and edge_expiry(predicate.text, source, flags=('expired',)) == 'requires':
         counters.append('expirations')
+    if source == target and edge_expiry(predicate.text, source, flags=('recoverable',)) == 'requires':
+        counters.append('recoveries')
     for node in _conjuncts(predicate.tree.body):
         if (isinstance(node, ast.Compare) and isinstance(node.ops[0], (ast.Lt, ast.LtE))
                 and isinstance(node.left, ast.Attribute) and node.left.attr in counters
@@ -458,6 +467,35 @@ def loop_edges(layout):
         if when not in ('always', 'otherwise') and not native_condition_id(when):
             bound = backward_bound(parse_predicate(when, predicate_fields(layout, source)), source, target, limit_keys)
         yield row, bound
+
+
+def recovery_problems(layout):
+    """Reject ambiguous or independently bounded recovery routes in every admitted plan."""
+    limits = {row['Key'] for row in layout.tables.get('Limits', ())}
+    for row in layout.tables.get('Functions', ()):
+        for field in ('recoverable', 'recoveries'):
+            if field in row['Output schema'].get('properties', {}):
+                yield row, f'Output schema declares reserved field {field}'
+    for step in layout.steps:
+        source = step.id
+        outgoing = [row for row in layout.tables['Edges'] if row['From'] == source]
+        recovery = [row for row in outgoing if edge_expiry(row['When'], source, ('recoverable',)) is not None]
+        if not recovery:
+            continue
+        if step.kind != 'node':
+            yield recovery[0], 'recoverable routing requires a native node'
+            continue
+        for row in recovery:
+            if edge_expiry(row['When'], source, ('recoverable',)) != 'requires':
+                yield row, f'{source}.recoverable must be a top-level positive conjunction'
+        for row in outgoing:
+            if row['To'] != source or edge_expiry(row['When'], source, ('expired', 'effected', 'recoverable')) is None:
+                continue
+            predicate = parse_predicate(row['When'], predicate_fields(layout, source))
+            bound = backward_bound(predicate, source, source, limits)
+            if (edge_expiry(row['When'], source, ('recoverable',)) != 'requires'
+                    or bound is None or bound[2] != 'recoveries'):
+                yield row, 'recovery replay requires a recoverable guard and recoveries bound'
 
 
 def condition_constants(predicate):

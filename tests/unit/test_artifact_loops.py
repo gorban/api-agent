@@ -131,3 +131,36 @@ def test_a_limits_table_must_be_a_list_of_rows(loop_plan):
 
     with pytest.raises(ArtifactRejected, match='invalid limit rows'):
         load_built(plan, edited(plan.plan, mutate))
+
+
+def test_compiled_plan_rejects_a_negated_recovery_guard(loop_plan):
+    plan, _ = loop_plan
+
+    def mutate(value):
+        entries = value['layout']['tables']['$m']
+        position = next(i for i, (name, _) in enumerate(entries) if name == 'Edges')
+        rows = [dict(row['$m']) for row in entries[position][1]]
+        row = next(row for row in rows if row['From'] == 'verify' and row['To'] == 'accept')
+        row['When'] = 'not verify.recoverable'
+        entries[position][1] = [{'$m': sorted(row.items())} for row in rows]
+
+    with pytest.raises(ArtifactRejected, match='top-level positive conjunction'):
+        load_built(plan, edited(plan.plan, mutate))
+
+
+def test_compiled_plan_rejects_reserved_recovery_output_field(loop_plan):
+    plan, _ = loop_plan
+
+    def mutate(value):
+        entries = value['layout']['tables']['$m']
+        position = next(i for i, (name, _) in enumerate(entries) if name == 'Functions')
+        row = dict(entries[position][1][0]['$m'])
+        schema = dict(row['Output schema']['$m'])
+        properties = dict(schema['properties']['$m'])
+        properties['recoveries'] = {'$m': [['type', 'integer']]}
+        schema['properties'] = {'$m': sorted(properties.items())}
+        row['Output schema'] = {'$m': sorted(schema.items())}
+        entries[position][1][0] = {'$m': sorted(row.items())}
+
+    with pytest.raises(ArtifactRejected, match='reserved field recoveries'):
+        load_built(plan, edited(plan.plan, mutate))
