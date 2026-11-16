@@ -45,6 +45,12 @@ class WorkflowError(RuntimeError):
     pass
 
 
+class RecoverableNodeFailure(WorkflowError):
+    """A content-free native failure eligible for declared bounded recovery."""
+    def __init__(self):
+        super().__init__('Recoverable node failure')
+
+
 class _SchemaRejection(WorkflowError):
     def __init__(self, node, direction, errors, schema, value):
         self.errors = errors
@@ -220,6 +226,7 @@ class NodeContext:
     request: object = None
     resources: object = None
     prompt_texts: object = field(default_factory=lambda: MappingProxyType({}))
+    recoveries: int = 0
     _tools: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -237,6 +244,11 @@ class NodeContext:
     def _dispatched(self):
         invocation = self._tools._invocation if self._tools is not None else None
         return bool(self._effects or (invocation is not None and self.node_id in getattr(invocation, 'effects', ())))
+
+    @property
+    def effect_dispatched(self):
+        """Whether engine replay-safety evidence records a non-idempotent dispatch for this node."""
+        return self._dispatched()
 
     def response_request(self, messages, *, tools=(), generation=None, strict=True):
         """Explicitly bind a request to this node's generated-response contract."""
@@ -338,6 +350,7 @@ def _entered(state, step_id):
     """``state`` as ``step_id`` starts: one more start counted and its expiry flags cleared."""
     return dict(state, starts=_started(state.get('starts', {}), step_id),
                 expired={key: value for key, value in state.get('expired', {}).items() if key != step_id},
+                recoverable={key: value for key, value in state.get('recoverable', {}).items() if key != step_id},
                 effected={key: value for key, value in state.get('effected', {}).items() if key != step_id})
 
 
@@ -381,6 +394,8 @@ class _State(TypedDict):
     starts: dict
     expired: dict
     expirations: dict
+    recoverable: dict
+    recoveries: dict
     effected: dict
 
 
@@ -492,6 +507,10 @@ class Workflow:
         for source, when in self._predicates:
             if edge_expiry(when, source) is not None:
                 self._expiry.setdefault(source, set()).add(when)
+        self._recovery = {}
+        for source, when in self._predicates:
+            if edge_expiry(when, source, ('recoverable',)) is not None:
+                self._recovery.setdefault(source, set()).add(when)
         self.schema = _State
 
     def _loop_recursion_limit(self, layout):
@@ -545,6 +564,7 @@ class Workflow:
             if unknown:
                 raise LayoutError(f'{definition.entry}:{row["line"]}: Functions schema names no State field: {min(unknown)}')
         self.limit_values = resolve_state_limits(definition, self.config)
+        self._recovery = {}
         self._expiry = {}
         for row in definition.timeouts:
             if 'Expired' in row:
@@ -692,6 +712,7 @@ class Workflow:
             with structural_scope(budget.id):
                 outcome = 'failed'
                 expired = False
+                recoverable = False
                 try:
                     self._event('scope_start', **common)
                     yield budget
@@ -704,14 +725,17 @@ class Workflow:
                         scope_ids=(budget.id,), terminal=owner == 'GRAPH' and metadata.get('kind') == 'graph' and parent_id is None,
                         deadline_expired=budget.deadline is not None and time.monotonic() >= budget.deadline)
                     outcome = 'cancelled' if failed.state == OutcomeState.CANCELLED else 'failed'
-                    expired = (isinstance(error, (asyncio.CancelledError, TimeoutError))
-                               and owner in self._expiry and self._own_expiry(owner, budget))
+                    recoverable = (metadata.get('kind') == 'node' and failed.state != OutcomeState.CANCELLED
+                                   and isinstance(error, RecoverableNodeFailure) and budget.remaining != 0
+                                   and not asyncio.current_task().cancelling())
+                    expired = (isinstance(error, (asyncio.CancelledError, TimeoutError, RecoverableNodeFailure))
+                               and (owner in self._expiry or owner in self._recovery) and self._own_expiry(owner, budget))
                     raise
                 finally:
                     try:
                         self._event('scope_end', **common, stopped_ms=time.time() * 1000,
                                     elapsed=time.monotonic() - budget.started, outcome=outcome,
-                                    **({'reason': 'declared_timeout_expired'} if expired else {}))
+                                    **({'reason': 'declared_timeout_expired'} if expired else {'reason': 'recoverable_node_failure'} if recoverable else {}))
                     except Exception:
                         if outcome == 'passed':
                             raise
@@ -754,7 +778,8 @@ class Workflow:
         apply: no other route may replay the step.
         """
         expired, effected = state.get('expired', {}), state.get('effected', {})
-        own = bool(expired.get(source))
+        recoverable = state.get('recoverable', {})
+        own = bool(expired.get(source) or recoverable.get(source))
         # Expired components discard their descendants, but retain a result
         # from an earlier completed visit. A node discards its own prior output.
         abandoned = ({step.id for step in self.layout.steps if self._owned_by(step, source)}
@@ -763,27 +788,29 @@ class Workflow:
             try:
                 return self._condition(row['When'], state['values'], source=source, ancestry=state['ancestry'],
                                        visits=state.get('starts'), expired=expired,
-                                       expirations=state.get('expirations'), effected=effected, abandoned=abandoned)
+                                       expirations=state.get('expirations'), effected=effected,
+                                       recoverable=recoverable, recoveries=self._turn_state.get()['recoveries'], abandoned=abandoned)
             except MissingPredicateField as error:
                 if error.owner not in abandoned:
                     raise
                 return False
         choices = [row for row in edges if row['When'] not in ('always', 'otherwise')
-                   and (not own or row['When'] in self._expiry[source])
+                   and (not own or expired.get(source) and row['When'] in self._expiry.get(source, ())
+                        or row['When'] in self._recovery.get(source, ()))
                    and (not effected.get(source) or edge_effected(row['When'], source)) and matches(row)]
         if not own:
             choices = choices or [row for row in edges if row['When'] in ('always', 'otherwise')]
         return choices
 
     def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None, expired=None,
-                   expirations=None, effected=None, abandoned=()):
+                   expirations=None, effected=None, recoverable=None, recoveries=None, abandoned=()):
         if (source, identifier) in self._predicates:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
             results = {key: value for key, value in self._turn_state.get()['results'].items() if key not in abandoned}
             result = predicate.evaluate({**values, **results}, attempt=attempt,
                                         max_passes=maximum, visits=visits, expired=expired,
-                                        expirations=expirations, effected=effected,
+                                        expirations=expirations, effected=effected, recoverable=recoverable, recoveries=recoveries,
                                         constants={**self.pass_constants, **self.limit_values})
         else:
             result = self.conditions[identifier](deepcopy(values))
@@ -904,7 +931,7 @@ class Workflow:
                 if item['When'] == 'always' or self._condition(item['When'], values)), services,
                 budget.id, state.get('attempt_id'), row, state.get('_correction'),
                 state.get('_rejected'), state.get('_correction_attempt', 0), state.get('_guard_attempt', 1),
-                state.get('_repair_limit'))
+                state.get('_repair_limit'), recoveries=self._turn_state.get()['recoveries'].get(step.id, 0))
             state['_node_context'] = context
             self._turn_state.get()['contexts'][step.id] = context
             for binding in bindings:
@@ -945,6 +972,9 @@ class Workflow:
                               else await offload(function.invoke, inputs, context))
                     if inspect.isawaitable(result):
                         result = await result
+                except RecoverableNodeFailure as error:
+                    state['_native_recoverable'] = error
+                    raise
                 finally:
                     from .evidence_finalization import finalize
                     try:
@@ -991,6 +1021,23 @@ class Workflow:
                     if expired is None:
                         raise
                     return expired
+                except RecoverableNodeFailure as error:
+                    if budget is None or current.get('_native_recoverable') is not error:
+                        raise
+                    if asyncio.current_task().cancelling():
+                        raise asyncio.CancelledError
+                    from api_agent.telemetry.outcomes import failure_outcome, OutcomeState
+                    if failure_outcome(error).state == OutcomeState.CANCELLED:
+                        raise
+                    if budget.remaining == 0:
+                        expired = self._expired_state(step.id, budget, (step.id,), current)
+                        if expired is not None:
+                            return {key: value for key, value in expired.items() if not key.startswith('_')}
+                        self._check_deadline(budget)
+                    recovered = self._recoverable_state(step.id, budget, current)
+                    if recovered is None:
+                        raise
+                    return recovered
                 except CandidateCorrection as error:
                     context = current.get('_node_context')
                     if frame is None:
@@ -1132,13 +1179,17 @@ class Workflow:
         that dispatched effects that is only an edge requiring ``<owner>.effected``, and the owner
         is sealed: it cannot start again in this turn.
         """
-        if owner not in self._expiry or not self._own_expiry(owner, budget):
+        if owner not in self._expiry and owner not in self._recovery or not self._own_expiry(owner, budget):
             return None
         contexts = self._turn_state.get()['contexts']
         effected = any(context._dispatched() for context in map(contexts.get, nodes) if context is not None)
         expirations = state.get('expirations', {})
+        recoveries = self._turn_state.get()['recoveries']
+        recoveries[owner] = recoveries.get(owner, 0) + 1
         after = dict(state, visit_id=budget.id, expired={**state.get('expired', {}), owner: True},
                      expirations={**expirations, owner: expirations.get(owner, 0) + 1},
+                     recoverable={**state.get('recoverable', {}), owner: True},
+                     recoveries=dict(recoveries),
                      effected={**state.get('effected', {}), owner: effected},
                      values={key: value for key, value in state['values'].items() if key != owner and key not in nodes})
         edges = [row for row in self.layout.tables['Edges'] if row['From'] == owner]
@@ -1148,9 +1199,30 @@ class Workflow:
             self._turn_state.get()['sealed'].add(owner)
         return after
 
+    def _recoverable_state(self, owner, budget, state):
+        if owner not in self._recovery:
+            return None
+        contexts = self._turn_state.get()['contexts']
+        context = contexts.get(owner)
+        effected = context is not None and context._dispatched()
+        recoveries = self._turn_state.get()['recoveries']
+        recoveries[owner] = recoveries.get(owner, 0) + 1
+        after = dict(state, visit_id=budget.id,
+                     recoverable={**state.get('recoverable', {}), owner: True},
+                     recoveries=dict(recoveries),
+                     effected={**state.get('effected', {}), owner: effected},
+                     values={key: value for key, value in state['values'].items() if key != owner})
+        after = {key: value for key, value in after.items() if not key.startswith('_')}
+        edges = [row for row in self.layout.tables['Edges'] if row['From'] == owner]
+        if not self._route_choices(owner, edges, after):
+            return None
+        if effected:
+            self._turn_state.get()['sealed'].add(owner)
+        return after
+
     def _check_unsealed(self, step_id):
         if step_id in self._turn_state.get()['sealed']:
-            raise WorkflowError(f'Step {step_id} cannot start again: its expired run dispatched effects')
+            raise WorkflowError(f'Step {step_id} cannot start again: its failed run dispatched effects')
 
     def _expiry_update(self, owner, state):
         expired, expirations = self._expiry[owner]
@@ -1605,7 +1677,7 @@ class Workflow:
         history = InferenceHistory()
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
                                                   'contexts': {}, 'budgets': {}, 'runs': [], 'exits': {}, 'results': {},
-                                                  'sealed': set()})
+                                                  'sealed': set(), 'recoveries': {}})
         completed = False
         try:
             selected_journal = self._journal.get()
@@ -1683,7 +1755,7 @@ class Workflow:
                 self._turn_state.get()['session'] = session
             prompts = self._prompt_texts()
             result = await self.graph.ainvoke(dict(values={'START': deepcopy(update)}, ancestry=(),
-                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}, expired={}, expirations={}, effected={}),
+                feedback={}, previous={}, prompts=prompts, visit_id=None, attempt_id=None, starts={}, expired={}, expirations={}, recoverable={}, recoveries={}, effected={}),
                 {'recursion_limit': self._recursion_limit})
             if commit is not None:
                 commit.merged = self._merge_session(session, self._turn_state.get()['runs'])

@@ -99,7 +99,8 @@ class _WorkflowStepBridge:
         # as the source when rebuilding that attribution.
         authoritative = packet.get('version') == 1 and 'projection' in packet
         steps = scope_steps(packet.get('events', []), allow_partial=(
-            authoritative and packet.get('completeness') == 'partial'))
+            authoritative and packet.get('completeness') == 'partial'),
+            projection=packet['projection'] if authoritative and packet.get('completeness') == 'complete' else None)
         invocation = packet['invocation_id'] if authoritative else None
         if authoritative:
             for step in steps:

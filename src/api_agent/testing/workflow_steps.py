@@ -121,7 +121,7 @@ def bubble_attention(step):
             return
 
 
-def _recover_scope_attempts(scopes, rows, attempts):
+def _recover_scope_attempts(scopes, rows, attempts, replay_links=()):
     """Only an observed successful retry in the same controller recovers a visit."""
     def mark(step, replacement):
         if step['status'] == 'failed':
@@ -132,6 +132,17 @@ def _recover_scope_attempts(scopes, rows, attempts):
 
     def failed(step):
         return step['status'] == 'failed' or any(failed(child) for child in step['steps'])
+
+    resolved = {}
+    for failed_id, successor_id in reversed(tuple(replay_links)):
+        successor = scopes[successor_id]
+        replacement = resolved.get(successor_id)
+        if (replacement is None and successor['end'] is not None
+                and successor['end']['outcome'] == 'passed' and not failed(rows[successor_id])):
+            replacement = successor_id
+        if replacement is not None:
+            resolved[failed_id] = replacement
+            mark(rows[failed_id], replacement)
 
     for identifier, scope in reversed(tuple(scopes.items())):
         parent = scopes.get(scope['parent_id'])
@@ -164,7 +175,7 @@ def _recover_scope_attempts(scopes, rows, attempts):
                 break
 
 
-def scope_steps(events, *, allow_partial=False):
+def scope_steps(events, *, allow_partial=False, projection=None):
     """An ended scope needs a real start and explicit outcome, never a heartbeat."""
     from api_agent.workflows.tool_observations import validate_tool_events
     validate_tool_events(events)
@@ -351,7 +362,36 @@ def scope_steps(events, *, allow_partial=False):
                                              and value >= 0 for value in values) else None
             rows[identifier]['parameters'].append(dict(name='inclusive_' + name,
                                                        value=str(amount) if amount is not None else 'unknown'))
-    _recover_scope_attempts(scopes, rows, attempts)
+    replay_links = []
+    if projection is not None:
+        from api_agent.workflows.journal import _routes_complete
+        if _routes_complete(projection, events):
+            declared = {(edge['owner'], edge['source'], edge['target'], edge['condition'])
+                        for edge in projection['edges']
+                        if edge.get('bound', {}).get('counter') == 'recoveries'}
+            pending = {}
+            for event in events:
+                if event.get('event') == 'edge':
+                    owner, source, target = event.get('owner'), event.get('source'), event.get('target')
+                    visit = event.get('visit_id')
+                    scope = scopes.get(visit)
+                    if (scope is not None and source == target == scope['owner']
+                            and (owner, source, target, event.get('condition')) in declared
+                            and scope['end'] is not None and scope['end']['outcome'] == 'failed'
+                            and scope.get('attempt_id') == event.get('attempt_id')):
+                        pending[scope['parent_id']] = visit
+                elif event.get('event') == 'scope_start':
+                    parent_id = event.get('parent_id')
+                    previous = pending.pop(parent_id, None)
+                    if previous is not None:
+                        replay_links.append((previous, event['scope_id']))
+                elif event.get('event') == 'scope_end':
+                    pending.pop(event.get('scope_id'), None)
+    replay_counts = {}
+    for previous, successor in replay_links:
+        replay_counts[successor] = replay_counts.get(previous, 0) + 1
+        rows[successor]['parameters'].append(dict(name='node_recovery_replays', value=str(replay_counts[successor])))
+    _recover_scope_attempts(scopes, rows, attempts, replay_links)
     for root in roots:
         bubble_attention(root)
     return roots

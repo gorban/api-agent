@@ -768,6 +768,37 @@ rows that read results are part of the declaration identity, and compiled plans 
 them: a plan whose `START` row does not name a direct child of its owner is rejected when
 it loads.
 
+### Recoverable native node failures in Bindings graphs
+
+A native node may signal a known, content-free recoverable failure by raising
+`RecoverableNodeFailure()` from `api_agent.workflows`. Declare its recovery route explicitly:
+
+```markdown
+| From | To | When |
+| --- | --- | --- |
+| work | outcome_unknown | work.recoverable and work.effected |
+| work | work | work.recoverable and work.recoveries < WORK_RECOVERY_PASSES |
+| work | failed | work.recoverable and work.recoveries >= WORK_RECOVERY_PASSES |
+| work | next | otherwise |
+```
+
+`work.recoverable` is true for the node's latest typed failure or its own declared
+expiry. `work.recoveries` counts both in the current turn; successful visits do not
+consume the allowance. `context.recoveries` gives the native node its prior count.
+These names are reserved output fields. A typed failure does not set `work.expired` or
+increment `work.expirations`; those fields continue to describe actual deadlines only.
+Only an explicit positive recoverable condition can route a typed failure, and no failed
+output is committed. The fallback is for successful visits. The self-edge must use the
+shared counter and a declared limit; other expiry self-edges cannot bypass it. An inclusive
+`<= LIMIT` bound treats the limit as the number of replays, including zero. An effectful
+failure may take only an explicit `work.effected` edge, and the node is sealed against
+later replay in the turn. `context.effect_dispatched` reports the same conservative dispatch state to
+the node for safe outcome reporting; it can remain true on a later visit in the same turn. External cancellation and ancestor deadlines are not recoverable.
+
+This feature applies to Bindings graphs and native nodes. Typed-state graphs do not
+interpret this signal and propagate it as a failure. Ordinary exceptions are never retried
+by this feature. Retain any safe diagnostic facts separately; the exception takes no data.
+
 ### Timeout expiry routing in Bindings graphs
 
 A node or component with its own `## Timeouts` row (an `Owner` that is the step ID, not
@@ -825,8 +856,7 @@ failing the turn:
   idempotent, or `mark_effect`) is never replayed or continued as if nothing happened, because
   the write may or may not have applied. Its expiry leaves only by an edge that requires
   `<step>.effected`, the engine flag that is true when the expired run had recorded an effect
-  (it implies `<step>.expired`, and a component is effected when any step it owns dispatched
-  one). No other expiry edge, replay edge included, applies to such a run, and without an
+  (a component is effected when any step it owns dispatched one). No other expiry edge, replay edge included, applies to such a run, and without an
   `.effected` edge the turn fails with the `TimeoutError`. Declare that route to a target that
   answers for the uncertain outcome:
 
@@ -839,7 +869,7 @@ failing the turn:
   later start of that step (or of a component that owns it) in the same turn fails with
   `cannot start again`, so no route can replay the write. A run that expired before any effect
   is replayed and exhausted as above. Like `expired`, `effected` is reserved in `Output`
-  schemas and needs the step's own `Timeouts` row. Typed-state graphs (`Expired` and
+  schemas and needs the step's own `Timeouts` row unless the node declares recoverable edges. Typed-state graphs (`Expired` and
   `Expirations` columns) keep failing the turn after an effect.
 - A node inside a guarded component is routed within the pass, and the guard and pass
   limits apply to what follows. A guarded component's expiry abandons all its passes and
