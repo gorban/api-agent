@@ -42,6 +42,7 @@ class ComponentProgress:
 
 _sink = ContextVar('component_progress_sink', default=None)
 _scope = ContextVar('component_timeout_scope', default=None)
+_enforced = ContextVar('component_timeout_enforced', default=None)
 _clock = time.monotonic
 
 
@@ -223,5 +224,15 @@ async def component_timeout(name, timeout=None):
         remaining = budget.remaining
         if remaining == 0:
             raise TimeoutError('Component deadline already expired')
-        async with asyncio.timeout(remaining):
+        deadline = math.inf if budget.deadline is None else budget.deadline
+        task, enclosing = asyncio.current_task(), _enforced.get()
+        if enclosing is not None and enclosing[1] is task and deadline >= enclosing[0]:
+            # A second timer for the same deadline could fire alone and hide the enclosing scope's cancellation.
             yield budget
+            return
+        token = _enforced.set((deadline, task))
+        try:
+            async with asyncio.timeout(remaining):
+                yield budget
+        finally:
+            _enforced.reset(token)
