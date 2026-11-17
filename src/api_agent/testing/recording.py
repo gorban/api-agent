@@ -435,7 +435,10 @@ class RunRecorder:
                     'mode': self.identity.mode, 'started_at': _timestamp(self.identity.started_at),
                     'finished_at': _timestamp(datetime.now(timezone.utc)), 'status': status,
                     'files': files, 'metadata': safe_metadata}
-        self._write('manifest.json', json.dumps(manifest, sort_keys=True).encode())
+        from .manifest_budget import check_manifest_budget
+        body = json.dumps(manifest, sort_keys=True).encode()
+        check_manifest_budget(files, body)
+        self._write('manifest.json', body)
         self._finalized = True
         return manifest
 

@@ -313,6 +313,9 @@ class RunStorage:
                 or not isinstance(run_id, str) or str(UUID(run_id)) != run_id):
             raise ValueError('Invalid run identity')
         names = manifest['files']
+        from .manifest_budget import MAX_MANIFEST_BYTES, MAX_MANIFEST_FILES
+        if isinstance(names, dict) and len(names) > MAX_MANIFEST_FILES:
+            raise ValueError('Allure manifest exceeds its publication budget')
         if not isinstance(names, dict) or any(
                 not isinstance(name, str) or not name or name in {'.', '..', 'manifest.json'}
                 or any(c in name for c in '/\\\0') for name in names):
@@ -323,7 +326,9 @@ class RunStorage:
             with ExitStack() as sources:
                 source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 sources.enter_context(_DescriptorCleanup(source_fd))
-                manifest_body = self._read_source('manifest.json', directory_fd=source_fd)
+                manifest_body = self._read_source('manifest.json', directory_fd=source_fd, max_bytes=MAX_MANIFEST_BYTES)
+                if len(manifest_body) > MAX_MANIFEST_BYTES:
+                    raise ValueError('Allure manifest exceeds its publication budget')
                 if json.loads(manifest_body) != manifest:
                     raise ValueError('Manifest does not match finalized metadata')
                 failed = False
@@ -378,7 +383,7 @@ class RunStorage:
         prefix = f'{self.prefix}/{repo}/'
         rows = []
         try:
-            from api_agent.telemetry.history import MAX_BYTES
+            from .manifest_budget import MAX_MANIFEST_BYTES, MAX_MANIFEST_FILES
             client = self._client()
             token = None
             seen_tokens = set()
@@ -402,8 +407,8 @@ class RunStorage:
                     try:
                         body = client.get_object(Bucket=self.bucket, Key=key)['Body']
                         with _ResourceCleanup(body):
-                            data = body.read(MAX_BYTES + 1)
-                        if len(data) > MAX_BYTES:
+                            data = body.read(MAX_MANIFEST_BYTES + 1)
+                        if len(data) > MAX_MANIFEST_BYTES:
                             raise ValueError('Oversized history manifest')
                         manifest = json.loads(data)
                         valid_id = str(UUID(manifest.get('run_id'))) == manifest.get('run_id')
@@ -411,7 +416,7 @@ class RunStorage:
                         started = datetime.fromisoformat(manifest.get('started_at').replace('Z', '+00:00'))
                         valid_time = finished.tzinfo is not None and started.tzinfo is not None and finished >= started
                         files = manifest.get('files')
-                        valid_files = isinstance(files, dict) and all(
+                        valid_files = isinstance(files, dict) and len(files) <= MAX_MANIFEST_FILES and all(
                             isinstance(name, str) and name and name not in {'.', '..', 'manifest.json'} and
                             not any(c in name for c in '/\\\0') and isinstance(digest, str) and
                             len(digest) == 64 and all(c in '0123456789abcdef' for c in digest)
