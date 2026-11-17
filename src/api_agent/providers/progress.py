@@ -226,13 +226,14 @@ async def component_timeout(name, timeout=None):
             raise TimeoutError('Component deadline already expired')
         deadline = math.inf if budget.deadline is None else budget.deadline
         task, enclosing = asyncio.current_task(), _enforced.get()
-        if enclosing is not None and enclosing[1] is task and deadline >= enclosing[0]:
+        if (enclosing is not None and enclosing[1] is task and not enclosing[2].expired()
+                and deadline >= enclosing[0]):
             # A second timer for the same deadline could fire alone and hide the enclosing scope's cancellation.
             yield budget
             return
-        token = _enforced.set((deadline, task))
-        try:
-            async with asyncio.timeout(remaining):
+        async with asyncio.timeout(remaining) as timer:
+            token = _enforced.set((deadline, task, timer))
+            try:
                 yield budget
-        finally:
-            _enforced.reset(token)
+            finally:
+                _enforced.reset(token)
