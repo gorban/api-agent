@@ -98,13 +98,11 @@ def test_empty_local_destinations_keep_s3_and_cleanup_staging(tmp_path, monkeypa
                   TOKEN_USAGE_CSV_ENABLED=True, TOKEN_USAGE_CSV='')
     monkeypatch.chdir(tmp_path)
     staging = []
-    original = recorded.tempfile.TemporaryDirectory
-    def temporary(*args, **kwargs):
-        value = original(*args, **kwargs)
-        if kwargs.get('prefix') == 'api-agent-allure-':
-            staging.append(Path(value.name))
-        return value
-    monkeypatch.setattr(recorded.tempfile, 'TemporaryDirectory', temporary)
+    class CaptureRecorder(recorded.RunRecorder):
+        def __init__(self, directory, *args, **kwargs):
+            staging.append(directory)
+            super().__init__(directory, *args, **kwargs)
+    monkeypatch.setattr(recorded, 'RunRecorder', CaptureRecorder)
     s3 = FakeS3()
     s3.fail = storage_failure
     storage = RunStorage('synthetic', client=s3, secondary_directory='')
@@ -116,7 +114,7 @@ def test_empty_local_destinations_keep_s3_and_cleanup_staging(tmp_path, monkeypa
     assert ('Allure publication failed:' in capsys.readouterr().err) is storage_failure
     assert result.persisted is not storage_failure
     assert result.directory is None
-    assert len(staging) == 1 and not staging[0].exists()
+    assert len(staging) == 1 and not staging[0].parents[1].exists()
     assert not list(tmp_path.iterdir())
     if not storage_failure:
         names = {key.rsplit('/', 1)[-1] for key in s3.objects}

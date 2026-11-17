@@ -1118,6 +1118,7 @@ def run_integration_tests(context, tests, **options):
         raise ValueError('E2E coverage diagnostic requires owned shutdown; disable retained DEBUG inspection')
     logical = {test.id: test for test in tests}
     histories = {test.id: [] for test in tests}
+    emitted_logical = set()
     attempts, chunks, inspections = [], [], []
     pending = tests
     admitted_profiles = deepcopy(options.get('resolved_test_profiles'))
@@ -1158,6 +1159,19 @@ def run_integration_tests(context, tests, **options):
                 # changes. This keeps journal validation and Allure history stable.
                 if row.identity is not None:
                     key = row.identity.id
+                    if row.kind == 'test_finished':
+                        previous = histories[key]
+                        status, incomplete = confirmation_outcome(
+                            [attempt.status for attempt in previous] + [row.status], allowance)
+                        if not incomplete and key not in emitted_logical and callbacks['on_event'] is not None:
+                            # Mark first so a failing observer cannot cause replay
+                            # during final aggregation. Recording remains in on_result.
+                            emitted_logical.add(key)
+                            callbacks['on_event'](RunnerEvent(
+                                'test_finished', row.repo, logical[key], status,
+                                sum(attempt.duration for attempt in previous) + row.duration,
+                                row.traceback))
+                        return
                     if row.kind in {'test_started', 'component_progress'}:
                         # Live progress belongs to the collected UI row; immutable
                         # evidence below still belongs to its physical attempt.
@@ -1228,8 +1242,10 @@ def run_integration_tests(context, tests, **options):
         outcomes = execution.tests
         if callbacks['on_event'] is not None:
             for row in outcomes:
-                callbacks['on_event'](RunnerEvent('test_finished', row.identity.repo, row.identity,
-                    row.status, row.duration, row.traceback))
+                if row.identity.id not in emitted_logical:
+                    emitted_logical.add(row.identity.id)
+                    callbacks['on_event'](RunnerEvent('test_finished', row.identity.repo, row.identity,
+                        row.status, row.duration, row.traceback))
         if options.get('cancel_event') is not None and options['cancel_event'].is_set():
             cancelled = True
             execution = replace(execution, exit_code=130, cancelled=True)

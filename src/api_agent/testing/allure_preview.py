@@ -7,7 +7,7 @@ from api_agent.providers.progress import report_timeout_sync
 from .storage import RunStorage
 
 
-MAX_FILES = 4096
+from .manifest_budget import MAX_MANIFEST_FILES as MAX_FILES
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
 
@@ -77,6 +77,8 @@ def emit_snapshot(recorder, result_files, callback, *, manifest=None, version=1)
                 if any(hashlib.sha256(files[name]).hexdigest() != digest
                        for name, digest in manifest['files'].items()):
                     raise ValueError('Viewer snapshot integrity mismatch')
+            from .manifest_budget import check_manifest_budget
+            check_manifest_budget(manifest['files'], json.dumps(manifest, sort_keys=True).encode())
             from .allure_viewer import PreviewSnapshot
             callback(PreviewSnapshot(files, deepcopy(manifest), dict(result_files), preview))
     except Exception:
