@@ -9,6 +9,7 @@ from copy import deepcopy
 from contextlib import ExitStack
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 from time import monotonic
@@ -255,8 +256,14 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
     identity = RunIdentity.create(repository_label(context, context.owner_root), config.get('TUI_MODE', 'integration'))
     with ExitStack() as resources:
         local_directory = config.get('ALLURE_RESULTS_DIR')
-        root = local_directory or resources.enter_context(
-            tempfile.TemporaryDirectory(prefix='api-agent-allure-'))
+        temporary_root = None
+        retain_temporary = [False]
+        if local_directory:
+            root = local_directory
+        else:
+            temporary_root = tempfile.mkdtemp(prefix='api-agent-allure-')
+            root = temporary_root
+            resources.callback(lambda: None if retain_temporary[0] else shutil.rmtree(temporary_root))
         directory = Path(root) / identity.repo / identity.run_id
         if evidence_boundary is None:
             evidence_boundary = EmissionBoundary(ContentPolicy(True))
@@ -594,16 +601,22 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 shared.append(('Suite prerequisite diagnostics', 'prerequisite-events.json', 'application/json'))
             if has_workflow_accounting:
                 shared.append(('Workflow accounting join', 'workflow-accounting-join.json', 'application/json'))
-            manifest = recorder.finalize(status=status, shared_artifacts=tuple(shared),
-                prerequisite_events=prerequisite_events,
-                **({'e2e_reruns': result.e2e_reruns} if identity.mode == 'e2e' else {}))
-            from .allure_preview import emit_snapshot
-            emit_snapshot(recorder, {logical_owners[key]: value for key, value in recording_ids.items()},
-                          on_snapshot, manifest=manifest)
-            estimator.ingest(directory, manifest)
+            from .manifest_budget import ManifestBudgetError
+            phase = 'finalize'
             try:
+                manifest = recorder.finalize(status=status, shared_artifacts=tuple(shared),
+                    prerequisite_events=prerequisite_events,
+                    **({'e2e_reruns': result.e2e_reruns} if identity.mode == 'e2e' else {}))
+                phase = 'prepare'
+                from .allure_preview import emit_snapshot
+                emit_snapshot(recorder, {logical_owners[key]: value for key, value in recording_ids.items()},
+                              on_snapshot, manifest=manifest)
+                estimator.ingest(directory, manifest)
+                phase = 'persist'
                 storage.persist(directory, manifest)
             except Exception as error:
+                if phase != 'persist' and not isinstance(error, ManifestBudgetError):
+                    raise
                 from .suite_lock import _cleanup_receipts
                 if any(_cleanup_receipts(error)):
                     # A reporting outcome must never erase a live disposal duty.
@@ -615,8 +628,13 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
                 import sys
                 scrub = CredentialScrubber(boundary=evidence_boundary)
                 detail = str(error) if type(error) is StorageError else _diagnostic(error, 'Allure publication')
-                message = scrub(f'Allure publication failed: {detail}\n'
-                                'Local evidence availability and integrity are unverified.\n')
+                if isinstance(error, ManifestBudgetError):
+                    retain_temporary[0] = True
+                    detail = 'Allure manifest exceeds its publication budget'
+                    location = f'Unpublished local staging retained at {directory}. No valid manifest was committed.\n'
+                else:
+                    location = 'Local evidence availability and integrity are unverified.\n'
+                message = scrub(f'Allure publication failed: {detail}\n' + location)
                 # Textual's print capture accepts the text but returns None.
                 # A numeric short write still means the warning was not delivered.
                 written = sys.stderr.write(message)
@@ -825,6 +843,6 @@ def run_recorded_integration(context, tests, config, *, accepted=False, no_std_i
             from .confirmations import logical_usage
             presentation_usage = logical_usage(presentation_usage, logical_owners, predictions=estimator.predictions,
                 advance_predictions=getattr(estimator, 'advance_predictions', estimator.predictions))
-        return RecordedIntegrationResult(execution, identity, directory if local_directory else None,
+        return RecordedIntegrationResult(execution, identity, directory if local_directory or retain_temporary[0] else None,
                                          presentation_usage, manifest, persisted,
                                          monotonic() - started_at)
