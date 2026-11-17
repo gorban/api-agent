@@ -1,6 +1,8 @@
 """Nested budgets retain independent clocks and honor the earliest deadline."""
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
+import time
 
 import pytest
 
@@ -172,3 +174,66 @@ def test_display_leaf_clamped_budget_or_nearest_timed_ancestor():
 def test_invalid_parent_identity_rejected(parent_id):
     with pytest.raises(ValueError):
         p.ComponentProgress('self', 'Name', 1, 0, True, parent_id=parent_id)
+
+
+def _arm_node_timer_late(monkeypatch, stall):
+    """Delay only the first timer arming, as a preempted node scope would."""
+    stalls = [stall]
+    proxy = SimpleNamespace(**vars(asyncio))
+
+    def timeout(delay):
+        time.sleep(stalls.pop(0) if stalls else 0)
+        return asyncio.timeout(delay)
+
+    proxy.timeout = timeout
+    monkeypatch.setattr(p, 'asyncio', proxy)
+
+
+def test_enclosing_deadline_cancels_nested_scope_when_its_timer_arms_late(monkeypatch):
+    # The stall must fit inside the node budget yet exceed scheduling jitter: a nested
+    # scope clipped to the node deadline would then fire 0.2s before the node's timer.
+    _arm_node_timer_late(monkeypatch, .2)
+    async def run():
+        seen = []
+        with pytest.raises(TimeoutError):
+            async with p.component_timeout('node', .3):
+                try:
+                    async with p.component_timeout('tool', 30):
+                        await asyncio.sleep(5)
+                except BaseException as error:
+                    seen.append(type(error))
+                    raise
+        assert seen == [asyncio.CancelledError]
+    asyncio.run(run())
+
+
+def test_child_task_with_inherited_budget_enforces_its_own_deadline():
+    async def run():
+        outcome = []
+        with pytest.raises(TimeoutError):
+            async with p.component_timeout('node', .1) as budget:
+                async def child():
+                    with p.bind_timeout_budget(budget):
+                        try:
+                            async with p.component_timeout('tool', 30):
+                                await asyncio.sleep(5)
+                        except BaseException as error:
+                            outcome.append(type(error))
+                            raise
+                task = asyncio.create_task(child())
+                await asyncio.sleep(5)
+        async with asyncio.timeout(2):
+            await asyncio.gather(task, return_exceptions=True)
+        assert outcome == [TimeoutError]
+    asyncio.run(run())
+
+
+def test_nested_scope_with_shorter_deadline_still_enforces_it():
+    async def run():
+        started = time.monotonic()
+        async with p.component_timeout('node', 30):
+            with pytest.raises(TimeoutError):
+                async with p.component_timeout('tool', .05):
+                    await asyncio.sleep(5)
+        assert time.monotonic() - started < 2
+    asyncio.run(run())
