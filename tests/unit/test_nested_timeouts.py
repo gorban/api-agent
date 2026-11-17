@@ -237,3 +237,40 @@ def test_nested_scope_with_shorter_deadline_still_enforces_it():
                     await asyncio.sleep(5)
         assert time.monotonic() - started < 2
     asyncio.run(run())
+
+
+def test_cleanup_after_an_enclosing_expiry_still_enforces_its_own_deadline():
+    async def run():
+        outcome = []
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            async with p.component_timeout('node', .05):
+                try:
+                    await asyncio.sleep(5)
+                finally:
+                    # An expiry cleanup is shielded from the spent node timer, which fires only once.
+                    with p.independent_timeout_scope():
+                        try:
+                            async with p.component_timeout('cleanup', .2):
+                                await asyncio.sleep(3)
+                        except BaseException as error:
+                            outcome.append(type(error))
+        assert outcome == [TimeoutError]
+        assert time.monotonic() - started < 2
+    asyncio.run(run())
+
+
+def test_detached_scope_entered_before_the_enclosing_expiry_is_still_cancelled_by_it():
+    async def run():
+        outcome = []
+        with pytest.raises(TimeoutError):
+            async with p.component_timeout('node', .05):
+                with p.independent_timeout_scope():
+                    try:
+                        async with p.component_timeout('detached', 30):
+                            await asyncio.sleep(5)
+                    except BaseException as error:
+                        outcome.append(type(error))
+                        raise
+        assert outcome == [asyncio.CancelledError]
+    asyncio.run(run())
