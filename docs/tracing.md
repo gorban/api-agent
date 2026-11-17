@@ -208,10 +208,29 @@ an annotation that cannot fit does not erase the original response.
 
 Fixed failure cause/code metadata remains useful without content permission.
 Trusted provider adapters can also publish finite, allowlisted failure facts:
-HTTP status, provider type/code, policy recommendation/categories, and explicit
-retry attempt/limit. These structural fields never include provider messages,
-response bodies, prompts, or stacks, regardless of content permission. Unknown
-provider labels are omitted. `WorkflowObservations.export_trace_context()` retains
+HTTP status, provider type/code, policy recommendation/categories, the category
+source (`reported` or `inferred`), and explicit retry attempt/limit. These
+structural fields never include provider messages, response bodies, prompts, or
+stacks, regardless of content permission. Unknown provider labels are omitted.
+
+Type, code, recommendation and category values come from a closed vocabulary.
+The defaults are public, provider-independent names. An embedding application
+whose provider reports its own failure types, codes, recommendations or
+categories registers those fixed tokens once at startup with
+`api_agent.telemetry.failure_vocabulary.register_provider_failure_vocabulary`.
+Registration is additive and idempotent, order-independent, limited to 64
+tokens per field, and rejects anything that is not a short lowercase
+identifier token with `ValueError`. It cannot remove a default or admit free
+text, and values outside the registered vocabulary are still dropped, as is a
+category list with any unregistered item. Tests use
+`provider_failure_vocabulary_scope`, which withdraws on exit only the
+tokens it added. The application classifies the failure itself and attaches
+the resulting `api_agent.provider.*` fields to the running workflow node's span
+with `api_agent.workflows.inference_capture.record_provider_failure_fields`;
+that call is a no-op outside a traced workflow node and never raises. The span
+sanitizer remains the final gate.
+
+`WorkflowObservations.export_trace_context()` retains
 the explicit graph span's validated trace/span IDs after closure so local evidence
 can link to the exported trace without depending on ambient OTEL state.
 When a trusted boundary has one canonical failed-call identity,

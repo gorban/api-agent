@@ -12,6 +12,7 @@ import os
 import re
 from threading import Event, Lock, Thread
 
+from .failure_vocabulary import admits
 from .privacy import ContentPolicy, EmissionBoundary
 
 
@@ -96,6 +97,14 @@ def _model_identity(value, model_identities):
             and value in model_identities)
 
 
+_FAILURE_SCALARS = {
+    'api_agent.provider.failure.type': 'type',
+    'api_agent.provider.failure.code': 'code',
+    'api_agent.provider.failure.recommendation': 'recommendation',
+    'api_agent.provider.failure.category_source': 'category_source',
+}
+
+
 def _structural(boundary, payload, model_identities=frozenset()):
     """Only this versioned, bounded manual signal contract bypasses content gating."""
     if type(payload) is not dict:
@@ -157,23 +166,11 @@ def _structural(boundary, payload, model_identities=frozenset()):
         elif key == 'api_agent.provider.operation':
             if type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/-]{0,95}', value):
                 clean[key] = value
-        elif key == 'api_agent.provider.failure.type':
-            if type(value) is str and value in ('content_policy_violation', 'invalid_request_error',
-                    'rate_limit_error', 'authentication_error', 'permission_error', 'server_error'):
-                clean[key] = value
-        elif key == 'api_agent.provider.failure.code':
-            if type(value) is str and value in ('content_blocked', 'content_filter',
-                    'context_length_exceeded', 'rate_limit_exceeded', 'invalid_api_key', 'insufficient_quota'):
-                clean[key] = value
-        elif key == 'api_agent.provider.failure.recommendation':
-            if type(value) is str and value in ('block', 'allow', 'review'):
+        elif key in _FAILURE_SCALARS:
+            if admits(_FAILURE_SCALARS[key], value):
                 clean[key] = value
         elif key == 'api_agent.provider.failure.categories':
-            if type(value) is list and len(value) <= 16 and all(type(item) is str and item in (
-                    'jailbreak_attempt', 'hate', 'hate/threatening', 'harassment',
-                    'harassment/threatening', 'self-harm', 'self-harm/intent', 'self-harm/instructions',
-                    'sexual', 'sexual/minors', 'violence', 'violence/graphic', 'illicit', 'illicit/violent')
-                    for item in value):
+            if type(value) is list and len(value) <= 16 and all(admits('categories', item) for item in value):
                 clean[key] = value
         elif key == 'api_agent.failure.cause':
             from .outcomes import OutcomeCause
