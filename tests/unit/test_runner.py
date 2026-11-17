@@ -7,6 +7,7 @@ import pytest
 
 from api_agent.testing.collection import collect_tests, CollectionError
 from api_agent.testing.runner import CoverageArea, run_unit_tests, unit_parallel_jobs
+from procfs_support import is_gone_or_zombie
 
 
 @pytest.mark.parametrize('config, expected', [
@@ -160,8 +161,7 @@ def test_cancellation_reaps_pytest_and_its_child(tmp_path, monkeypatch):
     scratch = Path((base / "scratch-path").read_text())
     assert scratch.parent == tmp_path and not scratch.exists()
     pid = int((base / 'child.pid').read_text())
-    status = Path(f'/proc/{pid}/stat')
-    assert not status.exists() or status.read_text().split()[2] == 'Z'
+    assert is_gone_or_zombie(pid)
 
 
 def test_unselected_owner_still_measures_all_production(tmp_path, monkeypatch):

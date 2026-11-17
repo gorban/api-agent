@@ -8,6 +8,7 @@ import pytest
 
 from api_agent.testing.collection import CollectionError, collect_tests
 from api_agent.testing.integration import run_integration_tests
+from procfs_support import is_gone_or_zombie
 
 
 def stdout_boundary_from_launch(args):
@@ -319,8 +320,7 @@ def test_cancellation_reaps_child_before_after_hook(tmp_path):
     assert result.exit_code == 130 and result.cancelled
     assert observations == [result]
     child = int((base / 'child.pid').read_text())
-    status = Path(f'/proc/{child}/stat')
-    assert not status.exists() or status.read_text().split()[2] == 'Z'
+    assert is_gone_or_zombie(child)
 
 
 def test_callback_failure_is_sanitized_and_nonzero(tmp_path):

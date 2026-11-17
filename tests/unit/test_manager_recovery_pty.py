@@ -8,6 +8,7 @@ import pytest
 from api_agent.auth.credentials import CredentialError
 from api_agent.auth.interaction import Reply
 from api_agent.auth.recovery import recover
+from procfs_support import is_gone_or_zombie
 
 
 # These functional fixtures include native interpreter and guardian startup.
@@ -336,11 +337,11 @@ open({str(marker)!r}, 'w').write(str(pid))
 print('value')
 '''
     assert _run([sys.executable, '-c', script], _NORMAL_RECOVERY_SECONDS) == 'value\n'
-    stat = Path(f'/proc/{int(marker.read_text())}/stat')
+    child = int(marker.read_text())
     deadline = time.monotonic() + .3
-    while stat.exists() and stat.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
+    while not is_gone_or_zombie(child) and time.monotonic() < deadline:
         time.sleep(.01)
-    assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+    assert is_gone_or_zombie(child)
 
 
 def test_shared_scope_does_not_carry_short_limit_into_human_recovery(tmp_path, monkeypatch):

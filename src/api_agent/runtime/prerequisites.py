@@ -86,7 +86,7 @@ def process_identity(pid):
     if Path('/proc/sys/kernel/random/boot_id').is_file():
         try:
             fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-        except FileNotFoundError as error:
+        except (FileNotFoundError, ProcessLookupError) as error:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:

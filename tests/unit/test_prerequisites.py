@@ -15,6 +15,7 @@ import pytest
 from api_agent.runtime.compose import plan_compose, snapshot_compose
 from api_agent.runtime.ownership import StackScope
 import api_agent.runtime.prerequisites as p
+from procfs_support import is_gone_or_zombie
 
 
 from test_compose import bundled_trace_config
@@ -1158,8 +1159,7 @@ def test_bounded_cli_timeout_kills_group_and_descendant(tmp_path):
         p.run_command((sys.executable, '-c', code, str(pidfile)), environment={}, directory=tmp_path,
                       deadline=p.time.monotonic() + .25, cancelled=lambda: False)
     child = int(pidfile.read_text())
-    stat = Path(f'/proc/{child}/stat')
-    assert not stat.exists() or stat.read_text().rsplit(')', 1)[1].split()[0] == 'Z'
+    assert is_gone_or_zombie(child)
 
 
 def test_bounded_cli_cancellation(tmp_path):
@@ -1218,6 +1218,34 @@ def test_process_identity_linux_dead_and_malformed(monkeypatch):
     assert p.process_identity(123) is None
     monkeypatch.setattr(Path, 'read_text', lambda *args, **kwargs: 'malformed')
     with pytest.raises(p.PrerequisiteError): p.process_identity(123)
+
+
+def _linux_pid_reaped_between_open_and_read(monkeypatch, *, kill):
+    """Linux host whose stat file opens, then reports ESRCH from the read."""
+    boot = '/proc/sys/kernel/random/boot_id'
+    monkeypatch.setattr(Path, 'is_file', lambda path: str(path) == boot)
+    def read(path, *args, **kwargs):
+        raise ProcessLookupError(3, 'No such process')
+    monkeypatch.setattr(Path, 'read_text', read)
+    monkeypatch.setattr(p.os, 'kill', kill)
+
+
+def test_process_identity_confirms_a_holder_reaped_mid_read_is_gone(monkeypatch):
+    probes = []
+    def missing(pid, signal):
+        probes.append((pid, signal))
+        raise ProcessLookupError()
+    _linux_pid_reaped_between_open_and_read(monkeypatch, kill=missing)
+
+    assert p.process_identity(4242) is None
+    assert probes == [(4242, 0)]
+
+
+def test_process_identity_fails_closed_when_a_mid_read_miss_is_contradicted_by_a_live_pid(monkeypatch):
+    _linux_pid_reaped_between_open_and_read(monkeypatch, kill=lambda pid, signal: None)
+
+    with pytest.raises(p.PrerequisiteError, match='lease process identity'):
+        p.process_identity(4242)
 
 
 @pytest.mark.parametrize('case', ['alive', 'missing', 'zombie', 'boot_error', 'oserror', 'timeout', 'unsupported', 'ps_permission', 'ps_empty'])

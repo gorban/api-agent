@@ -1,7 +1,6 @@
 """Read-only managed logs reuse the bounded shared process owner."""
 import json
 import os
-from pathlib import Path
 import sys
 import threading
 import time
@@ -12,6 +11,7 @@ import pytest
 from api_agent.runtime.containers import ContainerError, ContainerRuntime
 from api_agent.runtime.prerequisites import PrerequisiteError
 from api_agent.testing.diagnostics import CredentialScrubber
+from procfs_support import is_gone_or_zombie
 from test_containers import SCOPE, record
 
 
@@ -133,8 +133,7 @@ def test_real_process_cancel_reaps_reader_and_its_child(tmp_path, monkeypatch):
         cancelled.set();reader.join(10)
         assert not reader.is_alive() and len(failures)==1
         for pid in pids:
-            stat = Path(f'/proc/{pid}/stat')
-            assert not stat.exists() or stat.read_text().rpartition(')')[2].split()[0]=='Z'
+            assert is_gone_or_zombie(pid)
     finally:
         cancelled.set();reader.join(10)
 
