@@ -9,7 +9,7 @@ from uuid import UUID
 
 from .storage import RunStorage
 
-MAX_MANIFEST = 2 * 1024 * 1024
+from .manifest_budget import MAX_MANIFEST_BYTES as MAX_MANIFEST, MAX_MANIFEST_FILES
 MAX_ARTIFACT = 16 * 1024 * 1024
 MAX_RUN = 128 * 1024 * 1024
 
@@ -51,7 +51,7 @@ def validate_manifest(manifest, *, repo=None, preview=False):
             if end.tzinfo is None or end < start or manifest['status'] not in {'completed', 'failed', 'interrupted'}:
                 raise ValueError()
         files = manifest['files']
-        if not isinstance(files, dict) or not files or len(files) > 4096:
+        if not isinstance(files, dict) or not files or len(files) > MAX_MANIFEST_FILES:
             raise ValueError()
         for name, digest in files.items():
             component(name)
@@ -173,7 +173,10 @@ class RunSource:
             _check_budget(budget)
             directory = self._local(manifest['run_id']) if self.local_root is not None else None
             if directory is not None and (directory / 'manifest.json').exists():
-                committed = json.loads(RunStorage._read_source(directory / 'manifest.json', max_bytes=MAX_MANIFEST))
+                body = RunStorage._read_source(directory / 'manifest.json', max_bytes=MAX_MANIFEST)
+                if len(body) > MAX_MANIFEST:
+                    raise ViewerError('Allure manifest exceeds viewer limit')
+                committed = json.loads(body)
                 if validate_manifest(committed, repo=self.repo) != digest:
                     raise ViewerError('Finalized Allure manifest binding changed')
                 def local_read(name):
@@ -190,7 +193,10 @@ class RunSource:
                     return stream.read(limit + 1)
                 finally:
                     stream.close()
-            committed = json.loads(read('manifest.json', MAX_MANIFEST))
+            body = read('manifest.json', MAX_MANIFEST)
+            if len(body) > MAX_MANIFEST:
+                raise ViewerError('Allure manifest exceeds viewer limit')
+            committed = json.loads(body)
             if validate_manifest(committed, repo=self.repo) != digest:
                 raise ViewerError('Finalized Allure manifest binding changed')
             return verified_files(manifest, read, results_only=results_only)

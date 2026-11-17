@@ -10,7 +10,9 @@ from threading import RLock
 from uuid import UUID
 from datetime import datetime, timezone
 
-MAX_BYTES = 2_000_000
+from api_agent.testing.manifest_budget import MAX_MANIFEST_BYTES, MAX_MANIFEST_FILES
+
+MAX_BYTES = MAX_MANIFEST_BYTES
 MAX_ACCOUNTING_BYTES = 16 * 1024 * 1024
 
 
@@ -36,7 +38,7 @@ def validate_manifest(manifest):
                  and manifest.get('status') in {'completed', 'failed', 'interrupted'} and manifest.get('mode') in {'integration', 'e2e'}
                  and isinstance(repo, str) and bool(repo) and repo not in {'.', '..'} and not any(c in repo for c in '/\\\0')
                  and start.tzinfo is not None and end.tzinfo is not None and start <= end
-                 and isinstance(files, dict) and 'accounting.json' in files
+                 and isinstance(files, dict) and len(files) <= MAX_MANIFEST_FILES and 'accounting.json' in files
                  and all(isinstance(name, str) and bool(name) and name not in {'.', '..', 'manifest.json'}
                          and not any(c in name for c in '/\\\0') and isinstance(digest, str) and len(digest) == 64
                          and all(c in '0123456789abcdef' for c in digest) for name, digest in files.items()))
@@ -86,6 +88,8 @@ class HistoryCache:
                            'WHERE f.run_id IS NULL')
                 for origin, run_id, digest, encoded, accounting in self.connection.execute(missing):
                     try:
+                        if len(encoded.encode()) > MAX_BYTES:
+                            continue
                         manifest = validate_manifest(json.loads(encoded))
                         if (sha256(encoded.encode()).hexdigest() != digest or manifest['run_id'] != run_id
                                 or sha256(accounting.encode()).hexdigest() != manifest['files']['accounting.json']):
@@ -127,7 +131,7 @@ class HistoryCache:
         if accounting['run_id'] != run_id:
             raise ValueError('Accounting run mismatch')
         encoded = json.dumps(manifest, sort_keys=True, separators=(',', ':'))
-        if len(encoded) > MAX_BYTES:
+        if len(encoded.encode()) > MAX_BYTES:
             raise ValueError('Oversized manifest')
         finished = self._utc_key(datetime.fromisoformat(manifest['finished_at'].replace('Z', '+00:00')))
         with self.lock, self.connection:
@@ -169,7 +173,7 @@ class HistoryCache:
                 if _check is not None:
                     _check()
                 try:
-                    if sha256(manifest.encode()).hexdigest() != digest:
+                    if len(manifest.encode()) > MAX_BYTES or sha256(manifest.encode()).hexdigest() != digest:
                         continue
                     manifest = validate_manifest(json.loads(manifest))
                     if (stored_run_id != manifest['run_id'] or stored_finish != self._utc_key(
