@@ -12,6 +12,9 @@ from api_agent.telemetry.privacy import EmissionBoundary, ContentPolicy
 from api_agent.ui import process
 
 
+RETRY_TIMEOUT = 5
+
+
 class PipeChild:
     def __init__(self):
         read, self.writer = os.pipe()
@@ -98,6 +101,9 @@ def test_pending_reader_retains_pipe_until_cleanup_retry():
         owner._output_owned = True
         with pytest.raises(CleanupPendingError) as pending: await owner.aclose()
         assert not child.stdout.closed
+        # Only the first close needs a tiny limit, to time out. The retry must
+        # succeed however long a loaded worker takes to schedule the reader.
+        owner.timeout = RETRY_TIMEOUT
         gate.set()
         await pending.value.retry()
         os.close(child.writer)

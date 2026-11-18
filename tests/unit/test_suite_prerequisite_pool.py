@@ -76,6 +76,20 @@ def test_cancelled_waiter_does_not_cancel_preparation():
     assert owner.starts == owner.stops == 1
 
 
+def test_a_borrower_that_stopped_waiting_is_cancelled_even_when_the_prerequisite_is_ready():
+    pool = SuitePrerequisitePool(owner_budget=5)
+    owner = Owner()
+    first = pool.borrow('a' * 64, lambda: owner)
+
+    with pytest.raises(PoolCancelled):
+        pool.borrow('a' * 64, lambda: pytest.fail('duplicate owner'), cancelled=lambda: True)
+
+    # The cancelled borrow took no lease, so releasing the first one lets the suite drain.
+    first.release()
+    pool.close(timeout=2)
+    assert owner.starts == owner.stops == 1
+
+
 def test_failure_is_shared_until_explicit_cleanup_and_invalidation():
     pool = SuitePrerequisitePool(owner_budget=5)
     owner = Owner(fail=True)

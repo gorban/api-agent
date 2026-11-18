@@ -57,7 +57,7 @@ def test_removed_persistence_metadata_is_rejected():
         schema_from_dict({'version': 1, 'fields': {'STALE': {'type': 'str', 'persist_default': False}}})
 
 
-def test_hidden_required_optional_and_default_stay_hidden_but_saved_cleanup_visible(tmp_path):
+def test_hidden_default_and_optional_stay_hidden_but_saved_cleanup_visible(tmp_path):
     async def scenario():
         app = fixture(tmp_path, fields={
             'VISIBLE': {'type': 'int', 'default': 8},
@@ -66,12 +66,14 @@ def test_hidden_required_optional_and_default_stay_hidden_but_saved_cleanup_visi
             'HIDDEN_OPTIONAL': {'type': 'str', 'review_optional': True, 'acknowledge_default': False},
         })
         assert app.session.schema.fields['VISIBLE'].acknowledge_default is True
-        assert app.configuration_pending() == {'VISIBLE'}
+        assert app.configuration_pending() == {'VISIBLE', 'HIDDEN_REQUIRED'}
         assert 'HIDDEN_REQUIRED' in app.session.result().missing
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app.screen.kind == 'defaults'
-            assert [row.key.value for row in app.screen.query_one(DataTable).ordered_rows] == ['VISIBLE']
+            table = app.screen.query_one(DataTable)
+            assert [row.key.value for row in table.ordered_rows] == ['HIDDEN_REQUIRED', 'VISIBLE']
+            table.move_cursor(row=1)
             await pilot.press('a')
             assert app.session.result().values['VISIBLE'] == 8
             app.session.set_value('HIDDEN_OPTIONAL', 'explicit', persist=True)
