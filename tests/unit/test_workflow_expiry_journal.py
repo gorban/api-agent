@@ -1,5 +1,4 @@
 """Journals record a routed expiry on the scope that ended and admit it only as declared."""
-import asyncio
 from copy import deepcopy
 from uuid import uuid4
 
@@ -10,6 +9,7 @@ from expiry_support import ENDS, EXPIRY_REPLAY, REPLAY, ROUTE, TIMEOUT, expiring
 from loop_support import build, load
 from test_workflow_expiry import GROUP_ROUTE, effected, group, looped
 from test_workflow_loops_journal import routes, sign
+from virtual_time import run as virtual_run
 
 SAME_TARGET = (('work', 'finish', 'work.expired'), ('work', 'finish', 'otherwise'))
 
@@ -21,7 +21,7 @@ def recorded(entry, script=None, limit=None, **limits):
     journal = WorkflowJournal(definition, limits=values or None)
     workflow, native, _ = build(entry, config=values, journal=journal)
     native['SCRIPT'].update({name: list(steps) for name, steps in (script or {}).items()})
-    asyncio.run(workflow.arun({'accept_at': 1}))
+    virtual_run(workflow.arun({'accept_at': 1}))
     return journal.finalize(), definition
 
 

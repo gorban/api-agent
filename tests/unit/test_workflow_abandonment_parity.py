@@ -1,12 +1,12 @@
 """Source and compiled workflows agree on abandoned outputs and nullable appends."""
-import asyncio
 import json
+import time
 
 import pytest
 
 from artifact_acceptance_support import build_wheel, install
 from artifact_unit_support import Built, edited, load_built
-from api_agent.workflows import LayoutError
+from api_agent.workflows import LayoutError, execution
 from api_agent.workflows.predicates import PredicateError
 from api_agent.workflows.artifact import ArtifactRejected, plan_digest
 from api_agent.workflows.artifact_compile import compile_plan
@@ -14,6 +14,7 @@ from expiry_support import NATIVE, expiring
 from loop_support import build
 from session_workflow_support import session_entry, session_workflow, turn
 from test_workflow_expiry import group
+from virtual_time import run as virtual_run
 
 
 def compiled(entry, tmp_path, package, files):
@@ -39,10 +40,10 @@ def test_expiry_routes_only_using_surviving_results(tmp_path, artifact, use_aban
     native['SCRIPT']['work'] = ['hang']
     if use_abandoned:
         with pytest.raises(TimeoutError):
-            asyncio.run(workflow.arun({'accept_at': 1}))
+            virtual_run(workflow.arun({'accept_at': 1}))
         assert native['CALLS'] == ['prepare', 'work']
     else:
-        values = asyncio.run(workflow.arun({'accept_at': 1}))
+        values = virtual_run(workflow.arun({'accept_at': 1}))
         assert native['CALLS'] == ['prepare', 'work', 'timed_out']
         assert 'prepare' not in values
 
@@ -64,7 +65,7 @@ def test_nullable_append_is_a_no_write_and_preserves_prior_values(tmp_path, arti
         loaded = compiled(entry, tmp_path, 'aq_session', {f'aq_session/{name}': (package / name).read_bytes() for name in ('__init__.py', 'nodes.py')})
         workflow = loaded.workflow()
     turn(workflow, 'none', thread='null-first')
-    assert 'history' not in asyncio.run(workflow.session('null-first'))
+    assert 'history' not in virtual_run(workflow.session('null-first'))
     turn(workflow, 'first')
     turn(workflow, 'none')
     assert turn(workflow, 'last')['reply']['seen']['history'] == 2
@@ -95,22 +96,26 @@ def test_expiry_dispatch_skips_only_abandoned_candidate(tmp_path, artifact, owne
                           {'aq_expiry/__init__.py': b'', 'aq_expiry/native.py': NATIVE.encode()})
         workflow, native = loaded.workflow(), vars(loaded.modules['aq_expiry.native'])
     native['SCRIPT']['work'] = ['hang'] if owner == 'group' else ['ok', 'hang']
-    values = asyncio.run(workflow.arun({'accept_at': 1}))
+    values = virtual_run(workflow.arun({'accept_at': 1}))
     assert native['CALLS'][-1] == 'timed_out'
     assert ('prepare' if owner == 'group' else 'work') not in values
 
 
-@pytest.mark.parametrize('artifact', ['source', 'compiled'])
-def test_expired_component_preserves_prior_completed_result(tmp_path, artifact):
-    root = tmp_path / 'tree'
+def reentered_group(root):
+    """A group whose first pass completes, then review routes back into it for a pass that expires."""
     root.mkdir()
     rows = (('group', 'timed_out', 'group.expired and group["n"] == 1'),
             ('group', 'review', 'otherwise'),
             ('review', 'group', 'group.attempt < NODE_TIMEOUT_PASSES'),
             ('review', 'finish', 'otherwise'))
-    entry = expiring(root, *rows, flow=[('component', 'group'), *[('node', x) for x in ('review', 'finish', 'timed_out')]],
-                     owners=(('group', 'GROUP_TIMEOUT'),),
-                     components={'group': (['prepare', 'work'], '')})
+    return expiring(root, *rows, flow=[('component', 'group'), *[('node', x) for x in ('review', 'finish', 'timed_out')]],
+                    owners=(('group', 'GROUP_TIMEOUT'),),
+                    components={'group': (['prepare', 'work'], '')})
+
+
+@pytest.mark.parametrize('artifact', ['source', 'compiled'])
+def test_expired_component_preserves_prior_completed_result(tmp_path, artifact):
+    entry = reentered_group(tmp_path / 'tree')
     if artifact == 'source':
         workflow, native, _ = build(entry)
     else:
@@ -118,9 +123,29 @@ def test_expired_component_preserves_prior_completed_result(tmp_path, artifact):
                           {'aq_expiry/__init__.py': b'', 'aq_expiry/native.py': NATIVE.encode()})
         workflow, native = loaded.workflow(), vars(loaded.modules['aq_expiry.native'])
     native['SCRIPT']['work'] = ['ok', 'hang']
-    values = asyncio.run(workflow.arun({'accept_at': 1}))
+    values = virtual_run(workflow.arun({'accept_at': 1}))
     assert native['CALLS'] == ['prepare', 'work', 'review', 'prepare', 'work', 'timed_out']
     assert 'work' not in values
+
+
+def test_a_host_stall_inside_the_second_pass_does_not_expire_the_group(tmp_path, monkeypatch):
+    # The group budget is far smaller than the stall; only the work that outwaits it may expire it.
+    workflow, native, _ = build(reentered_group(tmp_path / 'tree'), {'GROUP_TIMEOUT': 0.02})
+    native['SCRIPT']['work'] = ['ok', 'hang']
+    published = execution.publish_step_progress
+    starts = []
+
+    async def stalled(step, attempt_id, phase, *rest):
+        if step == 'prepare' and phase == 'start':
+            starts.append(step)
+            if len(starts) == 2:
+                time.sleep(0.1)
+        return await published(step, attempt_id, phase, *rest)
+
+    monkeypatch.setattr(execution, 'publish_step_progress', stalled)
+    virtual_run(workflow.arun({'accept_at': 1}))
+    assert starts == ['prepare', 'prepare']
+    assert native['CALLS'] == ['prepare', 'work', 'review', 'prepare', 'work', 'timed_out']
 
 
 @pytest.mark.parametrize('artifact', ['source', 'compiled'])
@@ -171,4 +196,4 @@ def test_expiry_does_not_hide_missing_unrelated_result(tmp_path, artifact):
         workflow, native = loaded.workflow(), vars(loaded.modules['aq_expiry.native'])
     native['SCRIPT']['work'] = ['hang']
     with pytest.raises(PredicateError, match='prepare.ok was not produced'):
-        asyncio.run(workflow.arun({'accept_at': 1}))
+        virtual_run(workflow.arun({'accept_at': 1}))

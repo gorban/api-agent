@@ -1,5 +1,4 @@
 """Typed Limits, component Timeouts and declared timeout-expiry routing."""
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -8,6 +7,7 @@ from api_agent.workflows.definition import load_definition
 from api_agent.workflows.execution import Workflow
 from api_agent.workflows.layout import LayoutError
 from api_agent.workflows.native import load_native_bindings
+from virtual_time import run as virtual_run
 
 NATIVE = '''import asyncio
 from typing import TypedDict
@@ -57,7 +57,7 @@ def finish(state, context):
     return {'trail': [*state['trail'], 'finish']}
 '''
 
-# Long enough that a loaded host cannot exhaust it before the scope's own work starts.
+# Spent on virtual time (`run` below), so a loaded host cannot exhaust it before the scope's own work starts.
 TIMEOUT = 0.5
 
 LIMITS = f'''version = 1
@@ -174,7 +174,7 @@ def run(root, entry, update=None, config=None, events=None, journal=None):
     catalog = load_native_bindings(definition, config=config)
     workflow = Workflow(definition, catalog=catalog, reducers={}, config=config, journal=journal,
                         services={'observe': events.append} if events is not None else None)
-    return asyncio.run(workflow.arun({**STATE, **(update or {})}, thread_id='limits')), workflow
+    return virtual_run(workflow.arun({**STATE, **(update or {})}, thread_id='limits')), workflow
 
 
 RETRY_EDGES = '''| plan_request | plan_request | .timed_out == "plan_request" and .timeout_retries <= TIMEOUT_RETRIES |

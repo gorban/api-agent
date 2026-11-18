@@ -1,5 +1,4 @@
 """A step whose own declared timeout expires is routed by its `<step>.expired` edges."""
-import asyncio
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -10,6 +9,7 @@ from expiry_support import (EFFECT_ENDS, EFFECT_FLOW, EFFECTED, ENDS, EXPIRY_REP
                             calls_after, expiring, play)
 from loop_support import build, edges, load, node, table
 from test_workflow_session_loop import stored
+from virtual_time import run as virtual_run
 
 
 def test_an_expired_node_is_routed_to_the_step_its_expired_edge_names(tmp_path):
@@ -351,7 +351,7 @@ def test_an_expired_and_routed_turn_persists_the_session_of_the_runs_that_comple
     workflow, native, _ = build(entry, checkpointer=saver)
     native['SCRIPT']['work'] = ['hang']
 
-    asyncio.run(workflow.arun({'accept_at': 1}, thread_id='t'))
+    virtual_run(workflow.arun({'accept_at': 1}, thread_id='t'))
 
     assert native['CALLS'] == ['prepare', 'work', 'timed_out']
     assert stored(saver) == {'prepared': True, 'note': False}
@@ -364,7 +364,7 @@ def test_an_expired_component_contributes_nothing_to_the_session(tmp_path):
     workflow, native, _ = build(entry, checkpointer=saver)
     native['SCRIPT']['work'] = ['hang']
 
-    asyncio.run(workflow.arun({'accept_at': 1}, thread_id='t'))
+    virtual_run(workflow.arun({'accept_at': 1}, thread_id='t'))
 
     assert native['CALLS'] == ['prepare', 'work', 'timed_out']
     assert stored(saver) == {'note': False}
@@ -380,7 +380,7 @@ def test_a_failed_expiry_leaves_the_session_untouched(tmp_path):
     native['SCRIPT']['work'] = ['hang']
 
     with pytest.raises(TimeoutError):
-        asyncio.run(workflow.arun({'accept_at': 1}, thread_id='t'))
+        virtual_run(workflow.arun({'accept_at': 1}, thread_id='t'))
 
     assert not list(saver.list(None))
 

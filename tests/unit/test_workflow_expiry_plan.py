@@ -1,5 +1,4 @@
 """Compiled plans and diagrams carry expiry edges and the Timeouts rows that enable them."""
-import asyncio
 from html import unescape
 
 import pytest
@@ -15,6 +14,7 @@ from artifact_acceptance_support import build_wheel, install
 from artifact_unit_support import Built, edited, isolated_imports, load_built  # noqa: F401
 from expiry_support import NATIVE, REPLAY, ROUTE, expiring
 from loop_support import load
+from virtual_time import run as virtual_run
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def compiled_plan(tmp_path):
 def run(compiled, script):
     native = compiled.modules['aq_expiry.native']
     native.SCRIPT['work'] = list(script)
-    asyncio.run(compiled.workflow().arun({'accept_at': 1}))
+    virtual_run(compiled.workflow().arun({'accept_at': 1}))
     return native.CALLS
 
 
