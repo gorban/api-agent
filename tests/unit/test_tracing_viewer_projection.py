@@ -710,7 +710,7 @@ def test_effective_standard_endpoint_outside_raw_enum_retains_admitted_route(ext
 
 @pytest.mark.parametrize(('environment', 'reason'), [
     ({'TRACE_EXPORT_ENDPOINT': 'https://collector.example/v1/traces'}, 'saved endpoint from a different profile'),
-    ({'DASHBOARD_URL': ''}, 'DASHBOARD_URL is explicitly empty'),
+    ({'DASHBOARD_URL': 'off'}, 'DASHBOARD_URL is set to Off'),
 ])
 def test_custom_provider_dashboard_diagnostic_uses_its_own_fields(external_profile, environment, reason):
     schema, anchors, provider = external_profile
@@ -769,11 +769,11 @@ def test_stale_profile_endpoint_diagnostic_precedes_missing_dashboard_credential
     assert 'remove the saved override' in message and 'TRACE_VIEWER_URL' in message
 
 
-def test_explicit_empty_viewer_is_explained_without_dashboard_credentials():
-    with pytest.raises(ConfigError, match='explicitly empty'):
+def test_off_viewer_is_explained_without_dashboard_credentials():
+    with pytest.raises(ConfigError, match='set to Off'):
         resolve_viewer_config(load_shared_schema(), argv=(), environ={
             'TRACE_MODE': 'LangFuse', 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces',
-            'TRACE_VIEWER_URL': ''}, dotenv={}, anchors={})
+            'TRACE_VIEWER_URL': 'Off'}, dotenv={}, anchors={})
 
 
 def test_explicit_remote_dashboard_still_requires_selected_login_credentials():

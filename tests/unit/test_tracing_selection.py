@@ -61,7 +61,8 @@ def test_malformed_profile_tables_reject_before_factory(tmp_path, body):
     ('http://127.0.0.1:4318/v1/traces', '', (), 'otel', 'http://localhost:16686'),
     ('https://collector.example.test/v1/traces', '', (), None, None),
     ('https://collector.example.test/v1/traces', 'https://viewer.example.test', ('TRACE_VIEWER_URL',), None, 'https://viewer.example.test'),
-    ('http://localhost:4318/v1/traces', '', ('TRACE_VIEWER_URL',), None, None),
+    ('http://localhost:4318/v1/traces', '', ('TRACE_VIEWER_URL',), 'otel', 'http://localhost:16686'),
+    ('http://localhost:4318/v1/traces', 'Off', ('TRACE_VIEWER_URL',), None, None),
     ('http://localhost:4318/v1/traces', 'https://viewer.example.test', ('TRACE_VIEWER_URL',), None, 'https://viewer.example.test'),
 ])
 def test_effective_destinations_control_both_dashboard_and_local_ownership(trace, viewer, explicit, managed, dashboard):
@@ -649,16 +650,40 @@ def test_unavailable_viewer_explains_stale_saved_endpoint(mode, endpoint):
     assert 'never overwritten automatically' in message
 
 
-def test_unavailable_viewer_explains_explicit_empty_url():
+@pytest.mark.parametrize('value', ['Off', 'off', ' OFF '])
+def test_unavailable_viewer_explains_off_url(value):
     from api_agent.runtime.tracing_viewer_config import _dashboard_unavailable
     declaration = read_declaration(ROOT)
     profile = select_declaration(declaration, {'TRACE_MODE': 'OTEL'})
-    selected = effective_selection(config(explicit=('TRACE_VIEWER_URL',)), environ={}, require_export=False)
+    selected = effective_selection(config(TRACE_VIEWER_URL=value, explicit=('TRACE_VIEWER_URL',)),
+                                   environ={}, require_export=False)
     message = _dashboard_unavailable(selected, profile, declaration)
-    assert selected.dashboard_unavailable_reason == 'explicit_empty_viewer'
-    assert 'TRACE_VIEWER_URL is explicitly empty' in message
-    assert 'remove that saved override' in message
+    assert selected.dashboard_unavailable_reason == 'viewer_off'
+    assert selected.values['TRACE_VIEWER_URL'] == 'Off'
+    assert selected.declaration.dashboard is None
+    assert 'TRACE_VIEWER_URL is set to Off' in message
+    assert 'empty or remove' in message
     assert 'saved endpoint from a different profile' not in message
+
+
+@pytest.mark.parametrize('value', ['', '  '])
+@pytest.mark.parametrize('explicit', [(), ('TRACE_VIEWER_URL',)])
+def test_empty_viewer_url_derives_the_managed_dashboard_like_an_omitted_one(value, explicit):
+    omitted = effective_selection(config(), environ={}, require_export=False)
+    empty = effective_selection(config(TRACE_VIEWER_URL=value, explicit=explicit), environ={}, require_export=False)
+    assert empty.values['TRACE_VIEWER_URL'] == omitted.values['TRACE_VIEWER_URL'] == 'http://localhost:16686'
+    assert empty.dashboard_unavailable_reason is None
+    assert empty.declaration.dashboard is not None
+    assert empty.identity == omitted.identity
+    assert 'TRACE_VIEWER_URL' not in empty.explicit_fields
+
+
+def test_empty_viewer_url_for_remote_ingestion_matches_omitted():
+    remote = dict(TRACE_EXPORT_ENDPOINT='https://collector.example/v1/traces')
+    omitted = effective_selection(config(**remote, explicit=('TRACE_EXPORT_ENDPOINT',)), environ={}, require_export=False)
+    empty = effective_selection(config(**remote, explicit=('TRACE_EXPORT_ENDPOINT', 'TRACE_VIEWER_URL')),
+                                environ={}, require_export=False)
+    assert empty.dashboard_unavailable_reason == omitted.dashboard_unavailable_reason == 'unmanaged_endpoint'
 
 
 @pytest.mark.parametrize('endpoint', [

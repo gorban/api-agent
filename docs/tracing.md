@@ -25,10 +25,11 @@ does not replace an explicitly saved endpoint; update or clear it in configurati
 Remote HTTPS verifies certificates and uses `CLIENT_CA_FILE` when supplied.
 Credentials must never be embedded in URLs.
 
-`TRACE_VIEWER_URL` is the separate dashboard address. Omitted viewer settings
-can derive the managed local dashboard for an exact conventional local ingestion
+`TRACE_VIEWER_URL` is the separate dashboard address. Omitted or empty viewer
+settings (accepting the empty default saves an empty value) can derive the managed
+local dashboard for an exact conventional local ingestion
 URL: LangFuse on port 3000, or Jaeger on `JAEGER_VIEWER_PORT` (default 16686).
-An explicit empty viewer disables dashboard presentation. Remote/custom ingestion
+Set `TRACE_VIEWER_URL=Off` (any letter case) to disable dashboard presentation. Remote/custom ingestion
 requires an explicit viewer URL if a dashboard is wanted; the application does
 not infer a remote dashboard from an ingestion path. A remote/custom ingestion
 or dashboard does not start a local collector stack. Readiness and authenticated

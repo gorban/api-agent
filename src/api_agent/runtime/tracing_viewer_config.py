@@ -230,9 +230,10 @@ def _dashboard_unavailable(selection, profile, declaration, *, secret_values=())
     if expected:
         parts.append('Managed endpoint defaults: ' + ', '.join(
             safe_url(value) or '<unsafe URL; redacted>' for value in expected) + '.')
-    if selection.dashboard_unavailable_reason == 'explicit_empty_viewer':
-        parts.append(f'{profile.dashboard.url_field} is explicitly empty, which disables the dashboard; '
-                     'remove that saved override to use the managed default, or set an explicit dashboard URL.')
+    if selection.dashboard_unavailable_reason == 'viewer_off':
+        parts.append(f'{profile.dashboard.url_field} is set to Off, which disables the dashboard; '
+                     'leave it empty or remove that saved override to use the managed default, '
+                     'or set an explicit dashboard URL.')
     elif selection.dashboard_unavailable_reason == 'unmanaged_endpoint':
         parts.append('The effective ingestion endpoint does not match this profile’s managed defaults. '
                      'A saved endpoint from a different profile can remain after changing the mode. '

@@ -10,6 +10,9 @@ from pathlib import Path
 
 from .tracing_providers import read_declaration, select_declaration, TracingProviderError
 
+# The dashboard URL value that switches the viewer off; an empty value never does.
+VIEWER_OFF = 'Off'
+
 OTEL_KEYS = frozenset({
     'OTEL_SDK_DISABLED', 'OTEL_EXPORTER_OTLP_ENDPOINT',
     'OTEL_EXPORTER_OTLP_PROTOCOL', 'OTEL_EXPORTER_OTLP_HEADERS',
@@ -77,6 +80,15 @@ def effective_selection(config, *, owner_root=None, environ=None, declaration=No
         managed = dict(selected.managed_endpoints)
         local = trace_endpoint in (managed['trace_endpoint'], *managed.get('trace_endpoint_aliases', ()))
         field = selected.dashboard.url_field
+        viewer = values.get(field)
+        if type(viewer) is str and not viewer.strip():
+            # A saved empty value is the same request as an omitted one.
+            values[field] = ''
+            explicit = explicit - {field}
+        elif type(viewer) is str and viewer.strip().lower() == VIEWER_OFF.lower():
+            # Kept canonical, never rewritten empty, so a captured selection resolves identically.
+            values[field] = VIEWER_OFF
+            explicit = explicit | {field}
         if local and 'dashboard_port_field' in managed:
             port = values.get(managed['dashboard_port_field'])
             if type(port) is not int or not 1 <= port <= 65535:
@@ -94,9 +106,9 @@ def effective_selection(config, *, owner_root=None, environ=None, declaration=No
             dashboard_unavailable_reason = dashboard_unavailable_reason or 'unmanaged_endpoint'
             values[field] = ''
             selected = replace(selected, dashboard=None)
-        if not values.get(field):
+        if not values.get(field) or values[field] == VIEWER_OFF:
             if field in explicit:
-                dashboard_unavailable_reason = 'explicit_empty_viewer'
+                dashboard_unavailable_reason = 'viewer_off'
             selected = replace(selected, dashboard=None)
         if (not local
                 or values.get(field) != managed['dashboard_url']):
