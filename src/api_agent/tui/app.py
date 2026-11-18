@@ -1254,6 +1254,18 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         return (self.session.review_field_names() if hasattr(self.session, 'review_field_names')
                 else frozenset(self.schema.fields))
 
+    @staticmethod
+    def blocking_review_names(review, blocking, schema, runtime_fields):
+        """Missing settings that appear in Review configuration, whether or not they can be defaults.
+
+        Review spans operations, so only a setting in ``blocking`` (missing from the current
+        execution) is listed when it can never be a saved default. Required unattended
+        authentication keeps its dedicated setup screen unless it is reviewable.
+        """
+        return [name for name in review.missing
+                if schema.fields[name].acknowledge_default or name in runtime_fields
+                or name in blocking and name != 'UNATTENDED_AUTH']
+
     def configuration_pending(self, *, include_optional=True, review=None, snapshot=None):
         review = self.session.result(_review=True) if review is None else review
         schema = snapshot.schema if snapshot else self.schema
@@ -1261,8 +1273,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                       if not value.explicit and schema.fields[name].acknowledge_default]
         runtime_fields = (snapshot.runtime_required_fields if snapshot is not None
                           else self.session.runtime_required_fields)
-        missing = [name for name in review.missing
-                   if schema.fields[name].acknowledge_default or name in runtime_fields]
+        execution = snapshot.execution if snapshot is not None else self.session.result()
+        missing = self.blocking_review_names(review, execution.missing, schema, runtime_fields)
         active = set(review.active_fields) | set(review.fields) | set(review.missing)
         optional = [name for name, field in schema.fields.items()
                     if name in active and name in self.tool_review_fields(snapshot) and include_optional and field.review_optional and field.acknowledge_default
@@ -1476,6 +1488,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         required_review = set(snapshot.runtime_required_fields if snapshot is not None
                               else self.session.runtime_required_fields)
         active = set(result.active_fields) | set(result.fields) | set(result.missing)
+        execution = snapshot.execution if snapshot is not None else self.session.result()
+        blocking = self.blocking_review_names(result, execution.missing, schema, required_review)
         review = result
         default_names = {name for name, field in schema.fields.items()
                          if field.default is not UNSET or field.conditional_defaults}
@@ -1483,7 +1497,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.review_names.update(self.configuration_pending(review=review, snapshot=snapshot))
         rows = []
         for name in sorted(schema.fields):
-            if (name not in self.tool_review_fields(snapshot) or (not schema.fields[name].acknowledge_default and name not in required_review) or name not in self.review_names
+            if (name not in self.tool_review_fields(snapshot) or (not schema.fields[name].acknowledge_default and name not in required_review and name not in blocking) or name not in self.review_names
                     or name not in active):
                 continue
             resolved = review.fields.get(name) if name in default_names else result.fields.get(name)
@@ -1789,10 +1803,14 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             if "UNATTENDED_AUTH" in hidden_missing:
                 self.show_required_auth()
                 return
+            self.review_destination = self.mode
             self.show("error", "Missing configuration",
                       "Required settings must be provided explicitly:\n" + "\n".join(
                           f"{name}: .env / environment {name} or --{name.lower().replace('_', '-')} VALUE"
-                          for name in result.missing), (("menu", "Main menu"),))
+                          + (f"\n  {self.schema.fields[name].help}" if self.schema.fields[name].help else "")
+                          for name in result.missing)
+                      + "\nOr choose Review configuration to enter the values here; they are written to the selected target .env.",
+                      (("review-config", "Review configuration"), ("menu", "Main menu")))
             return
         if result.missing:
             self.review_destination = self.mode

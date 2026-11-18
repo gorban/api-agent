@@ -29,6 +29,14 @@ Startup review lists unacknowledged defaults and missing potentially required
 settings. A new default appears automatically, giving you a chance to override
 it or preserve a reproducible configuration. Advanced/operation-only fields
 may be hidden here; their executable declarations and help remain available.
+A hidden setting that currently blocks the operation is the exception: it is
+listed as **Required** with source *Not provided* so you can set it with **e**.
+That value is written to the selected target `.env` as an explicit assignment.
+A hidden setting is never offered as a saved default, so **a** and bulk accept
+skip it, and it leaves the list once it has a value. If you start an operation
+from the main menu while such a setting is missing, the **Missing configuration**
+screen names the setting's help text, the `.env`, environment and `--flag VALUE`
+alternatives, and offers **Review configuration** to enter it in the application.
 
 Provider declarations may mark a text setting `sensitive = true` (without enum
 choices). Its editor masks input; Review/default descriptions and Clear .env

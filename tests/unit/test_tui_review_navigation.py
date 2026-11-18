@@ -218,7 +218,7 @@ def test_start_authorized_review_labels_continue_operation(tmp_path, size):
     asyncio.run(scenario())
 
 
-def test_removing_final_review_row_reports_active_hidden_requirement(tmp_path):
+def test_requirement_activated_during_review_becomes_a_required_row(tmp_path):
     from unittest.mock import Mock
     collector = Mock(side_effect=AssertionError('Missing hidden configuration must not collect tests'))
     app = fixture(tmp_path, fields={'PROVIDER_SETTING': {'type': 'str', 'default': 'synthetic'}}, collector=collector)
@@ -235,8 +235,9 @@ def test_removing_final_review_row_reports_active_hidden_requirement(tmp_path):
                 'SECRET': {'type': 'str', 'required_when': {'TUI_MODE': 'integration'}, 'acknowledge_default': False}}})
             app.refresh_configuration_rows(app.screen)
             await pilot.pause()
-            assert app.screen.kind == 'menu'
-            assert app.mode is None
+            assert app.screen.kind == 'defaults'
+            assert [row.key.value for row in app.screen.query_one(DataTable).ordered_rows] == ['SECRET']
+            assert app.mode == 'integration'
             collector.assert_not_called()
     asyncio.run(scenario())
 
