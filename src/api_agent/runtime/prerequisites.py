@@ -31,7 +31,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from uuid import uuid4
 
 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment, snapshot_compose
-from api_agent.runtime.ownership import PROFILES
+from api_agent.runtime.ownership import CHECKOUT_LABEL, PROFILES
 from api_agent.runtime.processes import disposal_complete, finalize, list_processes, observe_exit, wait_owned
 
 CONFIG_LABEL = 'api-agent.config'
@@ -644,7 +644,7 @@ def _http_identity(readiness, timeout, *, cancelled=lambda: False):
 
 
 class _NetworkCleanup:
-    def _prune_networks(self, deadline, *, aged=False, only_id=None, required_labels=None):
+    def _prune_networks(self, deadline, *, aged=False, only_id=None, required_labels=None, scope_id=None):
         if not self.plan.enabled:
             return ()
         # Stopped definitions still need their networks for restart, even when
@@ -652,10 +652,13 @@ class _NetworkCleanup:
         # Hold the creation lock over inspection and deletion, and remove only
         # pinned, explicitly opted-in networks with NO container references.
         executable, marker = self.plan.command[0], 'api-agent.network-cleanup-v1'
+        # A non-aged pass targets one scope: the caller's, or an unused one the reaper
+        # has just emptied. Every ownership check below still applies to that scope.
+        target = scope_id or self.scope.id
         cleanup = not aged
         with self._network_guard(deadline, cleanup=cleanup):
             removable = []
-            selected = marker if aged else marker + '=' + self.scope.id
+            selected = marker if aged else marker + '=' + target
             names = self._command((executable, 'network', 'ls', '--filter',
                 'label=' + selected, '--format', '{{.Name}}'), deadline, cleanup=cleanup).split()
             names = sorted({name for name in names if re.fullmatch(r'sa-[0-9a-f]{16}_default', name)})
@@ -678,7 +681,7 @@ class _NetworkCleanup:
                             or labels.get('api-agent.scope') != scope
                             or labels.get('com.docker.compose.project') != 'sa-' + scope
                             or labels.get('com.docker.compose.network') != 'default'
-                            or (not aged and scope != self.scope.id)
+                            or (not aged and scope != target)
                             or (required_labels and any(labels.get(key) != value
                                 for key, value in required_labels.items()))):
                         continue
@@ -1477,6 +1480,18 @@ class PrerequisiteManager(_NetworkCleanup):
         self._rollback = None
         return stopped
 
+    def _reap_unused(self, deadline, *, cleanup=False):
+        """Remove managed resources nothing uses; best-effort and bounded, never raising."""
+        if not self.plan.enabled:
+            return None
+        from . import reaper
+        return reaper.reap_unused_managed_resources(
+            run=lambda args, limit: self._command(args, limit, cleanup=cleanup),
+            prune_network=lambda scope_id, limit: self._prune_networks(limit, scope_id=scope_id),
+            executable=self.plan.command[0], scope=self.scope, retention_days=self.plan.retention_days,
+            deadline=min(deadline, self.now() + reaper.BUDGET_SECONDS), now=self.now, cancelled=self.cancelled,
+            identity=self.identity, host_paths_visible=reaper.host_paths_visible(self.engine_environment))
+
     def acquire(self, *, expected_ids=None, reporting_directory=None, _prelocked=False, _deadline=None):
         if self._rollback is not None:
             raise PrerequisiteError('Prerequisite rollback remains pending; release before acquiring again.')
@@ -1518,6 +1533,9 @@ class PrerequisiteManager(_NetworkCleanup):
             if not self.plan.enabled:
                 self.lease = ServiceLease(invocation, self.scope.id, (), (), ())
                 return self.lease
+            # Every managed start passes here, after this scope's fail-closed checks and
+            # before any service is created, so address pools and disks are freed first.
+            self._reap_unused(deadline)
             initial = self._inventory(deadline)
             self._retire_disposed_duties(journal, initial)
             self._cleanup_pending_networks(journal, deadline)
@@ -1573,8 +1591,10 @@ class PrerequisiteManager(_NetworkCleanup):
                     override = self.directory / f'{self.scope.id}-labels.json'
                     if override.is_symlink():
                         raise PrerequisiteError('Compose ownership override may not be a symlink.')
+                    # The checkout name only helps people tell scopes apart in a container UI.
+                    readable = {CHECKOUT_LABEL: self.scope.checkout} if getattr(self.scope, 'checkout', '') else {}
                     override.write_text(json.dumps({'services': {name: {'labels': {
-                        CONFIG_LABEL: fingerprint, **({'api-agent.acquisition': self.acquisition_nonce}
+                        CONFIG_LABEL: fingerprint, **readable, **({'api-agent.acquisition': self.acquisition_nonce}
                             if self.dispose_on_release else {})}} for name, fingerprint in self.fingerprints.items()}}))
                     # Private snapshot paths remain available for retained bind
                     # mounts. No mutable source asset reaches Compose execution.
@@ -1671,6 +1691,17 @@ class PrerequisiteManager(_NetworkCleanup):
 
     def release(self, *, retain=False, reporting_ids=None, reporting_directory=None,
                 _prelocked=False, _deadline=None):
+        held = self.lease is not None or self._rollback is not None
+        stopped = self._release(retain=retain, reporting_ids=reporting_ids,
+                                reporting_directory=reporting_directory, _prelocked=_prelocked, _deadline=_deadline)
+        if held and self.lease is None and self._rollback is None:
+            # The lease has ended; other scopes' leftovers can go now. Failure keeps ownership instead.
+            limit = self.now() + self.cleanup_timeout
+            self._reap_unused(limit if _deadline is None else min(limit, _deadline), cleanup=True)
+        return stopped
+
+    def _release(self, *, retain=False, reporting_ids=None, reporting_directory=None,
+                 _prelocked=False, _deadline=None):
         if self.lease is None and self._rollback is None:
             return ()
         deadline = self.now() + self.cleanup_timeout

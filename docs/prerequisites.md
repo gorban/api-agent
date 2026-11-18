@@ -117,6 +117,57 @@ with `docker network ls`. A one-time `docker network prune` removes all networks
 unused by any container, including manually created unused networks; review its
 confirmation before accepting. The launcher does not perform that broad cleanup.
 
+## Unused managed resource reaping
+
+Release stops containers and keeps them, with their volumes and network, so the
+current checkout reuses its stack quickly. Scopes are per checkout, so a deleted
+checkout or an abandoned scope would otherwise leave stopped containers, volumes
+and networks behind forever. The stop-only reuse therefore applies to the current
+checkout; other checkouts' unused stacks are reaped automatically.
+
+`PrerequisiteManager.acquire` (every Run local, test run and trace viewer start)
+reaps while holding its own scope lock, after that scope's fail-closed checks and before it
+creates any service. `PrerequisiteManager.release` reaps once the lease has ended. Release
+skips it after a failed release or when cancelled. When nothing is unused the cost is one
+label-filtered listing (`ps -a`) and one batched inspection; an idle engine
+costs only the listing. The reaper never fails or delays a run: it has its own bounded budget inside
+the manager's deadline, honors cancellation, preserves everything it cannot verify (the
+same posture as network pruning), and logs only a short value-free diagnostic.
+
+A scope is a candidate only when every one of its `api-agent.managed` containers
+is stopped (`exited`, `created` or `dead`; paused, restarting or removing counts as
+live), it is not the caller's scope or a previous path-based scope, and no live lease
+protects it in its own ownership journal. The journal is found beside the recorded
+`com.docker.compose.project.working_dir` snapshot directory and read through the
+same lock, identity and lease checks that guard stop (`guarded_cleanup`); an
+unreadable journal, a held lock or an unrecognised directory layout preserves the
+scope. A candidate is reaped when either rule holds:
+
+- **Orphan:** the recorded working directory no longer exists on this host. This rule always
+  applies, but only when this process can see the engine host's paths (a
+  local `unix://` engine and no containerised session); it is skipped for remote engines
+  and sessions inside a container.
+- **Aged:** every container has been stopped for at least
+  `MANAGED_CONTAINER_RETENTION_DAYS` (default 14; `0` disables only this age rule).
+  Age counts from the most recent stop, or creation for a never-started container.
+
+Reaping removes, in batches, the scope's containers; then volumes that carry the same
+compose project label and the full api-agent ownership labels (managed, scope and
+profile); then the scope's cleanup-marked network when no saved container
+references it. It never removes images, build cache, anonymous volumes, or anything
+without the api-agent ownership labels, and it never uses `-f`, `-v` or system/volume
+pruning. Stack volumes hold local trace and result history, which is deleted with an
+orphaned or aged stack; a shared reporting stack is re-provisioned the next time it is needed.
+
+Managed containers also carry `api-agent.checkout=<checkout directory name>` (label
+only; project and container names are unchanged) so a container UI can tell scopes
+apart. Existing containers without it keep working.
+
+For a one-time cleanup, **Container management** (`TUI_MODE=cleanup-containers`) offers
+**Remove unused stopped stacks**, which runs the same reaper
+(`ContainerRuntime.reap_unused`, built on `reap_unused_managed_resources`) with the
+configured retention and reports what was removed.
+
 ## Other conditional requirements
 
 Other downloadable tools are prepared at their existing operation boundaries,
@@ -131,7 +182,7 @@ See [setup and configuration](workbench.md#getting-started),
 
 Callers that create temporary prerequisite definitions may opt in with
 `PrerequisiteManager(..., dispose_on_release=True)`. The default remains
-stop-only. Temporary ownership follows compatible borrowers until their final
+stop-only (with [unused-resource reaping](#unused-managed-resource-reaping) for other scopes). Temporary ownership follows compatible borrowers until their final
 release; conflicting policies for the same definition are rejected. Cleanup
 verifies immutable container IDs, creator nonces and configuration before removing definitions,
 and removes a network created by that lifecycle only when no saved container

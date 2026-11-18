@@ -1,9 +1,11 @@
 """Read-only container visibility; destructive actions keep existing stop guards."""
+import asyncio
 import os
 
 from textual.widgets import Button, DataTable, Static
 
 from api_agent.runtime.tasks import offload
+from api_agent.runtime.compose import DEFAULT_RETENTION_DAYS
 from api_agent.testing.diagnostics import CredentialScrubber
 
 
@@ -32,8 +34,10 @@ class ContainerManagement:
                          ('✓ ' if key == selected else '') + 'Select engine: ' + _engine_display(label, key))
                         for key, label in targets)
         self.show('containers', 'Container management', self.container_summary +
-                  '\nEnter marks running rows for Stop. Highlight a container to view its bounded logs. Containers and volumes are retained.',
+                  '\nEnter marks running rows for Stop. Highlight a container to view its bounded logs. Stopping retains containers and volumes; '
+                  'Remove unused deletes only stopped stacks of other checkouts that are orphaned or past retention.',
                   (('container-logs', 'View highlighted logs'), ('stop-containers', 'Stop selected containers (s)'),
+                   ('reap-containers', 'Remove unused stopped stacks'),
                    ('refresh-containers', 'Refresh inventory')) + actions, rows)
 
     def select_container_engine(self, key):
@@ -44,6 +48,24 @@ class ContainerManagement:
             self.container_runtime.selected_label, self.container_runtime.selected_key) + '; checking…'
         self.show_container_management()
         self.refresh_managed_containers()
+
+    def request_container_reap(self):
+        runtime = getattr(self.container_runtime, 'selected_runtime', self.container_runtime)
+        retention = self.session.result(_review=True).values.get('MANAGED_CONTAINER_RETENTION_DAYS', DEFAULT_RETENTION_DAYS)
+        self.run_worker(self._reap_containers(runtime, retention), group='containers', exclusive=True)
+
+    async def _reap_containers(self, runtime, retention):
+        try:
+            report = await asyncio.to_thread(runtime.reap_unused, retention_days=retention)
+            message = (f'Removed {report.scopes} unused scope(s): {report.containers} container(s), '
+                       f'{report.volumes} volume(s), {report.networks} network(s).'
+                       if report.scopes else 'Nothing unused to remove.')
+            if report.diagnostic:
+                message += ' Cleanup ' + report.diagnostic + '.'
+        except Exception as error:
+            message = str(error)
+        await self._refresh_managed_containers()
+        self.call_after_refresh(self.show_container_stop_error, message)
 
     def refresh_managed_containers(self):
         self.run_worker(self._refresh_managed_containers(), group='containers', exclusive=True)

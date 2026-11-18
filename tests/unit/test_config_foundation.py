@@ -478,3 +478,23 @@ def test_all_unit_is_an_execution_only_unit_setting(tmp_path, mode, collect_only
         explicit = resolve_config(schema, environ=options, argv=['--all-unit'], anchors={'owner_root': tmp_path})
         explicit.raise_for_errors()
         assert explicit.values['ALL_UNIT'] is True
+
+
+@pytest.mark.parametrize('mode', ['run-local', 'unit', 'integration', 'e2e', 'trace-viewer', 'cleanup-containers'])
+def test_managed_container_retention_defaults_to_two_weeks_without_a_review_prompt(tmp_path, mode):
+    schema = load_shared_schema()
+    field = schema.fields['MANAGED_CONTAINER_RETENTION_DAYS']
+    result = resolve_config(schema, environ={**AUTH, 'TUI_MODE': mode}, anchors={'owner_root': tmp_path})
+    result.raise_for_errors()
+
+    assert result.values['MANAGED_CONTAINER_RETENTION_DAYS'] == 14
+    assert field.type == 'int' and field.review_optional and not field.acknowledge_default
+    assert 'MANAGED_CONTAINER_RETENTION_DAYS' not in result.missing
+
+
+@pytest.mark.parametrize(('raw', 'valid'), [('0', True), ('30', True), ('-1', False), ('soon', False)])
+def test_managed_container_retention_accepts_nonnegative_days(tmp_path, raw, valid):
+    result = resolve_config(load_shared_schema(), environ={**AUTH, 'TUI_MODE': 'run-local'},
+                            argv=['--managed-container-retention-days=' + raw], anchors={'owner_root': tmp_path})
+
+    assert (not any('MANAGED_CONTAINER_RETENTION_DAYS' in error for error in result.errors)) is valid

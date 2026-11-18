@@ -3,17 +3,26 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from itertools import product
 from pathlib import Path
+import re
 
 MANAGED_LABEL = "api-agent.managed"
 SCOPE_LABEL = "api-agent.scope"
 PROFILE_LABEL = "api-agent.profile"
 PROFILES = frozenset({"langfuse", "otel", "localstack"})
+CHECKOUT_LABEL = "api-agent.checkout"
+
+
+def checkout_label(name):
+    """A readable, label-safe form of a checkout directory name."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)[:63]
 
 
 @dataclass(frozen=True)
 class StackScope:
     id: str
     legacy_ids: tuple[str, ...] = field(default=(), compare=False)
+    # Display only: never part of identity, project names or ownership checks.
+    checkout: str = field(default="", compare=False)
 
     @classmethod
     def from_roots(cls, base_root, pack_root):
@@ -36,7 +45,7 @@ class StackScope:
             aliases.append({root, candidate} if candidate.exists() and candidate.samefile(root) else {root})
         legacy = tuple(sorted(sha256(f'{base}\n{pack}'.encode()).hexdigest()[:16]
                               for base, pack in product(*aliases)))
-        return cls(identifier, legacy)
+        return cls(identifier, legacy, checkout_label(roots[1].name))
 
     def is_legacy(self, labels):
         return (isinstance(labels, dict) and labels.get(MANAGED_LABEL) == 'true'

@@ -74,7 +74,9 @@ To preserve traces, stop every Run local, trace viewer and test invocation using
 that stack. In the same container engine/context, confirm the identified web
 container is stopped and remove only that container using the notice's command.
 Keep all volumes; do not force removal or use `-v`, `compose down -v`, or volume
-pruning. Rerunning recreates the web container. Existing database accounts keep
+pruning. (Automatic [unused resource reaping](prerequisites.md#unused-managed-resource-reaping)
+deletes the volumes of a whole stopped stack only when its checkout directory is gone
+or it has been stopped past `MANAGED_CONTAINER_RETENTION_DAYS`.) Rerunning recreates the web container. Existing database accounts keep
 their actual credentials; recreating a container does not rotate the account.
 Shared test setup retains this recovery notice in successful-test stderr details
 when tracing is unavailable, while the original functional request continues.

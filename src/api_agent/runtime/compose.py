@@ -34,6 +34,9 @@ class Scope(Protocol):
     def labels(self, profile: str) -> Mapping[str, str]: ...
 
 
+DEFAULT_RETENTION_DAYS = 14
+
+
 @dataclass(frozen=True)
 class ComposePlan:
     profiles: tuple[str, ...]
@@ -44,6 +47,7 @@ class ComposePlan:
     assets: Mapping[str, bytes] = field(repr=False)
     conditional: tuple = ()
     inventory: object = None
+    retention_days: int = DEFAULT_RETENTION_DAYS
 
     @property
     def enabled(self):
@@ -73,6 +77,13 @@ def _localstack_port(config):
     if type(port) is not int or not 1 <= port <= 65535:
         raise ComposeError('ALLURE_LOCALSTACK_PORT must be a port from 1 to 65535.')
     return port
+
+
+def _retention_days(config):
+    days = config.get('MANAGED_CONTAINER_RETENTION_DAYS', DEFAULT_RETENTION_DAYS)
+    if type(days) is not int or days < 0:
+        raise ComposeError('MANAGED_CONTAINER_RETENTION_DAYS must be a nonnegative integer.')
+    return days
 
 
 def _jaeger_viewer_port(config):
@@ -274,6 +285,7 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
     profiles = selected_profiles(resolved, tracing_profiles=tracing_profiles)
     viewer_port = _jaeger_viewer_port(config)
     localstack_port = _localstack_port(config)
+    retention_days = _retention_days(config)
     if 'otel' in profiles and (viewer_port == 4318 or
             ('localstack' in profiles and localstack_port in {4318, viewer_port})):
         raise ComposeError('Managed Jaeger and LocalStack host ports must not conflict.')
@@ -381,7 +393,8 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
                 environment['SA_' + key] = value
     return ComposePlan(profiles, services, command, directory, MappingProxyType(environment),
         MappingProxyType({'compose.json': compose_bytes, 'empty.env': empty_bytes,
-                          'localstack-ready.sh': hook_bytes, 'jaeger-config.json': jaeger_bytes}))
+                          'localstack-ready.sh': hook_bytes, 'jaeger-config.json': jaeger_bytes}),
+        retention_days=retention_days)
 
 
 def validate_compose(plan, *, runner=subprocess.run):

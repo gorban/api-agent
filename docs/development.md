@@ -22,6 +22,12 @@ the first ten choices directly. **Ctrl+C** copies the selected destination URL
 or log-source name. `RUN_LOG_SOURCE` selects the initial source
 by name. **Stop running containers** lists only eligible owned services and
 requires confirmation; it excludes unrelated containers and the hosting session.
+Stop keeps containers and volumes for reuse by the current checkout. Stopped stacks of
+other checkouts whose directory is gone, or that stayed stopped longer than
+`MANAGED_CONTAINER_RETENTION_DAYS` (default 14; 0 disables only the age rule), are
+removed with their labelled volumes and network when a managed start or release
+runs, or on demand from Container management. See
+[unused resource reaping](prerequisites.md#unused-managed-resource-reaping).
 
 Model discovery caches validated successful metadata for
 `LLM_CATALOG_CACHE_TTL_SECONDS` (default 3600 seconds). Zero disables completed

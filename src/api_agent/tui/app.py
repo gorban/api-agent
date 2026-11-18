@@ -2947,6 +2947,8 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.request_container_stop()
             elif key.startswith("container-engine-"):
                 self.select_container_engine(key[len("container-engine-"):])
+            elif key == "reap-containers":
+                self.request_container_reap()
             elif key == "refresh-containers":
                 self.refresh_container_inventory()
             elif key == "container-logs":

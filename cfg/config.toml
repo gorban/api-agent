@@ -263,6 +263,17 @@ default = "../api-agent"
 pack_only = true
 help = "Base runtime location, resolved relative to the pack root."
 
+[fields.MANAGED_CONTAINER_RETENTION_DAYS]
+type = "int"
+default = 14
+validation = "nonnegative"
+acknowledge_default = false
+review_optional = true
+help = "Days a stopped managed container stack of another checkout is kept before it is removed with its api-agent-labelled volumes and network. Release stops containers so the current checkout reuses its stack; stacks whose checkout directory no longer exists are always removed once stopped, and a stack with a running container or a live lease is never touched. 0 disables only the age rule. Images and build cache are never removed. Stack volumes hold local trace and result history, which is deleted with the stack."
+[fields.MANAGED_CONTAINER_RETENTION_DAYS.applies_when]
+TUI_MODE = ["run-local", "unit", "integration", "e2e", "trace-viewer", "cleanup-containers"]
+COLLECT_ONLY = false
+
 [fields.TEST_PARALLEL_JOBS]
 type = "int"
 default = 8
