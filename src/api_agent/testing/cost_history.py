@@ -194,7 +194,7 @@ def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=Non
     card = (cached_rate_card(context, config) if _source(config) == BEDROCK else
             rate_card or config.get('_COST_RATE_CARD') or cached_rate_card(context, config))
     repo = repository_label(context, context.owner_root)
-    origin = sha256(json.dumps([config.get(name) for name in ('ALLURE_S3_ENDPOINT', 'ALLURE_S3_BUCKET', 'ALLURE_S3_PREFIX')] + [repo]).encode()).hexdigest()
+    origin = sha256(json.dumps([config.get(name) for name in ('S3_ENDPOINT', 'ALLURE_S3_BUCKET', 'ALLURE_S3_PREFIX')] + [repo]).encode()).hexdigest()
     try:
         cache = cache if cache is not None else HistoryCache()
         if test_configs is not None:
@@ -216,9 +216,9 @@ def estimator_for(context, tests, config, *, now=None, cache=None, rate_card=Non
         storage = None
         if config.get('ALLURE_S3_BUCKET'):
             storage = RunStorage(config['ALLURE_S3_BUCKET'], prefix=config.get('ALLURE_S3_PREFIX', 'allure'),
-                                 endpoint_url=config.get('ALLURE_S3_ENDPOINT'), region_name=config.get('ALLURE_S3_REGION'),
-                                 localstack_port=config.get('ALLURE_LOCALSTACK_PORT', 4566),
-                                 managed_local=config.get('ALLURE_S3_USE_LOCALSTACK', False))
+                                 endpoint_url=config.get('S3_ENDPOINT'), region_name=config.get('S3_REGION'),
+                                 localstack_port=config.get('LOCALSTACK_PORT', 4566),
+                                 managed_local=config.get('S3_USE_LOCALSTACK', False))
         return HistoricalEstimator(tests, config, cache, origin, repo, card, storage, now, context=context)
     except ProjectionCancelled:
         raise

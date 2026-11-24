@@ -309,7 +309,7 @@ repository and may incur provider usage.
 For standalone use, start `./launch.sh --tui-mode integration` from this
 checkout. Its bundled `demo/` is selected automatically; save personal settings
 in the ignored repository-root `.env`. For managed local report storage, add
-`--allure-s3-use-localstack=True`, or save that same setting through Review
+`--s3-use-localstack=True`, or save that same setting through Review
 configuration. Derived bucket/endpoint defaults are valid for operation entry
 without saving. Startup and leaving Clear .env offer pending-value review; menu
 operations redirect only for actual configuration errors or missing active
@@ -422,10 +422,23 @@ and published, so a slow or failing store fails the turn and is journaled as suc
 If finalizing or publishing the journal then fails, the start-of-turn session is
 written back before the error propagates, while the thread is still held. That
 restore is a second write rather than a transaction: if it also fails, the stored
-session is the failed turn's. Only the accepted pass of a guarded component
+session is the failed turn's, and the failure is attached to the original error as a
+note (the original error is the one raised). Only the accepted pass of a guarded component
 contributes: outputs from rejected passes are discarded before the turn ends.
 Pass `checkpointer=` to `Workflow` (or a compiled definition's `workflow()`) to
-persist beyond the process; the default is in-memory. A workflow without
+persist beyond the process; the default is in-memory. To keep only the session
+durably, without checkpointing every step of the turn graph, pass `session_store=`
+to `Workflow`: an object with `async load(thread_id) -> SessionSnapshot(value,
+version, saved_at)` and `async save(thread_id, value, *, expected_version) -> version`
+(`api_agent.workflows.session_store`). The turn loads once, saves with the version it
+loaded, and a restore writes the start-of-turn value against the version its own save
+returned; a store signals a lost race with `SessionConflict`, which fails the turn. The
+`thread_id` it receives is the raw one given to `arun` (the `<graph_id>:` prefix below
+is the default adapter's own). Without `session_store=` the checkpointer is wrapped in a
+default adapter that now also checks the version it loaded: two `Workflow` instances
+sharing one checkpointer and thread used to be last-writer-wins and now fail the later
+save with `SessionConflict`. A single instance never sees the difference, because it runs
+one turn per thread at a time. A workflow without
 `## Session` still rejects `thread_id` and `checkpointer`. A session is stored under
 `<graph_id>:<thread_id>`, so graphs that share a checkpointer and thread names keep
 separate sessions (graph IDs never contain `:`). Fields in a stored session that the

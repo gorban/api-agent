@@ -45,22 +45,22 @@ def test_default_port_remains_compatible(tmp_path):
     from api_agent.config.declarations import ConfigSchema
     from api_agent.config.session import ConfigSession
     shared=load_shared_schema()
-    schema=ConfigSchema({name:shared.fields[name] for name in ('NO_STD_IN','TUI_MODE','COLLECT_ONLY','SKIP_ALLURE_REPORTING','ALLURE_S3_USE_LOCALSTACK','ALLURE_LOCALSTACK_PORT')})
-    invalid=resolve_config(schema,argv=['--tui-mode=integration','--allure-s3-use-localstack=True'],environ={},overrides={'ALLURE_LOCALSTACK_PORT':None})
-    assert invalid.errors==('ALLURE_LOCALSTACK_PORT: external values must be strings',)
-    assert 'ALLURE_LOCALSTACK_PORT' not in invalid.values
+    schema=ConfigSchema({name:shared.fields[name] for name in ('NO_STD_IN','TUI_MODE','COLLECT_ONLY','SKIP_ALLURE_REPORTING','S3_USE_LOCALSTACK','LOCALSTACK_PORT')})
+    invalid=resolve_config(schema,argv=['--tui-mode=integration','--s3-use-localstack=True'],environ={},overrides={'LOCALSTACK_PORT':None})
+    assert invalid.errors==('LOCALSTACK_PORT: external values must be strings',)
+    assert 'LOCALSTACK_PORT' not in invalid.values
     context=SimpleNamespace(base_root=tmp_path,pack_root=tmp_path,external_pack=False,dotenv_path=tmp_path/'.env',anchors={})
-    session=ConfigSession(context,schema,argv=['--tui-mode=integration','--allure-s3-use-localstack=True'],environ={})
-    assert session.set_value('ALLURE_LOCALSTACK_PORT','14566',persist=True).values['ALLURE_LOCALSTACK_PORT']==14566
-    cleared=session.unset_saved('ALLURE_LOCALSTACK_PORT')
+    session=ConfigSession(context,schema,argv=['--tui-mode=integration','--s3-use-localstack=True'],environ={})
+    assert session.set_value('LOCALSTACK_PORT','14566',persist=True).values['LOCALSTACK_PORT']==14566
+    cleared=session.unset_saved('LOCALSTACK_PORT')
     assert not cleared.errors
-    assert cleared.values['ALLURE_LOCALSTACK_PORT']==4566
+    assert cleared.values['LOCALSTACK_PORT']==4566
     assert RunStorage('bucket').localstack_port==4566
-    assert RunStorage('bucket',localstack_port=cleared.values['ALLURE_LOCALSTACK_PORT']).localstack_port==4566
+    assert RunStorage('bucket',localstack_port=cleared.values['LOCALSTACK_PORT']).localstack_port==4566
 
 
-@pytest.mark.parametrize('settings,port',[({},4566),({'ALLURE_LOCALSTACK_PORT':14566},14566),
-    ({'ALLURE_S3_USE_LOCALSTACK':True},4566)])
+@pytest.mark.parametrize('settings,port',[({},4566),({'LOCALSTACK_PORT':14566},14566),
+    ({'S3_USE_LOCALSTACK':True},4566)])
 def test_recording_threads_configured_port(tmp_path,monkeypatch,settings,port):
     from api_agent.testing import recorded
     from test_recorded_integration import fixture,Storage,fake_runner
@@ -71,11 +71,11 @@ def test_recording_threads_configured_port(tmp_path,monkeypatch,settings,port):
     result=recorded.run_recorded_integration(context,[test],config,accepted=True,runner=fake_runner())
     assert result.persisted
     assert factory.call_args.kwargs['localstack_port']==port
-    assert factory.call_args.kwargs['managed_local'] is settings.get('ALLURE_S3_USE_LOCALSTACK',False)
+    assert factory.call_args.kwargs['managed_local'] is settings.get('S3_USE_LOCALSTACK',False)
 
 
-@pytest.mark.parametrize('settings,port',[({},4566),({'ALLURE_LOCALSTACK_PORT':14566},14566),
-    ({'ALLURE_S3_USE_LOCALSTACK':True},4566)])
+@pytest.mark.parametrize('settings,port',[({},4566),({'LOCALSTACK_PORT':14566},14566),
+    ({'S3_USE_LOCALSTACK':True},4566)])
 def test_history_threads_configured_port(tmp_path,monkeypatch,settings,port):
     from api_agent.testing import cost_history
     from test_recorded_integration import fixture
@@ -88,4 +88,4 @@ def test_history_threads_configured_port(tmp_path,monkeypatch,settings,port):
     monkeypatch.setattr(cost_history,'HistoricalEstimator',Mock())
     cost_history.estimator_for(context,[test],config,rate_card={'synthetic':1})
     assert factory.call_args.kwargs['localstack_port']==port
-    assert factory.call_args.kwargs['managed_local'] is settings.get('ALLURE_S3_USE_LOCALSTACK',False)
+    assert factory.call_args.kwargs['managed_local'] is settings.get('S3_USE_LOCALSTACK',False)

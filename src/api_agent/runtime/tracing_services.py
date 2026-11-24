@@ -83,7 +83,7 @@ def custom_trace_prerequisites(context, values, *, cancel_event=None, tool_plan=
     schema = bootstrap_schema(schema, (), {}, {}, values, owner_root=context.owner_root,
                               configuration_paths=context.provider_config_paths, **configuration_inputs(context))
     # A custom tracing selection cannot acquire legacy collectors or report storage.
-    selected = {**values, 'ALLURE_S3_USE_LOCALSTACK': False}
+    selected = {**values, 'S3_USE_LOCALSTACK': False}
     environment = {key: os.environ[key] for key in ENGINE_ENVIRONMENT_KEYS if key in os.environ}
     plan = plan_infrastructure(ConfigResult(selected, {}, (), (), ()), schema, contributions, scope,
         engine_environment=environment, inventory=capture_inventory(admitted_context, tool_plan),

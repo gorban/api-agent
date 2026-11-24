@@ -23,8 +23,8 @@ def test_startup_review_reaches_requested_destination_and_valid_operation_ignore
         pack_id='demo', external_pack=False, dotenv_path=tmp_path / '.env',
         anchors={name: tmp_path for name in ('base_root', 'pack_root', 'owner_root')}, suite_paths=lambda mode: ())
     argv = (['--tui-mode=integration', '--llm-provider=' + str(root / 'src/api_agent/llm_providers/gpt/factory.py') + ':factory',
-             '--gpt-state-dir=.provider-state/gpt', '--allure-s3-use-localstack=True'] if explicit_mode else [])
-    app = ApiAgentApp(context, schema, argv=argv, environ={'ALLURE_S3_USE_LOCALSTACK': 'True'},
+             '--gpt-state-dir=.provider-state/gpt', '--s3-use-localstack=True'] if explicit_mode else [])
+    app = ApiAgentApp(context, schema, argv=argv, environ={'S3_USE_LOCALSTACK': 'True'},
         collector=lambda *args, **kwargs: [Identity('base', root, 'tests/integration/test_sample.py', 'test_sample', 'integration')],
         container_runtime=SimpleNamespace(inventory=lambda: ()))
 
@@ -128,7 +128,7 @@ def test_bare_demo_names_missing_storage_and_allows_editing(tmp_path):
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path / 'demo', owner_root=tmp_path,
         pack_id='demo', external_pack=False, dotenv_path=tmp_path / '.env',
         anchors={name: tmp_path for name in ('base_root', 'pack_root', 'owner_root')})
-    app = ApiAgentApp(context, schema, environ={'ALLURE_S3_USE_LOCALSTACK': 'False'}, container_runtime=SimpleNamespace(inventory=lambda: ()))
+    app = ApiAgentApp(context, schema, environ={'S3_USE_LOCALSTACK': 'False'}, container_runtime=SimpleNamespace(inventory=lambda: ()))
 
     async def scenario():
         async with app.run_test(size=(80, 12)) as pilot:

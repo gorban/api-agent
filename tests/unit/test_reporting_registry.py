@@ -21,7 +21,7 @@ from api_agent.runtime import reporting_metadata as metadata
 from test_prerequisites import Engine
 from test_reporting_engine import engine as identity_engine, identify as identify_engine
 
-CONFIG = {'ALLURE_S3_USE_LOCALSTACK': True}
+CONFIG = {'S3_USE_LOCALSTACK': True}
 
 
 @pytest.fixture
@@ -46,6 +46,11 @@ class ReportingEngine(Engine):
         return identifier
 
     def run(self, command, **kwargs):
+        if command[1] == 'rm':
+            self.commands.append((command, kwargs))
+            for identifier in command[2:]:
+                del self.records[identifier]
+            return ''
         if command[1] == 'start':
             self.commands.append((command, kwargs))
             for identifier in command[2:]:
@@ -68,8 +73,8 @@ def storage(tmp_path):
         return manager
     state.factory = factory
     def create(config=None, **kwargs):
-        plan = plan_compose(config or CONFIG, StackScope.from_roots(tmp_path / 'checkout', tmp_path / 'pack'))
-        return r.SharedReportingManager(plan, registry_directory=state.registry,
+        plan = plan_compose(config or CONFIG, StackScope.from_roots(tmp_path / 'checkout', tmp_path / 'pack'), storage=True)
+        return r.SharedS3Manager(plan, registry_directory=state.registry,
             identity=lambda *args, **kwargs: state.generation, manager_factory=factory,
             occupied=lambda port: False, **kwargs)
     state.create = create
@@ -88,8 +93,8 @@ def binding(storage):
 def test_two_checkouts_share_one_server_and_journal(storage, tmp_path):
     first = storage.create()
     one = first.acquire()
-    plan = plan_compose(CONFIG, StackScope.from_roots(tmp_path / 'other', tmp_path / 'other-pack'))
-    second = r.SharedReportingManager(plan, registry_directory=storage.registry,
+    plan = plan_compose(CONFIG, StackScope.from_roots(tmp_path / 'other', tmp_path / 'other-pack'), storage=True)
+    second = r.SharedS3Manager(plan, registry_directory=storage.registry,
         identity=lambda *args, **kwargs: storage.generation, manager_factory=storage.factory,
         occupied=lambda port: pytest.fail('registered server must not be discovered by port'))
     two = second.acquire()
@@ -135,7 +140,9 @@ def test_retained_localstack_reuses_exact_object(storage, stopped, legacy_three_
     assert dict(joined.manager.plan.assets) == snapshot
     assert set(record['assets']) == set(snapshot)
     delta = mutation_commands(storage.engine)[len(before):]
-    assert delta == ([('docker', 'start', identifier)] if stopped else [])
+    ensure_buckets = ('docker', 'exec', '-e', 'SA_S3_BUCKETS=', identifier, '/bin/sh',
+                      '/etc/localstack/init/ready.d/10-api-agent-s3.sh')
+    assert delta == ([('docker', 'start', identifier)] if stopped else []) + [ensure_buckets]
     joined.release(retain=True)
     assert path.read_bytes() == saved_record
 
@@ -313,7 +320,7 @@ def test_shared_reporting_rejects_other_selected_service(storage):
     plan = storage.create().plan
     mixed = replace(plan, services=('localstack', 'jaeger'))
     with pytest.raises(p.PrerequisiteError, match='only the LocalStack profile'):
-        r.SharedReportingManager(mixed, registry_directory=storage.registry,
+        r.SharedS3Manager(mixed, registry_directory=storage.registry,
             identity=lambda *args, **kwargs: storage.generation, manager_factory=storage.factory)
     assert storage.engine.commands == []
 
@@ -599,15 +606,14 @@ def test_cancelled_owner_can_release_recovered_legacy_binding(storage):
     assert joined.lease is None and joined.pending_cleanup is None
 
 
-@pytest.mark.parametrize('change', ['bucket', 'region', 'assets', 'directory'])
+@pytest.mark.parametrize('change', ['region', 'assets', 'directory'])
 def test_incompatible_binding_refuses_before_mutation(storage, change):
     first = storage.create()
     lease = first.acquire()
     first.release(retain=True)
     before = mutation_commands(storage.engine)
     config = dict(CONFIG)
-    if change == 'bucket': config['ALLURE_S3_BUCKET'] = 'other-results'
-    if change == 'region': config['ALLURE_S3_REGION'] = 'eu-west-1'
+    if change == 'region': config['S3_REGION'] = 'eu-west-1'
     if change in {'assets', 'directory'}:
         path, record = binding(storage)
         if change == 'assets': record['assets'] = {}
@@ -671,14 +677,16 @@ def test_registered_container_removed_outside_api_agent_is_reprovisioned(storage
     replacement.release(retain=True)
 
 
-def test_final_release_keeps_the_retained_reporting_network(storage):
+def test_final_release_removes_the_container_and_its_network_but_never_data(storage):
     owner = storage.create()
     identifier, = owner.acquire().container_ids
     before = len(storage.engine.commands)
     owner.release()
     released = [command for command, _ in storage.engine.commands[before:]]
     assert ('docker', 'stop', '--time', '5', identifier) in released
-    assert not [command for command in released if command[1:3] in {('network', 'prune'), ('network', 'rm')}]
+    assert ('docker', 'rm', identifier) in released
+    assert [command[1:3] for command in released if command[1] == 'network' and command[2] == 'rm'] == [('network', 'rm')]
+    assert not storage.engine.networks and never_removes_data(storage.engine)
 
 
 def test_registered_container_replaced_by_another_project_container_still_refuses(storage):
@@ -704,13 +712,9 @@ def test_failed_provisioning_preserves_retry_owner_and_clears_settled_intent(sto
     assert owner.intent and binding(storage)[1]['state'] == 'provisioning'
     with pytest.raises(p.PrerequisiteError): owner.release()
     storage.engine.fail_stop = False
-    with pytest.raises(p.PrerequisiteError, match='cleanup remains pending'):
-        owner.release()
-    # Stopped retained objects still require explicit review; controlled fixture
-    # removal represents that independent verified recovery, not auto-adoption.
-    storage.engine.records.clear()
+    # The disposable rollback now stops and removes what the failed start created.
     owner.release()
-    assert not owner.intent
+    assert not owner.intent and not storage.engine.records
     assert not list(storage.registry.glob('*.json'))
 
 
@@ -729,12 +733,12 @@ def test_explicit_enrollment_joins_original_journal_without_engine_writes(storag
     base, pack = tmp_path / 'legacy-base', tmp_path / 'legacy-pack'
     base.mkdir(); pack.mkdir()
     scope = StackScope.from_roots(base, pack)
-    selected = plan_compose(CONFIG, scope)
+    selected = plan_compose(CONFIG, scope, storage=True)
     original = storage.factory(selected, scope, tmp_path / 'original-journal')
     lease = original.acquire()
     original.release(retain=True)
     before = mutation_commands(storage.engine)
-    key = r.enroll_reporting(plan_compose(CONFIG, StackScope('a' * 16)), base_root=base,
+    key = r.enroll_reporting(plan_compose(CONFIG, StackScope('a' * 16), storage=True), base_root=base,
         pack_root=pack, ownership_directory=original.directory, registry_directory=storage.registry,
         identity=lambda *args, **kwargs: 'engine', manager_factory=storage.factory)
     assert mutation_commands(storage.engine) == before
@@ -761,12 +765,29 @@ def test_runtime_anonymous_volume_is_not_the_controlled_persisted_volume(storage
     assert mutation_commands(storage.engine) == before
 
 
+def test_an_enrolled_binding_is_stopped_but_never_removed_on_final_release(storage, tmp_path):
+    base, pack = tmp_path / 'legacy-base', tmp_path / 'legacy-pack'
+    base.mkdir(); pack.mkdir()
+    scope = StackScope.from_roots(base, pack)
+    original = storage.factory(plan_compose(CONFIG, scope, storage=True), scope, tmp_path / 'original-journal')
+    lease = original.acquire()
+    original.release(retain=True)
+    r.enroll_reporting(plan_compose(CONFIG, StackScope('a' * 16), storage=True), base_root=base,
+        pack_root=pack, ownership_directory=original.directory, registry_directory=storage.registry,
+        identity=lambda *args, **kwargs: 'engine', manager_factory=storage.factory)
+    joined = storage.create()
+    joined.acquire()
+    joined.release()
+    assert set(lease.container_ids) <= set(storage.engine.records)
+    storage.create().acquire()
+
+
 @pytest.mark.parametrize('kind', ['missing', 'active', 'absent', 'already'])
 def test_enrollment_requires_original_settled_verified_installation(storage, tmp_path, kind):
     base, pack = tmp_path / 'base', tmp_path / 'pack'
     base.mkdir(); pack.mkdir()
     scope = StackScope.from_roots(base, pack)
-    original = storage.factory(plan_compose(CONFIG, scope), scope, tmp_path / 'journal')
+    original = storage.factory(plan_compose(CONFIG, scope, storage=True), scope, tmp_path / 'journal')
     original.directory.mkdir()
     if kind != 'missing':
         original.acquire()
@@ -825,7 +846,7 @@ def test_private_registry_and_supported_profile_are_required(storage):
     storage.registry.chmod(0o700)
     with pytest.raises(p.PrerequisiteError, match='deadline'): storage.create(deadline_seconds=0)
     with pytest.raises(p.PrerequisiteError, match='only the LocalStack'):
-        r.SharedReportingManager(plan_compose({}, StackScope('a' * 16)))
+        r.SharedS3Manager(plan_compose({}, StackScope('a' * 16)))
 
 
 def test_metadata_size_limit_preserves_previous_registry_and_lease_journal(storage, tmp_path):
@@ -914,7 +935,7 @@ def test_publication_only_loopback_performs_zero_engine_or_initialization_comman
     from unittest.mock import Mock
     monkeypatch.setattr(dependencies, 'active_environment', lambda path: True)
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda *args, **kwargs: None)
-    monkeypatch.setattr(r, 'SharedReportingManager', lambda *args, **kwargs: pytest.fail('external storage queried registry'))
+    monkeypatch.setattr(r, 'SharedS3Manager', lambda *args, **kwargs: pytest.fail('external storage queried registry'))
     original = p.PrerequisiteManager
     def factory(*args, **kwargs):
         return original(*args, command_runner=lambda *a, **k: pytest.fail('publication-only ran engine command'), **kwargs)
@@ -922,7 +943,7 @@ def test_publication_only_loopback_performs_zero_engine_or_initialization_comman
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, external_pack=False)
     owner = local_recording_prerequisites(context, scope=StackScope('a' * 16), ownership_directory=tmp_path / 'owners')
     lease = owner.prepare(('selected',), {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'reports',
-        'ALLURE_S3_ENDPOINT': 'http://localhost:4566', 'ALLURE_S3_USE_LOCALSTACK': False}, accepted=True)
+        'S3_ENDPOINT': 'http://localhost:4566', 'S3_USE_LOCALSTACK': False}, accepted=True)
     assert lease.profiles == () and lease.container_ids == ()
     owner.finish()
 
@@ -969,12 +990,11 @@ def test_pending_creation_reacquire_keeps_exact_owner_and_retry(storage):
     receipt = caught.value.cleanup_pending
     with pytest.raises(CleanupPendingError) as repeated: owner.acquire()
     assert repeated.value is receipt and owner.manager is manager
-    storage.engine.fail_stop = False
     with pytest.raises(CleanupPendingError): asyncio.run(receipt.retry())
     assert owner.manager is manager and owner.pending_cleanup is receipt
-    storage.engine.records.clear()
+    storage.engine.fail_stop = False
     asyncio.run(receipt.retry())
-    assert owner.pending_cleanup is None and not owner.intent
+    assert owner.pending_cleanup is None and not owner.intent and not storage.engine.records
 
 
 def test_cleanup_has_its_own_budget_after_expired_callers_deadline(storage, monkeypatch):
@@ -992,7 +1012,7 @@ def test_cleanup_has_its_own_budget_after_expired_callers_deadline(storage, monk
 def test_mixed_scope_enrollment_is_refused_before_registering_unusable_binding(storage, tmp_path):
     base, pack = tmp_path / 'base', tmp_path / 'pack'; base.mkdir(); pack.mkdir()
     scope = StackScope.from_roots(base, pack)
-    original = storage.factory(plan_compose(CONFIG, scope), scope, tmp_path / 'original')
+    original = storage.factory(plan_compose(CONFIG, scope, storage=True), scope, tmp_path / 'original')
     lease = original.acquire(); original.release(retain=True)
     extra = deepcopy(storage.engine.records[lease.container_ids[0]])
     extra['Id'] = 'f' * 64
@@ -1077,7 +1097,7 @@ def test_storage_verification_rejects_one_invalid_ownership_fact(storage, tmp_pa
 def test_rotating_compatibility_id_enrollment_and_lookup_use_same_binding(storage, identity_engine, tmp_path):
     base, pack = tmp_path / 'base', tmp_path / 'pack'; base.mkdir(); pack.mkdir()
     scope = StackScope.from_roots(base, pack)
-    original = storage.factory(plan_compose(CONFIG, scope), scope, tmp_path / 'original')
+    original = storage.factory(plan_compose(CONFIG, scope, storage=True), scope, tmp_path / 'original')
     lease = original.acquire(); original.release(retain=True)
     identity_engine.cli = {'host': {'hostname': 'host'}, 'store': {'graphRoot': '/store'}}
     identity_engine.cli_ids = list(storage.engine.records)
@@ -1090,7 +1110,7 @@ def test_rotating_compatibility_id_enrollment_and_lookup_use_same_binding(storag
     key = r.enroll_reporting(original.plan, base_root=base, pack_root=pack,
         ownership_directory=original.directory, registry_directory=storage.registry,
         identity=rotating, manager_factory=storage.factory)
-    joined = r.SharedReportingManager(original.plan, registry_directory=storage.registry,
+    joined = r.SharedS3Manager(original.plan, registry_directory=storage.registry,
         identity=rotating, manager_factory=storage.factory)
     with joined._binding() as (path, budget):
         assert path.stem == key and metadata._read(path) is not None
@@ -1109,8 +1129,8 @@ def test_ipv6_only_listener_prevents_unregistered_managed_provisioning(storage):
         listener.listen()
         port = listener.getsockname()[1]
         assert r._occupied(port)
-        owner = storage.create({'ALLURE_S3_USE_LOCALSTACK': True,
-            'ALLURE_LOCALSTACK_PORT': port, 'ALLURE_S3_ENDPOINT': f'http://localhost:{port}'})
+        owner = storage.create({'S3_USE_LOCALSTACK': True,
+            'LOCALSTACK_PORT': port, 'S3_ENDPOINT': f'http://localhost:{port}'})
         owner.occupied = r._occupied
         with pytest.raises(p.PrerequisiteError, match='occupied and unregistered'):
             owner.acquire()
@@ -1133,3 +1153,107 @@ def test_occupancy_skips_only_unavailable_address_families(monkeypatch, error, i
         expected = nullcontext() if ignored else pytest.raises(OSError)
         with expected:
             assert not r._occupied(port)
+
+
+def removal_commands(engine):
+    return [command for command, _ in engine.commands if command[1] in {'rm', 'stop'}]
+
+
+def never_removes_data(engine):
+    return not any(command[1:3] == ('volume', 'rm') or 'down' in command or '-v' in command
+                   for command, _ in engine.commands)
+
+
+@pytest.mark.parametrize('creator_releases_first', [True, False])
+def test_last_release_removes_the_container_and_keeps_the_volume(storage, creator_releases_first):
+    creator = storage.create()
+    created = creator.acquire()
+    consumer = storage.create()
+    reused = consumer.acquire()
+    assert reused.reused_ids == created.owned_ids
+    first, last = (creator, consumer) if creator_releases_first else (consumer, creator)
+
+    first.release()
+
+    assert set(storage.engine.records) == set(created.owned_ids)
+    assert storage.engine.records[created.owned_ids[0]]['State']['Running']
+    last.release()
+    assert not storage.engine.records
+    assert storage.engine.networks == set()
+    assert [command[1] for command in removal_commands(storage.engine)] == ['stop', 'rm']
+    assert never_removes_data(storage.engine)
+
+
+def test_reacquiring_after_removal_provisions_a_fresh_container_on_the_same_volume(storage):
+    first = storage.create()
+    original = first.acquire()
+    first.release()
+
+    again = storage.create()
+    fresh = again.acquire()
+
+    assert fresh.owned_ids and fresh.owned_ids != original.owned_ids and not fresh.reused_ids
+    projects = {command[command.index('--project-name') + 1]
+                for command, _ in storage.engine.commands if 'up' in command}
+    assert len(projects) == 1 and len([c for c, _ in storage.engine.commands if 'up' in c]) == 2
+    document = json.loads(again.plan.assets['compose.json'])
+    assert 'localstack-data:/persisted-data' in document['services']['localstack']['volumes']
+    again.release()
+    assert not storage.engine.records and never_removes_data(storage.engine)
+
+
+def test_the_same_manager_can_release_and_acquire_again(storage):
+    owner = storage.create()
+    owner.acquire()
+    owner.release()
+
+    assert owner.acquire().owned_ids
+    owner.release()
+    assert not storage.engine.records
+
+
+def exec_buckets(engine):
+    return [command[3] for command, _ in engine.commands if command[1] == 'exec']
+
+
+def test_a_running_container_gains_a_new_consumers_buckets_instead_of_refusing(storage):
+    allure = storage.create({**CONFIG, 'ALLURE_S3_BUCKET': 'allure-results', 'S3_EXTRA_BUCKETS': 'application-data'})
+    created = allure.acquire()
+    app = storage.create({**CONFIG, 'S3_EXTRA_BUCKETS': 'application-data,other-bucket'})
+
+    reused = app.acquire()
+
+    assert reused.reused_ids == created.owned_ids
+    assert exec_buckets(storage.engine) == ['SA_S3_BUCKETS=allure-results,application-data',
+                                            'SA_S3_BUCKETS=application-data,other-bucket']
+    assert len([c for c, _ in storage.engine.commands if 'up' in c]) == 1
+
+
+def test_the_container_environment_carries_the_region_but_no_bucket(storage):
+    owner = storage.create({**CONFIG, 'ALLURE_S3_BUCKET': 'allure-results'})
+    identifier, = owner.acquire().owned_ids
+    environment = json.loads(owner.plan.assets['compose.json'])['services']['localstack']['environment']
+
+    assert environment['SA_S3_REGION'] == '${SA_S3_REGION:?controlled local development value required}'
+    assert not [name for name in environment if 'BUCKET' in name]
+    assert storage.engine.records[identifier]['Config']['Labels']['api-agent.acquisition']
+
+
+def test_a_rollback_removal_that_left_a_container_keeps_the_provisioning_intent_pending(storage):
+    owner = storage.create()
+    original = storage.engine.run
+
+    def removal_without_effect(command, **kwargs):
+        if command[1] == 'rm':
+            storage.engine.commands.append((command, kwargs))
+            return ''
+        return original(command, **kwargs)
+    storage.engine.run = removal_without_effect
+    storage.engine.fail_up = True
+    with pytest.raises(p.PrerequisiteError, match='up failed'):
+        owner.acquire()
+
+    with pytest.raises(p.PrerequisiteError, match='cleanup remains pending'):
+        owner.release()
+
+    assert owner.intent and binding(storage)[1]['state'] == 'provisioning'

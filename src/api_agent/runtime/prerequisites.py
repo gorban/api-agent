@@ -81,6 +81,18 @@ class ManagedService:
     acquisition_nonce: str | None = None
 
 
+_BOOT_SESSION = re.compile(r'[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}')
+_DARWIN_IDENTITY = re.compile(r'darwin:[0-9A-Fa-f-]{36}:(.+)')
+_LEGACY_DARWIN_IDENTITY = re.compile(
+    r'\{ sec = (\d+), usec = \d+ \} [A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4}:(.+)')
+_BOOT_TIME = re.compile(r'\{ sec = (\d+), usec = \d+ \}.*')
+
+
+def _sysctl(name):
+    return subprocess.run(['/usr/sbin/sysctl', '-n', name], capture_output=True, text=True,
+                          timeout=1, check=False, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+
+
 def process_identity(pid):
     """PID birth time plus host boot identity; uncertainty never means stale."""
     if Path('/proc/sys/kernel/random/boot_id').is_file():
@@ -110,16 +122,41 @@ def process_identity(pid):
     if sys.platform != 'darwin':
         raise PrerequisiteError('Cannot verify lease process identity on this platform.')
     try:
-        boot = subprocess.run(['/usr/sbin/sysctl', '-n', 'kern.boottime'], capture_output=True, text=True,
-                              timeout=1, check=False, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+        # kern.boottime is derived from the calendar clock and moves when the
+        # kernel corrects it; the boot session UUID is fixed for the boot.
+        boot = _sysctl('kern.bootsessionuuid')
         birth = list_processes('started', 'state', pid=pid, timeout=1)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         raise PrerequisiteError('Cannot verify lease process identity.') from error
-    if boot.returncode or not boot.stdout.strip():
+    if boot.returncode or not _BOOT_SESSION.fullmatch(boot.stdout.strip()):
         raise PrerequisiteError('Cannot verify host boot identity.')
     if not birth or birth[0][1].startswith('Z'):
         return None
-    return boot.stdout.strip() + ':' + birth[0][0]
+    return 'darwin:' + boot.stdout.strip() + ':' + birth[0][0]
+
+
+def same_process(current, recorded):
+    """Whether a fresh ``process_identity`` reading is the process a lease recorded.
+
+    macOS leases recorded before the boot session UUID carry ``kern.boottime``,
+    whose microseconds drift within one boot; they match on boot second and birth.
+    """
+    if current is None:
+        return False
+    darwin = _DARWIN_IDENTITY.fullmatch(current)
+    legacy = _LEGACY_DARWIN_IDENTITY.fullmatch(recorded)
+    if darwin is None or legacy is None:
+        return current == recorded
+    if darwin[1] != legacy[2]:
+        return False
+    try:
+        boot = _sysctl('kern.boottime')
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PrerequisiteError('Cannot verify host boot identity.') from error
+    seconds = _BOOT_TIME.fullmatch(boot.stdout.strip())
+    if boot.returncode or seconds is None:
+        raise PrerequisiteError('Cannot verify host boot identity.')
+    return seconds[1] == legacy[1]
 
 
 def _check(deadline, cancelled, now):
@@ -416,7 +453,7 @@ def _read_journal(directory, scope, identity):
         if record.get('conditional_engine_id') and record.get('owned_ids'):
             record['conditional_cleanup_ids'] = sorted(set(record.get('conditional_cleanup_ids', [])) |
                                                        set(record['owned_ids']))
-        if not record.get('cleanup_only', False) and identity(record['pid']) == record['identity']:
+        if not record.get('cleanup_only', False) and same_process(identity(record['pid']), record['identity']):
             active[key] = dict(record)
         elif record.get('conditional_cleanup_ids') or record.get('disposal_network_id'):
             stale_duties.append((key, record))
@@ -1619,8 +1656,12 @@ class PrerequisiteManager(_NetworkCleanup):
                                 self.verify_conditional_storage(name, item.id, deadline)
                         if 'jaeger' in current:
                             self.verify_jaeger_storage(current['jaeger'].id, deadline)
-                        if 'localstack' in current and reporting_directory is None:
-                            self._command((self.plan.command[0], 'exec', current['localstack'].id,
+                        if 'localstack' in current:
+                            # Also on reuse: create any bucket this consumer needs that a
+                            # running container lacks (the container env carries no buckets).
+                            self._command((self.plan.command[0], 'exec', '-e',
+                                'SA_S3_BUCKETS=' + self.environment.get('SA_S3_BUCKETS', ''),
+                                current['localstack'].id,
                                 '/bin/sh', '/etc/localstack/init/ready.d/10-api-agent-s3.sh'), deadline)
                             _check(deadline, self.cancelled, self.now)
                         break
@@ -1669,8 +1710,7 @@ class PrerequisiteManager(_NetworkCleanup):
         from api_agent.runtime.tasks import offload
         await offload(self.release, retain=False)
 
-    def release(self, *, retain=False, reporting_ids=None, reporting_directory=None,
-                _prelocked=False, _deadline=None):
+    def release(self, *, retain=False, adopted_ids=(), _prelocked=False, _deadline=None):
         if self.lease is None and self._rollback is None:
             return ()
         deadline = self.now() + self.cleanup_timeout
@@ -1727,25 +1767,16 @@ class PrerequisiteManager(_NetworkCleanup):
                         journal[key] = successor
                         network_id = None
                         break
-            if reporting_ids is not None and not retain:
-                # The final consumer may have reused every object. Ownership is
-                # the verified registry chain, not which invocation created it.
+            if adopted_ids and not retain:
+                # The shared S3 registry already proved these exact IDs (ownership chain,
+                # configuration and storage). The final consumer disposes of them even when
+                # their creator is gone, so no container outlives its last lease.
                 current = self._inventory(deadline, cleanup=True)
-                if set(current) != set(reporting_ids):
-                    raise PrerequisiteError('Registered reporting container changed; cleanup remains owned.')
-                compatible = self._compatible(current, deadline, allow_stopped=True, cleanup=True)
-                if set(compatible) != {'localstack'}:
-                    raise PrerequisiteError('Registered reporting service changed; cleanup remains owned.')
-                for identifier in reporting_ids:
-                    self.verify_reporting_storage(identifier, reporting_directory, deadline, cleanup=True)
-                protected = _leased_ids(journal)
-                eligible = tuple(sorted(item for item in reporting_ids
-                    if item not in protected and current[item].running))
-                if eligible:
-                    self._command((self.plan.command[0], 'stop', '--time', '5', *eligible), deadline, cleanup=True)
-                stopped = eligible
-            else:
-                stopped = () if retain else self._stop_new(tuple(sorted(set(self.lease.owned_ids) | cleanup_ids)), journal, deadline, nonces=nonces)
+                present = tuple(identifier for identifier in adopted_ids if identifier in current)
+                cleanup_ids.update(present)
+                disposable_ids.update(present)
+                nonces.update({identifier: current[identifier].acquisition_nonce for identifier in present})
+            stopped = () if retain else self._stop_new(tuple(sorted(set(self.lease.owned_ids) | cleanup_ids)), journal, deadline, nonces=nonces)
             if not retain:
                 if self.dispose_on_release:
                     self._dispose_new(disposable_ids, journal, deadline, nonces=nonces)

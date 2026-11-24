@@ -638,7 +638,7 @@ manifests = selected_manifests({'API_PROVIDER': str(path) + ':create'}, owner_ro
                                active_kinds={'api'})
 assert len(manifests) == 1
 assert manifests[0].root == path.parent
-assert manifests[0].requirements() == ('graphql-core==3.2.13',)
+assert manifests[0].requirements() == ('graphql-core==3.2.14',)
 print('installed bundled GraphQL named tool default resolved')
 '''
     output = run([str(python), '-I', '-c', consumer, str(environment), str(repository)],

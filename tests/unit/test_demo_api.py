@@ -65,7 +65,7 @@ def test_demo_import_isolation_restores_paths_and_graphql_modules(monkeypatch, w
         spec = importlib.util.spec_from_file_location('demo_isolation_probe', DEMO / 'api/server.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        assert str(DEMO / 'api/graphql_core-3.2.13-py3-none-any.whl') in sys.path
+        assert str(DEMO / 'api/graphql_core-3.2.14-py3-none-any.whl') in sys.path
         assert 'graphql' in sys.modules
         sys.modules['graphql'] = ModuleType('graphql')
         sys.modules['graphql.isolation_probe'] = ModuleType('graphql.isolation_probe')

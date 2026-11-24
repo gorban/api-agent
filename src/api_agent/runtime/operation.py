@@ -268,11 +268,17 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
     from api_agent.runtime.listener import UvicornListener
     from api_agent.auth.extensions import validate_operation
 
+    selected = {}
+
     def resolved_for_operation():
         config = resolve()
         if config.errors or config.missing:
             raise ValueError('invalid_runtime_configuration')
         validate_operation(context, config.values)
+        selected['values'] = config.values
+        # A pack opts into the shared S3 by declaring the application bucket setting.
+        from api_agent.runtime.shared_s3 import declares_application_s3
+        selected['application_s3'] = declares_application_s3(config)
         return config
 
     def dependencies(config):
@@ -322,9 +328,16 @@ def local_operation(context, *, resolve, argv, scope, ownership_directory,
                             tracing_destination=_tracing_destination(selected) if selected is not None else None)
 
     def manager(selected_plan, cancelled):
-        return PrerequisiteManager(selected_plan, scope, ownership_directory,
-                                   engine_environment=engine_environment,
-                                   cancelled=cancelled, deadline_seconds=timeout)
+        from api_agent.runtime.shared_s3 import with_shared_s3
+        primary = PrerequisiteManager(selected_plan, scope, ownership_directory,
+                                      engine_environment=engine_environment,
+                                      cancelled=cancelled, deadline_seconds=timeout)
+        # Only a pack that declares S3_APPLICATION_BUCKET gets the shared S3 (and its
+        # endpoint exported to the agent); every other pack runs without Docker for S3.
+        if not selected.get('application_s3'):
+            return primary
+        return with_shared_s3(primary, selected.get('values', {}), scope, engine_environment=engine_environment,
+                              cancelled=cancelled, deadline_seconds=timeout)
 
     def runtime(config, origin, material):
         if runtime_factory is not None:

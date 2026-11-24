@@ -182,7 +182,7 @@ def test_managed_langfuse_viewer_keeps_ordinary_provisioning_and_readiness_keys(
     from api_agent.runtime.ownership import StackScope
     schema = load_shared_schema()
     environ = {'TUI_MODE': 'run-local', 'TRACE_MODE': 'LangFuse', 'LANGFUSE_PUBLIC_KEY': 'synthetic-project-public',
-        'LANGFUSE_SECRET_KEY': 'synthetic-project-secret', 'ALLURE_S3_USE_LOCALSTACK': 'False'}
+        'LANGFUSE_SECRET_KEY': 'synthetic-project-secret', 'S3_USE_LOCALSTACK': 'False'}
     anchors = {'owner_root': tmp_path}
     full = resolve_config(bootstrap_schema(schema, (), environ, {}, owner_root=tmp_path),
         environ=environ, anchors=anchors, interactive=True)

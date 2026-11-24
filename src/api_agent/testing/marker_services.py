@@ -16,6 +16,10 @@ def _discard(text):
 
 
 def _load(path, symbol):
+    if path is None:
+        # Built-in provider declared as api_agent:<name>; only names admitted by the pack parser.
+        from api_agent.runtime import shared_s3
+        return getattr(shared_s3, symbol)
     spec = importlib.util.spec_from_file_location('api_agent_marker_services_' + sha256(str(path).encode()).hexdigest()[:16], path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -23,14 +27,16 @@ def _load(path, symbol):
 
 
 @contextmanager
-def acquired_test_services(context, tests, environment, *, output=None, timeout=None, cancel_event=None):
+def acquired_test_services(context, tests, environment, *, output=None, timeout=None, cancel_event=None, s3=None):
     """Enter each declared marker's service once, only for markers a selected test carries.
 
     A provider is `function(services)` returning a context manager whose value is
     the environment variables to add to every test process. `services` holds the
     owner root, the environment tests will see, a scratch directory, an
-    `output(text)` callback, the startup `deadline` (a `time.monotonic()` value)
-    and a `cancelled()` check. Starting every service, including any image build,
+    `output(text)` callback, the startup `deadline` (a `time.monotonic()` value),
+    a `cancelled()` check and `s3`, the resolved shared S3 settings. A pack may
+    also reference the built-in `api_agent:shared_s3` provider, which leases the
+    launcher's shared LocalStack. Starting every service, including any image build,
     shares one budget of `timeout` seconds (else `TEST_SERVICES_TIMEOUT_SECONDS`);
     a provider must stop waiting at the deadline or once `cancelled()` is true.
     A service that is not up by then, or a run cancelled through `cancel_event`
@@ -63,7 +69,8 @@ def acquired_test_services(context, tests, environment, *, output=None, timeout=
     with ExitStack() as stack, tempfile.TemporaryDirectory(prefix='api-agent-services-') as directory:
         for (owner, marker), (path, symbol) in selected.items():
             services = {'owner_root': owner, 'environment': {**environment, **added}, 'directory': Path(directory),
-                        'output': output or _discard, 'deadline': deadline, 'cancelled': cancelled}
+                        'output': output or _discard, 'deadline': deadline, 'cancelled': cancelled,
+                        's3': dict(s3 or {})}
             try:
                 values = stack.enter_context(_load(path, symbol)(services))
             except Exception as error:

@@ -2,10 +2,16 @@
 
 [Test execution](development.md#testing) · [Provider test profiles](integration_test_profiles.md)
 
-Before integration/E2E commands, save `ALLURE_S3_USE_LOCALSTACK=True` in Review
-configuration or append `--allure-s3-use-localstack=True` for managed local history.
-For external S3, choose False and supply `ALLURE_S3_BUCKET`. Unit tests need no
-report storage.
+Before integration/E2E commands, save `S3_USE_LOCALSTACK=True` in Review
+configuration or append `--s3-use-localstack=True` for managed local history
+(the shared LocalStack S3 service; see [prerequisites](prerequisites.md#shared-s3-localstack)).
+For external S3, choose False and supply `S3_ENDPOINT` and `ALLURE_S3_BUCKET`.
+The former `ALLURE_S3_USE_LOCALSTACK`, `ALLURE_LOCALSTACK_PORT`, `ALLURE_S3_ENDPOINT`
+and `ALLURE_S3_REGION` names now fail with an error naming the replacement.
+Unit tests need no report storage; they start LocalStack only when a selected
+test carries a marker the pack maps to `api_agent:shared_s3`
+(`./launch.sh --tui-mode unit --no-std-in 'pack::tag:localstack'`), and release it
+at the end of the run.
 
 Run all unit tests without selectors; require every test to pass and 100% line
 and branch coverage. Run integrations under the documented qualified settings

@@ -79,23 +79,32 @@ The PostgreSQL 17.6, ClickHouse 25.3.6.56 and Redis 7.4.5 pins are conservative
 compatibility selections, not claims to be their newest releases. Container
 startup and fresh/existing-volume headless provisioning remain runtime checks.
 
-## Managed local result history
+## Shared S3 (LocalStack)
 
-`ALLURE_S3_USE_LOCALSTACK=True` selects local result storage with the declared
-`allure-results` bucket and `http://localhost:4566` endpoint defaults. An explicit
-bucket or region remains selected; `us-east-1` is the default region. The toggle
-rejects an explicit conflicting endpoint before any engine command. With the
-toggle False, an explicitly selected conventional local endpoint still selects
-LocalStack; ordinary remote S3 remains independent.
+One LocalStack service backs every S3 consumer (Allure result history, the
+application's data bucket, pack tests); see
+[prerequisites](../../docs/prerequisites.md#shared-s3-localstack) for the settings
+and lifecycle. `S3_USE_LOCALSTACK=True` selects it, with the `http://localhost:4566`
+endpoint (`LOCALSTACK_PORT`) and `us-east-1` region (`S3_REGION`) defaults. The
+toggle rejects an explicit conflicting endpoint before any engine command. With
+the toggle False nothing starts and `S3_ENDPOINT` is used as given. Only the
+dedicated shared-S3 plan (`plan_compose(..., storage=True)`) contains this
+profile; tracing and API plans never do.
 
-`localstack-ready.sh` provisions the selected bucket with `awslocal`, using an
-explicit container-local endpoint and synthetic `test` credentials. It checks
-existence, creates only when missing, and verifies readability after creation.
-Creation and final verification errors fail startup. Regions other than
-`us-east-1` receive an explicit location constraint. The script never contacts
-AWS. Its content digest and selected bucket/region participate in configuration
-compatibility, so an existing stack with different initialization must be
-reviewed instead of silently reused.
+The container's environment carries only the region (`SA_S3_REGION`); the bucket
+list is not part of its configuration. `localstack-ready.sh` creates every bucket
+in the comma-separated `SA_S3_BUCKETS` with `awslocal`, using an explicit
+container-local endpoint and synthetic `test` credentials. For each bucket it
+checks existence, creates only when missing, and verifies readability after
+creation; an empty list is valid. Creation and final verification errors fail
+startup. Regions other than `us-east-1` receive an explicit location constraint.
+The script never contacts AWS. Its content digest and the region participate in
+configuration compatibility, so a different region is refused, while a new
+consumer's extra bucket is simply created on the running container.
+
+The last consumer's release removes the container and its network (labels,
+nonce and fingerprint are verified first) but never the `localstack-data` volume;
+the next acquire provisions a fresh container on that volume.
 
 The LocalStack init hook and packaged Jaeger config are the controlled
 service-specific read-only bind assets. The planner resolves the hook source
@@ -104,9 +113,10 @@ and mounts it read-only at the fixed `ready.d` path using exact short `ro,z`
 syntax. This supplies shared SELinux labeling through Podman-backed Compose;
 the previously used long bind form did not relabel on that engine. No engine socket is
 mounted. Readiness waits for S3 and the controlled automatic hook to complete
-successfully; acquisition then executes the same idempotent hook inside the
-inspected immutable container ID, including for reused services. This also
-checks that the selected bucket remains readable before result publication.
+successfully; every acquisition then executes the same idempotent hook inside the
+inspected immutable container ID with `-e SA_S3_BUCKETS=<this consumer's list>`,
+including for reused services. This creates missing buckets and checks that the
+selected buckets remain readable before use.
 
 The hook and mount contracts follow [LocalStack initialization hooks](https://docs.localstack.cloud/aws/customization/advanced/initialization-hooks/)
 and [Compose bind mount options](https://docs.docker.com/reference/compose-file/services/).
@@ -120,3 +130,19 @@ and on graceful shutdown. LocalStack Community's `PERSISTENCE=1` did not preserv
 S3 objects in the previous image. Retained history requires successful restart
 retrieval, not just successful upload; a force-kill cannot guarantee the latest
 unflushed write.
+
+LocalStack opens an object for writing before it evaluates `If-None-Match` or
+`If-Match`, and localstack-persist (every tag through 4.14.0) truncates the
+stored file on that open. A rejected conditional write therefore empties the
+existing object while its metadata keeps the old size, so later reads send the
+headers and then stall until the client times out; upstream
+`localstack/localstack:4.14.0` is not affected. The service's `entrypoint`
+writes a `start.d` Python hook, which LocalStack runs in-process before it
+serves requests, and then executes the image's `docker-entrypoint.sh`. The hook
+stages each write in a short `.<random>.partial` sibling file, renames it over
+the object when the write completes, and discards it when the write fails.
+Object file names always contain `@`, so staging names cannot collide with
+them. The entrypoint contains no `$`, so Compose and the launcher's
+fingerprint interpolation see the same value. `tests/unit/test_localstack_staged_writes.py`
+executes the embedded hook against a stand-in with the image's truncating
+store semantics.

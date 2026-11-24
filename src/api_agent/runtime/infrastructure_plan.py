@@ -291,10 +291,11 @@ def plan_infrastructure(config, schema, contributions, scope, *, compose_directo
             value = port.split(':')[1]
             if value.isdecimal():
                 used_ports.add(int(value))
-            elif 'SA_JAEGER_VIEWER_PORT' in value:
-                used_ports.add(int(base.environment['SA_JAEGER_VIEWER_PORT']))
             else:
-                used_ports.add(int(base.environment['SA_LOCALSTACK_PORT']))
+                used_ports.add(int(base.environment['SA_JAEGER_VIEWER_PORT']))
+    if values.get('S3_USE_LOCALSTACK') is True:
+        # The shared S3 service is leased beside every plan, so its host port is taken too.
+        used_ports.add(int(base.environment['SA_LOCALSTACK_PORT']))
     planned = []
     endpoints_seen = set()
     named_volumes = set(document.get('volumes', {}))

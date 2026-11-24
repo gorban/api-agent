@@ -85,7 +85,7 @@ def test_terminal_dispatch_prepares_dependencies_and_preserves_status(handoff):
          patch('api_agent.runtime.worktrees.verify_worktrees'), \
          patch('api_agent.runtime.dependencies.ensure_environment', return_value=handoff) as prepare, \
          patch('api_agent.runtime.allure_terminal.run_allure_terminal', new_callable=AsyncMock, return_value=130) as run:
-        assert main(['--tui-mode=allure', '--no-std-in', '--allure-s3-use-localstack=False'], base_root=root) == (130 if handoff is None else handoff)
+        assert main(['--tui-mode=allure', '--no-std-in', '--s3-use-localstack=False'], base_root=root) == (130 if handoff is None else handoff)
     assert prepare.call_args.kwargs['groups'] == ('dev', 'browser')
     assert run.await_count == (1 if handoff is None else 0)
 

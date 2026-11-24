@@ -1,2 +1,2 @@
 version = 1
-dependencies = ["graphql-core==3.2.13"]
+dependencies = ["graphql-core==3.2.14"]

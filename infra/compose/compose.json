@@ -311,16 +311,21 @@
         "api-agent.scope": "${SA_SCOPE:?controlled local development value required}",
         "api-agent.profile": "localstack"
       },
+      "entrypoint": [
+        "python3",
+        "-c",
+        "import os, pathlib, sys; hook = pathlib.Path('/etc/localstack/init/start.d/20-api-agent-staged-writes.py'); hook.parent.mkdir(parents=True, exist_ok=True); hook.write_text(sys.argv[1]); os.execvp('docker-entrypoint.sh', ['docker-entrypoint.sh'])",
+        "# LocalStack opens an object for writing before it checks If-None-Match/If-Match,\n# and localstack-persist truncates the stored file on open, so a rejected\n# conditional write would empty the existing object. Stage every write in a\n# sibling file and replace the object only when the write completes. Object\n# file names already use up to 240 characters and always contain '@', so the\n# staging name is short and cannot collide with one.\nimport os\nimport threading\nimport uuid\n\nfrom localstack_persist.s3 import storage\n\nstore, stored = storage.PersistedS3ObjectStore, storage.PersistedS3StoredObject\nopen_file, close_file = store.open_file, store.close_file\nstaged, staged_lock = {}, threading.Lock()\n\n\ndef staged_open_file(self, path, mode):\n    if mode != 'w':\n        return open_file(self, path, mode)\n    staging = os.path.join(os.path.dirname(path), f'.{uuid.uuid4().hex}.partial')\n    file = open_file(self, staging, mode)\n    with staged_lock:\n        staged[file] = staging, path\n    return file\n\n\ndef staged_close_file(self, file, commit=True):\n    close_file(self, file)\n    with staged_lock:\n        pending = staged.pop(file, None)\n    if pending is not None:\n        staging, path = pending\n        if commit:\n            os.replace(staging, path)\n        else:\n            os.unlink(staging)\n\n\ndef close(self):\n    if not self.closed:\n        self._store.close_file(self._file)\n        self.closed = True\n\n\ndef exit_discarding_failed_writes(self, error_type, *_):\n    if error_type is None or self.closed:\n        return self.close()\n    self._store.close_file(self._file, commit=False)\n    self.closed = True\n\n\nstore.open_file, store.close_file = staged_open_file, staged_close_file\nstored.close, stored.__exit__ = close, exit_discarding_failed_writes\n"
+      ],
       "environment": {
         "SERVICES": "s3",
         "PERSIST_DEFAULT": "0",
         "PERSIST_S3": "1",
         "PERSIST_FREQUENCY": "1",
-        "AWS_DEFAULT_REGION": "${SA_ALLURE_S3_REGION:?controlled local development value required}",
+        "AWS_DEFAULT_REGION": "${SA_S3_REGION:?controlled local development value required}",
         "AWS_ACCESS_KEY_ID": "test",
         "AWS_SECRET_ACCESS_KEY": "test",
-        "SA_ALLURE_S3_BUCKET": "${SA_ALLURE_S3_BUCKET:?controlled local development value required}",
-        "SA_ALLURE_S3_REGION": "${SA_ALLURE_S3_REGION:?controlled local development value required}",
+        "SA_S3_REGION": "${SA_S3_REGION:?controlled local development value required}",
         "SA_LOCALSTACK_READY_DIGEST": "${SA_LOCALSTACK_READY_DIGEST:?controlled local development value required}"
       },
       "ports": [

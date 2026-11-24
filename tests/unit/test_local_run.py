@@ -1,5 +1,6 @@
 """Controlled operation lifecycle; no actual listener, browser or infrastructure."""
 import asyncio
+import os
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -77,6 +78,53 @@ def test_start_freezes_selected_definition_and_stop_releases_reverse(local):
         assert local.owner.snapshot.phase == 'stopped'
         assert any(event.kind == 'log' and 'ready' in event.text for event in local.events)
     asyncio.run(run())
+
+
+APPLICATION_S3 = ('S3_ENDPOINT', 'S3_REGION', 'S3_APPLICATION_BUCKET')
+
+
+@pytest.fixture
+def unset_application_s3(monkeypatch):
+    for name in APPLICATION_S3:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_application_construction_sees_the_configured_shared_s3_before_prerequisites(local, unset_application_s3):
+    local.config.values.update({'S3_USE_LOCALSTACK': True, 'LOCALSTACK_PORT': 4601, 'S3_REGION': 'eu-west-1',
+                                'S3_EXTRA_BUCKETS': 'app-results,other-bucket'})
+    local.config.active_fields = ('S3_APPLICATION_BUCKET',)
+    constructed = {}
+
+    def construct(definition, config):
+        constructed.update({name: os.environ.get(name) for name in APPLICATION_S3})
+        return SimpleNamespace(definition=definition, timeouts={})
+    local.application_factory.side_effect = construct
+
+    async def run():
+        await local.owner.start()
+        await local.owner.aclose()
+    asyncio.run(run())
+
+    assert constructed == {'S3_ENDPOINT': 'http://localhost:4601', 'S3_REGION': 'eu-west-1',
+                           'S3_APPLICATION_BUCKET': 'app-results'}
+    assert not any(name in os.environ for name in APPLICATION_S3)
+
+
+def test_a_pack_that_does_not_declare_the_application_bucket_gets_no_s3_environment(local, unset_application_s3):
+    local.config.values.update({'S3_USE_LOCALSTACK': True, 'LOCALSTACK_PORT': 4601})
+    constructed = {}
+
+    def construct(definition, config):
+        constructed.update({name: os.environ.get(name) for name in APPLICATION_S3})
+        return SimpleNamespace(definition=definition, timeouts={})
+    local.application_factory.side_effect = construct
+
+    async def run():
+        await local.owner.start()
+        await local.owner.aclose()
+    asyncio.run(run())
+
+    assert constructed == {name: None for name in APPLICATION_S3}
 
 
 @pytest.mark.parametrize('startup_failure', [False, True])

@@ -173,9 +173,11 @@ Choose `unit`, `integration`, or `e2e` as `<tests_type>`:
 ```
 
 Integration/E2E reporting requires an explicit storage choice: save
-`ALLURE_S3_USE_LOCALSTACK=True` in Review configuration or add
-`--allure-s3-use-localstack=True` for managed local history. For external S3,
-choose False and supply a bucket; unit coverage needs neither.
+`S3_USE_LOCALSTACK=True` in Review configuration or add
+`--s3-use-localstack=True` for managed local history. For external S3,
+choose False and supply `S3_ENDPOINT` and a bucket; unit coverage needs neither.
+Run local starts the same shared LocalStack S3 automatically
+(`S3_USE_LOCALSTACK` defaults to True there) and exports its endpoint to the app.
 
 Unit tests start with the active owner's tests selected and measure only that
 owner's production code. Dependency and base tests remain visible in the TUI.

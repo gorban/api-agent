@@ -476,6 +476,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                 result.raise_for_errors()
                 if result.missing:
                     raise ValueError('Missing required configuration: ' + ', '.join(result.missing))
+            from api_agent.runtime.shared_s3 import s3_config
             from api_agent.testing.diagnostics import CredentialScrubber
             unit_scrubber = CredentialScrubber(result.values)
             test_environment = unit_test_environment(schema, result.values)
@@ -486,6 +487,7 @@ def main(argv=None, *, base_root=None, resource_pack_dir=None, launcher_root=Non
                                        collection_timeout=result.values['TEST_COLLECTION_TIMEOUT_SECONDS'],
                                        frontend_timeout=result.values['SOURCE_FRONTEND_TIMEOUT_SECONDS'],
                                        services_timeout=result.values['TEST_SERVICES_TIMEOUT_SECONDS'],
+                                       s3_settings=s3_config(result.values),
                                        **({'test_environment': test_environment} if test_environment else {}),
                                        coverage_full=result.values.get('UNIT_COVERAGE_FULL', False),
                                        **({'coverage_owner_only': True} if owner_unit_only(context, result.values) else {}),

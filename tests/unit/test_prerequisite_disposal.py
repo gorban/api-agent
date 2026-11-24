@@ -128,7 +128,7 @@ def test_unrelated_persistent_service_preserves_shared_network(setup):
     temporary = create(dispose_on_release=True)
     temporary.runner = removable_engine(engine)
     temporary.acquire()
-    persistent = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    persistent = create({'S3_USE_LOCALSTACK': True})
     persistent.runner = temporary.runner
     retained = persistent.acquire()
 
@@ -145,7 +145,7 @@ def test_network_duty_follows_disjoint_temporary_service(setup):
     first = create(dispose_on_release=True)
     first.runner = removable_engine(engine)
     first.acquire()
-    second = create({'ALLURE_S3_USE_LOCALSTACK': True}, dispose_on_release=True)
+    second = create({'S3_USE_LOCALSTACK': True}, dispose_on_release=True)
     second.runner = first.runner
     second.acquire()
 
@@ -403,3 +403,54 @@ def test_network_receipt_keeps_remaining_container_duty(setup):
     assert journal['duty']['conditional_cleanup_ids'] == [identifier]
     assert journal['duty']['disposal_network_id'] is None
     assert not engine.networks
+
+
+def adopting_pair(setup):
+    """A creator that left without handing over its disposal duty, and a later reusing consumer."""
+    create, engine, _, _, _ = setup
+    creator = create(dispose_on_release=True)
+    creator.runner = removable_engine(engine)
+    created = creator.acquire()
+    creator.release(retain=True)
+    consumer = create(dispose_on_release=True)
+    consumer.runner = creator.runner
+    reused = consumer.acquire()
+    assert reused.reused_ids == created.owned_ids and not reused.owned_ids
+    return create, engine, consumer, reused
+
+
+def test_a_verified_registry_chain_lets_the_final_consumer_dispose_of_what_it_reused(setup):
+    _, engine, consumer, reused = adopting_pair(setup)
+
+    consumer.release()
+    assert set(engine.records) == set(reused.reused_ids)
+
+    consumer.acquire()
+    consumer.release(adopted_ids=reused.reused_ids)
+
+    assert not engine.records
+    assert not any(command[1:3] == ('volume', 'rm') or 'down' in command for command, _ in engine.commands)
+
+
+def test_adoption_is_ignored_for_a_retained_release_and_for_ids_that_are_gone(setup):
+    _, engine, consumer, reused = adopting_pair(setup)
+
+    consumer.release(retain=True, adopted_ids=reused.reused_ids)
+    assert set(engine.records) == set(reused.reused_ids)
+    consumer.acquire()
+    consumer.release(adopted_ids=('f' * 64,))
+
+    assert set(engine.records) == set(reused.reused_ids)
+
+
+def test_an_adopted_id_still_leased_by_another_consumer_is_left_for_that_consumer(setup):
+    create, engine, first, reused = adopting_pair(setup)
+    second = create(dispose_on_release=True)
+    second.runner = first.runner
+    second.acquire()
+
+    first.release(adopted_ids=reused.reused_ids)
+    assert set(engine.records) == set(reused.reused_ids)
+    second.release(adopted_ids=reused.reused_ids)
+
+    assert not engine.records

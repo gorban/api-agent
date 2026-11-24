@@ -51,6 +51,14 @@ def retain_runtime_directory(result, context):
                                          explicit=context.bootstrap_explicit)
     return replace(result, fields=fields)
 
+# Settings renamed when LocalStack became one shared S3 service for every consumer.
+RENAMED_SETTINGS = {
+    'ALLURE_S3_USE_LOCALSTACK': 'S3_USE_LOCALSTACK',
+    'ALLURE_LOCALSTACK_PORT': 'LOCALSTACK_PORT',
+    'ALLURE_S3_ENDPOINT': 'S3_ENDPOINT',
+    'ALLURE_S3_REGION': 'S3_REGION',
+}
+
 def format_enum_values(values):
     return ', '.join('<blank>' if value == '' else str(value) for value in values)
 
@@ -180,6 +188,9 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
     if values.get('HELP') is True:
         return ConfigResult(values, fields, options.positionals, (), tuple(errors), True,
                             negative_selectors=negative_selectors)
+    # A leftover old name is an error only where the renamed field applies, and once.
+    leftover = tuple(old for old, new in RENAMED_SETTINGS.items() if new in schema.fields
+                     and any(old in mapping for _, mapping in sources[:2]))
     # Resolve all plain values first so predicate order never depends on TOML order.
     deferred_errors = {}
     completed, visiting = {'HELP'}, set()
@@ -210,6 +221,8 @@ def resolve_config(schema, *, argv=(), environ=None, dotenv=None, anchors=None,
               if (not declaration.pack_only or pack_launcher) and _matches(declaration.applies_when, values, operation_intents)}
     for name in active:
         errors.extend(deferred_errors.get(name, ()))
+    errors.extend(f'{old} was renamed to {RENAMED_SETTINGS[old]}; update your .env or environment.'
+                  for old in leftover if RENAMED_SETTINGS[old] in active)
     def required(declaration):
         return declaration.required or bool(declaration.required_when) and _matches(declaration.required_when, values)
     deferred_required = tuple(name for name, declaration in schema.deferred_requirements.items()

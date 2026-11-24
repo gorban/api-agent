@@ -30,9 +30,26 @@ def test_two_tui_sessions_and_operation_keep_server_until_last_closure(storage):
     asyncio.run(second.aclose())
     assert storage.engine.records[identifier]['State']['Running']
     operation.release()
-    assert not storage.engine.records[identifier]['State']['Running']
+    assert identifier not in storage.engine.records
     assert first.managers == second.managers == {}
     with pytest.raises(RuntimeError, match='closing'): first.acquire(plan)
+
+
+def test_plans_with_different_bucket_lists_get_their_own_session_handle(storage):
+    from api_agent.runtime.compose import plan_compose
+    from api_agent.runtime.ownership import StackScope
+    factory = Mock(side_effect=lambda *a, **k: storage.create())
+    sessions = ReportingSessions(factory)
+    scope = StackScope('a' * 16)
+    first = plan_compose({**CONFIG, 'S3_EXTRA_BUCKETS': 'first-bucket'}, scope, storage=True)
+    second = plan_compose({**CONFIG, 'S3_EXTRA_BUCKETS': 'second-bucket'}, scope, storage=True)
+
+    sessions.acquire(first)
+    sessions.acquire(first)
+    sessions.acquire(second)
+
+    assert factory.call_count == 2
+    asyncio.run(sessions.aclose())
 
 
 def test_session_reuses_handle_and_keeps_failed_release_until_retry(storage):
@@ -78,7 +95,7 @@ def test_recording_session_joins_after_operation_and_shared_finish_releases_acti
     subject.finish()
     assert operation.lease is None and storage.engine.records[identifier]['State']['Running']
     asyncio.run(sessions.aclose())
-    assert not storage.engine.records[identifier]['State']['Running']
+    assert identifier not in storage.engine.records
 
 
 def test_tui_runner_callback_keeps_custom_runner_signatures_compatible(tmp_path):
@@ -114,7 +131,7 @@ def test_quit_releases_reporting_after_inspection_and_keeps_failed_receipt(tmp_p
         assert app.pending_shutdown_cleanup is None and manager.lease is None
         await app.confirm_quit()
         app.exit.assert_called_once_with(3)
-        assert not storage.engine.records[identifier]['State']['Running']
+        assert identifier not in storage.engine.records
     asyncio.run(run())
 
 
@@ -157,14 +174,14 @@ def test_noninteractive_launched_operation_lease_covers_publication(storage, mon
     result = launched.run_launched_integration(context, (test,), config, accepted=True,
         prerequisites=operation, runner=fake_runner(), storage=CheckedStorage())
     assert result.persisted and manager.lease is None
-    assert not next(iter(storage.engine.records.values()))['State']['Running']
+    assert not storage.engine.records
 
 
 @pytest.mark.parametrize('values,expected', [
-    ({'ALLURE_S3_BUCKET': 'reports', 'ALLURE_S3_USE_LOCALSTACK': True}, 1),
-    ({'ALLURE_S3_BUCKET': 'reports', 'ALLURE_S3_USE_LOCALSTACK': False}, 0),
-    ({'ALLURE_S3_BUCKET': 'reports', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_VIEW_SECONDARY': True}, 0),
-    ({'ALLURE_S3_USE_LOCALSTACK': True}, 0),
+    ({'ALLURE_S3_BUCKET': 'reports', 'S3_USE_LOCALSTACK': True}, 1),
+    ({'ALLURE_S3_BUCKET': 'reports', 'S3_USE_LOCALSTACK': False}, 0),
+    ({'ALLURE_S3_BUCKET': 'reports', 'S3_USE_LOCALSTACK': True, 'ALLURE_VIEW_SECONDARY': True}, 0),
+    ({'S3_USE_LOCALSTACK': True}, 0),
 ])
 def test_allure_explicit_managed_access_only_joins_session(tmp_path, values, expected):
     app = fixture(tmp_path)
@@ -191,7 +208,7 @@ def test_two_workbenches_normal_quit_leave_other_workbench_and_operation_live(tm
         second.exit.assert_called_once()
         assert storage.engine.records[identifier]['State']['Running']
         operation.release()
-        assert not storage.engine.records[identifier]['State']['Running']
+        assert identifier not in storage.engine.records
     asyncio.run(run())
 
 
@@ -202,7 +219,7 @@ def test_local_recording_adapter_forwards_session_environment_and_budget(storage
     monkeypatch.setattr(dependencies, 'active_environment', lambda root: True)
     monkeypatch.setattr(dependencies, 'ensure_environment', lambda *args, **kwargs: None)
     managed = storage.create()
-    monkeypatch.setattr(reporting_registry, 'SharedReportingManager', lambda *args, **kwargs: managed)
+    monkeypatch.setattr(reporting_registry, 'SharedS3Manager', lambda *args, **kwargs: managed)
     callback = Mock()
     environment = {'PATH': '/usr/bin'}
     context = SimpleNamespace(base_root=tmp_path, pack_root=tmp_path, external_pack=False)

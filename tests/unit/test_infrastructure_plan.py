@@ -183,6 +183,20 @@ def test_active_fixed_profile_port_collision():
         plan((item,), values={'USE_DATA': True, 'TRACE_MODE': 'OTEL', 'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default, 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces', 'JAEGER_VIEWER_PORT': 16686})
 
 
+@pytest.mark.parametrize('shared_s3,collides', [(True, True), (False, False)])
+def test_fixed_port_may_not_take_the_shared_s3_port_while_it_is_selected(shared_s3, collides):
+    fragment = dict(service().compose)
+    fragment['ports'] = ('127.0.0.1:4566:8090',)
+    item = service(compose=MappingProxyType(fragment),
+        endpoints=(EndpointOutput('api', 'http://127.0.0.1:4566', 'http://self:8090'),))
+    values = {'USE_DATA': True, 'S3_USE_LOCALSTACK': shared_s3, 'LOCALSTACK_PORT': 4566}
+    if collides:
+        with pytest.raises(ComposeError, match='port'):
+            plan((item,), values=values)
+    else:
+        assert plan((item,), values=values).conditional
+
+
 def test_health_and_unconditional_activation():
     item = service(activation=None, readiness=Readiness('health'), seed=None)
     result = plan((item,), values={})
@@ -361,8 +375,9 @@ def test_nonstring_endpoint_and_fixed_variable_ports():
     item = service(compose=MappingProxyType({'image': IMAGE, 'ports': ('127.0.0.1:58090:8090',)}),
         readiness=Readiness('health'), seed=None)
     both = plan((item,), values={'USE_DATA': True, 'TRACE_MODE': 'OTEL', 'TRACE_PROVIDER': load_shared_schema().fields['TRACE_PROVIDER'].default, 'TRACE_EXPORT_ENDPOINT': 'http://localhost:4318/v1/traces', 'JAEGER_VIEWER_PORT': 16686,
-        'ALLURE_S3_USE_LOCALSTACK': True})
-    assert set(both.profiles) >= {'otel', 'localstack'}
+        'S3_USE_LOCALSTACK': True})
+    # The shared S3 service is leased separately; infrastructure plans never include it.
+    assert 'otel' in both.profiles and 'localstack' not in both.profiles
 
 
 def test_multi_dependency_dag_visits_shared_predecessor_once():

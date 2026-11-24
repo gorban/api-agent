@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import BoundedSemaphore
 
-sys.path.insert(0, str(Path(__file__).with_name('graphql_core-3.2.13-py3-none-any.whl')))
+sys.path.insert(0, str(Path(__file__).with_name('graphql_core-3.2.14-py3-none-any.whl')))
 from graphql import build_schema, graphql_sync
 
 

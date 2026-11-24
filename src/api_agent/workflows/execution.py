@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from typing import Annotated, TypedDict, get_args, get_origin, get_type_hints
 from typing_extensions import is_typeddict
@@ -21,6 +22,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from .model import LayoutError
 from .model import NativeCatalog
 from . import session as session_contract
+from .session_store import CheckpointerSessionStore
 from .prompt_slots import fill_slots, slot_text
 from .configuration import resolve_timeouts, resolve_component_passes, resolve_state_limits, resolve_state_timeouts
 from api_agent.runtime.tasks import settle
@@ -362,25 +364,37 @@ class _SessionCommit:
     scope (journal finalization, evidence publication) fails the same turn.
     """
 
-    def __init__(self, session, config, fields):
-        self.session, self.config, self.fields = session, config, fields
-        self.before, self.merged, self.saved = {}, None, False
+    def __init__(self, store, thread_id, fields):
+        self.store, self.thread_id, self.fields = store, thread_id, fields
+        self.before, self.merged, self.saved, self.version = {}, None, False, None
 
     async def load(self):
         """The stored session as this turn starts, minus fields the Session table dropped."""
-        snapshot = await self.session.aget_state(self.config)
-        stored = snapshot.values.get('session', {})
-        self.before = deepcopy({field: value for field, value in stored.items() if field in self.fields})
+        snapshot = await self.store.load(self.thread_id)
+        self.version = snapshot.version
+        self.before = deepcopy({field: value for field, value in snapshot.value.items() if field in self.fields})
         return deepcopy(self.before)
 
     async def save(self):
-        await self.session.ainvoke({'session': self.merged}, self.config)
+        self.version = await self.store.save(self.thread_id, self.merged, expected_version=self.version)
         self.saved = True
 
     async def restore(self):
         if self.saved:
             self.saved = False
-            await self.session.ainvoke({'session': self.before}, self.config)
+            await self.store.save(self.thread_id, self.before, expected_version=self.version)
+
+
+async def _restore_session(commit):
+    """Take the turn's session write back without hiding the error that caused it."""
+    original = sys.exception()
+    try:
+        await commit.restore()
+    except Exception as failure:
+        if original is None:
+            raise
+        original.add_note(f'Session restore failed: {type(failure).__name__}: {failure}')
+        logging.getLogger(__name__).warning('Session restore failed after a failed turn', exc_info=failure)
 
 
 class _State(TypedDict):
@@ -432,7 +446,7 @@ class Workflow:
     """The admitted LangGraph engine for bindings and typed continuation state."""
 
     def __init__(self, layout, registry=None, conditions=None, *, catalog=None, reducers=None,
-                 config=None, services=None, journal=None, checkpointer=None):
+                 config=None, services=None, journal=None, checkpointer=None, session_store=None):
         if not hasattr(layout, 'definition_id'):
             raise LayoutError('Execution requires an admitted workflow definition')
         self.typed_state = getattr(layout, 'schema_source', None) is not None
@@ -461,6 +475,8 @@ class Workflow:
         saver = (checkpointer if checkpointer is not None else InMemorySaver()) if self.typed_state else False
         self.graph = self._compile(None, checkpointer=saver)
         self._session = self._compile_session(checkpointer) if self.session_rows else None
+        self._session_store = session_store if session_store is not None else (
+            CheckpointerSessionStore(self._session, self.definition.graph_id) if self._session is not None else None)
 
     def _init_bindings(self, layout, registry, conditions=None, *, config=None, services=None):
         self.definition = layout
@@ -1645,7 +1661,7 @@ class Workflow:
         recorded = recording_enabled()
         if recorded:
             proof = selected_services.get('packaged_proof')
-            source_manifest = _source_manifest(self.definition, proof)
+            source_manifest = await offload(_source_manifest, self.definition, proof)
             from .journal import WorkflowJournal
             journal = WorkflowJournal(self.definition,
                 semantic_identity=workflow_identity(self.definition, timeouts=self.timeouts,
@@ -1717,7 +1733,7 @@ class Workflow:
                 # Still holding the thread, so no other turn reads the value being taken back.
                 try:
                     if session is not None and not completed:
-                        await session.restore()
+                        await _restore_session(session)
                 finally:
                     with self._thread_guard:
                         self._active_threads.remove(thread_id)
@@ -1762,10 +1778,7 @@ class Workflow:
             return result['values']
 
     def _session_commit(self, thread_id):
-        # Graph IDs never contain ':', so the prefix keeps graphs that share a checkpointer apart.
-        return _SessionCommit(
-            self._session, {'configurable': {'thread_id': f'{self.definition.graph_id}:{thread_id}'}},
-            {row['Field'] for row in self.session_rows})
+        return _SessionCommit(self._session_store, thread_id, {row['Field'] for row in self.session_rows})
 
     async def session(self, thread_id):
         """A deep copy of the session committed for ``thread_id``; empty before any turn commits one."""

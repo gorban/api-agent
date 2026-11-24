@@ -45,7 +45,7 @@ def test_trace_plan_selects_only_conventional_collector(monkeypatch, tmp_path, m
     from threading import Event
     from api_agent.runtime import prerequisites
     context = trace_context(tmp_path)
-    config = dict(trace_config(mode, target), ALLURE_S3_USE_LOCALSTACK=True, RUN_UI=True,
+    config = dict(trace_config(mode, target), S3_USE_LOCALSTACK=True, RUN_UI=True,
                   LANGFUSE_PUBLIC_KEY='public-test', LANGFUSE_SECRET_KEY='secret-test')
     if target is not None:
         config['TRACE_EXPORT_ENDPOINT'] = target

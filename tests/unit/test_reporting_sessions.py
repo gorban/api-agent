@@ -18,32 +18,36 @@ def stopped(storage, identifier):
     return not storage.engine.records[identifier]['State']['Running']
 
 
-def test_last_reusing_consumer_stops_registered_id(storage):
+def test_last_reusing_consumer_removes_registered_id_but_keeps_its_data(storage):
     session, operation = storage.create(), storage.create()
     identifier, = session.acquire().container_ids
     assert operation.acquire().reused_ids == (identifier,)
     session.release()
     assert not stopped(storage, identifier)
     operation.release()
-    assert stopped(storage, identifier)
+    assert identifier not in storage.engine.records
     assert binding(storage)[1]['ids'] == [identifier]
-    assert all(command[1] not in {'rm', 'down', 'volume'}
+    assert all(command[1] not in {'down', 'volume'} and '-v' not in command
                for command in mutation_commands(storage.engine))
 
 
-def test_restart_preserves_container_and_original_captured_assets(storage):
+def test_restart_preserves_a_retained_stopped_container_and_original_captured_assets(storage):
     first = storage.create()
     identifier, = first.acquire().container_ids
+    first.release(retain=True)
+    storage.engine.records[identifier]['State']['Running'] = False
     original = json.loads(json.dumps(storage.engine.records[identifier]))
-    first.release()
     before = len(storage.engine.commands)
     second = storage.create()
     assert second.acquire().owned_ids == (identifier,)
     commands = [command for command, _ in storage.engine.commands[before:]]
     assert ('docker', 'start', identifier) in commands
-    assert not any('up' in command or command[1] == 'exec' for command in commands)
+    assert not any('up' in command for command in commands)
+    original['State']['Running'] = True
     assert storage.engine.records[identifier] == original
     second.release()
+    # Not created by this lifecycle, yet the final consumer disposes of the verified registered ID.
+    assert identifier not in storage.engine.records
 
 
 @pytest.mark.parametrize('change', ['image', 'fingerprint', 'volume', 'assets', 'registry', 'replacement'])
@@ -76,10 +80,10 @@ def test_stop_failure_keeps_exact_session_for_retry(storage):
     storage.engine.fail_stop = False
     session.release()
     assert session.lease is None and json.loads(journal.read_text()) == {}
-    assert stopped(storage, lease.container_ids[0])
+    assert lease.container_ids[0] not in storage.engine.records
 
 
-def test_join_waits_until_final_stop_then_restarts_same_id(storage):
+def test_join_waits_until_final_removal_then_provisions_a_fresh_container(storage):
     first, joining = storage.create(), storage.create()
     identifier, = first.acquire().container_ids
     stopping, permit_stop, joined = Event(), Event(), Event()
@@ -101,8 +105,9 @@ def test_join_waits_until_final_stop_then_restarts_same_id(storage):
         assert not joined.wait(.15)
         permit_stop.set()
         released.result(timeout=10)
-        assert acquired.result(timeout=10).container_ids == (identifier,)
-    assert not stopped(storage, identifier)
+        fresh, = acquired.result(timeout=10).container_ids
+    assert fresh != identifier and identifier not in storage.engine.records
+    assert not stopped(storage, fresh)
     joining.release()
 
 
@@ -139,7 +144,8 @@ def test_real_process_death_prunes_session_without_exit_handler(storage):
             recovered = storage.create()
             assert recovered.acquire().container_ids == (identifier,)
             recovered.release()
-            assert stopped(storage, identifier)
+            # The creator left while the child held a lease; the last consumer still disposes.
+            assert identifier not in storage.engine.records
         finally:
             if child.poll() is None: child.kill(); child.wait(timeout=10)
 
@@ -153,7 +159,7 @@ def test_pid_reuse_identity_does_not_protect_stale_session(storage):
     records['stale-session'] = {'pid': os.getpid(), 'identity': 'previous-process-birth', 'ids': [identifier]}
     p._write_journal(manager.directory, manager.scope, records)
     owner.release()
-    assert stopped(storage, identifier) and json.loads(journal.read_text()) == {}
+    assert identifier not in storage.engine.records and json.loads(journal.read_text()) == {}
 
 
 def test_stopped_registration_with_live_operation_lease_refuses_restart(storage):
@@ -221,7 +227,8 @@ def test_partial_restart_keeps_original_manager_and_retry_without_replacing_asse
     first = storage.create()
     identifier, = first.acquire().container_ids
     source = storage.engine.records[identifier]['Mounts'][0]['Source']
-    first.release()
+    first.release(retain=True)
+    storage.engine.records[identifier]['State']['Running'] = False
     factory = storage.factory
     failed = [False]
     def start_failure(plan, scope, directory, **options):
@@ -351,9 +358,9 @@ def test_canceled_failed_provision_retries_stop_and_final_intent_inventory(stora
     with pytest.raises(CleanupPendingError): asyncio.run(receipt.retry())
     assert owner.intent and owner.manager._rollback is not None
     storage.engine.fail_stop = False
-    with pytest.raises(CleanupPendingError): asyncio.run(receipt.retry())
-    assert owner.intent and owner.manager._rollback is None
-    storage.engine.records.clear()  # independently recovered disposable fixture
+    # The disposable rollback now stops and removes the failed start's container, so the
+    # final intent inventory is empty and one retry settles everything.
     asyncio.run(receipt.retry())
+    assert not owner.intent and not storage.engine.records
     assert cancel.is_set() and not owner.intent and owner.pending_cleanup is None
     assert not list(storage.registry.glob('*.json'))

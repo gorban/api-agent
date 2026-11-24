@@ -299,6 +299,15 @@ class LocalRunOwner:
                     # Translate the explicitly selected endpoint without guessing.
                     selected['DOCKER_HOST'] = selected['CONTAINER_HOST']
                 self._engine_environment = MappingProxyType(selected)
+                # The application may build its S3 clients while it is constructed,
+                # before the shared S3 prerequisite is acquired.
+                from api_agent.runtime.shared_s3 import (
+                    application_s3_environment, declares_application_s3, export_environment)
+                if declares_application_s3(self._config):
+                    restore_s3 = export_environment(application_s3_environment(self._config.values))
+                    async def restore_s3_environment():
+                        restore_s3()
+                    self._stack.push(restore_s3_environment)
                 self._startup_stage('view preparation')
                 await asyncio.sleep(0)
                 from api_agent.runtime.tasks import offload

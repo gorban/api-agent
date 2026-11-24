@@ -289,7 +289,7 @@ def collector_from_snapshot(snapshot, config):
         scope, inventory, contributions, schema, directory, assets, selection = decoded
         from .infrastructure_plan import plan_infrastructure
         environment = {key:os.environ[key] for key in ENGINE_ENVIRONMENT_KEYS if key in os.environ}
-        selected = {**selection.values, 'ALLURE_S3_USE_LOCALSTACK':False}
+        selected = {**selection.values, 'S3_USE_LOCALSTACK':False}
         profile = selection.declaration.managed_compose_profile
         plan = plan_infrastructure(selected,schema,contributions,scope,compose_directory=directory,
                                   engine_environment=environment,inventory=inventory,base_assets=assets,

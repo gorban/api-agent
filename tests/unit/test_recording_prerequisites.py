@@ -11,7 +11,7 @@ from api_agent.testing.prerequisites import RecordingPrerequisites, local_record
 
 
 CONFIG = {'TUI_MODE': 'integration', 'ALLURE_S3_BUCKET': 'allure-results',
-          'ALLURE_S3_USE_LOCALSTACK': True, 'TRACE_MODE': 'LangFuse'}
+          'S3_USE_LOCALSTACK': True, 'TRACE_MODE': 'LangFuse'}
 LEASE = ServiceLease('invocation', 'scope', ('localstack',), ('owned',), ('reused',))
 
 
@@ -38,7 +38,7 @@ def test_inert_validated_storage_only_and_idempotent():
     assert prepare(subject) is LEASE
     assert prepare(subject) is LEASE
     deps.assert_called_once_with()
-    plan.assert_called_once_with({'ALLURE_S3_BUCKET': 'allure-results', 'ALLURE_S3_USE_LOCALSTACK': True})
+    plan.assert_called_once_with({'ALLURE_S3_BUCKET': 'allure-results', 'S3_USE_LOCALSTACK': True})
     assert subject.lease.owned_ids == ('owned',)
     assert subject.lease.reused_ids == ('reused',)
     subject.finish()
@@ -184,25 +184,25 @@ def test_isolated_storage_port_survives_projection_without_tracing_or_api(tmp_pa
     captured=[]
     def plan(config):
         captured.append(config)
-        return plan_compose(config,scope)
+        return plan_compose(config,scope,storage=True)
     manager=Mock(lease=LEASE)
     manager.acquire.return_value=LEASE
     factory=Mock(return_value=manager)
     subject=RecordingPrerequisites(prepare_dependencies=Mock(),plan=plan,manager=factory)
-    settings={**CONFIG,'ALLURE_S3_ENDPOINT':'http://127.0.0.1:14566','ALLURE_LOCALSTACK_PORT':14566,
+    settings={**CONFIG,'S3_ENDPOINT':'http://127.0.0.1:14566','LOCALSTACK_PORT':14566,
               'TRACE_MODE':'LangFuse','LANGFUSE_HOST':'http://localhost:3000','API_ENDPOINT':'http://localhost:8080/graphql'}
     subject.prepare(('selected',),settings,accepted=True)
     selected=factory.call_args.args[0]
     assert selected.profiles==('localstack',)
     assert selected.services==('localstack',)
     assert selected.environment['SA_LOCALSTACK_PORT']=='14566'
-    assert captured==[{'ALLURE_S3_BUCKET':'allure-results','ALLURE_S3_USE_LOCALSTACK':True,
-                       'ALLURE_S3_ENDPOINT':'http://127.0.0.1:14566','ALLURE_LOCALSTACK_PORT':14566}]
+    assert captured==[{'ALLURE_S3_BUCKET':'allure-results','S3_USE_LOCALSTACK':True,
+                       'S3_ENDPOINT':'http://127.0.0.1:14566','LOCALSTACK_PORT':14566}]
     client=Mock()
     monkeypatch.setitem(sys.modules,'boto3',SimpleNamespace(client=client))
     monkeypatch.setitem(sys.modules,'botocore.config',SimpleNamespace(Config=lambda **kwargs:kwargs))
-    RunStorage(captured[0]['ALLURE_S3_BUCKET'],endpoint_url=captured[0]['ALLURE_S3_ENDPOINT'],
-               localstack_port=captured[0]['ALLURE_LOCALSTACK_PORT'])._client()
+    RunStorage(captured[0]['ALLURE_S3_BUCKET'],endpoint_url=captured[0]['S3_ENDPOINT'],
+               localstack_port=captured[0]['LOCALSTACK_PORT'])._client()
     assert client.call_args.kwargs['aws_access_key_id']=='test'
     assert client.call_args.kwargs['aws_secret_access_key']=='test'
     subject.finish()

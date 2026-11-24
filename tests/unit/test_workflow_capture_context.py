@@ -381,6 +381,30 @@ def test_reused_compiled_workflow_keeps_concurrent_invocation_authorities_isolat
     assert len({graph['invocation_id'] for graph in graphs})==2
 
 
+def test_concurrent_recorded_turns_verify_provenance_off_the_event_loop(tmp_path,monkeypatch):
+    """Blocking Git provenance must not serialize concurrent turns on one loop."""
+    import threading
+    from api_agent.providers.llm import LLMResult,Message,TextContent
+    from api_agent.workflows import execution
+    from api_agent.workflows.application import build
+    from api_agent.workflows.resources import bundled_root
+    monkeypatch.setenv('API_AGENT_ALLURE_REPORTING','1')
+    monkeypatch.setenv('API_AGENT_INTEGRATION_EVENTS',str(tmp_path/'events.jsonl'))
+    async def complete(request):return LLMResult(Message('assistant',(TextContent('Ok'),)))
+    graph=build(bundled_root(),llm=complete,selection='model')
+    manifest=execution._source_manifest(graph.definition)
+    both_verifying=threading.Barrier(2,timeout=5)
+    def rendezvous(definition,packaged_proof=None):
+        both_verifying.wait()
+        return manifest
+    monkeypatch.setattr(execution,'_source_manifest',rendezvous)
+    async def run():
+        return await asyncio.gather(*(graph.arun({'messages':[{'role':'user','content':label}]})
+                                      for label in ('alpha','beta')))
+    results=asyncio.run(run())
+    assert [result['llm_call']['response_text'] for result in results]==['Ok','Ok']
+
+
 @pytest.mark.parametrize('field', [ResolvedValue(True, None, True), ResolvedValue(True, 'dotenv', 1)])
 def test_capture_sources_rejects_malformed_resolved_provenance(field):
     with pytest.raises(ContractError, match='provenance'):

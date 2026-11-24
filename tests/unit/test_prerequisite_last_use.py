@@ -84,7 +84,7 @@ def test_explicit_retain_on_last_consumer_keeps_shared_service(setup):
 
 def test_passive_unselected_neighbor_never_becomes_last_use_cleanup_owned(setup):
     create, engine, _, _, _ = setup
-    create({'ALLURE_S3_USE_LOCALSTACK': True})
+    create({'S3_USE_LOCALSTACK': True})
     neighbor = engine.add('localstack')
     creator = create()
     created = creator.acquire()

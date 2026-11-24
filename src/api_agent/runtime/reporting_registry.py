@@ -1,4 +1,4 @@
-"""Explicit local reporting bindings, delegating leases to the original journal.
+"""Shared S3 (LocalStack) bindings, delegating leases to the original journal.
 
 No port or label discovery grants ownership. Enrollment is an operator-selected,
 read-only verification followed by an atomic local metadata registration.
@@ -30,7 +30,7 @@ def _assets(plan):
 
 def _configuration(plan):
     return {key: plan.environment[key] for key in
-            ('SA_LOCALSTACK_PORT', 'SA_ALLURE_S3_BUCKET', 'SA_ALLURE_S3_REGION')}
+            ('SA_LOCALSTACK_PORT', 'SA_S3_REGION')}
 
 
 def _binding_location(record, key, registry_directory):
@@ -164,8 +164,15 @@ def _occupied(port):
     return False
 
 
-class SharedReportingManager:
-    """Retain the underlying manager across failure and retryable release."""
+class SharedS3Manager:
+    """The shared S3 (LocalStack) lease: one manager per engine and endpoint.
+
+    Retains the underlying manager across failure and retryable release. Consumers
+    on any checkout share one lease journal; the final release removes the disposable
+    container (the `localstack-data` volume is kept) and acquiring again provisions a
+    fresh container on that volume. A running container missing a consumer's bucket
+    gets it created on acquire; region drift is still refused.
+    """
     session_lifecycle = True
 
     def __init__(self, plan, *, engine_environment=None, cancelled=lambda: False,
@@ -179,7 +186,12 @@ class SharedReportingManager:
             raise PrerequisiteError('Reporting deadline must be positive.')
         self.directory = Path(registry_directory) if registry_directory else (
             Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'api-agent/reporting')
-        self.identity, self.factory, self.occupied = identity, manager_factory, occupied
+        # Registry-created bindings dispose on release: the last lease removes the container
+        # and its network, and never a volume, so a later acquire re-provisions on the same
+        # data. Enrolled bindings (recorded roots) stay stop-only: enrolment never owns them.
+        self.identity, self.occupied = identity, occupied
+        self.factory = lambda *args, **options: manager_factory(*args, dispose_on_release=True, **options)
+        self.enrolled_factory = lambda *args, **options: manager_factory(*args, dispose_on_release=False, **options)
         self.manager = None
         self.key = None
         self.ownership_identity = None
@@ -221,8 +233,9 @@ class SharedReportingManager:
             raise PrerequisiteError('Shared reporting bucket, region or assets differ; no initialization was performed.')
         directory, scope = _binding_location(record, self.key, self.directory)
         plan = rebind_reporting_plan(self.plan, scope)
-        manager = self.factory(plan, scope, directory, engine_environment=self.environment,
-                               cancelled=self.cancelled, deadline_seconds=remaining)
+        build = self.enrolled_factory if record['roots'] else self.factory
+        manager = build(plan, scope, directory, engine_environment=self.environment,
+                        cancelled=self.cancelled, deadline_seconds=remaining)
         if record['assets'] != _assets(plan):
             if manager.fingerprints != record['fingerprints']:
                 raise PrerequisiteError('Selected LocalStack configuration changed; no reuse was performed.')
@@ -232,8 +245,8 @@ class SharedReportingManager:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or (not cleanup and self.cancelled()):
                 raise PrerequisiteError('Retained reporting verification was cancelled or timed out.')
-            recovered = self.factory(plan, scope, directory, engine_environment=self.environment,
-                                     cancelled=self.cancelled, deadline_seconds=remaining)
+            recovered = build(plan, scope, directory, engine_environment=self.environment,
+                              cancelled=self.cancelled, deadline_seconds=remaining)
             if recovered.specs['localstack'] != manager.specs['localstack']:
                 raise PrerequisiteError('Retained LocalStack service differs from the reviewed configuration.')
             manager = recovered
@@ -351,8 +364,19 @@ class SharedReportingManager:
                     retained_ids = self.lease.container_ids if self.lease is not None else ()
                     if self.lease is not None and tuple(record['ids']) != tuple(retained_ids):
                         raise PrerequisiteError('Reporting container registration changed; cleanup remains owned.')
-                    self.manager.release(retain=retain, reporting_ids=tuple(retained_ids),
-                                         reporting_directory=directory, _prelocked=True,
+                    if self.lease is not None and not retain:
+                        # The final consumer may have reused every object. Ownership is the
+                        # verified registry chain, so prove it before removing anything.
+                        deadline = time.monotonic() + budget.remaining
+                        current = self.manager._inventory(deadline, cleanup=True)
+                        if set(current) != set(retained_ids):
+                            raise PrerequisiteError('Registered reporting container changed; cleanup remains owned.')
+                        compatible = self.manager._compatible(current, deadline, allow_stopped=True, cleanup=True)
+                        if set(compatible) != {'localstack'}:
+                            raise PrerequisiteError('Registered reporting service changed; cleanup remains owned.')
+                        for identifier in retained_ids:
+                            self.manager.verify_reporting_storage(identifier, directory, deadline, cleanup=True)
+                    self.manager.release(retain=retain, adopted_ids=tuple(retained_ids), _prelocked=True,
                                          _deadline=time.monotonic() + budget.remaining)
             else:
                 self.manager.release(retain=retain)
@@ -370,7 +394,7 @@ def enroll_reporting(plan, *, base_root, pack_root, ownership_directory, **optio
     Never discovers roots or journals from engine labels. This changes only local
     registry metadata; it neither initializes nor mutates the selected engine.
     """
-    shared = SharedReportingManager(plan, **options)
+    shared = SharedS3Manager(plan, **options)
     roots = [_directory(root) for root in (base_root, pack_root)]
     scope = StackScope.from_roots(*roots)
     original = _directory(ownership_directory)

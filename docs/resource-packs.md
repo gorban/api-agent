@@ -183,7 +183,7 @@ A pack with mixed unit and integration modules can declare
 identifiers affect only that owner's unit collection, including when composed;
 they do not change other owners, integration/E2E selection or coverage targets.
 
-A marker that needs a service can also be declared under `tests.prerequisites`; it
+<a id="test-prerequisites"></a>A marker that needs a service can also be declared under `tests.prerequisites`; it
 must be one of the owner's excluded markers:
 ```toml
 [tests]
@@ -194,7 +194,7 @@ needs_store = "tests/services/store.py:acquire"
 Those tests stay out of ordinary unit runs and join a run only when `tag:needs_store`
 (or the repository-qualified form) selects them. The function, found relative to the
 owner, receives `{"owner_root", "environment", "directory", "output", "deadline",
-"cancelled"}` and returns a context manager whose value is a mapping of environment
+"cancelled", "s3"}` (`s3` is the resolved shared S3 settings) and returns a context manager whose value is a mapping of environment
 variables for the test processes. The launcher enters it once for the whole run, inside
 the suite lock and before any test process starts, and exits it after the run, also on
 failure. Starting every declared service, including any image build, shares one budget,
@@ -208,7 +208,27 @@ dies: `api_agent.testing.owned_service.OwnedService` runs a shell script that pr
 ready line, waits for its standard input to close and cleans up from an EXIT trap, and
 it signals that script's process group when startup passes the deadline or is cancelled.
 A run that
-selects none of the marker's tests never imports the file. A partial selection reports
+selects none of the marker's tests never imports the file.
+
+Instead of a `path.py:function`, a marker may name the built-in shared S3 provider,
+which leases the launcher's one LocalStack S3 service (the same one Run local and
+Allure use; see [prerequisites](prerequisites.md#shared-s3-localstack)):
+```toml
+[tests]
+unit_exclude_markers = ["localstack", "local_db"]
+[tests.prerequisites]
+localstack = "api_agent:shared_s3"
+local_db = "tests/launcher_services/db.py:acquire"
+```
+`api_agent:shared_s3` is the only built-in reference. It is held for the whole run only
+when a selected test carries the marker, shares `TEST_SERVICES_TIMEOUT_SECONDS`, is
+cancellable and is released (last lease removes the container, keeps the volume) after
+the run. It yields `S3_ENDPOINT` and `S3_REGION` to the test processes; the buckets
+in `S3_EXTRA_BUCKETS` (default `application-data`) are ensured but not reported, so
+tests name their own. The LocalStack volume is shared with Run local and Allure
+history, so tests must use unique object names and clean up after themselves. With `S3_USE_LOCALSTACK=False`
+nothing starts and `S3_ENDPOINT` (when set) and `S3_REGION` are yielded as given. A
+partial selection reports
 coverage as informational, as for any selector.
 
 Put generic integrations in api-agent, provider-specific assertions with their

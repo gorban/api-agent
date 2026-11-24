@@ -36,7 +36,7 @@ def test_declarations_have_one_visibility_flag_and_pack_override():
     assert combined.fields['LOG_CONTENT'].acknowledge_default is True
     assert combined.fields['LLM_PROVIDER'].acknowledge_default is True
     for mode in ('run-local', 'integration', 'e2e'):
-        env = {'TUI_MODE': mode, 'ALLURE_S3_USE_LOCALSTACK': 'True',
+        env = {'TUI_MODE': mode, 'S3_USE_LOCALSTACK': 'True',
                'API_ENDPOINT': 'https://api.example/graphql', 'UI_SOURCE_DIR': '/example/frontend'}
         result = resolve_config(combined, environ=env)
         assert result.values['PROVIDER_SCOPE'] == 'synthetic'

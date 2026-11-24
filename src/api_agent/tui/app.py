@@ -1991,6 +1991,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
             self.show_unit_results(self.unit_progress())
             run_values = self.session.result().values
             test_environment = unit_test_environment(self.session.schema, run_values)
+            from api_agent.runtime.shared_s3 import s3_config
             from api_agent.testing.unit_scope import owner_unit_only, unit_coverage_complete
             result = await asyncio.to_thread(
                 runner, self.context, self.selection.selected_tests,
@@ -2002,6 +2003,7 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 collection_timeout=run_values.get('TEST_COLLECTION_TIMEOUT_SECONDS'),
                 frontend_timeout=run_values.get('SOURCE_FRONTEND_TIMEOUT_SECONDS'),
                 services_timeout=run_values.get('TEST_SERVICES_TIMEOUT_SECONDS'),
+                s3_settings=s3_config(run_values),
                 **({'test_environment': test_environment} if test_environment else {}),
                 coverage_full=run_values.get('UNIT_COVERAGE_FULL', False),
                 **({'coverage_owner_only': True} if owner_unit_only(self.context, run_values) else {}),

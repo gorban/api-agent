@@ -3,7 +3,7 @@ import json
 from threading import RLock
 
 from api_agent.providers.control import CleanupPendingError
-from api_agent.runtime.reporting_registry import SharedReportingManager, _assets, _configuration
+from api_agent.runtime.reporting_registry import SharedS3Manager, _assets, _configuration
 from api_agent.runtime.tasks import offload
 
 
@@ -14,7 +14,7 @@ class ReportingSessions:
     locking. This lock only protects this workbench's worker/shutdown handoff.
     Construction and publication-only plans perform no service I/O.
     """
-    def __init__(self, factory=SharedReportingManager):
+    def __init__(self, factory=SharedS3Manager):
         self.factory = factory
         self.managers = {}
         self.lock = RLock()
@@ -24,7 +24,8 @@ class ReportingSessions:
     def acquire(self, plan, *, engine_environment=None, deadline_seconds=120):
         if plan.profiles != ('localstack',):
             return
-        key = json.dumps([_configuration(plan), _assets(plan), engine_environment], sort_keys=True)
+        key = json.dumps([_configuration(plan), plan.environment['SA_S3_BUCKETS'], _assets(plan), engine_environment],
+                         sort_keys=True)
         with self.lock:
             if self.closing:
                 raise RuntimeError('Reporting session is closing.')

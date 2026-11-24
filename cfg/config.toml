@@ -470,16 +470,17 @@ COLLECT_ONLY = false
 
 # Provider contributions do not execute authentication during configuration review.
 
-[fields.ALLURE_S3_USE_LOCALSTACK]
+[fields.S3_USE_LOCALSTACK]
 type = "bool"
 review_optional = true
-help = "Choose True or False before configuring result history. Use managed local S3 for result history. True defaults the bucket to allure-results and endpoint to http://localhost:4566; compatible launches share the same managed installation and namespace. False with an explicit endpoint publishes to that service without managing containers, even for loopback. Remote S3 requires False and an explicit bucket."
-[fields.ALLURE_S3_USE_LOCALSTACK.required_when]
+conditional_defaults = [{when = {TUI_MODE = ["run-local", "unit"]}, value = true}]
+help = "Use the one shared managed LocalStack S3 service (disposable container on the persistent localstack-data volume) for every S3 consumer: Allure result history, the application's data bucket and pack tests that declare the built-in localstack provider. Integration/E2E require an explicit True or False when Allure reporting is on; Run local and unit runs default to True (unit runs start it only when a selected test carries a marker mapped to api_agent:shared_s3). Compatible launches share one installation; the last consumer removes the container and keeps the volume. False starts nothing and uses S3_ENDPOINT as-is (opt-in to external S3; remote S3 also needs an explicit ALLURE_S3_BUCKET for Allure)."
+[fields.S3_USE_LOCALSTACK.required_when]
 TUI_MODE = ["integration", "e2e"]
 SKIP_ALLURE_REPORTING = false
 COLLECT_ONLY = false
-[fields.ALLURE_S3_USE_LOCALSTACK.applies_when]
-TUI_MODE = ["integration", "e2e", "allure"]
+[fields.S3_USE_LOCALSTACK.applies_when]
+TUI_MODE = ["run-local", "unit", "integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
 [fields.ALLURE_CLI]
@@ -508,26 +509,26 @@ help = "Launches in an Allure history window, including the current launch. Defa
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
-[fields.ALLURE_LOCALSTACK_PORT]
+[fields.LOCALSTACK_PORT]
 type = "int"
 default = 4566
 validation = "positive"
 acknowledge_default = false
-help = "Loopback host port for the owned LocalStack instance. Set ALLURE_S3_ENDPOINT to the same port when overriding it."
-[fields.ALLURE_LOCALSTACK_PORT.applies_when]
-ALLURE_S3_USE_LOCALSTACK = true
-TUI_MODE = ["integration", "e2e", "allure"]
+help = "Loopback host port for the shared LocalStack S3 service. Set S3_ENDPOINT to the same port when overriding it."
+[fields.LOCALSTACK_PORT.applies_when]
+S3_USE_LOCALSTACK = true
+TUI_MODE = ["run-local", "unit", "integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
 [fields.ALLURE_S3_BUCKET]
 type = "str"
-conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "allure-results"}]
-help = "Required S3 bucket for integration/E2E result history. Automatically defaults to allure-results when ALLURE_S3_USE_LOCALSTACK=True."
+conditional_defaults = [{when = {S3_USE_LOCALSTACK = true}, value = "allure-results"}]
+help = "Required S3 bucket for integration/E2E result history. Automatically defaults to allure-results when S3_USE_LOCALSTACK=True."
 [fields.ALLURE_S3_BUCKET.required_when]
 TUI_MODE = ["integration", "e2e"]
 SKIP_ALLURE_REPORTING = false
 [fields.ALLURE_S3_BUCKET.applies_when]
-ALLURE_S3_USE_LOCALSTACK = [true, false]
+S3_USE_LOCALSTACK = [true, false]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
@@ -536,26 +537,36 @@ type = "str"
 default = "allure"
 help = "S3 prefix for separate repository/run histories. Existing runs are retained."
 [fields.ALLURE_S3_PREFIX.applies_when]
-ALLURE_S3_USE_LOCALSTACK = [true, false]
+S3_USE_LOCALSTACK = [true, false]
 TUI_MODE = ["integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
-[fields.ALLURE_S3_ENDPOINT]
+[fields.S3_ENDPOINT]
 type = "str"
-conditional_defaults = [{when = {ALLURE_S3_USE_LOCALSTACK = true}, value = "http://localhost:4566"}]
-help = "Optional S3-compatible endpoint; omitted uses AWS S3. With ALLURE_S3_USE_LOCALSTACK=False, an explicit endpoint is publication-only and never starts, initializes or stops containers."
-[fields.ALLURE_S3_ENDPOINT.applies_when]
-ALLURE_S3_USE_LOCALSTACK = [true, false]
-TUI_MODE = ["integration", "e2e", "allure"]
+conditional_defaults = [{when = {S3_USE_LOCALSTACK = true}, value = "http://localhost:4566"}]
+help = "S3-compatible endpoint shared by every S3 consumer; omitted uses AWS S3. With S3_USE_LOCALSTACK=True it defaults to http://localhost:4566 and must be the loopback endpoint of LOCALSTACK_PORT (set both when overriding). With S3_USE_LOCALSTACK=False an explicit endpoint is used as-is and never starts, initializes or stops containers. Run local exports the running endpoint to the agent process as S3_ENDPOINT."
+[fields.S3_ENDPOINT.applies_when]
+S3_USE_LOCALSTACK = [true, false]
+TUI_MODE = ["run-local", "unit", "integration", "e2e", "allure"]
 COLLECT_ONLY = false
 
-[fields.ALLURE_S3_REGION]
+[fields.S3_REGION]
 type = "str"
 default = "us-east-1"
-help = "AWS signing region for result storage, including LocalStack."
-[fields.ALLURE_S3_REGION.applies_when]
-ALLURE_S3_USE_LOCALSTACK = [true, false]
-TUI_MODE = ["integration", "e2e", "allure"]
+help = "AWS signing region shared by every S3 consumer, including LocalStack. A running LocalStack with a different region is refused."
+[fields.S3_REGION.applies_when]
+S3_USE_LOCALSTACK = [true, false]
+TUI_MODE = ["run-local", "unit", "integration", "e2e", "allure"]
+COLLECT_ONLY = false
+
+[fields.S3_EXTRA_BUCKETS]
+type = "str"
+default = "application-data"
+acknowledge_default = false
+help = "Comma-separated non-Allure buckets the shared LocalStack creates (idempotently, also on an already-running container) for its consumers; default application-data is the application's data bucket (Run local, for a pack that declares S3_APPLICATION_BUCKET, exports the first one as that setting when it is unset). The Allure bucket is ALLURE_S3_BUCKET and is added automatically. Ignored when S3_USE_LOCALSTACK=False."
+[fields.S3_EXTRA_BUCKETS.applies_when]
+S3_USE_LOCALSTACK = true
+TUI_MODE = ["run-local", "unit", "integration", "e2e"]
 COLLECT_ONLY = false
 
 [fields.ALLURE_RESULTS_DIR]

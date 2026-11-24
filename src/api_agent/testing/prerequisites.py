@@ -45,9 +45,8 @@ class RecordingPrerequisites:
         self._check_cancelled()
         # Reports require storage only. Tracing/API profiles belong to their
         # independent operation owner and cannot be selected by this adapter.
-        storage_config = {key: value for key, value in config.items()
-                          if key.startswith('ALLURE_S3_') or key == 'ALLURE_LOCALSTACK_PORT'}
-        selected_plan = self.plan(storage_config)
+        from api_agent.runtime.shared_s3 import s3_config
+        selected_plan = self.plan(s3_config(config))
         self._check_cancelled()
         self.owned_manager = self.manager(selected_plan, self.cancel_event.is_set)
         acquired = False
@@ -115,7 +114,7 @@ def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(
     from api_agent.runtime.dependencies import active_environment, ensure_environment
     from api_agent.runtime.compose import plan_compose
     from api_agent.runtime.prerequisites import PrerequisiteManager
-    from api_agent.runtime.reporting_registry import SharedReportingManager
+    from api_agent.runtime.reporting_registry import SharedS3Manager
 
     def dependencies():
         owner = context.pack_root if getattr(context, 'external_pack', False) else context.base_root
@@ -132,8 +131,8 @@ def local_recording_prerequisites(context, *, scope, ownership_directory, argv=(
             raise RuntimeError('interpreter_handoff_required')
 
     return RecordingPrerequisites(prepare_dependencies=dependencies,
-        plan=lambda config: plan_compose(config, scope, engine_environment=engine_environment),
-        manager=lambda plan, cancelled: (SharedReportingManager(plan,
+        plan=lambda config: plan_compose(config, scope, engine_environment=engine_environment, storage=True),
+        manager=lambda plan, cancelled: (SharedS3Manager(plan,
             engine_environment=engine_environment, cancelled=cancelled, deadline_seconds=timeout)
             if plan.profiles == ('localstack',) else PrerequisiteManager(plan, scope, ownership_directory,
             engine_environment=engine_environment, cancelled=cancelled, deadline_seconds=timeout)),

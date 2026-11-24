@@ -132,7 +132,7 @@ def test_post_acquisition_cancellation_publishes_before_rollback(tmp_path, monke
     context.base_root = context.owner_root
     clock, engine, cancelled = Clock(), Engine(), Event()
     scope = StackScope.from_roots(context.base_root, context.owner_root)
-    config['ALLURE_S3_USE_LOCALSTACK'] = True
+    config['S3_USE_LOCALSTACK'] = True
     manager = runtime.PrerequisiteManager(plan_compose(config, scope), scope,
         tmp_path / 'ownership', command_runner=engine.run, readiness_probe=lambda *args: True,
         now=clock.now, sleep=clock.sleep, identity=lambda pid: 'birth')

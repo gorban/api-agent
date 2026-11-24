@@ -334,7 +334,7 @@ def test_noninteractive_debug_integration_dispatch_and_prepare_failure(monkeypat
         return SimpleNamespace(exit_code=1)
     monkeypatch.setattr('api_agent.testing.recorded.run_recorded_integration', run)
     monkeypatch.setattr(os, 'environ', {})
-    args = ['--tui-mode=integration', '--no-std-in', '--debug', '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', '--unattended-user-index=0']
+    args = ['--tui-mode=integration', '--no-std-in', '--debug', '--s3-use-localstack=False', '--allure-s3-bucket=synthetic', '--unattended-user-index=0']
     assert main(args, base_root=ROOT) == 1
     output = capsys.readouterr().out
     assert calls == ['run'] and 'raw evidence' not in output
@@ -440,7 +440,7 @@ def test_terminal_invalid_selection_stops_before_execution_resources(monkeypatch
     monkeypatch.setattr('api_agent.testing.launched.plan_integration_requirements', requirements)
     monkeypatch.setattr('api_agent.testing.recorded.run_recorded_integration', runner)
     args = ['--tui-mode=' + mode, '--no-std-in', '--start=' + start,
-            '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', *selectors]
+            '--s3-use-localstack=False', '--allure-s3-bucket=synthetic', *selectors]
     assert main(args, base_root=ROOT) == 2
     assert diagnostic in capsys.readouterr().err
     collect.assert_called_once()

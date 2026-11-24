@@ -17,6 +17,7 @@ class Config:
     errors: tuple = ()
     missing: tuple = ()
     fields: dict = field(default_factory=dict)
+    active_fields: tuple = ()
 
     def __post_init__(self):
         from api_agent.config import load_shared_schema
@@ -530,6 +531,8 @@ def test_local_factory_wires_helpers_without_io_at_initialization(monkeypatch, t
         def release(self, *, retain):
             events.append(f'release:{retain}')
     monkeypatch.setattr(prerequisites, 'PrerequisiteManager', Manager)
+    # The shared S3 lease has its own tests; this one pins the helpers' own order.
+    monkeypatch.setattr('api_agent.runtime.shared_s3.with_shared_s3', lambda primary, *args, **options: primary)
     class Runtime:
         async def astart(self):
             events.append('runtime-start')
@@ -593,6 +596,46 @@ def test_local_factory_pack_preflight_checks_fresh_valid_config_before_side_effe
     asyncio.run(scenario())
     assert len(calls) == 1 and calls[0][1] is context
     assert calls[0][2]['API_ENDPOINT'] == ''
+
+
+def test_local_operation_leases_the_shared_s3_beside_its_own_prerequisites_for_a_pack_that_declares_it(monkeypatch, tmp_path):
+    import api_agent.auth.extensions as extensions
+    from api_agent.runtime.compose import plan_compose
+    from api_agent.runtime.ownership import StackScope
+    from api_agent.runtime.prerequisites import PrerequisiteManager
+    from api_agent.runtime.shared_s3 import SharedS3Companion
+    monkeypatch.setattr(extensions, 'validate_operation', lambda *a: None)
+    scope = StackScope.from_roots(tmp_path, tmp_path)
+    config = Config({'AGENT_DJANGO_URL': 'https://agent.example/cb', 'S3_USE_LOCALSTACK': True,
+                     'LOCALSTACK_PORT': 4566, 'S3_REGION': 'eu-west-1', 'S3_EXTRA_BUCKETS': 'application-data'},
+                    active_fields=('S3_APPLICATION_BUCKET',))
+    runner = local_operation(SimpleNamespace(base_root=tmp_path, owner_root=tmp_path), resolve=lambda: config,
+                             argv=(), scope=scope, ownership_directory=tmp_path)
+
+    runner.resolve()
+    manager = runner.manager(plan_compose({}, scope), lambda: False)
+
+    assert isinstance(manager, SharedS3Companion) and isinstance(manager.primary, PrerequisiteManager)
+    assert manager.s3.plan.profiles == ('localstack',)
+    assert manager.s3.plan.environment['SA_S3_BUCKETS'] == 'application-data'
+    assert manager.s3.plan.environment['SA_S3_REGION'] == 'eu-west-1'
+
+
+def test_local_operation_skips_the_shared_s3_for_a_pack_that_does_not_declare_it(monkeypatch, tmp_path):
+    import api_agent.auth.extensions as extensions
+    from api_agent.runtime.compose import plan_compose
+    from api_agent.runtime.ownership import StackScope
+    from api_agent.runtime.prerequisites import PrerequisiteManager
+    monkeypatch.setattr(extensions, 'validate_operation', lambda *a: None)
+    scope = StackScope.from_roots(tmp_path, tmp_path)
+    config = Config({'AGENT_DJANGO_URL': 'https://agent.example/cb', 'S3_USE_LOCALSTACK': True})
+    runner = local_operation(SimpleNamespace(base_root=tmp_path, owner_root=tmp_path), resolve=lambda: config,
+                             argv=(), scope=scope, ownership_directory=tmp_path)
+
+    runner.resolve()
+    manager = runner.manager(plan_compose({}, scope), lambda: False)
+
+    assert isinstance(manager, PrerequisiteManager)
 
 
 def test_factory_handoff_status_is_explicit(monkeypatch, tmp_path):

@@ -25,7 +25,7 @@ def test_cross_mode_retained_stack_reuses_exact_provisioning(tmp_path, test_mode
     managers = []
     for mode in modes:
         environment = {
-            'ALLURE_S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse',
+            'S3_USE_LOCALSTACK': 'False', 'TUI_MODE': mode, 'TRACE_MODE': 'LangFuse',
             'ALLURE_S3_BUCKET': 'synthetic-results', **credentials}
         root = Path(__file__).resolve().parents[2]
         schema = bootstrap_schema(load_shared_schema(root), (), environment, {}, owner_root=tmp_path)

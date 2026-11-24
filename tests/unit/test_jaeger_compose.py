@@ -42,8 +42,8 @@ def test_jaeger_viewer_port_rejects_invalid_values(port):
 
 @pytest.mark.parametrize('config', [
     {'TRACE_MODE': 'OTEL', 'JAEGER_VIEWER_PORT': 4318},
-    {'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True, 'JAEGER_VIEWER_PORT': 4566},
-    {'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_LOCALSTACK_PORT': 4318},
+    {'TRACE_MODE': 'OTEL', 'S3_USE_LOCALSTACK': True, 'JAEGER_VIEWER_PORT': 4566},
+    {'TRACE_MODE': 'OTEL', 'S3_USE_LOCALSTACK': True, 'LOCALSTACK_PORT': 4318},
 ])
 def test_selected_host_port_collisions_are_rejected_before_compose(config):
     with pytest.raises(ComposeError, match='host ports must not conflict'):
@@ -51,7 +51,7 @@ def test_selected_host_port_collisions_are_rejected_before_compose(config):
 
 
 def test_unselected_localstack_port_does_not_conflict_with_jaeger():
-    plan = plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL', 'ALLURE_LOCALSTACK_PORT': 4318}), Scope())
+    plan = plan_compose(trace_fixture_config({'TRACE_MODE': 'OTEL', 'LOCALSTACK_PORT': 4318}), Scope())
     assert plan.services == ('jaeger',)
 
 

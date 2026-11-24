@@ -68,10 +68,10 @@ def _endpoint(value):
 
 
 def _localstack_port(config):
-    port = config.get('ALLURE_LOCALSTACK_PORT')
+    port = config.get('LOCALSTACK_PORT')
     port = 4566 if port is None else port
     if type(port) is not int or not 1 <= port <= 65535:
-        raise ComposeError('ALLURE_LOCALSTACK_PORT must be a port from 1 to 65535.')
+        raise ComposeError('LOCALSTACK_PORT must be a port from 1 to 65535.')
     return port
 
 
@@ -113,8 +113,30 @@ def _validate_tracing_destination(profile, destination, config, document=None):
         raise ComposeError('Controlled tracing published ports differ from their endpoint contract.')
 
 
-def selected_profiles(config, *, tracing_profiles=None):
-    """Only conventional loopback endpoints request managed local dependencies."""
+def s3_buckets(config):
+    """Allure bucket then the comma-separated extras, validated and de-duplicated."""
+    names = []
+    allure = config.get('ALLURE_S3_BUCKET')
+    extras = config.get('S3_EXTRA_BUCKETS', '')
+    if allure is not None:
+        names.append(allure)
+    if not isinstance(extras, str):
+        raise ComposeError('S3_EXTRA_BUCKETS must be comma-separated bucket names.')
+    names.extend(item.strip() for item in extras.split(',') if item.strip())
+    for name in names:
+        if (not isinstance(name, str) or not re.fullmatch('[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]', name)
+                or '..' in name or re.fullmatch(r'\d+\.\d+\.\d+\.\d+', name)):
+            raise ComposeError('LocalStack requires valid S3 bucket names.')
+    return tuple(dict.fromkeys(names))
+
+
+def selected_profiles(config, *, tracing_profiles=None, storage=False):
+    """Only conventional loopback endpoints request managed local dependencies.
+
+    Tracing/API plans never include LocalStack; the shared S3 service is planned
+    separately (``storage=True`` adds it; see ``shared_s3.shared_s3_plan``, which
+    plans it alone) and leased by every S3 consumer.
+    """
     profiles = []
     resolved = config
     config = config.values if hasattr(config, 'fields') else config
@@ -130,11 +152,13 @@ def selected_profiles(config, *, tracing_profiles=None):
                    for profile in tracing_profiles)):
         raise ComposeError('Invalid admitted tracing Compose profile.')
     profiles.extend(tracing_profiles)
-    localstack = config.get('ALLURE_S3_USE_LOCALSTACK', False)
+    if not storage:
+        return tuple(profiles)
+    localstack = config.get('S3_USE_LOCALSTACK', False)
     localstack_port = _localstack_port(config)
     if type(localstack) is not bool:
-        raise ComposeError('ALLURE_S3_USE_LOCALSTACK must be a boolean.')
-    endpoint = config.get('ALLURE_S3_ENDPOINT')
+        raise ComposeError('S3_USE_LOCALSTACK must be a boolean.')
+    endpoint = config.get('S3_ENDPOINT')
     if localstack and endpoint is None:
         endpoint = f'http://localhost:{localstack_port}'
     if endpoint or localstack:
@@ -142,7 +166,7 @@ def selected_profiles(config, *, tracing_profiles=None):
         is_local = _local_s3_endpoint(parsed, port, localstack_port)
         if localstack and not is_local:
             raise ComposeError('LocalStack selection requires its loopback S3 endpoint.')
-        if localstack and is_local:
+        if localstack:
             profiles.append('localstack')
     return tuple(profiles)
 
@@ -256,8 +280,12 @@ def controlled_engine_environment(environment):
 
 
 def plan_compose(config, scope: Scope, *, compose_directory=None, executable='docker', engine_environment=None, captured_assets=None,
-                 tracing_profiles=None, tracing_destination=None):
-    """Return reviewable arguments and a complete isolated child environment."""
+                 tracing_profiles=None, tracing_destination=None, storage=False):
+    """Return reviewable arguments and a complete isolated child environment.
+
+    ``storage=True`` adds the shared LocalStack S3 service (see ``selected_profiles``);
+    other plans never include it.
+    """
     resolved = config
     config = config.values if hasattr(config, 'fields') else config
     if not re.fullmatch('[0-9a-f]{16}', scope.id) or scope.project != 'sa-' + scope.id:
@@ -271,11 +299,12 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
         raise ComposeError('Invalid captured controlled Compose assets.')
     def read_asset(name):
         return (directory / name).read_bytes() if captured_assets is None else captured_assets[name]
-    profiles = selected_profiles(resolved, tracing_profiles=tracing_profiles)
+    profiles = selected_profiles(resolved, tracing_profiles=tracing_profiles, storage=storage)
     viewer_port = _jaeger_viewer_port(config)
     localstack_port = _localstack_port(config)
+    # The shared S3 service starts alongside the managed collector whenever it is selected.
     if 'otel' in profiles and (viewer_port == 4318 or
-            ('localstack' in profiles and localstack_port in {4318, viewer_port})):
+            (config.get('S3_USE_LOCALSTACK') is True and localstack_port in {4318, viewer_port})):
         raise ComposeError('Managed Jaeger and LocalStack host ports must not conflict.')
     try:
         compose_bytes = read_asset('compose.json')
@@ -353,19 +382,16 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
             raise
         raise ComposeError('Invalid or missing controlled Jaeger configuration.') from error
     environment['SA_JAEGER_CONFIG'] = str(jaeger_config.resolve() if captured_assets is None else jaeger_config)
-    bucket = config.get('ALLURE_S3_BUCKET')
-    region = config.get('ALLURE_S3_REGION')
-    bucket = 'allure-results' if bucket is None else bucket
+    region = config.get('S3_REGION')
     region = 'us-east-1' if region is None else region
+    buckets = ()
     if 'localstack' in profiles:
-        if (not isinstance(bucket, str) or not re.fullmatch('[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]', bucket)
-                or '..' in bucket or re.fullmatch(r'\d+\.\d+\.\d+\.\d+', bucket)):
-            raise ComposeError('LocalStack requires a valid selected S3 bucket name.')
+        buckets = s3_buckets(config)
         if not isinstance(region, str) or not re.fullmatch('[a-z0-9]+(?:-[a-z0-9]+)+', region):
             raise ComposeError('LocalStack requires a valid selected region.')
     # Inactive profiles still need controlled interpolation for config validation.
-    environment['SA_ALLURE_S3_BUCKET'] = bucket if 'localstack' in profiles else 'allure-results'
-    environment['SA_ALLURE_S3_REGION'] = region if 'localstack' in profiles else 'us-east-1'
+    environment['SA_S3_REGION'] = region if 'localstack' in profiles else 'us-east-1'
+    environment['SA_S3_BUCKETS'] = ','.join(buckets)
     if 'langfuse' in profiles:
         for setting, variable in (('LANGFUSE_ADMIN_EMAIL', 'SA_USER_EMAIL'), ('LANGFUSE_ADMIN_PASSWORD', 'SA_USER_PASSWORD')):
             value = config.get(setting)

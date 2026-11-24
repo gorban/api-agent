@@ -66,7 +66,7 @@ def test_leaving_drains_owned_opening_before_reporting_release(tmp_path, storage
     async def scenario():
         app = fixture(tmp_path, fields={
             'ALLURE_S3_BUCKET': {'type': 'str', 'default': 'allure-results'},
-            'ALLURE_S3_USE_LOCALSTACK': {'type': 'bool', 'default': True}})
+            'S3_USE_LOCALSTACK': {'type': 'bool', 'default': True}})
         manager = storage.create()
         sessions = ReportingSessions(lambda *args, **kwargs: manager)
         app.reporting_sessions = sessions
@@ -218,7 +218,7 @@ def test_quit_permanently_closes_noop_reporting_admission(tmp_path, run, seconda
     async def scenario():
         app = fixture(tmp_path, fields={
             'ALLURE_S3_BUCKET': {'type': 'str', 'default': 'reports'},
-            'ALLURE_S3_USE_LOCALSTACK': {'type': 'bool', 'default': secondary},
+            'S3_USE_LOCALSTACK': {'type': 'bool', 'default': secondary},
             'ALLURE_VIEW_SECONDARY': {'type': 'bool', 'default': secondary}})
         app.selected_allure_result = lambda screen: (PreviewSnapshot(files, manifest, {}, False), name)
         app._allure = Mock(side_effect=AssertionError('Quit admitted a new viewer'))

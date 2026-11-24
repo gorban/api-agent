@@ -156,7 +156,9 @@ def setup(tmp_path):
     scope = StackScope.from_roots(tmp_path / 'base', tmp_path / 'pack')
     clock, engine = Clock(), Engine()
     def create(config=None, **kwargs):
-        manager = p.PrerequisiteManager(plan_compose(trace_fixture_config(config or {'TRACE_MODE': 'OTEL'}), scope), scope,
+        # The shared S3 service is its own plan; selecting it never adds tracing services.
+        manager = p.PrerequisiteManager(plan_compose(trace_fixture_config(config or {'TRACE_MODE': 'OTEL'}), scope,
+                                                     storage='S3_USE_LOCALSTACK' in (config or {})), scope,
             tmp_path / 'artifacts' / 'prerequisites', command_runner=engine.run,
             cancelled=lambda: engine.cancel, readiness_probe=lambda *args: True,
             now=clock.now, sleep=clock.sleep, identity=lambda pid: 'boot:start',
@@ -783,7 +785,7 @@ def test_jaeger_fingerprint_uses_captured_content_independent_of_source_path(set
 
 def test_digest_pin_reuses_normalized_container_only_when_image_identity_matches(setup):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     pin = manager.specs['localstack']['image']
     assert '@sha256:' in pin
     identifier = engine.add('localstack', image=pin.split('@', 1)[0])
@@ -802,7 +804,7 @@ def test_digest_pin_reuses_normalized_container_only_when_image_identity_matches
 ])
 def test_docker_familiar_repo_digest_is_verified_with_container_image_id(setup, pin, familiar):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     manager.specs['localstack']['image'] = pin
     identifier = engine.add('localstack', image=pin.split('@', 1)[0])
     engine.image_inspections[pin] = [{'Id': 'sha256:' + '1' * 64,
@@ -819,7 +821,7 @@ def test_docker_familiar_repo_digest_is_verified_with_container_image_id(setup, 
 ])
 def test_familiar_repo_alias_does_not_accept_foreign_registry_or_repository(setup, reported):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     pin = manager.specs['localstack']['image']
     engine.add('localstack', image=pin.split('@', 1)[0])
     digest = pin.rsplit('@', 1)[1]
@@ -832,7 +834,7 @@ def test_familiar_repo_alias_does_not_accept_foreign_registry_or_repository(setu
 
 def test_non_docker_registry_pin_requires_its_exact_repository(setup):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     pin = 'registry.example:5000/team/localstack:4@sha256:' + 'c' * 64
     manager.specs['localstack']['image'] = pin
     identifier = engine.add('localstack', image='registry.example:5000/team/localstack:4')
@@ -849,7 +851,7 @@ def test_non_docker_registry_pin_requires_its_exact_repository(setup):
 ])
 def test_nested_library_repository_keeps_library_namespace(setup, reported, accepted):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     pin = 'docker.io/library/team/image:1@sha256:' + 'd' * 64
     manager.specs['localstack']['image'] = pin
     identifier = engine.add('localstack', image='docker.io/library/team/image:1')
@@ -869,7 +871,7 @@ def test_nested_library_repository_keeps_library_namespace(setup, reported, acce
                                    'list_container_id', 'dict_container_id', 'malformed_container_id'])
 def test_digest_pin_rejects_unproved_or_wrong_running_image(setup, wrong):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     pin = manager.specs['localstack']['image']
     identifier = engine.add('localstack', image=pin.split('@', 1)[0])
     record = engine.records[identifier]
@@ -933,7 +935,7 @@ def test_digest_only_image_locator_and_same_image_id_cache_reuse(setup):
 
 def test_malformed_digest_inspection_is_incompatible(setup):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     pin = manager.specs['localstack']['image']
     engine.add('localstack', image=pin.split('@', 1)[0])
     engine.image_inspections[pin] = [None]
@@ -984,7 +986,7 @@ def test_foreign_owned_project_is_refused(setup):
 
 def test_partial_up_failure_rolls_back_only_new_ids(setup):
     create, engine, _, _, _ = setup
-    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'TRACE_MODE': 'OTEL', 'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     reused = engine.add('jaeger')
     engine.fail_up = True
     with pytest.raises(p.PrerequisiteError, match='up failed'): manager.acquire()
@@ -1229,7 +1231,8 @@ def test_process_identity_mac_and_unknown_fail_closed(monkeypatch, case):
         if case == 'oserror': raise OSError('private')
         if case == 'timeout': raise subprocess.TimeoutExpired(command, 1)
         if command[0].endswith('sysctl'):
-            return SimpleNamespace(returncode=1 if case == 'boot_error' else 0, stdout='{ sec = 123, usec = 456 }')
+            assert command[1:] == ['-n', 'kern.bootsessionuuid']
+            return SimpleNamespace(returncode=1 if case == 'boot_error' else 0, stdout='B093631B-8658-45C5-8F92-007AE5C7CC08\n')
         return SimpleNamespace(returncode=1 if case in {'missing', 'ps_permission'} else 0, stderr='permission denied' if case == 'ps_permission' else '',
             stdout='' if case in {'missing', 'ps_permission', 'ps_empty'} else 'Mon Oct 5 12:00:00 2026 ' + ('Z' if case == 'zombie' else 'S'))
     monkeypatch.setattr(subprocess, 'run', run)
@@ -1238,7 +1241,7 @@ def test_process_identity_mac_and_unknown_fail_closed(monkeypatch, case):
     elif case in {'missing', 'zombie'}:
         assert p.process_identity(123) is None
     else:
-        assert p.process_identity(123) == '{ sec = 123, usec = 456 }:Mon Oct 5 12:00:00 2026'
+        assert p.process_identity(123) == 'darwin:B093631B-8658-45C5-8F92-007AE5C7CC08:Mon Oct 5 12:00:00 2026'
 
 
 def test_lock_contention_waits_boundedly(setup, monkeypatch):
@@ -1472,7 +1475,7 @@ def test_repeated_local_run_restarts_exact_stopped_owned_id(setup):
 
 def test_failed_restart_rolls_back_restarted_id_and_preserves_reused(setup):
     create, engine, _, _, _ = setup
-    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_ENDPOINT': 'http://localhost:4566'})
+    manager = create({'TRACE_MODE': 'OTEL', 'S3_USE_LOCALSTACK': True, 'S3_ENDPOINT': 'http://localhost:4566'})
     reused = engine.add('jaeger')
     restarted = engine.add('localstack', running=False)
     engine.fail_up = True
@@ -1590,12 +1593,14 @@ def test_owned_readiness_transport_ignores_proxy_and_refuses_local_redirect(tmp_
 
 def test_localstack_selected_bucket_is_provisioned_on_new_and_reused_stack(setup):
     create, engine, _, _, _ = setup
-    config = {'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'selected-results', 'ALLURE_S3_REGION': 'eu-west-1'}
+    config = {'S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'selected-results', 'S3_REGION': 'eu-west-1',
+              'S3_EXTRA_BUCKETS': 'application-data'}
     manager = create(config)
     lease = manager.acquire()
     hook = next(command for command, _ in engine.commands if command[1] == 'exec')
-    assert hook == ('docker', 'exec', lease.owned_ids[0], '/bin/sh', '/etc/localstack/init/ready.d/10-api-agent-s3.sh')
-    assert manager.environment['SA_ALLURE_S3_BUCKET'] == 'selected-results'
+    assert hook == ('docker', 'exec', '-e', 'SA_S3_BUCKETS=selected-results,application-data', lease.owned_ids[0],
+                    '/bin/sh', '/etc/localstack/init/ready.d/10-api-agent-s3.sh')
+    assert manager.environment['SA_S3_BUCKETS'] == 'selected-results,application-data'
     manager.release(retain=True)
     reused = create(config)
     assert reused.acquire().reused_ids == lease.owned_ids
@@ -1604,7 +1609,7 @@ def test_localstack_selected_bucket_is_provisioned_on_new_and_reused_stack(setup
 
 def test_bucket_provision_failure_rolls_back_only_new_services(setup):
     create, engine, _, _, _ = setup
-    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True})
+    manager = create({'TRACE_MODE': 'OTEL', 'S3_USE_LOCALSTACK': True})
     existing = engine.add('jaeger')
     engine.fail_hook = True
     with pytest.raises(p.PrerequisiteError, match='bucket hook failed'): manager.acquire()
@@ -1613,16 +1618,21 @@ def test_bucket_provision_failure_rolls_back_only_new_services(setup):
     assert engine.records[existing]['State']['Running']
 
 
-def test_selected_bucket_and_hook_change_prevent_unsafe_reuse(setup, monkeypatch):
+def test_bucket_list_is_not_compatibility_identity_but_region_and_hook_are(setup, monkeypatch):
     create, engine, _, _, _ = setup
-    first = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'first-results'})
-    first.acquire()
+    first = create({'S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'first-results'})
+    lease = first.acquire()
     first.release(retain=True)
-    changed = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'other-results'})
-    with pytest.raises(p.PrerequisiteError, match='incompatible'): changed.acquire()
+    other_bucket = create({'S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'other-results'})
+    assert other_bucket.fingerprints == first.fingerprints
+    assert other_bucket.acquire().reused_ids == lease.owned_ids
+    assert engine.commands[-1][0][3] == 'SA_S3_BUCKETS=other-results'
+    other_bucket.release(retain=True)
+    other_region = create({'S3_USE_LOCALSTACK': True, 'S3_REGION': 'eu-west-1'})
+    with pytest.raises(p.PrerequisiteError, match='incompatible'): other_region.acquire()
     original = Path.read_bytes
     monkeypatch.setattr(Path, 'read_bytes', lambda path: original(path) + (b'\n# changed hook contract\n' if path.name == 'localstack-ready.sh' else b''))
-    changed_hook = create({'ALLURE_S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'first-results'})
+    changed_hook = create({'S3_USE_LOCALSTACK': True, 'ALLURE_S3_BUCKET': 'first-results'})
     with pytest.raises(p.PrerequisiteError, match='incompatible'): changed_hook.acquire()
 
 
@@ -1660,9 +1670,9 @@ if 'create-bucket' in args:
 sys.exit(9)
 '''.replace('STATE', repr(str(state))).replace('LOG', repr(str(log))).replace('FAILURE', repr(failure)))
     fake.chmod(0o755)
-    hook = plan_compose(trace_fixture_config({'ALLURE_S3_USE_LOCALSTACK': True}), StackScope('a' * 16)).directory / 'localstack-ready.sh'
-    environment = {'PATH': str(tmp_path) + ':/usr/bin:/bin', 'SA_ALLURE_S3_BUCKET': 'chosen-results',
-                   'SA_ALLURE_S3_REGION': region, 'AWS_ACCESS_KEY_ID': 'ambient', 'AWS_SECRET_ACCESS_KEY': 'ambient',
+    hook = plan_compose(trace_fixture_config({'S3_USE_LOCALSTACK': True}), StackScope('a' * 16)).directory / 'localstack-ready.sh'
+    environment = {'PATH': str(tmp_path) + ':/usr/bin:/bin', 'SA_S3_BUCKETS': 'chosen-results',
+                   'SA_S3_REGION': region, 'AWS_ACCESS_KEY_ID': 'ambient', 'AWS_SECRET_ACCESS_KEY': 'ambient',
                    'AWS_SESSION_TOKEN': 'ambient'}
     result = subprocess.run(('/bin/sh', str(hook)), env=environment, capture_output=True, text=True, timeout=5)
     calls = json.loads(log.read_text())
@@ -1689,6 +1699,45 @@ sys.exit(9)
 @pytest.mark.parametrize('failure', ['create', 'head-after-create'])
 def test_ready_hook_propagates_create_and_final_readability_failures(tmp_path, failure):
     _exercise_ready_hook(tmp_path, failure=failure)
+
+
+def run_ready_hook(tmp_path, buckets, existing=()):
+    """Run the real hook against a fake awslocal that tracks a set of buckets."""
+    state, log = tmp_path / 'buckets.json', tmp_path / 'created.json'
+    state.write_text(json.dumps(sorted(existing)))
+    log.write_text('[]')
+    fake = tmp_path / 'awslocal'
+    fake.write_text('#!' + sys.executable + '\n' + '''import json,sys
+from pathlib import Path
+state, log = Path(STATE), Path(LOG)
+args = sys.argv[1:]
+bucket = args[args.index('--bucket') + 1]
+known = json.loads(state.read_text())
+if 'head-bucket' in args:
+    sys.exit(0 if bucket in known else 1)
+known.append(bucket)
+state.write_text(json.dumps(known))
+log.write_text(json.dumps(json.loads(log.read_text()) + [bucket]))
+'''.replace('STATE', repr(str(state))).replace('LOG', repr(str(log))))
+    fake.chmod(0o755)
+    hook = plan_compose({}, StackScope('a' * 16)).directory / 'localstack-ready.sh'
+    environment = {'PATH': str(tmp_path) + ':/usr/bin:/bin', 'SA_S3_REGION': 'us-east-1'}
+    if buckets is not None:
+        environment['SA_S3_BUCKETS'] = buckets
+    result = subprocess.run(('/bin/sh', str(hook)), env=environment, capture_output=True, text=True, timeout=5)
+    return result.returncode, json.loads(log.read_text())
+
+
+def test_ready_hook_creates_every_listed_bucket_and_leaves_existing_ones(tmp_path):
+    status, created = run_ready_hook(tmp_path, 'allure-results,application-data,third-bucket',
+                                     existing=['application-data'])
+
+    assert (status, created) == (0, ['allure-results', 'third-bucket'])
+
+
+@pytest.mark.parametrize('buckets', [None, '', ','])
+def test_ready_hook_accepts_an_empty_bucket_list(tmp_path, buckets):
+    assert run_ready_hook(tmp_path, buckets) == (0, [])
 
 
 @pytest.mark.parametrize('status,stage,expected', [(200, {'completed': False}, False),
@@ -1722,7 +1771,7 @@ def test_failed_journal_write_rolls_back_only_new_invocation(setup, monkeypatch,
     create, engine, _, _, _ = setup
     first = create({'TRACE_MODE': 'OTEL'})
     prior = first.acquire()
-    manager = create({'TRACE_MODE': 'OTEL', 'ALLURE_S3_USE_LOCALSTACK': True})
+    manager = create({'TRACE_MODE': 'OTEL', 'S3_USE_LOCALSTACK': True})
     restarted = engine.add('localstack', running=False) if restart else None
     def fail(*args):
         raise p.PrerequisiteError('journal persistence failed')
@@ -1746,7 +1795,7 @@ def test_execution_uses_reviewed_compose_and_hook_snapshot(setup, tmp_path, chan
     assets = tmp_path / 'assets'; assets.mkdir()
     for name, content in source.assets.items():
         (assets / name).write_bytes(content)
-    plan = plan_compose(trace_fixture_config({'ALLURE_S3_USE_LOCALSTACK': True, 'TRACE_MODE': 'OTEL'}), scope,
+    plan = plan_compose(trace_fixture_config({'S3_USE_LOCALSTACK': True, 'TRACE_MODE': 'OTEL'}), scope,
                         compose_directory=assets)
     def mutate():
         document = json.loads((assets / 'compose.json').read_text())
@@ -1883,7 +1932,7 @@ def test_stopped_localstack_definition_restarts_with_original_hook(setup, failed
                     assert mounts[identifier].is_file()
                     assert mounts[identifier].stat().st_mode & 0o111 == 0o111
     engine.run = run
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    manager = create({'S3_USE_LOCALSTACK': True})
     if failed_start:
         engine.fail_up = True
         with pytest.raises(p.PrerequisiteError, match='up failed'):
@@ -1895,7 +1944,7 @@ def test_stopped_localstack_definition_restarts_with_original_hook(setup, failed
         assert all(not engine.records[item]['State']['Running'] for item in lease.container_ids)
     assert mounts and all(path.is_file() for path in mounts.values())
     original_mounts = dict(mounts)
-    retry = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    retry = create({'S3_USE_LOCALSTACK': True})
     retry.acquire()
     assert mounts == original_mounts
     retry.release()
@@ -1908,7 +1957,7 @@ def test_failed_acquire_and_failed_rollback_keep_real_recording_retry(setup):
     from api_agent.providers.control import CleanupPendingError
     from api_agent.testing.collection import TestIdentity
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    manager = create({'S3_USE_LOCALSTACK': True})
     engine.fail_up = engine.fail_stop = True
     owner = RecordingPrerequisites(prepare_dependencies=lambda: None,
         plan=lambda config: manager.plan, manager=lambda *args: manager)
@@ -2020,7 +2069,7 @@ def test_concurrent_manager_rollback_retries_recheck_state_under_lock(setup, mon
 @pytest.mark.parametrize('container_prefix,image_prefix', [('', ''), ('', 'sha256:'), ('sha256:', '')])
 def test_engine_image_id_prefix_normalization_keeps_exact_identity_and_pin(setup, container_prefix, image_prefix):
     create, engine, _, _, _ = setup
-    manager = create({'ALLURE_S3_USE_LOCALSTACK': True})
+    manager = create({'S3_USE_LOCALSTACK': True})
     pin = manager.specs['localstack']['image']
     identifier = engine.add('localstack', image_id=container_prefix + '1' * 64)
     engine.image_inspections[pin] = [{'Id': image_prefix + '1' * 64,

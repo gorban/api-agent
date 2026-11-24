@@ -105,6 +105,19 @@ def test_selected_marker_holds_its_service_for_the_run_and_exports_its_environme
     assert events(owner) == ['enter', 'exit']
 
 
+def test_the_runner_hands_the_resolved_s3_settings_to_providers(pair):
+    base, owner = pair
+    (owner / 'tests/services/provider.py').write_text(
+        'from contextlib import contextmanager\n@contextmanager\ndef acquire(services):\n'
+        '    yield {"SERVICE_URL": "http://127.0.0.1:1/" + services["s3"]["SUFFIX"]}\n')
+    ctx = context(base, owner)
+    tests = collect_tests(ctx, 'unit', ['tag:needs_service'])
+
+    result = run_unit_tests(ctx, tests, s3_settings={'SUFFIX': 'x'}, require_full_coverage=False)
+
+    assert result.exit_code == 0, result.output
+
+
 def test_unmarked_selection_never_loads_the_provider(pair):
     base, owner = pair
     (owner / 'tests/services/provider.py').write_text('raise RuntimeError("provider imported")\n')
@@ -227,6 +240,71 @@ def test_manifest_declares_provider_for_an_excluded_marker(tmp_path):
         ('needs_db', pack / 'services/db.py', 'acquire'),)
     make_pack(pack)
     assert load_launch_context(base, pack).test_prerequisites == ()
+
+
+def pack_declaring(tmp_path, declaration):
+    base, pack = tmp_path / 'base', tmp_path / 'external'
+    base.mkdir()
+    make_pack(pack)
+    manifest = pack / 'pack.toml'
+    manifest.write_text(manifest.read_text().replace(
+        '[tests]\n', '[tests]\nunit_exclude_markers = ["localstack", "local_db"]\n' + declaration + '\n'))
+    return base, pack
+
+
+def test_manifest_accepts_the_builtin_shared_s3_provider_beside_owner_providers(tmp_path):
+    base, pack = pack_declaring(tmp_path, 'prerequisites = {localstack = "api_agent:shared_s3", local_db = "services/db.py:acquire"}')
+    (pack / 'services').mkdir()
+    (pack / 'services/db.py').write_text('')
+
+    assert load_launch_context(base, pack).test_prerequisites == (
+        ('localstack', None, 'shared_s3'), ('local_db', pack / 'services/db.py', 'acquire'))
+
+
+@pytest.mark.parametrize('declaration', [
+    'prerequisites = {localstack = "api_agent:other"}', 'prerequisites = {localstack = "api_agent:"}',
+    'prerequisites = {unlisted = "api_agent:shared_s3"}',
+])
+def test_unknown_builtin_providers_and_unexcluded_markers_are_rejected(tmp_path, declaration):
+    base, pack = pack_declaring(tmp_path, declaration)
+
+    with pytest.raises(ResourcePackError, match='built-in provider: api_agent:shared_s3'):
+        load_launch_context(base, pack)
+
+
+def test_builtin_provider_receives_the_resolved_s3_settings_and_adds_its_environment(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from api_agent.runtime import shared_s3
+    seen = []
+
+    @contextmanager
+    def fake(services):
+        seen.append((services['s3'], services['owner_root']))
+        try:
+            yield {'S3_ENDPOINT': 'http://localhost:4566', 'S3_REGION': 'us-east-1'}
+        finally:
+            seen.append('released')
+    monkeypatch.setattr(shared_s3, 'shared_s3', fake)
+    other = provider(tmp_path, 'other', '    yield {"A": "1"}\n')
+    ctx = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, test_prerequisites=(
+        ('localstack', None, 'shared_s3'), ('two', other, 'acquire')))
+    label = repository_label(ctx, tmp_path)
+
+    with acquired_test_services(ctx, [identity(label, 'localstack', 'two')], {},
+                                s3={'S3_USE_LOCALSTACK': True}) as values:
+        assert values == {'S3_ENDPOINT': 'http://localhost:4566', 'S3_REGION': 'us-east-1', 'A': '1'}
+    assert seen == [({'S3_USE_LOCALSTACK': True}, tmp_path.resolve()), 'released']
+
+
+def test_builtin_provider_is_not_started_for_tests_without_its_marker(tmp_path, monkeypatch):
+    from api_agent.runtime import shared_s3
+    monkeypatch.setattr(shared_s3, 'shared_s3', lambda services: pytest.fail('started'))
+    ctx = SimpleNamespace(base_root=tmp_path, owner_root=tmp_path, test_prerequisites=(
+        ('localstack', None, 'shared_s3'),))
+    label = repository_label(ctx, tmp_path)
+
+    with acquired_test_services(ctx, [identity(label, 'other')], {}) as values:
+        assert values == {}
 
 
 @pytest.mark.parametrize('declaration', [

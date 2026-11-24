@@ -15,7 +15,7 @@ from api_agent.testing.integration import IntegrationRunResult
 
 ROOT = Path(__file__).resolve().parents[2]
 ARGS = ['--no-std-in', '--tui-mode=integration', '--start=True',
-        '--allure-s3-use-localstack=False', '--allure-s3-bucket=synthetic', '--log-content=True',
+        '--s3-use-localstack=False', '--allure-s3-bucket=synthetic', '--log-content=True',
         '--synthetic-api-key=synthetic-credential-value', 'selected.py']
 
 

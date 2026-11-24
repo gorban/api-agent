@@ -9,12 +9,14 @@ Docker is an optional development dependency. Install and start an accessible
 supported engine, with its client and Compose support, when selecting any of these:
 
 - Managed local Jaeger or LangFuse tracing, including their backing services.
-- Managed LocalStack report storage.
+- The shared managed LocalStack S3 service (see [Shared S3](#shared-s3-localstack)): always for
+  Run local, and for recorded integration/E2E Allure reporting, the Allure viewer/restore, and
+  unit runs whose selected tests carry a marker mapped to `api_agent:shared_s3`.
 - A containerized local API and its dependencies.
 - A provider, workflow tool, or test that requires containers.
 - Container image builds or container-based tests.
 
-External tracing, external S3 storage, and an external API each remove the need
+External tracing, external S3 storage (`S3_USE_LOCALSTACK=False`), and an external API each remove the need
 for their corresponding local stack. Disabled tracing needs no tracing stack.
 Another selected feature can still require Docker. The launcher manages the
 selected application containers; it does not install or start your Docker engine.
@@ -91,6 +93,72 @@ provider or inaccessible engine needs fixing before selecting container features
 Shared local report infrastructure additionally requires a local Unix socket,
 not an arbitrary remote engine endpoint.
 
+## Shared S3 (LocalStack)
+
+One launcher-level S3 prerequisite serves every S3 consumer: Allure result history,
+the application's data bucket, and pack tests. It is a disposable
+`gresau/localstack-persist` container on the persistent named volume
+`localstack-data`, shared per container engine and endpoint across checkouts and
+modes through the original lease journal (`SharedS3Manager`, registry in
+`~/.cache/api-agent/reporting`). Its entrypoint installs a start hook that keeps
+a rejected conditional write (`If-None-Match`/`If-Match`) from emptying the
+existing object, which the persistence image would otherwise do; see the
+[Compose asset notes](../infra/compose/README.md#shared-s3-localstack).
+
+Settings (all apply in unit, integration, e2e, allure and run-local modes):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `S3_USE_LOCALSTACK` | `True` for Run local and unit; explicit choice required for recorded integration/E2E | `False` starts nothing and uses `S3_ENDPOINT` as-is (opt-in to external S3). |
+| `LOCALSTACK_PORT` | `4566` | Loopback host port. Set `S3_ENDPOINT` to the same port when overriding. |
+| `S3_ENDPOINT` | `http://localhost:4566` when LocalStack is on | Endpoint every consumer uses; unset with `False` means AWS. |
+| `S3_REGION` | `us-east-1` | Signing region; a running LocalStack with another region is refused. |
+| `S3_EXTRA_BUCKETS` | `application-data` | Comma-separated non-Allure buckets (the application's data bucket). |
+| `ALLURE_S3_BUCKET` / `ALLURE_S3_PREFIX` | `allure-results` / `allure` | Allure-specific; the bucket is added to the managed list. |
+
+`ALLURE_S3_USE_LOCALSTACK`, `ALLURE_LOCALSTACK_PORT`, `ALLURE_S3_ENDPOINT` and
+`ALLURE_S3_REGION` were renamed to the first four shared names above. Leaving an old name
+in `.env` or the environment is a configuration error naming its replacement.
+
+Lifecycle: the last consumer to release removes the container and its network
+(never the `localstack-data` volume; no `volume rm` or `down -v` is ever issued);
+acquiring again provisions a fresh container on the same volume, so stored
+objects survive. Buckets are not part of the container's configuration: every
+acquire, including on an already-running container, creates any bucket the
+consumer lists that is missing (`SA_S3_BUCKETS` through `localstack-ready.sh`),
+so consumers with different bucket lists share one container; only region drift
+refuses reuse. A pre-existing container from an older launcher (stop-only,
+bucket in its environment) is incompatible; remove it once with
+`docker rm -f` and relaunch.
+
+"Last consumer" is decided from the lease journal: each lease records its
+process ID with a process identity, the host boot identity plus that process's
+start time (`process_identity`). A lease whose recorded identity no longer
+matches its process is stale, and its cleanup duty passes to a live consumer.
+Linux uses `/proc/sys/kernel/random/boot_id`; macOS uses
+`kern.bootsessionuuid` (`darwin:<uuid>:<start time>`). macOS `kern.boottime` is
+not an identity: it is derived from the calendar clock, and its microseconds
+move within one boot, which made live leases look stale and let another
+consumer remove a container still in use. Leases recorded by earlier versions
+carry that `kern.boottime` string; they still match their live process on the
+boot second and start time, ignoring microseconds, while a different boot
+second or start time still means a dead or reused process. A process identity
+that cannot be read refuses cleanup instead of meaning stale. Restart a
+long-running Run local after upgrading: an older running version compares
+identities exactly and cannot recognize the new form.
+
+Where it starts, and only there: recorded integration/E2E runs
+(`RecordingPrerequisites`), Allure viewer/restore, Run local for a pack that
+declares the `S3_APPLICATION_BUCKET` setting (its prerequisites stage leases it
+beside the operation's own manager; other packs run without Docker for S3), and unit runs only when a
+selected test carries a marker mapped to the built-in provider
+(`localstack = "api_agent:shared_s3"` under `[tests.prerequisites]`; see
+[resource packs](resource-packs.md#test-prerequisites)). Run local exports the
+running endpoint to the agent process environment as `S3_ENDPOINT` and
+`S3_REGION`, plus `S3_APPLICATION_BUCKET` (first `S3_EXTRA_BUCKETS` entry,
+unless already set), and restores the previous values at shutdown. Tracing/API
+plans never include LocalStack.
+
 ## Managed network cleanup
 
 The launcher creates missing managed default networks with an explicit cleanup
@@ -130,8 +198,8 @@ See [setup and configuration](workbench.md#getting-started),
 [tracing](tracing.md) and [development](development.md) for operation-specific setup.
 
 Callers that create temporary prerequisite definitions may opt in with
-`PrerequisiteManager(..., dispose_on_release=True)`. The default remains
-stop-only. Temporary ownership follows compatible borrowers until their final
+`PrerequisiteManager(..., dispose_on_release=True)`; the shared S3 manager always does.
+The default remains stop-only. Temporary ownership follows compatible borrowers until their final
 release; conflicting policies for the same definition are rejected. Cleanup
 verifies immutable container IDs, creator nonces and configuration before removing definitions,
 and removes a network created by that lifecycle only when no saved container

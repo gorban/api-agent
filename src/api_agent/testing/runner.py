@@ -271,13 +271,14 @@ def _test_environment(values):
 
 
 @suite_locked
-def run_unit_tests(context, tests, *, output=None, test_environment=None, services_timeout=None, **options):
+def run_unit_tests(context, tests, *, output=None, test_environment=None, services_timeout=None,
+                   s3_settings=None, **options):
     """Run the selection once, with any services its markers declare held for the whole run."""
     from .marker_services import acquired_test_services
     environment = {**os.environ, **{name: value for name, value in _test_environment(test_environment).items()
                                     if value is not None}}
     with acquired_test_services(context, tests, environment, output=output, timeout=services_timeout,
-                                cancel_event=options.get('cancel_event')) as services:
+                                cancel_event=options.get('cancel_event'), s3=s3_settings) as services:
         return _run_unit_tests(context, tests, output=output,
                                test_environment={**_test_environment(test_environment), **services}, **options)
 

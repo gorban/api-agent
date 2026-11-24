@@ -20,6 +20,10 @@ class ResourcePackError(ValueError):
     """A pack cannot provide a valid launch context."""
 
 
+# Provider names a pack may reference as `api_agent:<name>` in [tests.prerequisites].
+BUILTIN_TEST_SERVICES = frozenset({'shared_s3'})
+
+
 @dataclass(frozen=True)
 class LaunchContext:
     base_root: Path
@@ -66,7 +70,7 @@ class LaunchContext:
     unit_exclude_markers: tuple[str, ...] = ()
     persisted_caches: tuple = ()
     hooks: tuple[tuple[str, str], ...] = ()
-    test_prerequisites: tuple[tuple[str, Path, str], ...] = ()
+    test_prerequisites: tuple[tuple[str, Path | None, str], ...] = ()
 
     @property
     def dotenv_path(self) -> Path:
@@ -335,6 +339,13 @@ def load_launch_context(
         raise ResourcePackError('tests.prerequisites must map markers to provider functions')
     test_prerequisites = []
     for marker, location in declared_prerequisites.items():
+        if type(location) is str and location.startswith('api_agent:'):
+            builtin = location.removeprefix('api_agent:')
+            if marker not in unit_exclude_markers or builtin not in BUILTIN_TEST_SERVICES:
+                raise ResourcePackError(f'tests.prerequisites.{marker} must name an excluded marker and a '
+                                        'built-in provider: ' + ', '.join(f'api_agent:{name}' for name in sorted(BUILTIN_TEST_SERVICES)))
+            test_prerequisites.append((marker, None, builtin))
+            continue
         path, _, symbol = location.partition(':') if type(location) is str else ('', '', '')
         source = owner / path
         if (marker not in unit_exclude_markers or not symbol.isidentifier() or not symbol.isascii()
