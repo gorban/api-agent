@@ -253,7 +253,7 @@ def _routes_complete(projection_data, events):
     caps = {(row['owner'], row['source'], row['target'], row['condition']):
             (limits[row['bound']['key']] + row['bound']['inclusive'], row['bound'].get('counter', 'attempt'))
             for row in projection_data['edges'] if 'bound' in row}
-    starts, expirations, recoveries = {}, {}, {}
+    starts, expirations, recoveries, traversals = {}, {}, {}, {}
     scopes, open_scopes, routes, pending, trail = {}, [], {}, {}, {}
     passes, node_outcomes, component_outcomes = {}, {}, {}
     graph_roots = 0
@@ -328,7 +328,9 @@ def _routes_complete(projection_data, events):
             if conditions is None or event.get('condition', 'always') not in conditions:
                 return False
             cap, counter = caps.get((owner, source, target, event.get('condition')), (None, None))
-            if cap is not None and ({'expirations': expirations, 'recoveries': recoveries}.get(counter, starts)).get(target, 0) >= cap:
+            edge_key = (owner, source, target, event.get('condition', 'always'))
+            count = traversals.get(edge_key, 0) if counter == 'traversals' else ({'expirations': expirations, 'recoveries': recoveries}.get(counter, starts)).get(target, 0)
+            if cap is not None and count >= cap:
                 return False
             if key not in routes:
                 if source != 'START':
@@ -369,6 +371,7 @@ def _routes_complete(projection_data, events):
                         or scope.get('attempt_id') != attempt
                         or scope['end']['sequence'] != event['sequence'] - 1):
                     return False
+            traversals[edge_key] = traversals.get(edge_key, 0) + 1
             routes[key] = target
             if owner in pass_components and target == 'END':
                 state = passes[open_scopes[-1]]
@@ -963,7 +966,7 @@ def validate_journal(payload, *, expected_definition=None, expected_component_pa
                     type(edge['bound']) is not dict or set(edge['bound']) - {'counter'} != {'key', 'inclusive'}
                     or edge['bound']['key'] not in {row['key'] for row in recorded_limits}
                     or type(edge['bound']['inclusive']) is not bool
-                    or edge['bound'].get('counter') not in (None, 'expirations', 'recoveries'))):
+                    or edge['bound'].get('counter') not in (None, 'expirations', 'recoveries', 'traversals'))):
             raise ValueError('Invalid workflow projection edge')
     admitted_edges = {tuple(edge[key] for key in ('owner', 'source', 'target', 'condition', 'implicit'))
                       for edge in projection_data['edges']}

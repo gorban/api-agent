@@ -169,6 +169,21 @@ class WorkflowObservations:
         current = self._call_fields.setdefault(key, {})
         current.update(fields)
 
+    def provider_failure_fields(self, fields):
+        """Attach provider failure facts classified by the embedding application to the
+        running node span. The span sanitizer stays the final gate: only registered
+        vocabulary survives, and this never raises into the caller."""
+        if not self._trace_active() or type(fields) is not dict:
+            return
+        from .attribution import current_workflow_visit
+        visit = current_workflow_visit()
+        span = self._spans.get(visit[1]) if visit is not None and visit[0] is self else None
+        clean = {key: value for key, value in fields.items()
+                 if type(key) is str and key.startswith('api_agent.provider.')}
+        if span is not None and clean:
+            from api_agent.telemetry.operation import safe_trace
+            safe_trace(lambda: span.structural(clean))
+
     def provider_diagnostics(self, cause_id, transport_id, diagnostics):
         if not self._trace_active():
             return

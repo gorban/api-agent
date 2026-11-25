@@ -53,7 +53,8 @@ def test_remote_network_cleanup_uses_admitted_budget(tmp_path, monkeypatch):
         elif args[1:3] == ['network', 'inspect']:
             output = json.dumps([{'Name': name, 'Id': network_id, 'Labels': {
                 'api-agent.network-cleanup-v1': scope.id, 'api-agent.managed': 'true',
-                'api-agent.scope': scope.id, 'com.docker.compose.project': scope.project,
+                'api-agent.scope': scope.id, 'api-agent.checkout': scope.checkout,
+                'com.docker.compose.project': scope.project,
                 'com.docker.compose.network': 'default', 'api-agent.acquisition': 'b' * 32}}])
         elif args[1:3] == ['network', 'rm']:
             output = ''

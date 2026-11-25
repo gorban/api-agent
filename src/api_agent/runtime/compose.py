@@ -15,6 +15,8 @@ from types import MappingProxyType
 from typing import Mapping, Protocol
 from urllib.parse import urlsplit
 
+from .ownership import accepted_projects
+
 
 class ComposeError(ValueError):
     pass
@@ -34,6 +36,9 @@ class Scope(Protocol):
     def labels(self, profile: str) -> Mapping[str, str]: ...
 
 
+DEFAULT_RETENTION_DAYS = 14
+
+
 @dataclass(frozen=True)
 class ComposePlan:
     profiles: tuple[str, ...]
@@ -44,6 +49,7 @@ class ComposePlan:
     assets: Mapping[str, bytes] = field(repr=False)
     conditional: tuple = ()
     inventory: object = None
+    retention_days: int = DEFAULT_RETENTION_DAYS
 
     @property
     def enabled(self):
@@ -73,6 +79,13 @@ def _localstack_port(config):
     if type(port) is not int or not 1 <= port <= 65535:
         raise ComposeError('LOCALSTACK_PORT must be a port from 1 to 65535.')
     return port
+
+
+def _retention_days(config):
+    days = config.get('MANAGED_CONTAINER_RETENTION_DAYS', DEFAULT_RETENTION_DAYS)
+    if type(days) is not int or days < 0:
+        raise ComposeError('MANAGED_CONTAINER_RETENTION_DAYS must be a nonnegative integer.')
+    return days
 
 
 def _jaeger_viewer_port(config):
@@ -288,7 +301,8 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
     """
     resolved = config
     config = config.values if hasattr(config, 'fields') else config
-    if not re.fullmatch('[0-9a-f]{16}', scope.id) or scope.project != 'sa-' + scope.id:
+    if (not re.fullmatch('[0-9a-f]{16}', scope.id)
+            or scope.project not in accepted_projects(scope.id, getattr(scope, 'checkout', ''))):
         raise ComposeError('Invalid Compose ownership scope.')
     if not isinstance(executable, str) or not executable or executable.startswith('-'):
         raise ComposeError('Invalid Compose executable.')
@@ -302,6 +316,7 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
     profiles = selected_profiles(resolved, tracing_profiles=tracing_profiles, storage=storage)
     viewer_port = _jaeger_viewer_port(config)
     localstack_port = _localstack_port(config)
+    retention_days = _retention_days(config)
     # The shared S3 service starts alongside the managed collector whenever it is selected.
     if 'otel' in profiles and (viewer_port == 4318 or
             (config.get('S3_USE_LOCALSTACK') is True and localstack_port in {4318, viewer_port})):
@@ -407,7 +422,8 @@ def plan_compose(config, scope: Scope, *, compose_directory=None, executable='do
                 environment['SA_' + key] = value
     return ComposePlan(profiles, services, command, directory, MappingProxyType(environment),
         MappingProxyType({'compose.json': compose_bytes, 'empty.env': empty_bytes,
-                          'localstack-ready.sh': hook_bytes, 'jaeger-config.json': jaeger_bytes}))
+                          'localstack-ready.sh': hook_bytes, 'jaeger-config.json': jaeger_bytes}),
+        retention_days=retention_days)
 
 
 def validate_compose(plan, *, runner=subprocess.run):

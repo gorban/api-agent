@@ -40,7 +40,7 @@ def test_selected_owned_capture_uses_bounded_timeout(monkeypatch):
     assert capture([SimpleNamespace(pages=[page])], capture_policy=AsyncMock(return_value=PNG),
         capture_timeout_seconds=30)[0][2] == 'image/png'
     assert durations == [('UI browser evidence', 30)]
-    for invalid in (0, 31, 5.0, True):
+    for invalid in (0, 36, 5.0, True):
         with pytest.raises(ValueError, match='capture timeout'):
             capture([SimpleNamespace(pages=[page])], capture_policy=AsyncMock(return_value=PNG),
                 capture_timeout_seconds=invalid)
@@ -213,7 +213,8 @@ def test_excluded_pages_preserve_context_and_page_numbers():
     assert [row[0] for row in rows] == ['UI success context 1 page 2', 'UI success context 2 page 1']
 
 
-def test_extended_capture_keeps_parent_deadline_and_drains_cancelled_policy():
+@pytest.mark.parametrize('page_budget', [30, 35])
+def test_extended_capture_keeps_parent_deadline_and_drains_cancelled_policy(page_budget):
     from api_agent.providers.progress import component_timeout
     async def run():
         cleaned, submitted = [], []
@@ -228,13 +229,14 @@ def test_extended_capture_keeps_parent_deadline_and_drains_cancelled_policy():
             async with component_timeout('Short parent', 1):
                 await evidence.capture_ui_evidence([SimpleNamespace(pages=[object()])],
                     EmissionBoundary(ContentPolicy(True)), submitted.append,
-                    capture_policy=policy, capture_timeout_seconds=30)
+                    capture_policy=policy, capture_timeout_seconds=page_budget)
         assert cleaned == [True]
         assert not any(row[2] == 'image/png' for row in submitted)
     asyncio.run(run())
 
 
-def test_expired_extended_capture_cannot_publish_late_pixels(monkeypatch):
+@pytest.mark.parametrize('page_budget', [30, 35])
+def test_expired_extended_capture_cannot_publish_late_pixels(monkeypatch, page_budget):
     from api_agent.providers.progress import component_timeout
     declared, cleaned, submitted = [], [], []
     @asynccontextmanager
@@ -251,7 +253,88 @@ def test_expired_extended_capture_cannot_publish_late_pixels(monkeypatch):
         finally:
             cleaned.append(True)
     rows = capture([SimpleNamespace(pages=[object()])], capture_policy=policy,
-        capture_timeout_seconds=30, submit=submitted.append)
-    assert declared == [30] and cleaned == [True]
+        capture_timeout_seconds=page_budget, submit=submitted.append)
+    assert declared == [page_budget] and cleaned == [True]
     assert rows == tuple(submitted)
     assert [row[2] for row in submitted] == ['application/json']
+
+
+def test_explicit_35_second_window_allows_transient_retry_but_not_late_capture(monkeypatch):
+    from api_agent.ui import evidence as viewport
+    from virtual_time import run as virtual_run
+    events = []
+    monkeypatch.setattr(viewport, 'monotonic', lambda: asyncio.get_running_loop().time())
+    monkeypatch.setattr(viewport, 'CAPTURE_RETRY_DELAY_SECONDS', 0)
+
+    async def case(timeout, final_delay):
+        page = SimpleNamespace()
+        attempts = 0
+        async def staged(page, boundary, origin, *, unavailable, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            await asyncio.sleep(12 if attempts == 1 else final_delay)
+            if attempts == 1:
+                unavailable('document_changed', None)
+                return None
+            return PNG
+        monkeypatch.setattr(viewport, '_capture_viewport_once', staged)
+        async def policy(page, boundary):
+            return await viewport.capture_studio_viewport(page, boundary, 'https://owned.invalid', retry_window_seconds=25)
+        diagnostics, submitted = [], []
+        rows = await evidence.capture_ui_evidence([SimpleNamespace(pages=[page])],
+            EmissionBoundary(ContentPolicy(True)), submitted.append, capture_policy=policy,
+            capture_timeout_seconds=timeout, capture_outcome=diagnostics.append)
+        events.append((attempts, rows[0][2], diagnostics))
+    virtual_run(case(30, 19.5))
+    virtual_run(case(35, 19.5))
+    virtual_run(case(35, 24))
+    assert events == [(2, 'application/json', ['timeout']), (2, 'image/png', []),
+                      (2, 'application/json', ['timeout'])]
+
+
+def test_fixed_capture_outcomes_never_reveal_exception_or_policy_data():
+    for candidate in (AsyncMock(return_value=None), AsyncMock(return_value=b'private'),
+                      AsyncMock(side_effect=RuntimeError('private reason'))):
+        outcomes = []
+        rows = capture([SimpleNamespace(pages=[object()])], capture_policy=candidate,
+                       capture_outcome=outcomes.append)
+        assert outcomes == ['rejected']
+        assert b'private' not in rows[0][1]
+
+
+def test_capture_outcome_callback_cannot_replace_failure_or_observe_private_error():
+    outcomes = []
+    def callback(value):
+        outcomes.append(value)
+        raise RuntimeError('private callback detail')
+    rows = capture([SimpleNamespace(pages=[object()])],
+                   capture_policy=AsyncMock(side_effect=RuntimeError('private capture detail')),
+                   capture_outcome=callback, capture_timeout_seconds=35)
+    assert outcomes == ['rejected']
+    assert rows[0][2] == 'application/json' and b'private' not in rows[0][1]
+
+
+def test_cancelled_capture_has_no_outcome_or_submission():
+    outcomes, submitted = [], []
+    with pytest.raises(asyncio.CancelledError):
+        capture([SimpleNamespace(pages=[object()])], capture_outcome=outcomes.append,
+                submit=submitted.append, capture_timeout_seconds=35,
+                capture_policy=AsyncMock(side_effect=asyncio.CancelledError))
+    assert not outcomes and not submitted
+
+
+def test_explicit_35_second_budget_is_admitted_without_changing_default():
+    rows = capture([SimpleNamespace(pages=[object()])],
+                   capture_policy=AsyncMock(return_value=PNG), capture_timeout_seconds=35)
+    assert rows[0][2] == 'image/png'
+
+
+def test_failed_png_submission_reports_rejection_without_second_attachment():
+    attempts, outcomes = [], []
+    def fail(attachment):
+        attempts.append(attachment)
+        raise OSError('private')
+    rows = capture([SimpleNamespace(pages=[object()])], submit=fail,
+                   capture_policy=AsyncMock(return_value=PNG), capture_outcome=outcomes.append)
+    assert rows == () and len(attempts) == 1 and attempts[0][2] == 'image/png'
+    assert outcomes == ['rejected']

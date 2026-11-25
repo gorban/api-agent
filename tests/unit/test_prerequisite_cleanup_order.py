@@ -28,21 +28,24 @@ def test_langfuse_stop_budget_covers_serial_engine_and_preserves_dependency_orde
     manager.runner = serial_engine(engine, clock)
     lease = manager.acquire()
     started = clock.now()
+    services = {identifier: record['Config']['Labels']['com.docker.compose.service']
+                for identifier, record in engine.records.items()}
 
     stopped = manager.release()
 
     assert set(stopped) == set(lease.owned_ids)
     assert clock.now() - started == 5 * len(lease.owned_ids) > 15
     stops = [command for command, _ in engine.commands if command[1] == 'stop']
-    positions = {engine.records[identifier]['Config']['Labels']['com.docker.compose.service']: index
-                 for index, command in enumerate(stops) for identifier in command[4:]}
+    positions = {services[identifier]: index for index, command in enumerate(stops) for identifier in command[4:]}
     for service, spec in manager.specs.items():
         if service in positions:
             for dependency in spec.get('depends_on', {}):
                 assert positions[service] < positions[dependency]
     assert manager.lease is None
-    assert all(not record['State']['Running'] for record in engine.records.values())
-    assert all('down' not in command and 'rm' not in command for command, _ in engine.commands)
+    assert engine.records == {}
+    assert all('down' not in command for command, _ in engine.commands)
+    removal = next(command for command, _ in engine.commands if command[1] == 'rm')
+    assert set(removal[2:]) == set(lease.owned_ids)
 
 
 def test_short_parent_deadline_retains_lease_and_retry_skips_stopped_containers(setup):
@@ -91,7 +94,7 @@ def test_retained_consumer_protects_shared_collector_and_last_user_stops_it(setu
     assert not any(command[1] == 'stop' for command, _ in engine.commands)
     second.release()
 
-    assert all(not record['State']['Running'] for record in engine.records.values())
+    assert engine.records == {}
 
 
 @pytest.mark.parametrize('value', [False, 0, -1, 301, 'bad', math.nan, math.inf])

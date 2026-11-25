@@ -35,7 +35,7 @@ from langgraph.graph import END, START, StateGraph
 from api_agent.providers.progress import component_timeout
 from api_agent.providers.presentation import publish_step_progress
 from api_agent.runtime.tasks import offload
-from .predicates import (component_controller, component_decision, edge_effected, edge_expiry, edge_source, entry_source, loop_edges,
+from .predicates import (component_controller, component_decision, edge_counter_reads, edge_effected, edge_expiry, edge_source, entry_source, loop_edges,
                          MissingPredicateField, native_condition_id, parse_predicate, predicate_fields, state_predicate_fields,
                          unbounded_edge_message)
 
@@ -597,7 +597,10 @@ class Workflow:
             if when in ('always', 'otherwise') or when in self._state_predicates:
                 continue
             try:
-                self._state_predicates[when] = parse_predicate(when, fields)
+                parsed = parse_predicate(when, fields)
+                if edge_counter_reads(parsed):
+                    raise ValueError('EDGE.traversals is supported only on Bindings backward edges')
+                self._state_predicates[when] = parsed
             except ValueError as error:
                 raise LayoutError(f'{definition.entry}:{row["line"]}: {error}') from None
         self.schema = schema
@@ -619,6 +622,10 @@ class Workflow:
         return self._capture_services_context.get()
 
     def _event(self, event, **values):
+        if event == 'edge' and self._turn_state.get() is not None:
+            key = (values.get('owner'), values.get('source'), values.get('target'), values.get('condition', 'always'))
+            counts = self._turn_state.get()['edge_traversals']
+            counts[key] = counts.get(key, 0) + 1
         journal = self._journal.get() or self._run_services().get('journal')
         if journal is not None:
             row = dict(event=event, **values)
@@ -805,7 +812,9 @@ class Workflow:
                 return self._condition(row['When'], state['values'], source=source, ancestry=state['ancestry'],
                                        visits=state.get('starts'), expired=expired,
                                        expirations=state.get('expirations'), effected=effected,
-                                       recoverable=recoverable, recoveries=self._turn_state.get()['recoveries'], abandoned=abandoned)
+                                       recoverable=recoverable, recoveries=self._turn_state.get()['recoveries'], abandoned=abandoned,
+                                       edge_traversals=self._turn_state.get()['edge_traversals'].get(
+                                           (self._parents.get(source) or 'GRAPH', row['From'], row['To'], row['When']), 0))
             except MissingPredicateField as error:
                 if error.owner not in abandoned:
                     raise
@@ -819,7 +828,7 @@ class Workflow:
         return choices
 
     def _condition(self, identifier, values, *, source=None, ancestry=(), visits=None, expired=None,
-                   expirations=None, effected=None, recoverable=None, recoveries=None, abandoned=()):
+                   expirations=None, effected=None, recoverable=None, recoveries=None, abandoned=(), edge_traversals=0):
         if (source, identifier) in self._predicates:
             predicate = self._predicates[source, identifier]
             attempt, maximum = (ancestry[-1][1:] if ancestry else (1, 1))
@@ -827,7 +836,7 @@ class Workflow:
             result = predicate.evaluate({**values, **results}, attempt=attempt,
                                         max_passes=maximum, visits=visits, expired=expired,
                                         expirations=expirations, effected=effected, recoverable=recoverable, recoveries=recoveries,
-                                        constants={**self.pass_constants, **self.limit_values})
+                                        edge_traversals=edge_traversals, constants={**self.pass_constants, **self.limit_values})
         else:
             result = self.conditions[identifier](deepcopy(values))
         if type(result) is not bool:
@@ -1693,7 +1702,7 @@ class Workflow:
         history = InferenceHistory()
         state_token = self._turn_state.set({'visits': {}, 'open_components': {}, 'llm_history': history,
                                                   'contexts': {}, 'budgets': {}, 'runs': [], 'exits': {}, 'results': {},
-                                                  'sealed': set(), 'recoveries': {}})
+                                                  'sealed': set(), 'recoveries': {}, 'edge_traversals': {}})
         completed = False
         try:
             selected_journal = self._journal.get()

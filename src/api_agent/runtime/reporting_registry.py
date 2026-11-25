@@ -24,6 +24,12 @@ from .reporting_engine import engine_identity
 from .reporting_metadata import _directory, _read, _write
 
 
+# The shared reporting stack has no checkout; its readable Compose project is derived from this name.
+REPORTING_CHECKOUT = 'reporting'
+_RECORD_KEYS = {'state', 'scope', 'directory', 'roots', 'ids', 'assets', 'configuration', 'fingerprints',
+                'directory_identity'}
+
+
 def _assets(plan):
     return {name: sha256(value).hexdigest() for name, value in plan.assets.items()}
 
@@ -47,7 +53,7 @@ def _binding_location(record, key, registry_directory):
     info = directory.stat()
     if record['directory_identity'] != [info.st_dev, info.st_ino]:
         raise ValueError('Changed ownership directory')
-    scope = StackScope(record['scope'])
+    scope = StackScope(record['scope'], checkout=REPORTING_CHECKOUT)
     roots = record['roots']
     if not isinstance(roots, list) or len(roots) not in {0, 2}:
         raise ValueError('Invalid roots')
@@ -59,8 +65,15 @@ def _binding_location(record, key, registry_directory):
             if root['identity'] != [root_info.st_dev, root_info.st_ino]:
                 raise ValueError('Changed root')
             original_roots.append(path)
-        if StackScope.from_roots(*original_roots).id != scope.id:
+        checkout = StackScope.from_roots(*original_roots)
+        if checkout.id != scope.id:
             raise ValueError('Changed scope')
+        # An enrolled installation keeps the project it was verified under: the checkout's derived
+        # name, or the legacy name of a stack created before names were derived (no recorded project).
+        scope = {checkout.project: checkout, 'sa-' + scope.id: StackScope(scope.id)}.get(
+            record.get('project', 'sa-' + scope.id))
+        if scope is None:
+            raise ValueError('Invalid project')
     elif scope.id != key or directory != registry_directory.absolute() / 'ownership':
         raise ValueError('Changed canonical owner')
     return directory, scope
@@ -164,6 +177,30 @@ def _occupied(port):
     return False
 
 
+def default_registry_directory():
+    return Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'api-agent/reporting'
+
+
+def enrolled_container_ids(directory=None):
+    """Container ids that an operator-enrolled binding pins; raises when the registry cannot be read.
+
+    A canonical binding is re-provisioned over its surviving volume when its container is gone, so
+    only an enrolled one (it names the checkout roots it was verified against) pins its container.
+    """
+    directory = Path(directory) if directory is not None else default_registry_directory()
+    if not directory.is_dir():
+        return frozenset()
+    pinned = set()
+    for path in sorted(directory.glob('*.json')):
+        if len(path.stem) != 16 or any(char not in '0123456789abcdef' for char in path.stem):
+            continue
+        record = _read(path)
+        ids = record.get('ids') if record is not None else None
+        if record is not None and record.get('roots') and isinstance(ids, list):
+            pinned.update(item for item in ids if isinstance(item, str))
+    return frozenset(pinned)
+
+
 class SharedS3Manager:
     """The shared S3 (LocalStack) lease: one manager per engine and endpoint.
 
@@ -184,8 +221,7 @@ class SharedS3Manager:
         self.cancelled, self.timeout = cancelled, deadline_seconds
         if deadline_seconds <= 0:
             raise PrerequisiteError('Reporting deadline must be positive.')
-        self.directory = Path(registry_directory) if registry_directory else (
-            Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'api-agent/reporting')
+        self.directory = Path(registry_directory) if registry_directory else default_registry_directory()
         # Registry-created bindings dispose on release: the last lease removes the container
         # and its network, and never a volume, so a later acquire re-provisions on the same
         # data. Enrolled bindings (recorded roots) stay stop-only: enrolment never owns them.
@@ -222,7 +258,7 @@ class SharedS3Manager:
 
     def _manager(self, record, remaining, *, cleanup=False):
         deadline = time.monotonic() + remaining
-        if (set(record) != {'state', 'scope', 'directory', 'roots', 'ids', 'assets', 'configuration', 'fingerprints', 'directory_identity'}
+        if (set(record) - {'project'} != _RECORD_KEYS
                 or record['state'] != 'ready' or not isinstance(record['scope'], str)
                 or len(record['scope']) != 16 or any(c not in '0123456789abcdef' for c in record['scope'])
                 or not isinstance(record['ids'], list) or len(record['ids']) != 1
@@ -324,7 +360,7 @@ class SharedS3Manager:
                         _deadline=time.monotonic() + budget.remaining)
             if self.occupied(int(self.plan.environment['SA_LOCALSTACK_PORT'])):
                 raise PrerequisiteError('Reporting endpoint is occupied and unregistered; use explicit verified enrollment or publication-only storage.')
-            scope = StackScope(self.key)
+            scope = StackScope(self.key, checkout=REPORTING_CHECKOUT)
             directory = _directory(path.parent / 'ownership', create=True)
             plan = rebind_reporting_plan(self.plan, scope)
             self.manager = self.factory(plan, scope, directory, engine_environment=self.environment,
@@ -398,7 +434,6 @@ def enroll_reporting(plan, *, base_root, pack_root, ownership_directory, **optio
     roots = [_directory(root) for root in (base_root, pack_root)]
     scope = StackScope.from_roots(*roots)
     original = _directory(ownership_directory)
-    selected = rebind_reporting_plan(plan, scope)
     with shared._binding() as (path, budget):
         if _read(path) is not None:
             raise PrerequisiteError('Reporting endpoint is already registered.')
@@ -408,9 +443,15 @@ def enroll_reporting(plan, *, base_root, pack_root, ownership_directory, **optio
                 raise PrerequisiteError('Enrollment requires the original ownership journal.')
             if _read_journal(original, scope, process_identity):
                 raise PrerequisiteError('Enrollment requires settled original invocation leases.')
-            manager = shared.factory(selected, scope, original, engine_environment=shared.environment,
-                                     cancelled=shared.cancelled, deadline_seconds=budget.remaining)
-            inventory = manager._inventory(time.monotonic() + budget.remaining)
+            # The installation lives under the checkout's derived project, or under the legacy name when it
+            # predates derived names. Verify the one that has containers, and record which it was.
+            for candidate in (scope, StackScope(scope.id)):
+                selected = rebind_reporting_plan(plan, candidate)
+                manager = shared.factory(selected, candidate, original, engine_environment=shared.environment,
+                                         cancelled=shared.cancelled, deadline_seconds=budget.remaining)
+                inventory = manager._inventory(time.monotonic() + budget.remaining)
+                if inventory:
+                    break
             current = manager._compatible(inventory, time.monotonic() + budget.remaining)
             if set(current) != {'localstack'} or len(inventory) != 1:
                 raise PrerequisiteError('Enrollment requires one verified running LocalStack installation.')
@@ -419,6 +460,7 @@ def enroll_reporting(plan, *, base_root, pack_root, ownership_directory, **optio
             record = dict(state='ready', scope=scope.id, directory=str(original), ids=[item.id],
                 configuration=_configuration(selected), assets=_assets(selected), fingerprints=manager.fingerprints,
                 directory_identity=[original.stat().st_dev, original.stat().st_ino],
-                roots=[dict(path=str(root), identity=[root.stat().st_dev, root.stat().st_ino]) for root in roots])
+                roots=[dict(path=str(root), identity=[root.stat().st_dev, root.stat().st_ino]) for root in roots],
+                project=manager.scope.project)
             _write(path, record)
     return shared.key

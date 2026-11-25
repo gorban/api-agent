@@ -10,6 +10,7 @@ import pytest
 from api_agent.testing import runner, unit_watchdog
 from api_agent.testing.collection import TestIdentity
 from api_agent.testing.unit_watchdog import UnitWatchdog
+from procfs_support import is_gone_or_zombie
 
 
 class Clock:
@@ -380,8 +381,7 @@ def test_real_owned_group_timeout_reaps_descendant_and_cannot_accept_late_pass(t
     assert disposal_complete(process)
     leader, child = json.loads(pid_file.read_text())
     assert leader == process.pid and not _group_running(leader)
-    child_stat = Path(f'/proc/{child}/stat')
-    assert not child_stat.exists() or child_stat.read_text().rsplit(')', 1)[1].split()[0] == 'Z'
+    assert is_gone_or_zombie(child)
 
 
 

@@ -434,6 +434,20 @@ def test_late_inventory_cannot_replace_new_engine_selection(monkeypatch, failed)
     assert app.containers == ('new-selection',)
 
 
+def test_late_volume_listing_cannot_replace_new_engine_selection():
+    import asyncio
+    from api_agent.tui.container_management import ContainerManagement
+    runtime = SimpleNamespace(selected_key='first', selected_label='first', inventory=lambda: ('old',))
+    def volumes():
+        runtime.selected_key = 'second'
+        return ('old-volume',)
+    runtime.volumes = volumes
+    app = SimpleNamespace(container_runtime=runtime, screen=object(), containers=('new',), volumes=('new-volume',))
+    app._managed_volumes = lambda: ContainerManagement._managed_volumes(app)
+    asyncio.run(ContainerManagement._refresh_managed_containers(app))
+    assert app.containers == ('new',) and app.volumes == ('new-volume',)
+
+
 def test_active_lease_on_one_engine_does_not_protect_identical_id_on_other(bound_manager, engines, monkeypatch):
     manager, engine, target, _, _ = bound_manager
     targets, _, _ = engines
@@ -640,8 +654,8 @@ def test_same_label_recovered_generations_have_distinct_captions_and_selected_st
     views = []
     class View(ContainerManagement):
         container_runtime = recovered
-        containers = ()
-        container_marked = set()
+        containers = volumes = ()
+        container_marked = volume_marked = set()
         container_summary = ''
         screen = SimpleNamespace(kind='containers')
         def container_log_scrubber(self):

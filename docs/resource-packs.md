@@ -223,7 +223,9 @@ local_db = "tests/launcher_services/db.py:acquire"
 `api_agent:shared_s3` is the only built-in reference. It is held for the whole run only
 when a selected test carries the marker, shares `TEST_SERVICES_TIMEOUT_SECONDS`, is
 cancellable and is released (last lease removes the container, keeps the volume) after
-the run. It yields `S3_ENDPOINT` and `S3_REGION` to the test processes; the buckets
+the run. The container is shared across launchers and is not run under an owner process, so
+a launcher that is killed (SIGKILL) leaves it running until a later acquire reclaims the stale
+lease. It yields `S3_ENDPOINT` and `S3_REGION` to the test processes; the buckets
 in `S3_EXTRA_BUCKETS` (default `application-data`) are ensured but not reported, so
 tests name their own. The LocalStack volume is shared with Run local and Allure
 history, so tests must use unique object names and clean up after themselves. With `S3_USE_LOCALSTACK=False`

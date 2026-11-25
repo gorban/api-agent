@@ -648,6 +648,15 @@ repeat a component's linked `Max passes` key. The effective value is checked
 (integer 0 to 99, configuration override over the declared default) before any
 native source runs. A limit is an integer constant in `Edges` `When` conditions;
 Bindings `Prompts` rows still name registered conditions and cannot read limits.
+`EDGE` is reserved and cannot be a limit key.
+
+`EDGE.traversals` counts selections of the current declared backward edge in the
+current turn, before the current routing decision. Its identity includes the
+owner, source, target and condition. Other edges to the same target do not spend
+its budget; a recovery or rollback does not refund a selected edge. Counts reset
+on a new turn and are checked against retained journals. The expression is allowed
+only once as a direct top-level bounding conjunct on a Bindings backward edge;
+it is not available in prompts, entry/forward/END edges or typed-state declarations.
 
 `<step_id>.attempt` evaluates to the number of times that node or component has
 started in the current turn: 0 before its first start, 1 after the first run. Counters
@@ -657,8 +666,9 @@ rejected at load. Bare `attempt` and `max_passes` keep their
 guarded-component meaning.
 
 An edge whose target is its source or earlier in Flow order (still a sibling) is allowed
-only when its `When` is a conjunction containing `<target>.attempt < LIMIT` or
-`<target>.attempt <= LIMIT`, where `LIMIT` is a declared limit key:
+only when its `When` is a conjunction containing `<target>.attempt < LIMIT`,
+`<target>.attempt <= LIMIT`, `EDGE.traversals < LIMIT`, or
+`EDGE.traversals <= LIMIT`, where `LIMIT` is a declared limit key:
 
 ```markdown
 ## Limits
@@ -697,9 +707,8 @@ turn with the largest declared loops still terminates normally. Journals of loop
 each visit as its own scope and edge and validate with the same strict route checks.
 A journal's projection records the effective limit values and, on every bounded
 backward edge, its limit key and whether it is `<=`. Validation counts each step's
-starts in the journal and rejects (as incomplete, like an over-budget component pass
-count) a traversal of a bounded edge once its target has started LIMIT times (LIMIT
-plus one for `<=`). Callers that check a journal against an admitted definition pass
+starts for an attempt bound, and prior selections of that edge for a traversal
+bound. It rejects as incomplete an edge at its LIMIT (LIMIT plus one for `<=`). Callers that check a journal against an admitted definition pass
 `expected_limits=` alongside `expected_component_passes=` when limits differ from
 the declared defaults.
 Limit rows and backward edges are part of the workflow identity and of compiled

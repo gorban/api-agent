@@ -261,3 +261,38 @@ def test_compiled_component_timeouts_load_and_resolve_by_owner(tmp_path):
     definition = load_built(built)
     assert {row['Owner']: row['Key'] for row in definition.timeouts} == {'GRAPH': 'GRAPH_LIMIT',
                                                                        'review': 'REVIEW_LIMIT'}
+
+
+@pytest.mark.parametrize('location', ['state', 'projection'])
+@pytest.mark.parametrize('owner', ['EDGE', 'ＥＤＧＥ'])
+def test_compiled_typed_edges_reject_edge_counter(v3_built, monkeypatch, location, owner):
+    def mutate(value):
+        if location == 'state':
+            rows = value['state']['edges']
+            static = next(row for row in rows if dict(row['$m']).get('Router') == '-')
+            static['$m'].append(['When', f'{owner}.traversals == 0'])
+        else:
+            rows = dict(value['layout']['tables']['$m'])['Edges']
+            row = rows[0]
+            values = dict(row['$m'])
+            values['When'] = f'{owner}.traversals == 0'
+            row['$m'] = sorted(values.items())
+    plan = edited(v3_built.plan, mutate)
+    imports = []
+    original = importlib.import_module
+    monkeypatch.setattr(importlib, 'import_module', lambda name, *args: (imports.append(name), original(name, *args))[1])
+    with pytest.raises(ArtifactRejected, match='EDGE.traversals'):
+        load_built(v3_built, plan)
+    assert imports == []
+
+
+def test_typed_runtime_rejects_counter_even_if_definition_bypasses_loader(v3_built):
+    from types import MappingProxyType
+    definition = load_built(v3_built)
+    rows = list(definition.edges)
+    index = next(i for i, row in enumerate(rows) if row['Router'] == '-')
+    rows[index] = MappingProxyType({**rows[index], 'When': 'EDGE.traversals == 0'})
+    forged = replace(definition, edges=tuple(rows))
+    from langgraph.graph.message import add_messages
+    with pytest.raises(artifact.LayoutError, match='EDGE.traversals'):
+        forged.workflow(reducers={'messages': add_messages})

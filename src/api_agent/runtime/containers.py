@@ -21,6 +21,14 @@ class ContainerError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Volume:
+    name: str
+    project: str
+    profile: str
+    in_use: bool
+
+
+@dataclass(frozen=True)
 class Container:
     id: str
     name: str
@@ -212,22 +220,15 @@ class ContainerRuntime:
             raise ContainerError("Cannot verify active prerequisite leases; cleanup refused.") from None
 
 
-    def dispose(self, identifiers, *, nonce, fingerprints, cleanup_timeout_seconds=15):
-        """Dispose only nonce-created definitions on the selected, leased engine."""
-        from types import SimpleNamespace
-        from .prerequisites import (guarded_cleanup, PrerequisiteError, _NetworkCleanup,
-                                    PrerequisiteManager)
-        if (type(cleanup_timeout_seconds) not in (int, float)
-                or not math.isfinite(cleanup_timeout_seconds) or not 0 < cleanup_timeout_seconds <= 300):
+    @staticmethod
+    def _check_cleanup_deadline(seconds):
+        if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 < seconds <= 300:
             raise ContainerError('Cleanup deadline must be between zero and 300 seconds.')
-        if (self.scope is None or self.ownership_directory is None
-                or not isinstance(nonce, str) or not re.fullmatch('[0-9a-f]{32}', nonce)
-                or type(fingerprints) is not dict or not fingerprints
-                or any(type(name) is not str or type(value) is not str
-                       or not re.fullmatch('[0-9a-f]{64}', value) for name, value in fingerprints.items())
-                or any(type(item) is not str or not re.fullmatch('[0-9a-f]{64}', item)
-                       for item in identifiers) or len(set(identifiers)) != len(identifiers)):
-            raise ContainerError('Invalid temporary container cleanup authority.')
+
+    def _network_cleanup(self):
+        """Reuse the manager's guarded network pruning over this runtime's engine commands."""
+        from types import SimpleNamespace
+        from .prerequisites import _NetworkCleanup, PrerequisiteManager
         runtime = self
         class NetworkCleanup(_NetworkCleanup):
             scope = runtime.scope
@@ -240,6 +241,59 @@ class ContainerRuntime:
                 if remaining <= 0:
                     raise ContainerError('Temporary network cleanup deadline expired.')
                 return runtime._run(list(args[1:]), timeout=min(remaining, 120), deadline=deadline)
+        return NetworkCleanup()
+
+    def _reap_arguments(self, cleanup_timeout_seconds):
+        self._check_cleanup_deadline(cleanup_timeout_seconds)
+        if self.scope is None or self.ownership_directory is None:
+            raise ContainerError('Container scope and ownership directory are required before cleanup.')
+        return dict(run=lambda arguments, limit: self._run(list(arguments[1:]), timeout=120, deadline=limit),
+                    executable=self.executable or 'docker', scope=self.scope,
+                    deadline=time.monotonic() + cleanup_timeout_seconds)
+
+    def reap_unused(self, *, retention_days=None, cleanup_timeout_seconds=30):
+        """One-time cleanup of other scopes' leaderless containers and unused volumes; the same rules run at lease boundaries."""
+        from .compose import DEFAULT_RETENTION_DAYS
+        from .reaper import host_paths_visible, reap_unused_managed_resources
+        arguments = self._reap_arguments(cleanup_timeout_seconds)
+        cleanup = self._network_cleanup()
+        return reap_unused_managed_resources(
+            prune_network=lambda scope_id, limit: cleanup._prune_networks(limit, scope_id=scope_id),
+            retention_days=DEFAULT_RETENTION_DAYS if retention_days is None else retention_days,
+            own_lock='free', host_paths_visible=host_paths_visible(self._environment()), **arguments)
+
+    def volumes(self, *, cleanup_timeout_seconds=30):
+        """Every fully labelled managed volume on this engine, with whether a container references it."""
+        from .reaper import list_managed_volumes
+        try:
+            return tuple(Volume(item.name, item.project, item.profile, item.in_use)
+                         for item in list_managed_volumes(**self._reap_arguments(cleanup_timeout_seconds)))
+        except ContainerError:
+            raise
+        except Exception:
+            raise ContainerError('Volume inventory unavailable.') from None
+
+    def remove_volumes(self, names, *, cleanup_timeout_seconds=30):
+        """Remove selected unreferenced volumes whose scope holds no live lease; never forced, never a container."""
+        from .reaper import remove_managed_volumes
+        names = tuple(dict.fromkeys(names))
+        if not names or any(not isinstance(name, str) or not name or name.startswith('-') for name in names):
+            raise ContainerError('Select valid volumes before removing.')
+        return remove_managed_volumes(names=names, ownership_directory=self.ownership_directory,
+                                      **self._reap_arguments(cleanup_timeout_seconds))
+
+    def dispose(self, identifiers, *, nonce, fingerprints, cleanup_timeout_seconds=15):
+        """Dispose only nonce-created definitions on the selected, leased engine."""
+        from .prerequisites import guarded_cleanup, PrerequisiteError
+        self._check_cleanup_deadline(cleanup_timeout_seconds)
+        if (self.scope is None or self.ownership_directory is None
+                or not isinstance(nonce, str) or not re.fullmatch('[0-9a-f]{32}', nonce)
+                or type(fingerprints) is not dict or not fingerprints
+                or any(type(name) is not str or type(value) is not str
+                       or not re.fullmatch('[0-9a-f]{64}', value) for name, value in fingerprints.items())
+                or any(type(item) is not str or not re.fullmatch('[0-9a-f]{64}', item)
+                       for item in identifiers) or len(set(identifiers)) != len(identifiers)):
+            raise ContainerError('Invalid temporary container cleanup authority.')
         protected = session_container_identity()
         try:
             with guarded_cleanup(self.ownership_directory, self.scope) as leased:
@@ -268,7 +322,7 @@ class ContainerRuntime:
                     self._run(['stop', '--time', '10', *running], timeout=min(120, 5 + 12 * len(running)))
                 if present:
                     self._run(['rm', *present], timeout=min(120, 5 + 12 * len(present)))
-                NetworkCleanup()._prune_networks(time.monotonic() + cleanup_timeout_seconds,
+                self._network_cleanup()._prune_networks(time.monotonic() + cleanup_timeout_seconds,
                     required_labels={'api-agent.acquisition': nonce})
         except PrerequisiteError:
             raise ContainerError('Cannot verify temporary prerequisite cleanup; cleanup remains pending.') from None

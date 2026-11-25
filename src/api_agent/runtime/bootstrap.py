@@ -768,7 +768,7 @@ def generated_help(schema, *, pack_launcher=False, declaration_paths=None, color
                   '',
                   'Modes: run-local starts local services/UI; unit runs base plus pack units;',
                   'integration and e2e select pack suites; allure opens reports; deployment-logs shows deployment logs;',
-                  'config-cleanup reviews persisted options; cleanup-containers stops selected running containers;',
+                  'config-cleanup reviews persisted options; cleanup-containers stops selected running containers or removes unused stopped stacks;',
                   'unattended-auth configures credential profiles.',
                   ])
     return '\n'.join(lines)

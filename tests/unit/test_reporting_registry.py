@@ -689,6 +689,47 @@ def test_final_release_removes_the_container_and_its_network_but_never_data(stor
     assert not storage.engine.networks and never_removes_data(storage.engine)
 
 
+def test_enrolled_binding_keeps_its_stopped_container_at_release(storage, tmp_path):
+    base, pack = tmp_path / 'legacy-base', tmp_path / 'legacy-pack'
+    base.mkdir(); pack.mkdir()
+    scope = StackScope.from_roots(base, pack)
+    directory = tmp_path / 'legacy-ownership'
+    directory.mkdir()
+    legacy = storage.factory(rebind_reporting_plan(storage.create().plan, scope), scope, directory)
+    identifier = legacy.acquire().container_ids[0]
+    legacy.release(retain=True)
+    r.enroll_reporting(storage.create().plan, base_root=base, pack_root=pack, ownership_directory=directory,
+        registry_directory=storage.registry, identity=lambda *args, **kwargs: storage.generation,
+        manager_factory=storage.factory, occupied=lambda port: False)
+    joined = storage.create()
+    joined.acquire()
+    before = len(storage.engine.commands)
+    joined.release()
+    assert identifier in storage.engine.records and not storage.engine.records[identifier]['State']['Running']
+    assert not any(command[1] == 'rm' for command, _ in storage.engine.commands[before:])
+
+
+def test_enrolled_binding_issues_no_stop_for_a_container_that_is_already_stopped(storage, tmp_path):
+    base, pack = tmp_path / 'legacy-base', tmp_path / 'legacy-pack'
+    base.mkdir(); pack.mkdir()
+    scope = StackScope.from_roots(base, pack)
+    directory = tmp_path / 'legacy-ownership'
+    directory.mkdir()
+    legacy = storage.factory(rebind_reporting_plan(storage.create().plan, scope), scope, directory)
+    identifier = legacy.acquire().container_ids[0]
+    legacy.release(retain=True)
+    r.enroll_reporting(storage.create().plan, base_root=base, pack_root=pack, ownership_directory=directory,
+        registry_directory=storage.registry, identity=lambda *args, **kwargs: storage.generation,
+        manager_factory=storage.factory, occupied=lambda port: False)
+    joined = storage.create()
+    joined.acquire()
+    storage.engine.records[identifier]['State']['Running'] = False
+    before = len(storage.engine.commands)
+    joined.release()
+    assert identifier in storage.engine.records and not storage.engine.records[identifier]['State']['Running']
+    assert not any(command[1] in {'rm', 'stop'} for command, _ in storage.engine.commands[before:])
+
+
 def test_registered_container_replaced_by_another_project_container_still_refuses(storage):
     first = storage.create()
     identifier, = first.acquire().container_ids
@@ -716,6 +757,21 @@ def test_failed_provisioning_preserves_retry_owner_and_clears_settled_intent(sto
     owner.release()
     assert not owner.intent and not storage.engine.records
     assert not list(storage.registry.glob('*.json'))
+
+
+def test_provisioning_intent_survives_while_another_container_of_the_project_remains(storage, tmp_path):
+    owner = storage.create()
+    storage.engine.fail_up = True
+    with pytest.raises(p.PrerequisiteError):
+        owner.acquire()
+    assert not storage.engine.records
+    owner.manager.snapshot_directory = tmp_path
+    storage.engine.add('localstack')
+
+    with pytest.raises(p.PrerequisiteError, match='cleanup remains pending'):
+        owner.release()
+
+    assert owner.intent and binding(storage)[1]['state'] == 'provisioning'
 
 
 def test_engine_generation_change_preserves_existing_lease(storage):
@@ -1153,6 +1209,99 @@ def test_occupancy_skips_only_unavailable_address_families(monkeypatch, error, i
         expected = nullcontext() if ignored else pytest.raises(OSError)
         with expected:
             assert not r._occupied(port)
+
+
+def project_filtering(engine):
+    """Make the shared fake honour the project filter, so legacy and derived stacks stay apart."""
+    original = engine.run
+    def run(command, **kwargs):
+        output = original(command, **kwargs)
+        wanted = next((part.rsplit('=', 1)[1] for part in command if part.startswith('label=com.docker.compose.project=')), None)
+        if command[1] == 'ps' and wanted is not None:
+            return '\n'.join(item for item in output.split()
+                             if engine.records[item]['Config']['Labels']['com.docker.compose.project'] == wanted)
+        return output
+    engine.run = run
+
+
+def test_the_canonical_reporting_stack_has_a_readable_project_named_for_its_binding(storage):
+    owner = storage.create()
+    identifier, = owner.acquire().container_ids
+
+    labels = storage.engine.records[identifier]['Config']['Labels']
+    assert owner.manager.scope.project == f'sa-reporting-{owner.key[:8]}' == labels['com.docker.compose.project']
+    assert labels['api-agent.checkout'] == 'reporting' and labels['api-agent.scope'] == owner.key
+    up = next(command for command, _ in storage.engine.commands if 'up' in command)
+    assert up[up.index('--project-name') + 1] == owner.manager.scope.project
+    assert storage.engine.records[identifier]['Mounts'][1]['Name'] == f'sa-reporting-{owner.key[:8]}_localstack-data'
+    owner.release()
+
+
+@pytest.mark.parametrize('installation', ['derived', 'legacy'])
+def test_enrollment_records_the_project_it_verified_and_binds_that_project(storage, tmp_path, installation):
+    project_filtering(storage.engine)
+    base, pack = tmp_path / 'legacy-base', tmp_path / 'legacy-pack'
+    base.mkdir(); pack.mkdir()
+    checkout = StackScope.from_roots(base, pack)
+    scope = checkout if installation == 'derived' else StackScope(checkout.id)
+    original = storage.factory(plan_compose(CONFIG, scope, storage=True), scope, tmp_path / 'original-journal')
+    lease = original.acquire()
+    original.release(retain=True)
+
+    key = r.enroll_reporting(plan_compose(CONFIG, StackScope('a' * 16), storage=True), base_root=base,
+        pack_root=pack, ownership_directory=original.directory, registry_directory=storage.registry,
+        identity=lambda *args, **kwargs: 'engine', manager_factory=storage.factory)
+
+    assert binding(storage)[1]['project'] == scope.project
+    assert (scope.project == f'sa-legacy-pack-{checkout.id[:8]}') is (installation == 'derived')
+    joined = storage.create()
+    assert joined.acquire().reused_ids == lease.container_ids and joined.key == key
+    assert joined.manager.scope.project == scope.project
+    joined.release(retain=True)
+
+
+def test_a_binding_without_a_recorded_project_binds_the_legacy_project(storage, tmp_path):
+    project_filtering(storage.engine)
+    base, pack = tmp_path / 'legacy-base', tmp_path / 'legacy-pack'
+    base.mkdir(); pack.mkdir()
+    legacy = StackScope(StackScope.from_roots(base, pack).id)
+    original = storage.factory(plan_compose(CONFIG, legacy, storage=True), legacy, tmp_path / 'original-journal')
+    lease = original.acquire()
+    original.release(retain=True)
+    r.enroll_reporting(plan_compose(CONFIG, StackScope('a' * 16), storage=True), base_root=base, pack_root=pack,
+        ownership_directory=original.directory, registry_directory=storage.registry,
+        identity=lambda *args, **kwargs: 'engine', manager_factory=storage.factory)
+    path, record = binding(storage)
+    del record['project']
+    path.write_text(json.dumps(record))
+
+    joined = storage.create()
+
+    assert joined.acquire().reused_ids == lease.container_ids
+    assert joined.manager.scope.project == legacy.project
+    joined.release(retain=True)
+
+
+@pytest.mark.parametrize('project', ['sa-other-12345678', 'sa-' + 'e' * 16, '', 7])
+def test_a_binding_naming_a_project_its_roots_do_not_reproduce_is_refused(storage, tmp_path, project):
+    base, pack = tmp_path / 'legacy-base', tmp_path / 'legacy-pack'
+    base.mkdir(); pack.mkdir()
+    scope = StackScope.from_roots(base, pack)
+    original = storage.factory(plan_compose(CONFIG, scope, storage=True), scope, tmp_path / 'original-journal')
+    original.acquire()
+    original.release(retain=True)
+    r.enroll_reporting(plan_compose(CONFIG, StackScope('a' * 16), storage=True), base_root=base, pack_root=pack,
+        ownership_directory=original.directory, registry_directory=storage.registry,
+        identity=lambda *args, **kwargs: 'engine', manager_factory=storage.factory)
+    path, record = binding(storage)
+    record['project'] = project
+    path.write_text(json.dumps(record))
+    before = mutation_commands(storage.engine)
+
+    with pytest.raises(p.PrerequisiteError, match='Invalid reporting binding'):
+        storage.create().acquire()
+
+    assert mutation_commands(storage.engine) == before
 
 
 def removal_commands(engine):

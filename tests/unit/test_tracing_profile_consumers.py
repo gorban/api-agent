@@ -71,9 +71,9 @@ def test_disabled_profile_allocates_no_dashboard_collector_or_capture(profile_co
 @pytest.mark.parametrize('change', [
     {'TRACE_EXPORT_ENDPOINT': 'https://collector.example/v1/traces'},
     {'TRACE_VIEWER_URL': 'https://dashboard.example'},
-    {'TRACE_VIEWER_URL': ''},
+    {'TRACE_VIEWER_URL': 'Off'},
 ])
-def test_remote_or_explicit_empty_viewer_never_plans_a_local_stack(profile_context, change, monkeypatch):
+def test_remote_or_off_viewer_never_plans_a_local_stack(profile_context, change, monkeypatch):
     from api_agent.config.resolve import ResolvedValue
     config = selected(**change)
     config = ConfigResult(config.values, {key: ResolvedValue(value, 'environment', True) for key, value in change.items()}, (), (), ())

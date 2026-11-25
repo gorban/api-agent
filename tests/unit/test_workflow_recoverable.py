@@ -5,6 +5,7 @@ import pytest
 
 from api_agent.workflows.execution import RecoverableNodeFailure
 from expiry_support import ENDS, NATIVE, calls_after, expiring, play
+from virtual_time import run as virtual_run
 
 ROUTES = (('work', 'work', 'work.recoverable and work.recoveries < NODE_TIMEOUT_PASSES'),
           ('work', 'timed_out', 'work.recoverable and work.recoveries >= NODE_TIMEOUT_PASSES'),
@@ -165,7 +166,7 @@ def test_external_cancellation_cannot_be_converted_into_recovery(tmp_path):
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    asyncio.run(cancelled())
+    virtual_run(cancelled())
     assert native['CALLS'] == ['work']
 
 
@@ -189,7 +190,7 @@ def test_recovery_count_resets_each_turn(tmp_path):
             native['SCRIPT']['work'] = ['failure', 'ok']
             await workflow.arun({'accept_at': 1})
 
-    asyncio.run(twice())
+    virtual_run(twice())
     assert native['COUNTS'] == [0, 1, 0, 1]
 
 
@@ -234,7 +235,7 @@ def test_concurrent_turns_keep_independent_recovery_counts(tmp_path):
         await asyncio.gather(*(workflow.arun({'accept_at': 1}, services={'tag': name})
                                for name in ('first', 'second')))
 
-    asyncio.run(together())
+    virtual_run(together())
     assert sorted(native['COUNTS']) == [('first', 0), ('first', 1), ('second', 0), ('second', 1)]
 
 
@@ -253,7 +254,7 @@ def test_each_node_has_its_own_recovery_allowance(tmp_path):
     path.write_text(source)
     workflow, native, _ = build(entry)
     native['SCRIPT']['work'] = ['failure', 'ok']
-    asyncio.run(workflow.arun({'accept_at': 1}))
+    virtual_run(workflow.arun({'accept_at': 1}))
     assert native['CALLS'] == ['work', 'work', 'prepare', 'prepare', 'finish']
 
 
@@ -277,7 +278,7 @@ def test_compiled_workflow_replays_a_recoverable_native_failure(tmp_path):
     native = compiled.modules['aq_recovery.native']
     native.SCRIPT['work'] = ['failure', 'failure', 'ok']
 
-    result = asyncio.run(compiled.workflow().arun({'accept_at': 1}))
+    result = virtual_run(compiled.workflow().arun({'accept_at': 1}))
     assert native.COUNTS == [0, 1, 2]
     assert native.CALLS == ['work', 'work', 'work', 'finish']
     assert result['work'] == {'n': 3}
@@ -376,7 +377,7 @@ def test_context_reports_effect_dispatch_for_the_current_node(tmp_path):
     entry = recovery_graph(tmp_path, routes, flow=flow, ends=(*ENDS, ('recover', 'END', 'always')))
     workflow, native, _ = build(entry)
     native['SCRIPT']['work'] = ['effect_failure']
-    asyncio.run(workflow.arun({'accept_at': 1}))
+    virtual_run(workflow.arun({'accept_at': 1}))
     assert native['EFFECTS'] == [False, True]
 
 

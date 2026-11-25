@@ -22,6 +22,17 @@ the first ten choices directly. **Ctrl+C** copies the selected destination URL
 or log-source name. `RUN_LOG_SOURCE` selects the initial source
 by name. **Stop running containers** lists only eligible owned services and
 requires confirmation; it excludes unrelated containers and the hosting session.
+Stop keeps volumes; a stopped container is removed by the next managed release or
+cleanup. Managed containers are disposable and their named volumes are not: releasing a
+stack stops and removes its containers, and the next start recreates them over the same
+volumes. A managed start or release, or **Remove unused** in Container management, also
+stops and removes other checkouts' containers that no live lease protects (for example
+after a crash), and removes the unused volumes of a checkout that is gone or has been
+idle for `MANAGED_CONTAINER_RETENTION_DAYS` (default 14; 0 disables only the idle rule).
+Container management also lists managed volumes; mark unused ones and choose **Remove
+selected volumes** to delete them after confirmation. See the
+[managed container lifecycle](prerequisites.md#managed-container-lifecycle) and
+[unused managed volumes](prerequisites.md#unused-managed-volumes).
 
 Model discovery caches validated successful metadata for
 `LLM_CATALOG_CACHE_TTL_SECONDS` (default 3600 seconds). Zero disables completed

@@ -18,10 +18,12 @@ from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
 from typing import ClassVar
+import unicodedata
 
 from . import session
 from .model import InlinePromptRef, Layout, LayoutError, Replacement, Resource, Step, ToolUsage, timeout_owner_problem
-from .predicates import entry_problem, loop_edges, recovery_problems, unbounded_edge_message
+from .predicates import (edge_counter_problem, edge_counter_reads, entry_problem, loop_edges,
+                         parse_predicate, recovery_problems, unbounded_edge_message)
 from .prompt_slots import slot_text, used_slots
 
 PLAN_FORMAT = 'api-agent-workflow-plan'
@@ -408,7 +410,7 @@ def _timeout_row(row, configured):
 def _limit_row(row, configured):
     return (isinstance(row, MappingProxyType)
             and set(row) in ({'Key', 'Source', 'line'}, {'Key', 'Source', 'line', '_owner', '_owner_id'})
-            and type(row['Key']) is str and _LIMIT_KEY.fullmatch(row['Key']) is not None
+            and type(row['Key']) is str and row['Key'] != 'EDGE' and _LIMIT_KEY.fullmatch(row['Key']) is not None
             and row['Source'] in configured and type(row['line']) is int and row['line'] >= 1
             and ('_owner' not in row or isinstance(row['_owner'], PurePosixPath)
                  and type(row['_owner_id']) is str))
@@ -481,6 +483,9 @@ def _decode_plan(value, typed):
             problem = entry_problem(layout, row) if row['From'] == 'START' else None
             if problem is not None:
                 raise ArtifactRejected(f'invalid layout: {problem}')
+            problem = edge_counter_problem(layout, row)
+            if problem is not None:
+                raise ArtifactRejected(f'invalid layout: {problem}')
         for row, message in recovery_problems(layout):
             raise ArtifactRejected(f'invalid layout: {message}')
         for row, bound in loop_edges(layout):
@@ -508,6 +513,10 @@ def _decode_plan(value, typed):
                 or not all(isinstance(row, MappingProxyType) and set(row) == {
                 'Owner', 'Source', 'Key', 'line'} for row in timeouts)):
             raise ValueError('invalid state rows')
+        for row in (*tables['Edges'], *edges):
+            when = row.get('When', 'always')
+            if 'EDGE' in unicodedata.normalize('NFKC', when) and edge_counter_reads(parse_predicate(when, None)):
+                raise ArtifactRejected('EDGE.traversals is supported only on Bindings backward edges')
         by_logical = {item.logical_path: item for item in resources}
         if state['helper_sources']:
             raise ArtifactRejected('compiled plans do not support helper native sources')

@@ -8,7 +8,7 @@ import pytest
 
 from api_agent.runtime.prerequisites import PrerequisiteError, ServiceLease
 from api_agent.runtime.ownership import StackScope
-from test_prerequisites import setup
+from test_prerequisites import leave_stopped, setup
 
 
 LABEL = 'api-agent.network-cleanup-v1'
@@ -24,9 +24,24 @@ def test_new_network_is_marked_without_changing_the_compose_declaration(setup):
     assert command == ('docker', 'network', 'create',
         '--label', LABEL + '=' + scope.id,
         '--label', 'api-agent.managed=true', '--label', 'api-agent.scope=' + scope.id,
+        '--label', 'api-agent.checkout=' + scope.checkout,
         '--label', 'com.docker.compose.project=' + scope.project,
         '--label', 'com.docker.compose.network=default', scope.project + '_default')
     assert 'networks' not in json.loads(manager.plan.assets['compose.json'])
+
+
+def test_a_scope_without_a_checkout_name_marks_its_network_with_the_legacy_name_only(setup):
+    from api_agent.runtime.ownership import StackScope
+    create, engine, _, scope, _ = setup
+    manager = create()
+    manager.scope = StackScope(scope.id)
+    manager.plan = manager.plan
+
+    manager._prepare_network(60)
+
+    command = next(command for command, _ in engine.commands if command[1:3] == ('network', 'create'))
+    assert command[-1] == 'sa-' + scope.id + '_default' and 'api-agent.checkout=pack' not in command
+    assert not any(value.startswith('api-agent.checkout=') for value in command)
 
 
 def test_existing_network_is_preserved_without_relabelling_or_recreation(setup):
@@ -101,7 +116,7 @@ def test_acquisition_reclaims_only_aged_explicitly_managed_networks(setup):
 
 
 @pytest.mark.parametrize('fail_start', [False, True])
-def test_release_and_failed_start_prune_only_current_scope_without_removing_containers_or_volumes(setup, fail_start):
+def test_release_and_failed_start_remove_containers_then_prune_only_current_scope_network_keeping_volumes(setup, fail_start):
     create, engine, _, scope, _ = setup
     manager = create()
     engine.fail_up = fail_start
@@ -114,10 +129,11 @@ def test_release_and_failed_start_prune_only_current_scope_without_removing_cont
         engine.commands.clear()
         manager.release()
 
+    seen = [command for command, _ in engine.commands]
     assert ('docker', 'network', 'ls', '--filter', 'label=' + LABEL + '=' + scope.id,
-            '--format', '{{.Name}}') in [command for command, _ in engine.commands]
-    assert not any(command[1] in {'rm', 'volume'} or 'down' in command for command, _ in engine.commands)
-    assert engine.records and scope.project + '_default' in engine.networks
+            '--format', '{{.Name}}') in seen
+    assert not any(command[1:3] in {('volume', 'rm'), ('volume', 'prune')} or 'down' in command for command in seen)
+    assert engine.records == {} and scope.project + '_default' not in engine.networks
 
 
 def test_retain_does_not_prune_the_current_scope(setup):
@@ -131,8 +147,8 @@ def test_retain_does_not_prune_the_current_scope(setup):
     assert not any(command[1] == 'network' for command, _ in engine.commands)
 
 
-def test_stopped_retained_container_keeps_its_restart_network(setup):
-    create, engine, _, scope, _ = setup
+def test_stopped_leftover_container_keeps_its_restart_network(setup):
+    create, engine, clock, scope, _ = setup
     manager = create()
     original = engine.run
     def endpoint_only_prune(command, **options):
@@ -142,8 +158,9 @@ def test_stopped_retained_container_keeps_its_restart_network(setup):
         return original(command, **options)
     manager.runner = endpoint_only_prune
     manager.acquire()
+    leave_stopped(engine, manager)
 
-    manager.release()
+    manager._prune_networks(clock.now() + 120)
 
     assert engine.records and not any(record['State']['Running'] for record in engine.records.values())
     assert scope.project + '_default' in engine.networks
@@ -503,6 +520,9 @@ def test_referenced_names_are_filtered_before_network_inspection(setup, aged):
         references.add(identifiers[id_only])
     calls = []
 
+    def owner(name):
+        return name[3:19] if aged else scope.id
+
     def inventory(command, **options):
         calls.append(command)
         if command[1:3] == ('network', 'ls'):
@@ -517,7 +537,8 @@ def test_referenced_names_are_filtered_before_network_inspection(setup, aged):
         if command[1:3] == ('network', 'inspect'):
             return json.dumps([{'Name': name, 'Id': identifiers[name],
                 'Created': '2000-01-01T00:00:00Z', 'Labels': {
-                    LABEL: name[3:19], 'api-agent.managed': 'true', 'api-agent.scope': name[3:19],
+                    LABEL: owner(name), 'api-agent.managed': 'true', 'api-agent.scope': owner(name),
+                    **({} if aged else {'api-agent.checkout': scope.checkout}),
                     'com.docker.compose.project': name.removesuffix('_default'),
                     'com.docker.compose.network': 'default'}} for name in command[3:]])
         assert command[1:3] == ('network', 'rm')
@@ -561,3 +582,80 @@ def test_empty_filtered_network_inventory_skips_reference_scan(setup, listing):
     manager._prune_networks(clock.now() + 120, aged=True)
 
     assert len(calls) == 1
+
+
+def prune_inventory(setup, networks, *, aged=False):
+    """Prune against an engine holding exactly ``networks`` (name -> labels); return the removed ones."""
+    create, _, clock, _, _ = setup
+    manager = create()
+    identifiers = {name: f'{index + 1:064x}' for index, name in enumerate(networks)}
+    removed = []
+
+    def engine(command, **options):
+        if command[1:3] == ('network', 'ls'):
+            return '\n'.join(networks)
+        if command[1] == 'ps':
+            return ''
+        if command[1:3] == ('network', 'inspect'):
+            return json.dumps([{'Name': name, 'Id': identifiers[name], 'Created': '2000-01-01T00:00:00Z',
+                                'Labels': networks[name]} for name in command[3:]])
+        assert command[1:3] == ('network', 'rm')
+        removed.extend(command[3:])
+        return ''
+
+    manager.runner = engine
+    manager._prune_networks(clock.now() + 120, aged=aged)
+    return manager.scope, {name: identifier for name, identifier in identifiers.items() if identifier in removed}
+
+
+def network_labels(scope_id, project, *, checkout='pack', marker=None, **changes):
+    return {LABEL: marker or scope_id, 'api-agent.managed': 'true', 'api-agent.scope': scope_id,
+            **({'api-agent.checkout': checkout} if checkout else {}),
+            'com.docker.compose.project': project, 'com.docker.compose.network': 'default', **changes}
+
+
+def test_pruning_removes_owned_networks_under_the_derived_and_the_legacy_project_name(setup):
+    scope = setup[3]
+    derived, legacy = scope.project + '_default', 'sa-' + scope.id + '_default'
+
+    _, removed = prune_inventory(setup, {
+        derived: network_labels(scope.id, scope.project),
+        legacy: network_labels(scope.id, 'sa-' + scope.id, checkout='')})
+
+    assert set(removed) == {derived, legacy}
+
+
+@pytest.mark.parametrize('case', ['derived name of another scope', 'derived name from another checkout label',
+                                  'derived name without a checkout label', 'name differs from its project label',
+                                  'label scope differs from the marker', 'not a project name'])
+def test_pruning_preserves_a_network_whose_name_and_labels_do_not_agree(setup, case):
+    scope = setup[3]
+    other = 'sa-pack-89abcdef'
+    name, labels = {
+        'derived name of another scope': (other + '_default', network_labels(scope.id, other)),
+        'derived name from another checkout label': (
+            scope.project + '_default', network_labels(scope.id, scope.project, checkout='other')),
+        'derived name without a checkout label': (
+            scope.project + '_default', network_labels(scope.id, scope.project, checkout='')),
+        'name differs from its project label': (
+            scope.project + '_default', network_labels(scope.id, 'sa-' + scope.id)),
+        'label scope differs from the marker': (
+            scope.project + '_default', network_labels(scope.id, scope.project, **{'api-agent.scope': '8' * 16})),
+        'not a project name': ('sa-UPPER_default', network_labels(scope.id, 'sa-UPPER'))}[case]
+
+    _, removed = prune_inventory(setup, {name: labels})
+
+    assert removed == {}
+
+
+def test_aged_pruning_verifies_each_network_by_its_own_scope_and_checkout_labels(setup):
+    scope = setup[3]
+    foreign = 'f' * 16
+    foreign_derived = f'sa-other-{foreign[:8]}'
+
+    _, removed = prune_inventory(setup, {
+        foreign_derived + '_default': network_labels(foreign, foreign_derived, checkout='other'),
+        'sa-' + foreign + '_default': network_labels(foreign, 'sa-' + foreign, checkout=''),
+        'sa-other-12345678_default': network_labels(foreign, 'sa-other-12345678', checkout='other')}, aged=True)
+
+    assert set(removed) == {foreign_derived + '_default', 'sa-' + foreign + '_default'}

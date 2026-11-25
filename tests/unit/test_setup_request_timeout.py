@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from api_agent.providers import progress, setup_transport
 from api_agent.providers.contracts import ContractError
 from api_agent.providers.llm import CompletionRequest, LLMRequest, LLMResult, Message, TextContent, Usage
 from api_agent.providers.progress import _scope, progress_sink, report_timeout_sync
@@ -34,6 +35,13 @@ def test_invalid_budget_allocates_no_resources(monkeypatch, tmp_path, value, kin
                                             ({'LLM_SETUP_REQUEST_TIMEOUT_SECONDS':.5},.5)])
 @pytest.mark.parametrize('parent', [None,.25])
 def test_actual_setup_backend_and_remote_obey_configured_and_parent_budgets(monkeypatch,tmp_path,config,expected,parent):
+    # Both ends of the real transport use the same budget clock. Keep the
+    # deadline math independent of how promptly their threads are scheduled.
+    def clock():
+        return 1000.0
+
+    monkeypatch.setattr(progress, '_clock', clock)
+    monkeypatch.setattr(setup_transport, '_clock', clock)
     observed=[];closed=[];events=[]
     class Owner:
         def __init__(self, backend):pass
@@ -54,9 +62,9 @@ def test_actual_setup_backend_and_remote_obey_configured_and_parent_budgets(monk
             result=remote.complete(LLMRequest('synthetic',CompletionRequest((Message('user',(TextContent('synthetic'),)),))))
         assert result.usage.output_tokens == 1
         ceiling=expected if parent is None else parent
-        assert len(observed)==1 and ceiling-.1 < observed[0] <= ceiling
+        assert observed == [ceiling]
         active=[event.timeout for event in events if event.active and event.name=='Shared provider setup']
-        assert active and all(ceiling-.1 < timeout <= ceiling for timeout in active)
+        assert active and all(timeout == ceiling for timeout in active)
     finally:
         remote.close()
         backend.close()

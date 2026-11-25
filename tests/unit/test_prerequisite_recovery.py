@@ -37,7 +37,10 @@ def test_changed_dashboard_settings_name_the_cause_and_preserve_the_stack(tmp_pa
                if record['Config']['Labels']['com.docker.compose.service'] == 'langfuse-web')
     actual = _interpolate(first.specs['langfuse-web']['environment'], first.environment)
     web['Config']['Env'] = [key + '=' + value for key, value in actual.items()]
-    first.release(retain=running)
+    first.release(retain=True)
+    if not running:
+        for record in engine.records.values():
+            record['State']['Running'] = False
     original_ids = set(engine.records)
     second = manager(tmp_path, engine, dict(config, **changes))
     before = len(engine.commands)

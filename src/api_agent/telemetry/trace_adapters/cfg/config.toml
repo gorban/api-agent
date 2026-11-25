@@ -124,7 +124,7 @@ COLLECT_ONLY = false
 type = "str"
 default = ""
 review_optional = true
-help = "Optional dashboard URL, separate from trace ingestion. Exact managed local destinations derive their local dashboard when omitted. Explicit empty disables the viewer. A remote/custom collector requires an explicit dashboard URL to open a viewer."
+help = "Optional dashboard URL, separate from trace ingestion. Exact managed local destinations derive their local dashboard when this is omitted or empty. Set Off to disable the viewer. A remote/custom collector requires an explicit dashboard URL to open a viewer."
 [fields.TRACE_VIEWER_URL.applies_when]
 TRACE_MODE = ["LangFuse", "OTEL"]
 

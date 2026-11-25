@@ -3,7 +3,7 @@ from api_agent.config import load_shared_schema, resolve_config
 from api_agent.runtime.compose import plan_compose
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.prerequisites import PrerequisiteManager
-from test_prerequisites import Clock, Engine
+from test_prerequisites import Clock, Engine, leave_stopped
 from pathlib import Path
 from api_agent.providers.loading import bootstrap_schema
 from api_agent.telemetry.tracing_providers import effective_selection
@@ -43,7 +43,10 @@ def test_cross_mode_retained_stack_reuses_exact_provisioning(tmp_path, test_mode
     assert first.fingerprints == second.fingerprints
     engine.owner = first
     initial = first.acquire()
-    first.release(retain=running)
+    if running:
+        first.release(retain=True)
+    else:
+        leave_stopped(engine, first)
     engine.owner = second
 
     repeated = second.acquire()

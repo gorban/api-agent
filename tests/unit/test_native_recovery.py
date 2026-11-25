@@ -87,7 +87,7 @@ def test_recovery_uses_pinned_engine_scope_and_canonical_stop(tmp_path, monkeypa
     assert tuple(owner._runtimes(state, json.loads((state / 'recovery.json').read_text()))) == ()
     EngineTargetRegistry(state / 'registry').remember(target)
     stopped = []
-    labels = {**scope.labels(profile, profiles=(profile,)),
+    labels = {**scope.labels(profile, profiles=(profile,)), 'api-agent.checkout': scope.checkout,
         'com.docker.compose.project': scope.project, 'com.docker.compose.service': service,
         'api-agent.acquisition': 'a'*32, 'api-agent.config': 'f'*64}
     row = {'Id': '1'*64, 'Name': '/owned', 'Config': {'Image': 'image', 'Labels': labels},
@@ -810,7 +810,8 @@ def test_guarded_temporary_disposal_checks_all_saved_network_references(pending_
     path.write_text(json.dumps(record))
     target, neighbor = '1'*64, '2'*64
     name, network_id, nonce = scope.project + '_default', 'a'*64, 'b'*32
-    labels = {**scope.labels('otel'), 'com.docker.compose.project': scope.project,
+    labels = {**scope.labels('otel'), 'api-agent.checkout': scope.checkout,
+        'com.docker.compose.project': scope.project,
         'com.docker.compose.service': 'jaeger', 'api-agent.acquisition': nonce,
         'api-agent.config': 'f'*64}
     rows = {target: {'Id': target, 'Name': '/target', 'Config': {'Labels': labels},
@@ -854,7 +855,8 @@ def test_guarded_temporary_disposal_checks_all_saved_network_references(pending_
         if args[:2] == ['network', 'inspect']:
             return json.dumps([{'Name': name, 'Id': network_id, 'Labels': {
                 'api-agent.network-cleanup-v1': scope.id, 'api-agent.managed': 'true',
-                'api-agent.scope': scope.id, 'com.docker.compose.project': scope.project,
+                'api-agent.scope': scope.id, 'api-agent.checkout': scope.checkout,
+                'com.docker.compose.project': scope.project,
                 'com.docker.compose.network': 'default', 'api-agent.acquisition': nonce}}])
         if args[:2] == ['network', 'rm']:
             networks.clear()
@@ -878,7 +880,8 @@ def test_guarded_disposal_refuses_changed_creation_evidence(tmp_path, monkeypatc
     from api_agent.runtime.containers import ContainerError, ContainerRuntime
     scope = StackScope.from_roots(tmp_path / 'one', tmp_path / 'two')
     identifier = '1'*64
-    labels = {**scope.labels('otel'), 'com.docker.compose.project': scope.project,
+    labels = {**scope.labels('otel'), 'api-agent.checkout': scope.checkout,
+        'com.docker.compose.project': scope.project,
         'com.docker.compose.service': 'jaeger', 'api-agent.acquisition': 'a'*32,
         'api-agent.config': 'f'*64, field: value}
     row = {'Id': identifier, 'Name': '/target', 'Config': {'Labels': labels},

@@ -38,6 +38,32 @@ class Scope:
                 'api-agent.profile': profile}
 
 
+def test_the_compose_project_is_derived_from_the_scope_and_checkout_labels(tmp_path):
+    from api_agent.runtime.ownership import StackScope
+    scope = StackScope.from_roots(tmp_path / 'base', tmp_path / 'Readable App')
+
+    plan = plan_compose({}, scope)
+
+    assert plan.command[plan.command.index('--project-name') + 1] == f'sa-readable_app-{scope.id[:8]}'
+
+
+@pytest.mark.parametrize('project', ['sa-0123456789abcdef', 'sa-checkout-01234567'])
+def test_a_scope_may_name_its_legacy_or_derived_project(project):
+    plan = plan_compose({}, SimpleNamespace(**{**vars(Scope()), 'project': project, 'checkout': 'checkout',
+                                               'labels': Scope().labels}))
+
+    assert plan.command[plan.command.index('--project-name') + 1] == project
+
+
+@pytest.mark.parametrize('project', ['sa-checkout-89abcdef', 'sa-other-01234567', 'unrelated', 'sa-'])
+def test_a_scope_cannot_name_a_project_its_labels_do_not_reproduce(project):
+    scope = SimpleNamespace(**{**vars(Scope()), 'project': project, 'checkout': 'checkout',
+                               'labels': Scope().labels})
+
+    with pytest.raises(ComposeError, match='Invalid Compose ownership scope'):
+        plan_compose({}, scope)
+
+
 @pytest.mark.parametrize('mode,target,expected', [('', '', ()),
     ('LangFuse', None, ('langfuse',)), ('OTEL', None, ('otel',)),
     ('OTEL', 'http://127.0.0.1:4318/v1/traces', ('otel',)),

@@ -231,7 +231,7 @@ def test_measurements_keep_overlapping_service_leases_and_last_consumer_cleanup(
                     assert engine.records[identifier]['State']['Running']
                 else:
                     assert manager.release() == first_lease.owned_ids
-                    assert not engine.records[identifier]['State']['Running']
+                    assert identifier not in engine.records
 
         async def run():
             await asyncio.gather(measurement(first), measurement(second))

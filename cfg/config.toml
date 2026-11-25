@@ -263,6 +263,17 @@ default = "../api-agent"
 pack_only = true
 help = "Base runtime location, resolved relative to the pack root."
 
+[fields.MANAGED_CONTAINER_RETENTION_DAYS]
+type = "int"
+default = 14
+validation = "nonnegative"
+acknowledge_default = false
+review_optional = true
+help = "Days a checkout's unused managed volumes are kept after its stack was last used, measured from its ownership journal's last write. Managed containers are disposable and storage is not: releasing a stack removes its containers and keeps its named volumes, which the next start reuses, and a start or release also removes leftover containers of other checkouts that no live lease protects. A volume that no container references is removed once its checkout directory no longer exists, or once it has been idle this long, unless a live lease protects it; a volume whose checkout cannot be verified is kept. 0 disables only the idle rule. Images and build cache are never removed. Stack volumes hold local trace and result history, which is deleted with them."
+[fields.MANAGED_CONTAINER_RETENTION_DAYS.applies_when]
+TUI_MODE = ["run-local", "unit", "integration", "e2e", "trace-viewer", "cleanup-containers"]
+COLLECT_ONLY = false
+
 [fields.TEST_PARALLEL_JOBS]
 type = "int"
 default = 8

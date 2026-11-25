@@ -10,6 +10,7 @@ import pytest
 from api_agent.runtime.containers import ContainerError, ContainerRuntime
 from api_agent.testing.diagnostics import CredentialScrubber
 from test_containers import SCOPE, record
+from procfs_support import is_gone_or_zombie
 
 
 @pytest.fixture
@@ -102,6 +103,6 @@ def test_cancelled_log_child_keeps_isolation_redaction_and_disposal(engine_conte
         assert secret not in text and json.dumps(secret)[1:-1] not in text and '[REDACTED]' in text
         assert_isolated(observations(),required,forbidden,['inspect','logs'])
         if Path('/proc').is_dir():
-            assert not Path('/proc/'+str(observations()[-1]['pid'])).exists()
+            assert is_gone_or_zombie(observations()[-1]['pid'])
     finally:
         cancelled.set();thread.join(10)

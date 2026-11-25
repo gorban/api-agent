@@ -142,10 +142,10 @@ def test_only_shared_backing_waits_for_the_narrower_consumers_last_lease(synthet
     assert not reused.owned_ids
 
     assert creator.release() == (api_id,)
-    assert not engine.records[api_id]['State']['Running']
+    assert api_id not in engine.records
     assert engine.records[backing_id]['State']['Running']
     assert consumer.release() == (backing_id,)
-    assert not engine.records[backing_id]['State']['Running']
+    assert backing_id not in engine.records
     stops = [item for command, _ in engine.calls if command[1] == 'stop'
              for item in command[4:]]
     assert stops == [api_id, backing_id]

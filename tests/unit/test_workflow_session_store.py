@@ -195,6 +195,38 @@ def test_the_default_adapter_lets_only_one_of_two_concurrent_saves_at_one_versio
     assert snapshot(workflow).version == winner
 
 
+def test_two_stores_sharing_a_checkpointer_serialize_their_saves(tmp_path):
+    saver = YieldingSaver()
+    first = session_workflow(session_entry(tmp_path / 'first'), checkpointer=saver)
+    second = session_workflow(session_entry(tmp_path / 'second'), checkpointer=saver)
+
+    async def race():
+        return await asyncio.gather(
+            first._session_store.save('chat', {'topic': 'a'}, expected_version=None),
+            second._session_store.save('chat', {'topic': 'b'}, expected_version=None),
+            return_exceptions=True)
+    results = asyncio.run(race())
+
+    assert sum(isinstance(result, SessionConflict) for result in results) == 1
+
+
+def test_save_locks_are_released_with_their_checkpointer(tmp_path):
+    import gc
+    from api_agent.workflows import session_store
+    workflow = session_workflow(session_entry(tmp_path), checkpointer=InMemorySaver())
+    asyncio.run(workflow._session_store.save('chat', {'topic': 'a'}, expected_version=None))
+    saver = workflow._session_store.session.checkpointer
+    assert not any(session_store._LOCKS[saver].values())
+
+    del workflow
+    gc.collect()
+
+    assert saver in session_store._LOCKS
+    del saver
+    gc.collect()
+    assert len(session_store._LOCKS) == 0
+
+
 def failing_finalize(monkeypatch, tmp_path):
     recorded(monkeypatch, tmp_path)
     monkeypatch.setattr('api_agent.workflows.journal.WorkflowJournal.finalize',

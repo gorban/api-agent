@@ -112,8 +112,8 @@ def test_exact_passive_pair_rejects_foreign_neighbors_before_effects(setup, sour
     normal = create()
     service, profile = catalog.pairs[0]
     identifier = 'a' * 64
-    labels = {**scope.labels(profile, profiles={profile}), 'com.docker.compose.project': scope.project,
-              'com.docker.compose.service': service}
+    labels = {**scope.labels(profile, profiles={profile}), 'api-agent.checkout': scope.checkout,
+              'com.docker.compose.project': scope.project, 'com.docker.compose.service': service}
     keys = {'profile': 'api-agent.profile', 'service': 'com.docker.compose.service',
             'managed': 'api-agent.managed', 'scope': 'api-agent.scope', 'project': 'com.docker.compose.project'}
     if damage == 'cross-profile': labels['api-agent.profile'] = next(other for _, other in catalog.pairs if other != profile)
@@ -136,7 +136,8 @@ def test_passive_neighbor_never_enters_selected_lease_or_cleanup(setup, source):
     service, profile = catalog.pairs[0]
     identifier = 'a' * 64
     engine.records[identifier] = {'Id': identifier, 'Config': {'Image': 'neighbor', 'Labels': {
-        **scope.labels(profile, profiles={profile}), 'com.docker.compose.project': scope.project,
+        **scope.labels(profile, profiles={profile}), 'api-agent.checkout': scope.checkout,
+        'com.docker.compose.project': scope.project,
         'com.docker.compose.service': service}}, 'State': {'Running': True}}
     manager = PrerequisiteManager(replace(normal.plan, inventory=catalog), scope, normal.directory,
         command_runner=engine.run, identity=normal.identity, now=normal.now, sleep=normal.sleep,

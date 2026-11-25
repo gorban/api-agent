@@ -10,7 +10,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from markdown_it import MarkdownIt
 from referencing.jsonschema import DRAFT202012
 from .model import Layout, LayoutError, MAX_COMPONENT_PASSES, Step, _ID, timeout_owner_problem
-from .predicates import (PredicateError, backward_bound, edge_effected, edge_source, entry_problem, parse_predicate,
+from .predicates import (PredicateError, backward_bound, edge_counter_problem, edge_effected, edge_source, entry_problem, parse_predicate,
                          predicate_fields, recovery_problems, unbounded_edge_message)
 from . import session
 
@@ -167,6 +167,10 @@ def _validate(layout, resource_bytes=None, tool_ports=None):
                 predicate = parse_predicate(row['When'], predicate_fields(layout, source, entering))
             except PredicateError as error:
                 layout.row_error(row, str(error))
+        if predicate is not None:
+            problem = edge_counter_problem(layout, row, predicate)
+            if problem is not None:
+                layout.row_error(row, problem)
         if entering is None and edge_effected(row['When'], source) and target == source:
             layout.row_error(row, f'{source}.effected may only route to a step other than {source}: '
                                   'a step that expired after an effect is never replayed')
@@ -194,7 +198,7 @@ def validate_limit_rows(layout, pass_sources):
     for row in layout.tables.get('Limits', ()):
         def reject(message, row=row):
             layout.row_error(row, message)
-        if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', row['Key']):
+        if row['Key'] == 'EDGE' or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', row['Key']):
             reject('invalid limit key')
         if row['Key'] in seen:
             reject('duplicate limit key')

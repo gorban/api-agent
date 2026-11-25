@@ -42,12 +42,13 @@ class Predicate:
     expiring: frozenset = frozenset()
 
     def evaluate(self, values, *, attempt=1, max_passes=1, constants=None, visits=None, expired=None,
-                 expirations=None, effected=None, recoverable=None, recoveries=None):
+                 expirations=None, effected=None, recoverable=None, recoveries=None, edge_traversals=0):
         """``visits`` maps a step ID to its start count (an unstarted step reads 0), ``expired`` to
         whether its latest run ended at its own declared timeout (an unstarted step reads false),
         ``expirations`` to how many of its runs did and ``effected`` to whether the latest such
         expiry came after the run recorded an effect."""
-        counters = {('attempt', step): (visits or {}).get(step, 0) for step in self.steps}
+        counters = {('traversals', 'EDGE'): edge_traversals}
+        counters.update({('attempt', step): (visits or {}).get(step, 0) for step in self.steps})
         counters.update({('expired', step): bool((expired or {}).get(step)) for step in self.expiring})
         counters.update({('expirations', step): (expirations or {}).get(step, 0) for step in self.expiring})
         counters.update({('effected', step): bool((effected or {}).get(step)) for step in self.steps})
@@ -120,6 +121,8 @@ def parse_predicate(text, fields):
 
     def contract(node):
         owner, path = _reference(node)
+        if owner == 'EDGE' and path == ('traversals',):
+            return {'type': 'integer'}
         if (len(path) == 1 and path[0] in ('attempt', 'expired', 'expirations', 'effected', 'recoverable', 'recoveries') and owner in steps
                 and path[0] in fields.get(owner, {})):
             raise PredicateError(f'{owner}.{path[0]} is ambiguous: {owner} also declares an output field '
@@ -383,6 +386,37 @@ def predicate_fields(layout, source, entering=None):
     return fields
 
 
+def edge_counter_reads(predicate):
+    """Count explicit EDGE.traversals references in a parsed expression."""
+    count = 0
+    for node in ast.walk(predicate.tree):
+        if isinstance(node, (ast.Attribute, ast.Subscript)):
+            owner, path = _reference(node)
+            count += owner == 'EDGE' and path == ('traversals',)
+    return count
+
+
+def edge_counter_problem(layout, row, predicate=None):
+    """Validate the EDGE counter's supported position on an admitted edge."""
+    source, target, when = row['From'], row['To'], row['When']
+    if predicate is None:
+        if when in ('always', 'otherwise') or native_condition_id(when):
+            return None
+        _, entering = edge_source(row)
+        predicate = parse_predicate(when, predicate_fields(layout, source, entering))
+    reads = edge_counter_reads(predicate)
+    if not reads:
+        return None
+    _, entering = edge_source(row)
+    ordered = [step.id for step in layout.steps]
+    backward = entering is None and target != 'END' and ordered.index(target) <= ordered.index(source)
+    limits = {item['Key'] for item in layout.tables.get('Limits', ())}
+    bound = backward_bound(predicate, source, target, limits) if backward else None
+    if reads != 1 or bound is None or bound[2] != 'traversals':
+        return 'EDGE.traversals requires one top-level bound on a backward edge'
+    return None
+
+
 def backward_bound(predicate, source, target, limits):
     """Find the bound on re-entering ``target`` among a condition's top-level conjuncts.
 
@@ -393,6 +427,12 @@ def backward_bound(predicate, source, target, limits):
     counter)`` for the first such comparison, or ``None`` when the condition does not bound
     re-entering ``target``.
     """
+    for node in _conjuncts(predicate.tree.body):
+        if (isinstance(node, ast.Compare) and isinstance(node.ops[0], (ast.Lt, ast.LtE))
+                and isinstance(node.left, ast.Attribute) and node.left.attr == 'traversals'
+                and isinstance(node.left.value, ast.Name) and node.left.value.id == 'EDGE'
+                and isinstance(node.comparators[0], ast.Name) and node.comparators[0].id in limits):
+            return node.comparators[0].id, isinstance(node.ops[0], ast.LtE), 'traversals'
     counters = ['attempt']
     if source == target and edge_expiry(predicate.text, source, flags=('expired',)) == 'requires':
         counters.append('expirations')

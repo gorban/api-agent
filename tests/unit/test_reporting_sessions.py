@@ -232,7 +232,7 @@ def test_partial_restart_keeps_original_manager_and_retry_without_replacing_asse
     factory = storage.factory
     failed = [False]
     def start_failure(plan, scope, directory, **options):
-        manager = factory(plan, scope, directory, **options)
+        manager = factory(plan, scope, directory, **{'dispose_on_release': True, **options})
         original = manager.runner
         def runner(command, **kwargs):
             output = original(command, **kwargs)

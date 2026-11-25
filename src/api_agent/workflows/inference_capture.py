@@ -233,6 +233,14 @@ def record_provider_fields(cause_id, transport_id, request, result, *, provider_
                                                        provider_name=provider_name))
 
 
+def record_provider_failure_fields(fields):
+    """Offer failure facts classified by the host to the current node span; a no-op without one."""
+    visit = current_workflow_visit()
+    callback = getattr(visit[0], 'provider_failure_fields', None) if visit is not None else None
+    if callable(callback):
+        visit[0].trace_losses.run(lambda: callback(fields))
+
+
 def select_capture_rows(rows):
     """Select authoritative phases; conflicting physical payloads stay incomplete."""
     if type(rows) not in (list, tuple) or len(rows) > 128:

@@ -23,7 +23,7 @@ from urllib.parse import unquote, urlsplit
 from .configuration import resolve_state_limits as _validated_limits
 from .configuration import resolve_state_timeouts as _validated_timeouts
 from .execution import _source_manifest
-from .predicates import PredicateError, condition_constants, parse_predicate
+from .predicates import PredicateError, condition_constants, edge_counter_reads, parse_predicate
 from .prompt_slots import check_prompt_file
 from .model import (NativeCatalog, Layout, LayoutError, Replacement, Resource, Step, ToolUsage, freeze as _freeze,
                     _ID, _PY_ID, _MAX_SNAPSHOT_BYTES)
@@ -37,6 +37,15 @@ def _read_bounded(path, root):
 
 _LINK = re.compile(r'\[[^\]\n]+\]\(([^()\n]+)\)\Z')
 _SLOT = re.compile(r'\{\{([^{}\n]{1,64})\}\}')
+
+
+def _typed_predicate(condition):
+    predicate = parse_predicate(condition, None)
+    if edge_counter_reads(predicate):
+        raise PredicateError('EDGE.traversals is supported only on Bindings backward edges')
+    return predicate
+
+
 _LIMIT_KEY = re.compile(r'[A-Z][A-Z0-9_]{0,63}\Z')
 _TIMEOUT_COLUMNS = ('Owner', 'Source', 'Key')
 _EXPIRY_COLUMNS = (*_TIMEOUT_COLUMNS, 'Expired', 'Expirations')
@@ -440,7 +449,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
             if row['When'] != 'always':
                 try:
                     used_constants.append((declaration, row['line'],
-                                           condition_constants(parse_predicate(row['When'], None))))
+                                           condition_constants(_typed_predicate(row['When']))))
                 except PredicateError as error:
                     raise LayoutError(f'{declaration}:{row["line"]}: {error}') from None
             if row['File'].startswith('@'):
@@ -592,7 +601,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
         if 'When' in row and row['When'] not in ('always', 'otherwise'):
             try:
                 used_constants.append((declaration, row['line'],
-                                       condition_constants(parse_predicate(row['When'], None))))
+                                       condition_constants(_typed_predicate(row['When']))))
             except PredicateError as error:
                 raise LayoutError(f'{declaration}:{row["line"]}: {error}') from None
         edges.append(dict(row, Source=None if row['Router'] == '-' else source(dict(row, _owner=declaration))))
@@ -652,7 +661,7 @@ def _load_state_definition(entry, *, base_root, pack_root, replacements, entry_r
             timeouts.append(dict(row, Source=path, **expiry, **({} if owner_id is None else {'_owner': declaration})))
     def capture_limits(declaration, owner_id, body):
         for row in _shared_table(declaration, body, ('Key', 'Source')):
-            if not _LIMIT_KEY.fullmatch(row['Key']):
+            if row['Key'] == 'EDGE' or not _LIMIT_KEY.fullmatch(row['Key']):
                 raise LayoutError(f'{declaration}:{row["line"]}: invalid limit key')
             if row['Key'] in {item['Key'] for item in limits}:
                 raise LayoutError(f'{declaration}:{row["line"]}: duplicate limit key')

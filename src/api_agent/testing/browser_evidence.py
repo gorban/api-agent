@@ -20,7 +20,7 @@ PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 
 async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None,
                               phase='failure', exclude_pages=(), capture_timeout_seconds=10,
-                              allow_masked_content=False):
+                              allow_masked_content=False, capture_outcome=None):
     """Submit immutable attachments before caller-owned browser teardown.
 
     ``capture_policy(page, boundary)`` is async and returns safely masked PNG
@@ -31,18 +31,20 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
     ``allow_masked_content`` opts in an owned provider policy to produce bounded
     masked pixels while content logging is off; the default remains no capture.
     The default ten-second page budget includes original-pixel safety audits
-    and restoration. Callers may explicitly select one through thirty seconds.
+    and restoration. Callers may explicitly select one through thirty-five seconds.
 
     ``submit((title, bytes, MIME))`` is synchronous, bounded and nonblocking;
     the caller binds it to the current test/attempt's immutable recording path.
     ``exclude_pages`` contains already recorded page objects; identity exclusion
     preserves context/page numbering and the traversal budget for other pages.
+    The optional synchronous ``capture_outcome`` receives only 'timeout' or
+    'rejected' for a failed page, after its submission attempt.
     Ordinary capture/submission failures never replace the primary outcome.
     Cancellation and other BaseExceptions propagate. No raw browser strings or
     exception messages become metadata. Returned tuples contain successful
     submissions only; the caller need not retain them.
     """
-    if type(capture_timeout_seconds) is not int or not 1 <= capture_timeout_seconds <= 30:
+    if type(capture_timeout_seconds) is not int or not 1 <= capture_timeout_seconds <= 35:
         raise ValueError('Invalid UI capture timeout')
     if boundary.policy.allow_content is not True and not allow_masked_content:
         return ()
@@ -51,6 +53,13 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
     submitted = []
     total = 0
     pages_seen = 0
+
+    def report(outcome):
+        if capture_outcome is not None:
+            try:
+                capture_outcome(outcome)
+            except Exception:
+                pass
 
     def emit(context, page, image=None):
         title = f'UI {phase} context {context} page {page}'
@@ -64,8 +73,9 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
         try:
             submit(attachment)
         except Exception:
-            return
+            return False
         submitted.append(attachment)
+        return True
 
     try:
         owned = tuple(itertools.islice(contexts, MAX_CONTEXTS + 1))
@@ -86,6 +96,7 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
             if any(page is excluded for excluded in exclude_pages):
                 continue
             emitted = False
+            failure = 'rejected'
             if capture_policy is not None:
                 try:
                     async with component_timeout('UI browser evidence', capture_timeout_seconds):
@@ -99,12 +110,17 @@ async def capture_ui_evidence(contexts, boundary, submit, *, capture_policy=None
                         # There must be no await between the provider's final
                         # live-secret check and immutable submission. Progress
                         # scope exit may yield while draining its heartbeat.
-                        emit(context_index, page_index, image)
+                        accepted = emit(context_index, page_index, image)
                         emitted = True
+                        if image is None or not accepted:
+                            report('rejected')
+                except TimeoutError:
+                    failure = 'timeout'
                 except Exception:
                     pass
             if not emitted:
                 emit(context_index, page_index)
+                report(failure)
     if len(owned) > MAX_CONTEXTS:
         emit(0, 0)
     return tuple(submitted)

@@ -17,6 +17,19 @@ from api_agent.workflows.inference_capture import collect_inference
 
 SECRET = 'synthetic-auth-secret'
 
+# Optional evidence is published within a bounded allowance and is otherwise
+# reported as truncated. A loaded host must not turn that bound into the
+# observable under test, so these deadlines only guard a hung scenario.
+PATIENT = 60
+
+
+@pytest.fixture(autouse=True)
+def patient_evidence_publication(monkeypatch):
+    from api_agent.providers import evidence_watchdog, setup_transport
+    monkeypatch.setattr(setup_transport, '_EVIDENCE_PUBLISH_SECONDS', PATIENT)
+    monkeypatch.setattr(setup_transport, '_RAW_EVIDENCE_PUBLISH_SECONDS', PATIENT)
+    monkeypatch.setattr(evidence_watchdog, '_WALL_SECONDS', PATIENT)
+
 
 @pytest.fixture
 def synthetic_capture_provider():

@@ -16,6 +16,7 @@ from api_agent.runtime.infrastructure_plan import ResolvedCheck, plan_infrastruc
 from api_agent.runtime.infrastructure_session import InfrastructureSession
 from api_agent.runtime.ownership import StackScope
 import api_agent.runtime.prerequisites as p
+from test_prerequisites import leave_stopped
 
 FIXTURE = Path(__file__).parents[1] / 'fixtures/infrastructure_pack/synthetic_infrastructure'
 SCHEMA = ConfigSchema({'USE_LOCAL_BACKING': FieldDeclaration('USE_LOCAL_BACKING', 'bool')})
@@ -72,6 +73,12 @@ class Engine:
         if command[1] == 'stop':
             if self.fail_stop: raise p.PrerequisiteError('Synthetic stop failure')
             for key in command[4:]: self.records[key]['State']['Running'] = False
+            return ''
+        if command[1] == 'rm':
+            assert not {'-v', '-f', '--volumes', '--force'} & set(command[2:])
+            for key in command[2:]:
+                if self.records[key]['State']['Running']: raise p.PrerequisiteError('rm refused a running container')
+                del self.records[key]
             return ''
         if command[1] == 'logs': return 'stdout:\nsynthetic output\n\nstderr:\n'
         if 'up' in command:
@@ -335,7 +342,7 @@ def test_removed_captured_assets_explain_container_recreation_without_mutating_e
     identifier = lease.owned_ids[0]
     record = engine.records[identifier]
     path = Path(next(mount['Source'] for mount in record['Mounts'] if mount['Type'] == 'bind'))
-    manager.release()
+    leave_stopped(engine, manager)
     if removed == 'file':
         path.unlink()
     else:
@@ -370,12 +377,12 @@ def test_status_honors_explicit_deadline_and_default_bound(synthetic):
 def test_generic_stopped_restart_preserves_captured_asset(synthetic):
     manager, engine, _, _, _ = synthetic
     first = manager.acquire()
-    manager.release()
+    leave_stopped(engine, manager)
     engine.seeded.clear()
     second = manager.acquire()
     assert second.owned_ids == first.owned_ids
     assert len(engine.records) == 2
-    manager.release()
+    leave_stopped(engine, manager)
 
 
 @pytest.mark.parametrize('limit', [None, 256, 65536])
@@ -624,12 +631,13 @@ def test_unclaimed_stale_duty_remains_recoverable_without_active_lease(synthetic
 
 def test_explicit_retain_does_not_become_stale_cleanup_duty(synthetic):
     manager, engine, clock, _, _ = synthetic
-    manager.acquire()
+    lease = manager.acquire()
     manager.release(retain=True)
+    assert json.loads((manager.directory / f'{manager.scope.id}.json').read_text()) == {}
     second = _second_manager(manager, engine, clock)
-    second.acquire()
-    assert second.release() == ()
-    assert all(item['State']['Running'] for item in engine.records.values())
+    assert second.acquire().reused_ids == lease.owned_ids
+    assert set(second.release()) == set(lease.owned_ids)
+    assert engine.records == {}
 
 
 def test_absent_stale_duty_retires_only_with_matching_engine_inventory(synthetic):
@@ -654,10 +662,10 @@ def test_unknown_engine_stale_duty_never_hands_off_or_disappears(synthetic):
     path.write_text(json.dumps(journal))
     second = _second_manager(manager, engine, clock)
     second.acquire()
-    assert second.release() == ()
+    assert set(second.release()) == set(lease.owned_ids)
     pending = json.loads(path.read_text())
     assert pending[lease.invocation_id]['cleanup_only'] is True
-    assert all(item['State']['Running'] for item in engine.records.values())
+    assert pending[lease.invocation_id]['conditional_engine_id'] == 'd' * 64
 
 
 @pytest.mark.parametrize('field,value', [('conditional_engine_id', 'wrong'),
@@ -853,7 +861,7 @@ def test_acquire_lists_all_missing_captures_and_excludes_healthy_containers(synt
     paths = [Path(next(mount['Source'] for mount in engine.records[identifier]['Mounts']
                        if mount['Type'] == 'bind')) for identifier in identifiers]
     assert paths[0] != paths[1]
-    manager.release()
+    leave_stopped(engine, manager)
     for path in paths[:missing_count]:
         path.unlink()
     before = len(engine.calls)
@@ -884,7 +892,7 @@ def test_missing_capture_does_not_hide_invalid_other_mount(synthetic, different_
     identifier = lease.owned_ids[0]
     record = engine.records[identifier]
     path = Path(next(mount['Source'] for mount in record['Mounts'] if mount['Type'] == 'bind'))
-    manager.release()
+    leave_stopped(engine, manager)
     path.unlink()
     invalid = engine.records[lease.owned_ids[1]] if different_container else record
     next(mount for mount in invalid['Mounts'] if mount['Type'] == 'volume')['Name'] = 'unowned-volume'
@@ -903,7 +911,7 @@ def test_missing_capture_notice_waits_for_other_plan_storage_checks(synthetic, m
     lease = manager.acquire()
     path = Path(next(mount['Source'] for mount in engine.records[lease.owned_ids[0]]['Mounts']
                      if mount['Type'] == 'bind'))
-    manager.release()
+    leave_stopped(engine, manager)
     path.unlink()
     calls = []
     if boundary == 'jaeger':

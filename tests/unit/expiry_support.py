@@ -1,9 +1,9 @@
 """Bindings-grammar graphs whose `work` node can outlive its declared timeout, scripted per run."""
-import asyncio
-
 from loop_support import CONFIG as LOOP_CONFIG, INPUTS, OUTPUTS, build, edges, graph, limits, table
+from virtual_time import run
 
-# Long enough that a loaded host cannot exhaust it before the scope's own work starts.
+# Declared budgets are spent on virtual time (`virtual_time.run`): a scope expires when its scripted work
+# outwaits the budget, never because a loaded host stalled the loop. Run every expiring graph through `run`.
 TIMEOUT = 0.5
 
 CONFIG = LOOP_CONFIG + f'''
@@ -132,7 +132,7 @@ def play(entry, script=None, config=None, update=None, **services):
     workflow, native, _ = build(entry, config, **services)
     for name, steps in (script or {}).items():
         native['SCRIPT'][name] = list(steps)
-    values = asyncio.run(workflow.arun({'accept_at': 1} if update is None else update))
+    values = run(workflow.arun({'accept_at': 1} if update is None else update))
     return values, native['CALLS'], workflow
 
 
@@ -141,7 +141,7 @@ def calls_after(entry, script=None, config=None, **services):
     workflow, native, _ = build(entry, config, **services)
     native['SCRIPT'].update({name: list(steps) for name, steps in (script or {}).items()})
     try:
-        asyncio.run(workflow.arun({'accept_at': 1}))
+        run(workflow.arun({'accept_at': 1}))
     except BaseException as error:
         return native['CALLS'], error
     return native['CALLS'], None

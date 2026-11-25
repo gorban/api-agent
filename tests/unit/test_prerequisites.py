@@ -15,6 +15,7 @@ import pytest
 from api_agent.runtime.compose import plan_compose, snapshot_compose
 from api_agent.runtime.ownership import StackScope
 import api_agent.runtime.prerequisites as p
+from procfs_support import is_gone_or_zombie
 
 
 from test_compose import bundled_trace_config
@@ -44,6 +45,7 @@ class Engine:
         self.counter = 0
         self.health = None
         self.fail_stop = False
+        self.fail_rm = False
         self.fail_hook = False
         self.image_inspections = {}
         self.volume_labels = None
@@ -58,6 +60,7 @@ class Engine:
         identifier = f'{self.counter:064x}'
         owner = self.owner
         labels = {**owner.scope.labels(profile or owner.specs[name]['profiles'][0]),
+            **({'api-agent.checkout': owner.scope.checkout} if owner.scope.checkout else {}),
             'com.docker.compose.project': owner.scope.project,
             'com.docker.compose.service': name,
             p.CONFIG_LABEL: fingerprint or owner.fingerprints[name]}
@@ -124,6 +127,7 @@ class Engine:
                 repository = repository[:repository.rfind(':')]
             return json.dumps([{'Id': 'sha256:' + '1' * 64,
                                 'RepoDigests': [repository + '@' + digest]}])
+        if command[1:3] == ('volume', 'ls'): return ''
         if command[1:3] == ('volume', 'inspect'):
             return json.dumps([{'Name': command[3], 'Labels': self.volume_labels
                                 or self.owner.scope.labels('otel')}])
@@ -133,6 +137,14 @@ class Engine:
             return ''
         if command[1] == 'start':
             for identifier in command[2:]: self.records[identifier]['State']['Running'] = True
+            return ''
+        if command[1] == 'rm':
+            # Like the engine: containers only, never a running one, never anonymous volumes or named storage.
+            assert not {'-v', '-f', '--volumes', '--force'} & set(command[2:])
+            if self.fail_rm: raise p.PrerequisiteError('rm failed')
+            for identifier in command[2:]:
+                if self.records[identifier]['State']['Running']: raise p.PrerequisiteError('rm refused a running container')
+                del self.records[identifier]
             return ''
         if command[1] == 'exec':
             if self.fail_hook: raise p.PrerequisiteError('bucket hook failed')
@@ -149,6 +161,14 @@ class Engine:
                 if self.fail_up: raise p.PrerequisiteError('up failed')
             return ''
         raise AssertionError(command)
+
+
+def leave_stopped(engine, manager):
+    """End a lease as a crash or an external stop does: the containers survive, stopped, unleased."""
+    identifiers = manager.lease.container_ids
+    manager.release(retain=True)
+    for identifier in identifiers:
+        engine.records[identifier]['State']['Running'] = False
 
 
 @pytest.fixture
@@ -210,7 +230,7 @@ def test_stopped_jaeger_recovers_deleted_snapshot_before_restart(setup):
     identifier, = lease.container_ids
     mounts = deepcopy(engine.records[identifier]['Mounts'])
     source = Path(mounts[0]['Source'])
-    original.release()
+    leave_stopped(engine, original)
     shutil.rmtree(source.parent)
 
     restarted = create().acquire()
@@ -229,7 +249,7 @@ def test_jaeger_recovery_preserves_readable_config_under_restrictive_umask(setup
     identifier, = manager.acquire().container_ids
     mounts = deepcopy(engine.records[identifier]['Mounts'])
     source = Path(mounts[0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     previous_umask = os.umask(0o077)
     try:
@@ -248,7 +268,7 @@ def test_deleted_jaeger_snapshot_is_not_restored_without_ownership_proof(setup, 
     original = create()
     identifier, = original.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    original.release()
+    leave_stopped(engine, original)
     shutil.rmtree(source.parent)
     record = engine.records[identifier]
     if damage == 'foreign':
@@ -290,7 +310,7 @@ def test_jaeger_recovery_refuses_snapshot_replaced_before_open(setup, monkeypatc
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     original_open = os.open
 
@@ -312,7 +332,7 @@ def test_jaeger_recovery_refuses_writable_prerequisite_root(setup):
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     manager.directory.chmod(0o770)
     try:
@@ -328,7 +348,7 @@ def test_jaeger_recovery_refuses_snapshot_replaced_after_write(setup, monkeypatc
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     original_stat = os.stat
     checks = 0
@@ -355,7 +375,7 @@ def test_failed_jaeger_recovery_cleans_only_its_owned_files(setup, monkeypatch, 
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     real_fdopen = os.fdopen
     failed = False
@@ -426,7 +446,7 @@ def test_jaeger_recovery_retries_after_snapshot_open_failure(setup, monkeypatch)
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     original_open = os.open
 
@@ -449,7 +469,7 @@ def test_jaeger_recovery_preserves_a_replacement_when_snapshot_open_fails(setup,
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     original_open = os.open
     displaced = source.parent.with_name('displaced-snapshot')
@@ -480,7 +500,7 @@ def test_jaeger_recovery_never_starts_a_replacement_container(setup):
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     retry = create()
     run = engine.run
@@ -506,7 +526,7 @@ def test_jaeger_recovery_leaves_a_replacement_running_after_restart(setup):
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     retry = create()
     run = engine.run
@@ -535,7 +555,7 @@ def test_jaeger_recovery_preserves_the_storage_error_before_creating_config(setu
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     original_open = os.open
     original_rmdir = os.rmdir
@@ -575,7 +595,7 @@ def test_jaeger_recovery_rechecks_inspected_identity_before_restoring(setup, cha
     manager = create()
     identifier, = manager.acquire().container_ids
     source = Path(engine.records[identifier]['Mounts'][0]['Source'])
-    manager.release()
+    leave_stopped(engine, manager)
     shutil.rmtree(source.parent)
     run = engine.run
     inspections = 0
@@ -943,13 +963,13 @@ def test_malformed_digest_inspection_is_incompatible(setup):
         manager.acquire()
 
 
-def test_reused_services_never_stopped_on_local_release(setup):
+def test_release_stops_and_removes_the_unleased_container_it_adopted(setup):
     create, engine, _, _, _ = setup
     manager = create()
     identifier = engine.add('jaeger')
     manager.acquire()
-    assert manager.release() == ()
-    assert engine.records[identifier]['State']['Running']
+    assert manager.release() == (identifier,)
+    assert engine.records == {}
 
 
 def test_second_active_lease_protects_first_invocation_new_service(setup):
@@ -961,7 +981,7 @@ def test_second_active_lease_protects_first_invocation_new_service(setup):
     assert first.release() == ()
     assert p.active_leased_ids(first.directory, scope, identity=lambda pid: 'boot:start') == set(lease.container_ids)
     assert second.release() == lease.owned_ids
-    assert not engine.records[lease.owned_ids[0]]['State']['Running']
+    assert engine.records == {}
 
 
 @pytest.mark.parametrize('change', ['fingerprint', 'image', 'duplicate', 'profile'])
@@ -994,7 +1014,7 @@ def test_partial_up_failure_rolls_back_only_new_ids(setup):
     assert reused not in stopped
     assert len(stopped[4:]) == 1
     assert engine.records[reused]['State']['Running']
-    assert not engine.records[stopped[4]]['State']['Running']
+    assert stopped[4] not in engine.records
 
 
 def test_cancellation_after_up_rolls_back_even_with_cancelled_signal(setup):
@@ -1160,8 +1180,7 @@ def test_bounded_cli_timeout_kills_group_and_descendant(tmp_path):
         p.run_command((sys.executable, '-c', code, str(pidfile)), environment={}, directory=tmp_path,
                       deadline=p.time.monotonic() + .25, cancelled=lambda: False)
     child = int(pidfile.read_text())
-    stat = Path(f'/proc/{child}/stat')
-    assert not stat.exists() or stat.read_text().rsplit(')', 1)[1].split()[0] == 'Z'
+    assert is_gone_or_zombie(child)
 
 
 def test_bounded_cli_cancellation(tmp_path):
@@ -1220,6 +1239,34 @@ def test_process_identity_linux_dead_and_malformed(monkeypatch):
     assert p.process_identity(123) is None
     monkeypatch.setattr(Path, 'read_text', lambda *args, **kwargs: 'malformed')
     with pytest.raises(p.PrerequisiteError): p.process_identity(123)
+
+
+def _linux_pid_reaped_between_open_and_read(monkeypatch, *, kill):
+    """Linux host whose stat file opens, then reports ESRCH from the read."""
+    boot = '/proc/sys/kernel/random/boot_id'
+    monkeypatch.setattr(Path, 'is_file', lambda path: str(path) == boot)
+    def read(path, *args, **kwargs):
+        raise ProcessLookupError(3, 'No such process')
+    monkeypatch.setattr(Path, 'read_text', read)
+    monkeypatch.setattr(p.os, 'kill', kill)
+
+
+def test_process_identity_confirms_a_holder_reaped_mid_read_is_gone(monkeypatch):
+    probes = []
+    def missing(pid, signal):
+        probes.append((pid, signal))
+        raise ProcessLookupError()
+    _linux_pid_reaped_between_open_and_read(monkeypatch, kill=missing)
+
+    assert p.process_identity(4242) is None
+    assert probes == [(4242, 0)]
+
+
+def test_process_identity_fails_closed_when_a_mid_read_miss_is_contradicted_by_a_live_pid(monkeypatch):
+    _linux_pid_reaped_between_open_and_read(monkeypatch, kill=lambda pid, signal: None)
+
+    with pytest.raises(p.PrerequisiteError, match='lease process identity'):
+        p.process_identity(4242)
 
 
 @pytest.mark.parametrize('case', ['alive', 'missing', 'zombie', 'boot_error', 'oserror', 'timeout', 'unsupported', 'ps_permission', 'ps_empty'])
@@ -1390,6 +1437,9 @@ elif args[0]=='inspect':
 elif args[0]=='stop':
  for identifier in args[3:]: records[identifier]['State']['Running']=False
  state_path.write_text(json.dumps(records))
+elif args[0]=='rm':
+ for identifier in args[1:]: del records[identifier]
+ state_path.write_text(json.dumps(records))
 elif args[0]=='volume' and args[1]=='inspect':
  metadata=json.loads(metadata_path.read_text())
  labels=metadata['jaeger']['Labels']
@@ -1411,7 +1461,8 @@ else:
     ownership = tmp_path / 'artifacts' / 'prerequisites'
     manager = p.PrerequisiteManager(plan, scope, ownership, readiness_probe=lambda *args: True)
     metadata_path.write_text(json.dumps({name: {'Image': spec['image'], 'Labels': {
-        **scope.labels(spec['profiles'][0]), 'com.docker.compose.project': scope.project,
+        **scope.labels(spec['profiles'][0]), 'api-agent.checkout': scope.checkout,
+        'com.docker.compose.project': scope.project,
         'com.docker.compose.service': name, p.CONFIG_LABEL: manager.fingerprints[name]}}
         for name, spec in manager.specs.items()}))
     lease = manager.acquire()
@@ -1421,7 +1472,7 @@ from pathlib import Path
 from api_agent.runtime.compose import plan_compose
 from api_agent.runtime.ownership import StackScope
 from api_agent.runtime.prerequisites import PrerequisiteManager
-scope=StackScope(sys.argv[1])
+scope=StackScope(sys.argv[1],checkout=sys.argv[8])
 manager=PrerequisiteManager(plan_compose({'TRACE_PROVIDER':sys.argv[7],'TRACE_MODE':'OTEL','TRACE_EXPORT_ENDPOINT':'http://localhost:4318/v1/traces','TRACE_VIEWER_URL':'http://localhost:16686','JAEGER_VIEWER_PORT':16686},scope,executable=sys.argv[2]),scope,
                            sys.argv[3],readiness_probe=lambda *args:True)
 lease=manager.acquire()
@@ -1434,7 +1485,7 @@ while not Path(sys.argv[5]).exists():
 manager.release()
 '''
     child = subprocess.Popen((sys.executable, '-c', child_code, scope.id, str(executable),
-        str(ownership), str(ready), str(release), 'crash' if child_exits_without_release else 'release', trace_fixture_config({'TRACE_MODE':'OTEL'})['TRACE_PROVIDER']),
+        str(ownership), str(ready), str(release), 'crash' if child_exits_without_release else 'release', trace_fixture_config({'TRACE_MODE':'OTEL'})['TRACE_PROVIDER'], scope.checkout),
         env={'PYTHONPATH': str(Path(p.__file__).resolve().parents[2]), 'PATH': '/usr/bin'},
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
@@ -1446,7 +1497,7 @@ manager.release()
         if child_exits_without_release:
             assert child.wait(timeout=5) == 0
             assert manager.release() == lease.owned_ids
-            assert not json.loads(state_path.read_text())[lease.owned_ids[0]]['State']['Running']
+            assert lease.owned_ids[0] not in json.loads(state_path.read_text())
         else:
             journal = json.loads((ownership / f'{scope.id}.json').read_text())
             assert len(journal) == 2
@@ -1460,17 +1511,20 @@ manager.release()
         p.finalize(child)
 
 
-def test_repeated_local_run_restarts_exact_stopped_owned_id(setup):
+def test_repeated_local_run_recreates_the_container_over_the_same_named_volume(setup):
     create, engine, _, _, _ = setup
     first = create()
     lease = first.acquire()
+    volume, = [mount['Name'] for mount in engine.records[lease.owned_ids[0]]['Mounts'] if mount['Type'] == 'volume']
     assert first.release() == lease.owned_ids
+    assert engine.records == {}
     second = create()
     repeat = second.acquire()
-    assert repeat.owned_ids == lease.owned_ids
-    assert repeat.reused_ids == ()
-    assert engine.records[repeat.owned_ids[0]]['State']['Running']
+    assert repeat.owned_ids != lease.owned_ids and repeat.reused_ids == ()
+    assert [mount['Name'] for mount in engine.records[repeat.owned_ids[0]]['Mounts'] if mount['Type'] == 'volume'] == [volume]
+    assert sum('up' in command for command, _ in engine.commands) == 2
     assert second.release() == repeat.owned_ids
+    assert engine.records == {}
 
 
 def test_failed_restart_rolls_back_restarted_id_and_preserves_reused(setup):
@@ -1483,7 +1537,7 @@ def test_failed_restart_rolls_back_restarted_id_and_preserves_reused(setup):
     stop = next(command for command, _ in engine.commands if command[1] == 'stop')
     assert stop[4:] == (restarted,)
     assert engine.records[reused]['State']['Running']
-    assert not engine.records[restarted]['State']['Running']
+    assert restarted not in engine.records
 
 
 def test_stopped_but_actively_leased_container_cannot_restart(setup):
@@ -1780,10 +1834,7 @@ def test_failed_journal_write_rolls_back_only_new_invocation(setup, monkeypatch,
         manager.acquire()
     assert manager.lease is None
     assert all(engine.records[item]['State']['Running'] for item in prior.container_ids)
-    changed = [item for item in engine.records if item not in prior.container_ids]
-    assert changed and all(not engine.records[item]['State']['Running'] for item in changed)
-    if restart:
-        assert changed == [restarted]
+    assert set(engine.records) == set(prior.container_ids)
     journal = json.loads((first.directory / f'{first.scope.id}.json').read_text())
     assert set(journal) == {prior.invocation_id}
 
@@ -1879,24 +1930,37 @@ def test_current_scope_invalid_inventory_independent_of_legacy(setup, response):
         manager.acquire()
 
 
-def test_failed_start_retains_snapshot_for_stopped_definition(setup):
+def test_failed_start_removes_the_snapshot_with_its_removed_definition(setup):
     create, engine, _, _, _ = setup
     manager = create()
     engine.fail_up = True
     with pytest.raises(p.PrerequisiteError, match='up failed'):
         manager.acquire()
-    assert manager.snapshot_directory.is_dir()
-    assert list(manager.directory.glob('*-assets-*'))
+    assert engine.records == {}
+    assert manager.snapshot_directory is None
+    assert not list(manager.directory.glob('*-assets-*'))
 
 
-def test_final_owned_release_retains_snapshot_for_stopped_definition(setup):
-    create, _, _, _, _ = setup
+def test_final_release_removes_the_snapshot_once_no_container_can_mount_it(setup):
+    create, engine, _, _, _ = setup
     manager = create()
     manager.acquire()
     directory = manager.snapshot_directory
     assert directory.is_dir()
     manager.release()
-    assert manager.snapshot_directory is None and directory.is_dir()
+    assert manager.snapshot_directory is None and not directory.exists()
+
+
+def test_release_keeps_the_snapshot_while_another_lease_still_uses_its_container(setup):
+    create, engine, _, _, _ = setup
+    first, second = create(), create()
+    first.acquire()
+    directory = first.snapshot_directory
+    second.acquire()
+    first.release()
+    assert directory.is_dir() and len(engine.records) == 1
+    second.release()
+    assert not directory.exists() and engine.records == {}
 
 
 def test_failed_command_without_created_definition_removes_unused_snapshot(setup):
@@ -1914,8 +1978,7 @@ def test_failed_command_without_created_definition_removes_unused_snapshot(setup
     assert not list(manager.directory.glob('*-assets-*'))
 
 
-@pytest.mark.parametrize('failed_start', [False, True])
-def test_stopped_localstack_definition_restarts_with_original_hook(setup, failed_start):
+def test_stopped_localstack_definition_restarts_with_original_hook(setup):
     create, engine, _, _, _ = setup
     mounts = {}
     original = engine.run
@@ -1933,22 +1996,16 @@ def test_stopped_localstack_definition_restarts_with_original_hook(setup, failed
                     assert mounts[identifier].stat().st_mode & 0o111 == 0o111
     engine.run = run
     manager = create({'S3_USE_LOCALSTACK': True})
-    if failed_start:
-        engine.fail_up = True
-        with pytest.raises(p.PrerequisiteError, match='up failed'):
-            manager.acquire()
-        engine.fail_up = False
-    else:
-        lease = manager.acquire()
-        manager.release()
-        assert all(not engine.records[item]['State']['Running'] for item in lease.container_ids)
+    lease = manager.acquire()
+    leave_stopped(engine, manager)
+    assert all(not engine.records[item]['State']['Running'] for item in lease.container_ids)
     assert mounts and all(path.is_file() for path in mounts.values())
     original_mounts = dict(mounts)
     retry = create({'S3_USE_LOCALSTACK': True})
     retry.acquire()
-    assert mounts == original_mounts
+    assert mounts == original_mounts and all(path.is_file() for path in mounts.values())
     retry.release()
-    assert all(path.is_file() for path in mounts.values())
+    assert engine.records == {}
 
 
 def test_failed_acquire_and_failed_rollback_keep_real_recording_retry(setup):
@@ -1978,7 +2035,7 @@ def test_failed_acquire_and_failed_rollback_keep_real_recording_retry(setup):
     assert owner.pending_cleanup is pending and owner.owned_manager is manager
     engine.fail_stop = False
     asyncio.run(pending.retry())
-    assert not any(engine.records[item]['State']['Running'] for item in created)
+    assert not any(item in engine.records for item in created)
     assert manager._rollback is None and owner.owned_manager is None
     owner.finish()
 

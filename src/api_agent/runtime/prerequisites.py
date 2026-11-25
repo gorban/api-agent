@@ -31,7 +31,8 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from uuid import uuid4
 
 from api_agent.runtime.compose import ENGINE_ENVIRONMENT_KEYS, controlled_engine_environment, snapshot_compose
-from api_agent.runtime.ownership import PROFILES
+from api_agent.runtime.ownership import CHECKOUT_LABEL, PROFILES, accepted_projects
+from api_agent.runtime import scope_index
 from api_agent.runtime.processes import disposal_complete, finalize, list_processes, observe_exit, wait_owned
 
 CONFIG_LABEL = 'api-agent.config'
@@ -98,7 +99,7 @@ def process_identity(pid):
     if Path('/proc/sys/kernel/random/boot_id').is_file():
         try:
             fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-        except FileNotFoundError as error:
+        except (FileNotFoundError, ProcessLookupError) as error:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
@@ -681,7 +682,7 @@ def _http_identity(readiness, timeout, *, cancelled=lambda: False):
 
 
 class _NetworkCleanup:
-    def _prune_networks(self, deadline, *, aged=False, only_id=None, required_labels=None):
+    def _prune_networks(self, deadline, *, aged=False, only_id=None, required_labels=None, scope_id=None):
         if not self.plan.enabled:
             return ()
         # Stopped definitions still need their networks for restart, even when
@@ -689,13 +690,16 @@ class _NetworkCleanup:
         # Hold the creation lock over inspection and deletion, and remove only
         # pinned, explicitly opted-in networks with NO container references.
         executable, marker = self.plan.command[0], 'api-agent.network-cleanup-v1'
+        # A non-aged pass targets one scope: the caller's, or an unused one the reaper
+        # has just emptied. Every ownership check below still applies to that scope.
+        target = scope_id or self.scope.id
         cleanup = not aged
         with self._network_guard(deadline, cleanup=cleanup):
             removable = []
-            selected = marker if aged else marker + '=' + self.scope.id
+            selected = marker if aged else marker + '=' + target
             names = self._command((executable, 'network', 'ls', '--filter',
                 'label=' + selected, '--format', '{{.Name}}'), deadline, cleanup=cleanup).split()
-            names = sorted({name for name in names if re.fullmatch(r'sa-[0-9a-f]{16}_default', name)})
+            names = sorted({name for name in names if re.fullmatch(r'sa-[a-z0-9_-]+_default', name)})
             if not names:
                 return self._absent_network(only_id, deadline, cleanup=cleanup)
             # This snapshot is protected against managed creation by the guard;
@@ -708,14 +712,15 @@ class _NetworkCleanup:
                 try:
                     labels = record.get('Labels', record.get('labels'))
                     scope = labels.get(marker) if isinstance(labels, dict) else None
+                    project = labels.get('com.docker.compose.project') if isinstance(labels, dict) else None
                     if (not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{16}', scope)
-                            or name != 'sa-' + scope + '_default'
+                            or project not in accepted_projects(scope, labels.get(CHECKOUT_LABEL))
+                            or name != project + '_default'
                             or record.get('Name', record.get('name')) != name
                             or labels.get('api-agent.managed') != 'true'
                             or labels.get('api-agent.scope') != scope
-                            or labels.get('com.docker.compose.project') != 'sa-' + scope
                             or labels.get('com.docker.compose.network') != 'default'
-                            or (not aged and scope != self.scope.id)
+                            or (not aged and scope != target)
                             or (required_labels and any(labels.get(key) != value
                                 for key, value in required_labels.items()))):
                         continue
@@ -950,6 +955,7 @@ class PrerequisiteManager(_NetworkCleanup):
             '--label', 'api-agent.network-cleanup-v1=' + self.scope.id,
             '--label', 'api-agent.managed=true',
             '--label', 'api-agent.scope=' + self.scope.id,
+            *(('--label', CHECKOUT_LABEL + '=' + self.scope.checkout) if getattr(self.scope, 'checkout', '') else ()),
             '--label', 'com.docker.compose.project=' + self.scope.project,
             '--label', 'com.docker.compose.network=default',
             *(( '--label', 'api-agent.acquisition=' + self.acquisition_nonce)
@@ -1439,7 +1445,7 @@ class PrerequisiteManager(_NetworkCleanup):
             desired[item.service] = item
         return desired
 
-    def _stop_new(self, identifiers, journal, deadline, *, nonces=None):
+    def _stop_new(self, identifiers, journal, deadline, *, nonces=None, remove=False):
         protected = _leased_ids(journal)
         eligible = set(identifiers) - protected
         if not eligible:
@@ -1468,7 +1474,36 @@ class PrerequisiteManager(_NetworkCleanup):
             pending.difference_update(tier)
         for tier in tiers:
             self._command((self.plan.command[0], 'stop', '--time', '5', *tier), deadline, cleanup=True)
+        if remove:
+            self._remove_stopped(sorted(item for item in eligible if item in current), deadline)
         return owned
+
+    def _remove_stopped(self, identifiers, deadline):
+        """Remove stopped containers by immutable ID; named volumes always stay.
+
+        Containers are disposable and storage is not, so this never passes ``-v`` or
+        ``-f``: a container that is somehow still running makes the release fail with
+        its lease intact instead of being killed.
+        """
+        for offset in range(0, len(identifiers), 32):
+            self._command((self.plan.command[0], 'rm', *identifiers[offset:offset + 32]), deadline, cleanup=True)
+        if identifiers and not self._inventory(deadline, cleanup=True):
+            self._forget_snapshots()
+
+    def _forget_snapshots(self):
+        """Delete retained project snapshots once no container of the scope can mount them."""
+        pattern = re.compile(re.escape(self.scope.id) + r'-assets-[A-Za-z0-9_]+')
+        try:
+            entries = [entry for entry in self.directory.iterdir() if pattern.fullmatch(entry.name)]
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                if stat.S_ISDIR(entry.lstat().st_mode):
+                    shutil.rmtree(entry)
+            except OSError:
+                continue
+        self.snapshot_directory = None
 
     def _dispose_new(self, identifiers, journal, deadline, *, nonces):
         eligible = set(identifiers) - _leased_ids(journal)
@@ -1497,7 +1532,7 @@ class PrerequisiteManager(_NetworkCleanup):
         journal = dict(journal)
         journal.pop(invocation, None)
         nonces = {item: self.acquisition_nonce for item in disposable}
-        stopped = self._stop_new(newly, journal, deadline, nonces=nonces)
+        stopped = self._stop_new(newly, journal, deadline, nonces=nonces, remove=not self.dispose_on_release)
         if self.dispose_on_release:
             self._dispose_new(disposable, journal, deadline, nonces=nonces)
         if not self.dispose_on_release or self._created_network_id:
@@ -1513,6 +1548,19 @@ class PrerequisiteManager(_NetworkCleanup):
             self.snapshot_directory = None
         self._rollback = None
         return stopped
+
+    def _reap_unused(self, deadline, *, cleanup=False, own_lock=None):
+        """Remove other scopes' leaderless containers; best-effort and bounded, never raising."""
+        if not self.plan.enabled:
+            return None
+        from . import reaper
+        return reaper.reap_unused_managed_resources(
+            run=lambda args, limit: self._command(args, limit, cleanup=cleanup),
+            prune_network=lambda scope_id, limit: self._prune_networks(limit, scope_id=scope_id),
+            executable=self.plan.command[0], scope=self.scope, retention_days=self.plan.retention_days,
+            deadline=min(deadline, self.now() + reaper.BUDGET_SECONDS), now=self.now, cancelled=self.cancelled,
+            identity=self.identity, own_lock=own_lock,
+            host_paths_visible=reaper.host_paths_visible(self.engine_environment))
 
     def acquire(self, *, expected_ids=None, reporting_directory=None, _prelocked=False, _deadline=None):
         if self._rollback is not None:
@@ -1555,6 +1603,11 @@ class PrerequisiteManager(_NetworkCleanup):
             if not self.plan.enabled:
                 self.lease = ServiceLease(invocation, self.scope.id, (), (), ())
                 return self.lease
+            # Every managed start passes here, after this scope's fail-closed checks and
+            # before any service is created, so address pools and disks are freed first.
+            # Where this scope keeps its journal outlives its containers; unused volumes are judged by it.
+            scope_index.record(self.scope.id, self.directory)
+            self._reap_unused(deadline, own_lock=(self.directory, _leased_ids(journal)))
             initial = self._inventory(deadline)
             self._retire_disposed_duties(journal, initial)
             self._cleanup_pending_networks(journal, deadline)
@@ -1610,8 +1663,10 @@ class PrerequisiteManager(_NetworkCleanup):
                     override = self.directory / f'{self.scope.id}-labels.json'
                     if override.is_symlink():
                         raise PrerequisiteError('Compose ownership override may not be a symlink.')
+                    # The checkout name only helps people tell scopes apart in a container UI.
+                    readable = {CHECKOUT_LABEL: self.scope.checkout} if getattr(self.scope, 'checkout', '') else {}
                     override.write_text(json.dumps({'services': {name: {'labels': {
-                        CONFIG_LABEL: fingerprint, **({'api-agent.acquisition': self.acquisition_nonce}
+                        CONFIG_LABEL: fingerprint, **readable, **({'api-agent.acquisition': self.acquisition_nonce}
                             if self.dispose_on_release else {})}} for name, fingerprint in self.fingerprints.items()}}))
                     # Private snapshot paths remain available for retained bind
                     # mounts. No mutable source asset reaches Compose execution.
@@ -1711,6 +1766,17 @@ class PrerequisiteManager(_NetworkCleanup):
         await offload(self.release, retain=False)
 
     def release(self, *, retain=False, adopted_ids=(), _prelocked=False, _deadline=None):
+        held = self.lease is not None or self._rollback is not None
+        stopped = self._release(retain=retain, adopted_ids=adopted_ids,
+                                _prelocked=_prelocked, _deadline=_deadline)
+        if held and self.lease is None and self._rollback is None:
+            # The lease has ended; other scopes' leftovers can go now. Failure keeps ownership instead.
+            limit = self.now() + self.cleanup_timeout
+            self._reap_unused(limit if _deadline is None else min(limit, _deadline), cleanup=True,
+                              own_lock=None if _prelocked else 'free')
+        return stopped
+
+    def _release(self, *, retain=False, adopted_ids=(), _prelocked=False, _deadline=None):
         if self.lease is None and self._rollback is None:
             return ()
         deadline = self.now() + self.cleanup_timeout
@@ -1767,16 +1833,35 @@ class PrerequisiteManager(_NetworkCleanup):
                         journal[key] = successor
                         network_id = None
                         break
+            enrolled_stopped = ()
             if adopted_ids and not retain:
                 # The shared S3 registry already proved these exact IDs (ownership chain,
                 # configuration and storage). The final consumer disposes of them even when
                 # their creator is gone, so no container outlives its last lease.
                 current = self._inventory(deadline, cleanup=True)
                 present = tuple(identifier for identifier in adopted_ids if identifier in current)
-                cleanup_ids.update(present)
-                disposable_ids.update(present)
-                nonces.update({identifier: current[identifier].acquisition_nonce for identifier in present})
-            stopped = () if retain else self._stop_new(tuple(sorted(set(self.lease.owned_ids) | cleanup_ids)), journal, deadline, nonces=nonces)
+                if self.dispose_on_release:
+                    cleanup_ids.update(present)
+                    disposable_ids.update(present)
+                    nonces.update({identifier: current[identifier].acquisition_nonce for identifier in present})
+                else:
+                    # An enrolled binding is stop-only: enrolment never owns its container.
+                    protected = _leased_ids(journal)
+                    eligible = tuple(sorted(item for item in present
+                                            if item not in protected and current[item].running))
+                    if eligible:
+                        self._command((self.plan.command[0], 'stop', '--time', '5', *eligible),
+                                      deadline, cleanup=True)
+                    enrolled_stopped = eligible
+            # Every container this lease relied on goes with it, whether it created them or
+            # adopted an unleased one, unless another live lease still protects it. A temporary
+            # (disposable) lifecycle keeps its narrower, nonce-verified ownership instead.
+            owned = set(self.lease.owned_ids) | cleanup_ids
+            if not self.dispose_on_release:
+                owned |= set(self.lease.container_ids) - set(adopted_ids)
+            stopped = () if retain else self._stop_new(tuple(sorted(owned)), journal, deadline, nonces=nonces,
+                                                       remove=not self.dispose_on_release)
+            stopped = (*enrolled_stopped, *stopped)
             if not retain:
                 if self.dispose_on_release:
                     self._dispose_new(disposable_ids, journal, deadline, nonces=nonces)

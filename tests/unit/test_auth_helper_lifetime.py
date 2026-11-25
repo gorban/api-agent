@@ -9,13 +9,24 @@ import time
 import pytest
 
 from api_agent.runtime.processes import finalize
+from procfs_support import process_state
 
 
 def _alive(pid):
-    try:
-        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
-    except FileNotFoundError:
-        return False
+    return process_state(pid) not in (None, 'Z')
+
+
+class _ReapedMidRead:
+    """A procfs file that opened, then lost its task before the read."""
+    def __enter__(self): return self
+    def __exit__(self, *exc): return False
+    def read(self, *args): raise ProcessLookupError(3, 'No such process')
+
+
+def test_alive_treats_a_task_reaped_between_open_and_read_as_gone(monkeypatch):
+    monkeypatch.setattr(Path, 'open', lambda path, *args, **kwargs: _ReapedMidRead())
+
+    assert _alive(4242) is False
 
 
 @pytest.fixture

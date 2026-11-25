@@ -274,6 +274,42 @@ class StopContainersDialog(QuitDialog):
         yield ButtonFooter()
 
 
+class RemoveVolumesDialog(QuitDialog):
+    def __init__(self, volumes, engine_label=None):
+        super().__init__()
+        self.volumes = volumes
+        self.engine_label = engine_label
+
+    def compose(self) -> ComposeResult:
+        prefix = ("Selected engine: " + self.engine_label + "\n") if self.engine_label is not None else ""
+        yield Static(prefix + "Remove these unused volumes and their data?\n" + "\n".join(
+            f"{item.name} ({item.project}, {item.profile})" for item in self.volumes) +
+            "\nEnter literal y to remove; every other response cancels.", markup=False)
+        yield EditableInput(id="remove-volumes-answer")
+        with Horizontal(classes="confirmation-actions"):
+            yield Button("Confirm response", id="remove-volumes-submit")
+            yield Button("Cancel", id="remove-volumes-cancel")
+        yield ButtonFooter()
+
+
+class ReapUnusedDialog(QuitDialog):
+    def __init__(self, engine_label=None):
+        super().__init__()
+        self.engine_label = engine_label
+
+    def compose(self) -> ComposeResult:
+        prefix = ("Selected engine: " + self.engine_label + "\n") if self.engine_label is not None else ""
+        yield Static(prefix + "Remove unused containers and volumes of other checkouts?\n"
+                     "This deletes their leaderless containers, and the volumes (traces, reports and other data) of "
+                     "checkouts that are gone or past retention. Deleted volumes cannot be restored.\n"
+                     "Enter literal y to remove; every other response cancels.", markup=False)
+        yield EditableInput(id="reap-answer")
+        with Horizontal(classes="confirmation-actions"):
+            yield Button("Confirm response", id="reap-submit")
+            yield Button("Cancel", id="reap-cancel")
+        yield ButtonFooter()
+
+
 class SettingHelpDialog(SelectedTextCopy, ModalScreen):
     BINDINGS = [Binding("escape,c", "close", "Close", key_display="Esc / c", priority=True),
                 Binding("up,k", "scroll_description('up')", show=False),
@@ -1103,8 +1139,9 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         self.container_runtime = container_runtime or ContainerRuntime(
             scope=StackScope.from_roots(context.base_root, context.pack_root),
             ownership_directory=context.owner_root / 'artifacts' / 'prerequisites')
-        self.containers = ()
+        self.containers = self.volumes = ()
         self.container_marked = set()
+        self.volume_marked = set()
         self.container_summary = "Running containers: checking…"
         from api_agent.runtime.worktrees import checkout_branch, WorktreeGateError
         self.branches = {}
@@ -1765,6 +1802,29 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
         label = self.container_engine_display()
         self.push_screen(StopContainersDialog(selected, label), lambda yes: self.run_worker(
             self._stop_containers(selected, runtime), group="containers", exclusive=True) if yes else None)
+
+    def request_volume_removal(self):
+        selected = tuple(item for item in self.volumes if not item.in_use and item.name in self.volume_marked)
+        if not selected:
+            raise ValueError("Select at least one unused volume.")
+        runtime = getattr(self.container_runtime, "selected_runtime", self.container_runtime)
+        label = self.container_engine_display()
+        self.push_screen(RemoveVolumesDialog(selected, label), lambda yes: self.run_worker(
+            self._remove_volumes(selected, runtime), group="containers", exclusive=True) if yes else None)
+
+    async def _remove_volumes(self, selected, runtime):
+        try:
+            report = await asyncio.to_thread(runtime.remove_volumes, tuple(item.name for item in selected))
+            message = f'Removed {report.volumes} of {len(selected)} selected volume(s).'
+            if report.volumes < len(selected):
+                message += ' The rest are referenced, protected by a live lease, or their checkout could not be verified.'
+            if report.diagnostic:
+                message += ' Cleanup ' + report.diagnostic + '.'
+            self.volume_marked.clear()
+        except Exception as error:
+            message = str(error)
+        await self._refresh_container_inventory()
+        self.call_after_refresh(self.show_container_stop_error, message)
 
     async def _stop_containers(self, selected, runtime=None):
         runtime = self.container_runtime if runtime is None else runtime
@@ -2949,6 +3009,10 @@ class ApiAgentApp(AllureNavigation, ContainerManagement, App[int]):
                 self.request_container_stop()
             elif key.startswith("container-engine-"):
                 self.select_container_engine(key[len("container-engine-"):])
+            elif key == "reap-containers":
+                self.request_container_reap()
+            elif key == "remove-volumes":
+                self.request_volume_removal()
             elif key == "refresh-containers":
                 self.refresh_container_inventory()
             elif key == "container-logs":

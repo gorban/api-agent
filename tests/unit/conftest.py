@@ -158,3 +158,12 @@ def isolated_suite_lock(tmp_path_factory, monkeypatch):
     path = tmp_path_factory.mktemp('unit-suite-lock') / 'test-suite.lock'
     monkeypatch.setattr(suite_lock, 'cache_path', lambda: path.with_name('cost-history.sqlite3'))
     return path
+
+
+@pytest.fixture(autouse=True)
+def isolated_scope_index(tmp_path_factory, monkeypatch):
+    """Acquires record each scope's journal location in the user cache; unit tests use a disposable index."""
+    from api_agent.runtime import scope_index
+    path = tmp_path_factory.mktemp('unit-scope-index') / 'scopes'
+    monkeypatch.setattr(scope_index, 'index_directory', lambda: path)
+    return path

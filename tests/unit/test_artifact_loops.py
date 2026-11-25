@@ -79,6 +79,7 @@ def test_compiled_plan_without_limits_carries_no_limits_table(tmp_path):
     (lambda rows: rows[0].pop('Key'), 'invalid limit rows'),
     (lambda rows: rows[0].update(extra=1), 'invalid limit rows'),
     (lambda rows: rows[0].update(Key='lower'), 'invalid limit rows'),
+    (lambda rows: rows[0].update(Key='EDGE'), 'invalid limit rows'),
     (lambda rows: rows[0].update(Source={'$p': 'base/native.py'}), 'invalid limit rows'),
     (lambda rows: rows[0].update(Source='base/config.toml'), 'invalid limit rows'),
     (lambda rows: rows[0].update(line=0), 'invalid limit rows'),
@@ -164,3 +165,33 @@ def test_compiled_plan_rejects_reserved_recovery_output_field(loop_plan):
 
     with pytest.raises(ArtifactRejected, match='reserved field recoveries'):
         load_built(plan, edited(plan.plan, mutate))
+
+
+@pytest.mark.parametrize('kind', ['forward', 'start', 'or_with_attempt'])
+def test_compiled_edge_counter_requires_direct_backward_bound(loop_plan, kind):
+    plan, _ = loop_plan
+    def mutate(value):
+        entries = value['layout']['tables']['$m']
+        position = next(i for i, (name, _) in enumerate(entries) if name == 'Edges')
+        rows = [dict(row['$m']) for row in entries[position][1]]
+        if kind == 'or_with_attempt':
+            row = next(row for row in rows if row['From'] == 'verify' and row['To'] == 'draft')
+            row['When'] = 'draft.attempt < PLAN_PASSES and (verify.accepted or EDGE.traversals < PLAN_PASSES)'
+        else:
+            row = next(row for row in rows if row['From'] == 'verify' and row['To'] == 'accept')
+            if kind == 'start':
+                row['From'] = 'START'
+            row['When'] = 'EDGE.traversals < PLAN_PASSES'
+        entries[position][1] = [{'$m': sorted(row.items())} for row in rows]
+    with pytest.raises(ArtifactRejected, match='EDGE.traversals'):
+        load_built(plan, edited(plan.plan, mutate))
+
+
+def test_compiled_edge_traversals_valid_loop_roundtrip(tmp_path):
+    root = tmp_path / 'tree'
+    root.mkdir()
+    entry = retry(root, ('verify', 'accept', 'verify.accepted'),
+                  ('verify', 'draft', 'not verify.accepted and EDGE.traversals < PLAN_PASSES'),
+                  ('verify', 'failed', 'otherwise'))
+    compiled = load_built(built(tmp_path, entry))
+    assert run(compiled, {'accept_at': 3})[1].count('draft') == 3

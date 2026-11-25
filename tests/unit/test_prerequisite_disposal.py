@@ -137,7 +137,7 @@ def test_unrelated_persistent_service_preserves_shared_network(setup):
     assert set(engine.records) == set(retained.container_ids)
     assert scope.project + '_default' in engine.networks
     persistent.release()
-    assert scope.project + '_default' in engine.networks
+    assert not engine.records and scope.project + '_default' not in engine.networks
 
 
 def test_network_duty_follows_disjoint_temporary_service(setup):

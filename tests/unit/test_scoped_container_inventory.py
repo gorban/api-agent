@@ -195,3 +195,19 @@ def test_dispose_requires_exact_inspection_identity_and_count(monkeypatch, tmp_p
     monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
     with pytest.raises(ContainerError, match='ownership changed'):
         runtime.dispose([OWNED], nonce=NONCE, fingerprints={'service': FINGERPRINT})
+
+
+@pytest.mark.parametrize(('project', 'checkout', 'listed'), [
+    ('sa-' + CURRENT, 'app', True), ('sa-app-11111111', 'app', True), ('sa-' + CURRENT, '', True),
+    ('sa-app-22222222', 'app', False), ('sa-other-11111111', 'app', False), ('sa-app-11111111', '', False)])
+def test_inventory_lists_a_container_only_when_its_labels_reproduce_its_project_name(
+        monkeypatch, project, checkout, listed):
+    row = record(OWNED)
+    row['Config']['Labels'].update({'com.docker.compose.project': project, 'api-agent.checkout': checkout})
+    runtime = ContainerRuntime('docker', StackScope(CURRENT, checkout='app'))
+    def engine(args, **_kwargs):
+        return OWNED if args[0] == 'ps' else json.dumps([row])
+    monkeypatch.setattr(runtime, '_run', engine)
+    monkeypatch.setattr('api_agent.runtime.containers.session_container_identity', lambda: set())
+
+    assert [item.id for item in runtime.inventory()] == ([OWNED] if listed else [])

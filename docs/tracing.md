@@ -25,10 +25,11 @@ does not replace an explicitly saved endpoint; update or clear it in configurati
 Remote HTTPS verifies certificates and uses `CLIENT_CA_FILE` when supplied.
 Credentials must never be embedded in URLs.
 
-`TRACE_VIEWER_URL` is the separate dashboard address. Omitted viewer settings
-can derive the managed local dashboard for an exact conventional local ingestion
+`TRACE_VIEWER_URL` is the separate dashboard address. Omitted or empty viewer
+settings (accepting the empty default saves an empty value) can derive the managed
+local dashboard for an exact conventional local ingestion
 URL: LangFuse on port 3000, or Jaeger on `JAEGER_VIEWER_PORT` (default 16686).
-An explicit empty viewer disables dashboard presentation. Remote/custom ingestion
+Set `TRACE_VIEWER_URL=Off` (any letter case) to disable dashboard presentation. Remote/custom ingestion
 requires an explicit viewer URL if a dashboard is wanted; the application does
 not infer a remote dashboard from an ingestion path. A remote/custom ingestion
 or dashboard does not start a local collector stack. Readiness and authenticated
@@ -63,18 +64,26 @@ move between panels. Redirecting stderr captures that literal terminal status. S
 home/status JSON, log events, trace payloads and inspection descriptors exclude
 them independently of content settings.
 
-Changing `LANGFUSE_ADMIN_EMAIL` or `LANGFUSE_ADMIN_PASSWORD` can make a retained
-managed web container incompatible with the new configuration. The recovery
-notice names changed initialization settings when inspection proves them,
-without showing credential values. Otherwise it explains the possible cause
-without asserting which setting changed.
+Changing `LANGFUSE_ADMIN_EMAIL` or `LANGFUSE_ADMIN_PASSWORD` can make a managed
+web container that is still present (running, or left behind by a crashed session)
+incompatible with the new configuration. Releasing a stack removes its containers
+and keeps its volumes, so a normal stop-and-rerun already recreates the web container
+over the same data. The recovery notice names changed initialization settings when
+inspection proves them, without showing credential values. Otherwise it explains the
+possible cause without asserting which setting changed.
 
 To preserve traces, stop every Run local, trace viewer and test invocation using
 that stack. In the same container engine/context, confirm the identified web
 container is stopped and remove only that container using the notice's command.
 Keep all volumes; do not force removal or use `-v`, `compose down -v`, or volume
-pruning. Rerunning recreates the web container. Existing database accounts keep
-their actual credentials; recreating a container does not rotate the account.
+pruning. Containers are disposable and the trace volumes are the data: the
+[container lifecycle](prerequisites.md#managed-container-lifecycle) never removes a
+volume when it removes a container, and
+[unused volume cleanup](prerequisites.md#unused-managed-volumes) reclaims a stack's volumes
+only after its checkout directory is gone or has been idle past
+`MANAGED_CONTAINER_RETENTION_DAYS`. Rerunning recreates the web container. Existing
+database accounts keep their actual credentials; recreating a container does not
+rotate the account.
 Shared test setup retains this recovery notice in successful-test stderr details
 when tracing is unavailable, while the original functional request continues.
 
@@ -208,10 +217,29 @@ an annotation that cannot fit does not erase the original response.
 
 Fixed failure cause/code metadata remains useful without content permission.
 Trusted provider adapters can also publish finite, allowlisted failure facts:
-HTTP status, provider type/code, policy recommendation/categories, and explicit
-retry attempt/limit. These structural fields never include provider messages,
-response bodies, prompts, or stacks, regardless of content permission. Unknown
-provider labels are omitted. `WorkflowObservations.export_trace_context()` retains
+HTTP status, provider type/code, policy recommendation/categories, the category
+source (`reported` or `inferred`), and explicit retry attempt/limit. These
+structural fields never include provider messages, response bodies, prompts, or
+stacks, regardless of content permission. Unknown provider labels are omitted.
+
+Type, code, recommendation and category values come from a closed vocabulary.
+The defaults are public, provider-independent names. An embedding application
+whose provider reports its own failure types, codes, recommendations or
+categories registers those fixed tokens once at startup with
+`api_agent.telemetry.failure_vocabulary.register_provider_failure_vocabulary`.
+Registration is additive and idempotent, order-independent, limited to 64
+tokens per field, and rejects anything that is not a short lowercase
+identifier token with `ValueError`. It cannot remove a default or admit free
+text, and values outside the registered vocabulary are still dropped, as is a
+category list with any unregistered item. Tests use
+`provider_failure_vocabulary_scope`, which withdraws on exit only the
+tokens it added. The application classifies the failure itself and attaches
+the resulting `api_agent.provider.*` fields to the running workflow node's span
+with `api_agent.workflows.inference_capture.record_provider_failure_fields`;
+that call is a no-op outside a traced workflow node and never raises. The span
+sanitizer remains the final gate.
+
+`WorkflowObservations.export_trace_context()` retains
 the explicit graph span's validated trace/span IDs after closure so local evidence
 can link to the exported trace without depending on ambient OTEL state.
 When a trusted boundary has one canonical failed-call identity,
