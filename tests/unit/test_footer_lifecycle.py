@@ -20,8 +20,9 @@ class FooterHarness(App):
         yield ButtonFooter()
 
 
+@pytest.mark.parametrize('ambient_refresh', [False, True])
 @pytest.mark.parametrize('cancel_first', [False, True])
-def test_overlapping_footer_refreshes_preserve_latest_bindings(monkeypatch, cancel_first):
+def test_overlapping_footer_refreshes_preserve_latest_bindings(monkeypatch, cancel_first, ambient_refresh):
     async def scenario():
         app = FooterHarness()
         async with app.run_test() as pilot:
@@ -30,14 +31,18 @@ def test_overlapping_footer_refreshes_preserve_latest_bindings(monkeypatch, canc
             original = Footer.mount_all
             entered, release, second_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
             active, calls = 0, 0
+            owned = set()
 
             async def controlled_recompose(widget, *args, **kwargs):
                 nonlocal active, calls
-                calls += 1
+                # Only the refreshes this test starts are counted and gated;
+                # framework-initiated ones still must not overlap them.
+                mine = asyncio.current_task() in owned
+                calls += mine
                 active += 1
                 assert active == 1, 'Footer removal/mounting must not overlap'
                 try:
-                    if calls == 1:
+                    if mine and calls == 1:
                         entered.set()
                         await release.wait()
                     token = active_message_pump.set(widget)
@@ -56,7 +61,18 @@ def test_overlapping_footer_refreshes_preserve_latest_bindings(monkeypatch, canc
                 finally:
                     active_message_pump.reset(token)
 
+            async def framework_refresh():
+                # Textual schedules its own refreshes (binding or screen changes)
+                # at times the test does not control, so one may land at any point.
+                token = active_message_pump.set(footer)
+                try:
+                    await footer.recompose()
+                finally:
+                    active_message_pump.reset(token)
+
+            ambient = asyncio.create_task(framework_refresh()) if ambient_refresh else None
             first = asyncio.create_task(first_refresh())
+            owned.add(first)
             await entered.wait()
             app._bindings.key_to_bindings['x'] = [Binding('x', 'example', 'Latest')]
 
@@ -69,6 +85,7 @@ def test_overlapping_footer_refreshes_preserve_latest_bindings(monkeypatch, canc
                     active_message_pump.reset(token)
 
             second = asyncio.create_task(refresh_again())
+            owned.add(second)
             await second_started.wait()
             assert calls == 1
             if cancel_first:
@@ -79,6 +96,8 @@ def test_overlapping_footer_refreshes_preserve_latest_bindings(monkeypatch, canc
                 release.set()
                 await first
             await second
+            if ambient is not None:
+                await ambient
             assert calls == 2
             assert len(footer.query('#tab-select-hint')) == 1
             assert any(key.description == 'Latest' for key in footer.query(FooterKey))

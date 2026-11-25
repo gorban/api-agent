@@ -137,6 +137,7 @@ class UnitRunResult:
     elapsed: float | None = None
     coverage_reports: tuple[CoverageReport, ...] = ()
     coverage_full: bool = False
+    discarded_coverage: tuple[str, ...] = ()
 
 
 _PLUGIN = r'''
@@ -337,8 +338,14 @@ def _run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=
         if on_event:
             on_event(event)
 
+    discarded_coverage = set()
+
     def raw(repo, chunk):
         chunks.append(chunk)
+        # Coverage skips a data file it cannot read and still reports on the rest,
+        # so its warning is the only sign that measurements were left out.
+        if "CoverageWarning: " in chunk and ("isn't a coverage data file" in chunk or "Couldn't use data file" in chunk):
+            discarded_coverage.add(repo)
         if output:
             output(chunk)
         emit(RunnerEvent('output', repo, text=chunk))
@@ -568,6 +575,9 @@ def _run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=
                                 reader.join(timeout=5)
                             if not reader_started or not reader.is_alive():
                                 process.stdout.close()
+            if repo in discarded_coverage:
+                failed = True
+                raw(repo, 'Coverage discarded an unreadable data file, so the coverage result cannot be trusted.\n')
             if has_code:
                 try:
                     data = json.loads(coverage.read_text())
@@ -617,7 +627,7 @@ def _run_unit_tests(context, tests, *, on_event=None, output=None, cancel_event=
         results.setdefault(test.id, TestResult(test, 'cancelled' if cancelled else 'error'))
     failed |= cancelled or any(r.status not in {'passed', 'not_applicable'} for r in results.values()) or (require_full_coverage and any(not a.complete for a in areas))
     result = UnitRunResult(130 if cancelled else int(failed), tuple(results[t.id] for t in tests), tuple(areas), ''.join(chunks), cancelled, require_full_coverage, time.monotonic() - started_at,
-                           tuple(retained), coverage_full)
+                           tuple(retained), coverage_full, tuple(sorted(discarded_coverage)))
     emit(RunnerEvent('finished', status='failed' if result.exit_code else 'passed'))
     return result
 
@@ -640,6 +650,7 @@ def format_unit_summary(result, *, include_elapsed=True):
     for report in result.coverage_reports:
         lines.extend((f'{report.repo} coverage JSON: {report.json_path}',
                       f'{report.repo} coverage HTML: {report.html_path}'))
+    lines.extend(f'{repo}: coverage data was unreadable; see output.' for repo in result.discarded_coverage)
     for repo in dict.fromkeys(test.identity.repo for test in result.tests):
         if not any(area.repo == repo for area in result.coverage):
             lines.append(f'{repo}: no measured code files (or coverage report unavailable; see output).')

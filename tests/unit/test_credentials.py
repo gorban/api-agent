@@ -130,8 +130,10 @@ def test_timeout_kills_owned_descendant_holding_pipes(tmp_path, monkeypatch):
     from api_agent.runtime import processes
     if os.name != 'posix':
         pytest.skip('Process group regression requires POSIX')
+    # The helper publishes the pid atomically after a deliberate delay, so readers
+    # that poll for existence never observe the created-but-empty file.
     marker = tmp_path / 'child.pid'
-    body = f"import subprocess\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\nopen({str(marker)!r}, 'w').write(str(child.pid))\ntime.sleep(30)"
+    body = f"import subprocess\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\nimport os\nhandle = open({str(marker)!r} + '.pending', 'w')\ntime.sleep(.1)\nhandle.write(str(child.pid))\nhandle.close()\nos.replace({str(marker)!r} + '.pending', {str(marker)!r})\ntime.sleep(30)"
     path = fake_cli(tmp_path, body)
     original = owned_process.OwnedProcess
     admitted = []

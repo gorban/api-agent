@@ -234,6 +234,22 @@ def test_runner_cannot_pass_without_valid_coverage(monkeypatch,tmp_path,coverage
     if coverage=='missing': assert 'Coverage report unavailable' in result.output
 
 
+@pytest.mark.parametrize('warning', [
+    "/venv/coverage/data.py:213: CoverageWarning: Data file '/scratch/.coverage.1' isn't a coverage data file: "
+    "Couldn't use data file '/scratch/.coverage.1': no such table: coverage_schema: (SQLITE_ERROR)\n",
+    "/venv/coverage/data.py:213: CoverageWarning: Couldn't use data file '/scratch/.coverage.2': "
+    "file is not a database: (SQLITE_NOTADB)\n",
+])
+def test_runner_fails_when_coverage_discarded_an_unreadable_data_file(monkeypatch, tmp_path, warning):
+    ctx=context(tmp_path)
+    test,_=fake_execution(monkeypatch,ctx,reports=[report('setup'), report(), report('teardown')],output=warning)
+    result=runner.run_unit_tests(ctx,[test])
+    assert result.tests[0].status == 'passed'
+    assert result.exit_code == 1
+    assert 'Coverage discarded an unreadable data file' in result.output
+    assert 'coverage data was unreadable; see output' in runner.format_unit_summary(result)
+
+
 def test_runner_unknown_events_are_ignored_and_no_production_source_is_supported(monkeypatch,tmp_path):
     ctx=context(tmp_path,source=False)
     test,_=fake_execution(monkeypatch,ctx,reports=[report(node='unselected'), report('setup'), report(), report('teardown')])
